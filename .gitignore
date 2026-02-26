@@ -151,3 +151,6 @@ yarn-error.log*
 *.sqlite
 *.sqlite3
 *.db
+
+# ── Local agent instructions ──────────────────────────────────────────────────────
+AGENTS.md
