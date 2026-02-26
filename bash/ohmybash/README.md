@@ -32,30 +32,36 @@ No `username@hostname`. No clutter.
 
 The powerline arrow glyphs (``, ``) and the branch glyph (``) are Nerd Font codepoints. Everything else (`✓`, `✗`, `❯`, `·`) is standard Unicode — the prompt degrades gracefully if Nerd Fonts are missing.
 
-## Deploy to a remote host
+## Deploy (local first)
 
 ```bash
 cd bash/ohmybash
 chmod +x deploy.sh
 
-# Deploy to specific host/user
-./deploy.sh myserver.example.com ansible
-
-# Deploy with defaults (myserver.example.com / ansible)
+# Local install (default)
 ./deploy.sh
+
+# Explicit local install
+./deploy.sh --local
+
+# Optional remote install
+./deploy.sh --remote host01.example.com user
+
+# Backward-compatible remote syntax
+./deploy.sh host01.example.com user
 ```
 
 The script:
 1. Backs up existing `~/.bashrc`
 2. Clones Oh My Bash into `~/.oh-my-bash` (skips if already installed)
-3. Uploads the theme to `~/.oh-my-bash/custom/themes/devops-powerline/`
-4. Appends OMB config to `~/.bashrc`
+3. Installs/updates the theme at `~/.oh-my-bash/custom/themes/devops-powerline/`
+4. Appends or updates OMB config in `~/.bashrc`
 
-SSH back in after deployment to see the new prompt.
+Open a new shell (or run `source ~/.bashrc`) after deployment.
 
 ## Updating the theme
 
-Edit `theme/devops-powerline/devops-powerline.theme.bash` locally, then re-run `deploy.sh`. It will overwrite the theme file without touching OMB itself.
+Edit `theme/devops-powerline/devops-powerline.theme.bash` locally, then re-run `deploy.sh`. It overwrites only the theme file and updates `OSH_THEME` as needed.
 
 ## Tested distros
 
@@ -89,7 +95,7 @@ To change the fill character, edit `_DP_FILL_CHAR='·'`.
 ```
 bash/ohmybash/
 ├── README.md
-├── deploy.sh                              # Deploy to any remote host
+├── deploy.sh                              # Local install by default; remote optional
 └── theme/
     └── devops-powerline/
         └── devops-powerline.theme.bash    # The OMB theme
