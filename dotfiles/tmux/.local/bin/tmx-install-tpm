@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TPM_DIR="$HOME/.tmux/plugins/tpm"
+
+if ! command -v git >/dev/null 2>&1; then
+  echo "ERROR: git is required to install TPM"
+  exit 1
+fi
+
+mkdir -p "$HOME/.tmux/plugins"
+
+if [[ -d "$TPM_DIR/.git" ]]; then
+  echo "TPM already installed at $TPM_DIR"
+else
+  echo "Cloning TPM from GitHub..."
+  git clone --depth=1 https://github.com/tmux-plugins/tpm "$TPM_DIR"
+fi
+
+echo "TPM ready."
+echo "Next steps:"
+echo "1) Start tmux"
+echo "2) Press prefix + I (capital i) to install plugins"

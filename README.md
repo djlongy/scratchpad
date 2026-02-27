@@ -7,6 +7,7 @@ Drop onto any machine with minimal dependencies — no frameworks, no package sp
 
 | Tool | What it does | Requires |
 |------|-------------|----------|
+| [`dotfiles`](dotfiles/README.md) | Stow-managed tmux/dev environment bootstrap for fast machine migration | git, stow, tmux |
 | [`bash/git-functions`](bash/git-functions/README.md) | fzf interactive branch picker, prune gone branches | bash, fzf |
 | [`bash/ohmybash`](bash/ohmybash/README.md) | Powerline prompt with git/venv/time, deploy script, Nerd Font installer | bash, git |
 | [`ansible/action_plugins/get_cli_args`](ansible/action_plugins/get_cli_args/README.md) | Expose `ansible-playbook` CLI args and Semaphore vars to tasks | Python, Ansible |
@@ -15,6 +16,8 @@ Drop onto any machine with minimal dependencies — no frameworks, no package sp
 
 ```
 scratchpad/
+├── dotfiles/
+│   └── tmux/               stow package for tmux and helper scripts
 ├── bash/
 │   ├── git-functions/      fzf git helpers
 │   └── ohmybash/           Oh My Bash prompt theme + deploy tooling
