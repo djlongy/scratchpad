@@ -3,24 +3,39 @@
 
 # Git checkout interactive
 gci() {
-  local current=$(git branch --show-current)
-  local branches=$(git for-each-ref --sort=-committerdate \
-    --format='%(refname:short)|%(committerdate:relative)|%(subject)' \
-    refs/heads refs/remotes/origin | \
-    sed 's|origin/||' | \
-    awk -F'|' '!seen[$1]++')
+  local current
+  current=$(git branch --show-current)
 
-  local branch=$(echo "$branches" | \
-    awk -F'|' -v curr="$current" '{
-      if($1==curr)
-        printf "\033[1;32m* %-40s\033[0m \033[36m%-20s\033[0m %s\n", $1, $2, $3
-      else
-        printf "  \033[33m%-40s\033[0m \033[36m%-20s\033[0m %s\n", $1, $2, $3
-    }' | \
-    fzf --ansi --height=40% --reverse \
-      --preview "git log --oneline --graph --date=short --color=always --pretty='format:%C(auto)%cd %h%d %s' \$(echo {} | awk '{print \$1}' | sed 's/^\* //; s/ *//') --" | \
-    sed 's/^\* //' | \
-    awk '{print $1}')
+  local branches
+  branches=$(
+    {
+      git for-each-ref --sort=-committerdate \
+        --format='%(refname:short)|%(refname:short)|%(committerdate:relative)|%(subject)' \
+        refs/heads
+
+      git for-each-ref --sort=-committerdate \
+        --format='%(refname:short)|%(committerdate:relative)|%(subject)' \
+        refs/remotes/origin | \
+        awk -F'|' '$1 != "origin/HEAD" {
+          name = $1
+          sub(/^origin\//, "", name)
+          print name "|" $1 "|" $2 "|" $3
+        }'
+    } | awk -F'|' '!seen[$1]++'
+  )
+
+  local branch
+  branch=$(printf '%s\n' "$branches" | \
+    awk -F'|' -v curr="$current" 'BEGIN { OFS="\t" }
+      {
+        marker = ($1 == curr) ? "* " : "  "
+        color = ($1 == curr) ? "\033[1;32m" : "\033[33m"
+        display = color marker $1 "\033[0m"
+        print $1, $2, display, $3, $4
+      }' | \
+    fzf --ansi --height=40% --reverse --delimiter=$'\t' --with-nth=3,4,5 \
+      --preview "git log --oneline --graph --date=short --color=always --pretty='format:%C(auto)%cd %h%d %s' {2} --" | \
+    awk -F'\t' '{print $1}')
 
   [[ -n "$branch" ]] && git checkout "$branch" 2>&1
 }
