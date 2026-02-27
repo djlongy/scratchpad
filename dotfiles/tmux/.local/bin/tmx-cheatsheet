@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tmp_file="$(mktemp)"
+trap 'rm -f "$tmp_file"' EXIT
+
+cat >"$tmp_file" <<'EOF'
+tmux quick cheatsheet
+====================
+
+Prefix key: Ctrl-b
+
+Core
+----
+Ctrl-b ?      open this cheatsheet in a right pane
+Ctrl-b d      detach
+Ctrl-b r      reload ~/.tmux.conf
+Ctrl-b e      open ~/.tmux.conf in a new window
+
+Sessions
+--------
+Ctrl-b N      create/switch to a named session
+Ctrl-b s      choose session (tree view)
+F1/F2/F3      jump directly to session 1/2/3
+
+Windows
+-------
+Ctrl-b c      new window (current path)
+Ctrl-b ,      rename current window
+Ctrl-b n/p    next/previous window
+Ctrl-b w      choose window
+Ctrl-b 1..9   jump to window number 1..9
+
+Panes
+-----
+Ctrl-b |      split right
+Ctrl-b -      split down
+Ctrl-b h/j/k/l  move between panes
+Ctrl-b H/J/K/L  resize pane
+Ctrl-b x      kill current pane
+
+viewer usage in this pane
+-------------------------
+/pattern      search forward
+n / N         next / previous match
+q             quit cheatsheet (vim only)
+EOF
+
+if command -v vim >/dev/null 2>&1; then
+  exec vim -R -n -u NONE \
+    --cmd 'set shortmess+=F' \
+    --cmd 'set nomore' \
+    -c 'setlocal nomodifiable nomodified readonly nowrap mouse=a' \
+    -c 'nnoremap q :q<CR>' \
+    "$tmp_file"
+fi
+
+if command -v vi >/dev/null 2>&1; then
+  exec vi -R "$tmp_file"
+fi
+
+exec less "$tmp_file"

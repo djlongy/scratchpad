@@ -15,7 +15,8 @@ without manually editing config files.
 
 - `tmux`
   - `.tmux.conf`
-  - `.local/bin/tmx-dev` (session bootstrap for a DevOps workflow)
+  - `.local/bin/tmx-dev` (session bootstrap with shell + cheatsheet pane)
+  - `.local/bin/tmx-cheatsheet` (shortcut reference shown in pane)
   - `.local/bin/tmx-install-tpm` (optional TPM installer)
 
 ## Requirements
@@ -54,15 +55,23 @@ sudo apt-get update && sudo apt-get install -y git tmux stow
 ```bash
 git clone <your-repo-url> ~/scratchpad
 cd ~/scratchpad/dotfiles
-chmod +x install.sh uninstall.sh save-environment.sh tmux/.local/bin/tmx-dev tmux/.local/bin/tmx-install-tpm
+chmod +x install.sh uninstall.sh save-environment.sh tmux/.local/bin/tmx-dev tmux/.local/bin/tmx-cheatsheet tmux/.local/bin/tmx-install-tpm
 ./install.sh
 ```
 
-3) Start tmux with the DevOps layout:
+3) Start tmux with the default layout:
 
 ```bash
 ~/.local/bin/tmx-dev
 ```
+
+This starts one session with one window split into two panes:
+
+- Left pane: terminal in your workspace
+- Right pane: tmux shortcut cheatsheet
+
+Kill the cheatsheet pane any time with `Ctrl-b x`.
+Inside cheatsheet pane: use `/` to search, `n`/`N` for next/previous match, mouse wheel to scroll, `q` to quit.
 
 4) Optional plugin path (only if GitHub access is allowed):
 
