@@ -4,9 +4,11 @@
 # Local first:
 #   ./deploy.sh
 #   ./deploy.sh --local
+#   ./deploy.sh --local --with-blesh
 #
 # Optional remote deploy:
 #   ./deploy.sh --remote host01.example.com user
+#   ./deploy.sh --remote host01.example.com user --with-blesh
 #
 # Backward-compatible remote positional args:
 #   ./deploy.sh host01.example.com user
@@ -23,13 +25,16 @@ Usage:
   ./deploy.sh
   ./deploy.sh --local
   ./deploy.sh --remote <host> [user]
+  ./deploy.sh [--local|--remote <host> [user]] [--with-blesh|--without-blesh]
 
 Examples:
   ./deploy.sh
   ./deploy.sh --remote host01.example.com user
+  ./deploy.sh --local --with-blesh
 
 Notes:
   - Default behavior is local install.
+  - ble.sh autosuggestions are optional and off by default.
   - Positional args are still accepted for remote mode:
       ./deploy.sh <host> [user]
 EOF
@@ -66,6 +71,45 @@ install_theme() {
   mkdir -p "${theme_dir}"
   cp "${theme_src}" "${theme_dir}/${THEME_NAME}.theme.bash"
   echo "- Installed theme at ${theme_dir}"
+}
+
+install_blesh_if_enabled() {
+  local bashrc="$1"
+  local blesh_dir="${HOME}/.local/share/blesh"
+
+  if [[ "${WITH_BLESH}" != "1" ]]; then
+    return
+  fi
+
+  command -v git >/dev/null 2>&1 || {
+    echo "ERROR: --with-blesh requested but git is missing"
+    exit 1
+  }
+  command -v make >/dev/null 2>&1 || {
+    echo "ERROR: --with-blesh requested but make is missing"
+    exit 1
+  }
+
+  mkdir -p "${HOME}/.local/share"
+  if [[ ! -d "${blesh_dir}/.git" ]]; then
+    echo "- Cloning ble.sh into ${blesh_dir}"
+    git clone --recursive --depth 1 https://github.com/akinomyoga/ble.sh.git "${blesh_dir}"
+  else
+    echo "- ble.sh source already present at ${blesh_dir}; skipping clone"
+  fi
+
+  if [[ ! -f "${blesh_dir}/ble.sh" ]]; then
+    echo "- Building/installing ble.sh"
+    (cd "${blesh_dir}" && make install PREFIX="${HOME}/.local")
+  else
+    echo "- ble.sh already installed"
+  fi
+
+  touch "${bashrc}"
+  sed -i '/local\/share\/blesh\/ble.sh/d;/ble-attach/d;/BLE_VERSION/d' "${bashrc}"
+  printf '%s\n' '[[ $- == *i* ]] && source -- "$HOME/.local/share/blesh/ble.sh" --attach=none' >>"${bashrc}"
+  printf '%s\n' '[[ ! ${BLE_VERSION-} ]] || ble-attach' >>"${bashrc}"
+  echo "- Enabled ble.sh autosuggestions in ${bashrc}"
 }
 
 configure_bashrc() {
@@ -131,6 +175,7 @@ install_local() {
   install_omb_if_needed "${omb_dir}"
   install_theme "${omb_dir}" "${THEME_SRC}"
   configure_bashrc "${bashrc}"
+  install_blesh_if_enabled "${bashrc}"
 
   echo ""
   echo "Done. Open a new shell (or run: source ~/.bashrc)"
@@ -149,7 +194,7 @@ install_remote() {
   ssh "${ssh_target}" "mkdir -p /tmp/${THEME_NAME}"
   scp "${THEME_SRC}" "${ssh_target}:/tmp/${THEME_NAME}/${THEME_NAME}.theme.bash"
 
-  ssh "${ssh_target}" THEME_NAME="${THEME_NAME}" bash <<'REMOTE_EOF'
+  ssh "${ssh_target}" THEME_NAME="${THEME_NAME}" WITH_BLESH="${WITH_BLESH}" bash <<'REMOTE_EOF'
 set -euo pipefail
 
 OMB_DIR="${HOME}/.oh-my-bash"
@@ -206,6 +251,32 @@ source "$OSH/oh-my-bash.sh"
 BASHRC_BLOCK
 fi
 
+if [[ "${WITH_BLESH}" == "1" ]]; then
+  BLESH_DIR="${HOME}/.local/share/blesh"
+  command -v git >/dev/null 2>&1 || {
+    echo "ERROR: --with-blesh requested but git is missing on remote host"
+    exit 1
+  }
+  command -v make >/dev/null 2>&1 || {
+    echo "ERROR: --with-blesh requested but make is missing on remote host"
+    exit 1
+  }
+
+  mkdir -p "${HOME}/.local/share"
+  if [[ ! -d "${BLESH_DIR}/.git" ]]; then
+    git clone --recursive --depth 1 https://github.com/akinomyoga/ble.sh.git "${BLESH_DIR}"
+  fi
+
+  if [[ ! -f "${BLESH_DIR}/ble.sh" ]]; then
+    (cd "${BLESH_DIR}" && make install PREFIX="${HOME}/.local")
+  fi
+
+  touch "${BASHRC}"
+  sed -i '/local\/share\/blesh\/ble.sh/d;/ble-attach/d;/BLE_VERSION/d' "${BASHRC}"
+  printf '%s\n' '[[ $- == *i* ]] && source -- "$HOME/.local/share/blesh/ble.sh" --attach=none' >>"${BASHRC}"
+  printf '%s\n' '[[ ! ${BLE_VERSION-} ]] || ble-attach' >>"${BASHRC}"
+fi
+
 echo "Remote install complete on $(hostname)"
 REMOTE_EOF
 
@@ -216,6 +287,7 @@ echo "Done. Reconnect to activate prompt: ssh ${ssh_target}"
 MODE="local"
 TARGET_HOST=""
 TARGET_USER="user"
+WITH_BLESH="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -236,6 +308,14 @@ while [[ $# -gt 0 ]]; do
         TARGET_USER="$1"
         shift
       fi
+      ;;
+    --with-blesh)
+      WITH_BLESH="1"
+      shift
+      ;;
+    --without-blesh)
+      WITH_BLESH="0"
+      shift
       ;;
     -h|--help)
       usage
