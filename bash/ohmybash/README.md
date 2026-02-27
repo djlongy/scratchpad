@@ -27,6 +27,7 @@ No `username@hostname`. No clutter.
 |-------------|-------|
 | bash 4.2+ | Ships with RHEL 8+, AlmaLinux 8+, Ubuntu 20.04+ |
 | git | For OMB installation (one-time) |
+| make | Only needed when using `--with-blesh` |
 | Nerd Font on client terminal | MesloLGS NF, Hack NF, JetBrainsMono NF, etc. |
 | UTF-8 locale | Standard on modern Linux |
 
@@ -44,8 +45,14 @@ chmod +x deploy.sh
 # Explicit local install
 ./deploy.sh --local
 
+# Local install + ble.sh autosuggestions (optional)
+./deploy.sh --local --with-blesh
+
 # Optional remote install
 ./deploy.sh --remote host01.example.com user
+
+# Optional remote install + ble.sh autosuggestions
+./deploy.sh --remote host01.example.com user --with-blesh
 
 # Backward-compatible remote syntax
 ./deploy.sh host01.example.com user
@@ -56,6 +63,8 @@ The script:
 2. Clones Oh My Bash into `~/.oh-my-bash` (skips if already installed)
 3. Installs/updates the theme at `~/.oh-my-bash/custom/themes/devops-powerline/`
 4. Appends or updates OMB config in `~/.bashrc`
+
+Optional: with `--with-blesh`, it also installs `ble.sh` and enables inline autosuggestions/history prediction in `~/.bashrc`.
 
 Open a new shell (or run `source ~/.bashrc`) after deployment.
 
