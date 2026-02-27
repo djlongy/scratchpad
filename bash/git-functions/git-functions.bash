@@ -3,6 +3,11 @@
 
 # Git checkout interactive
 gci() {
+  if ! command -v fzf &>/dev/null; then
+    echo "gci: fzf is not installed. Install it with: brew install fzf" >&2
+    return 1
+  fi
+
   local current
   current=$(git branch --show-current)
 
