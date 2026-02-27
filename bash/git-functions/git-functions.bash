@@ -29,9 +29,12 @@ gci() {
     awk -F'|' -v curr="$current" 'BEGIN { OFS="\t" }
       {
         marker = ($1 == curr) ? "* " : "  "
-        color = ($1 == curr) ? "\033[1;32m" : "\033[33m"
-        display = color marker $1 "\033[0m"
-        print $1, $2, display, $3, $4
+        branch_color = ($1 == curr) ? "\033[1;32m" : "\033[33m"
+        branch_col = sprintf("%-40s", $1)
+        date_col = sprintf("%-20s", $3)
+        branch_display = branch_color marker branch_col "\033[0m"
+        date_display = "\033[36m" date_col "\033[0m"
+        print $1, $2, branch_display, date_display, $4
       }' | \
     fzf --ansi --height=40% --reverse --delimiter=$'\t' --with-nth=3,4,5 \
       --preview "git log --oneline --graph --date=short --color=always --pretty='format:%C(auto)%cd %h%d %s' {2} --" | \
