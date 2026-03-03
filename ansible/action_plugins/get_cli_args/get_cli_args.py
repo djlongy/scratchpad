@@ -3,6 +3,89 @@ from ansible.plugins.action import ActionBase
 import sys
 import os
 import json
+import subprocess
+
+
+def _run_git(cmd, cwd):
+    """Run a git command and return stdout, or None on failure."""
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _get_git_status(playbook_dir):
+    """
+    Collect git state for the playbook's working tree.
+
+    Returns a dict with:
+        branch        - current branch name (or 'HEAD' if detached)
+        commit        - full commit SHA
+        commit_short  - 7-char short SHA
+        tag           - nearest tag (git describe), or None
+        modified      - list of modified tracked files (not staged)
+        staged        - list of staged files
+        untracked     - list of untracked files
+        deleted       - list of deleted tracked files
+        is_clean      - True if working tree and index are clean
+        error         - set if git is unavailable or dir is not a repo
+    """
+    cwd = playbook_dir or os.getcwd()
+
+    branch = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    if branch is None:
+        return {"error": "not a git repository or git unavailable"}
+
+    commit = _run_git(["git", "rev-parse", "HEAD"], cwd) or "unknown"
+    commit_short = commit[:7] if commit != "unknown" else "unknown"
+    tag = _run_git(["git", "describe", "--tags", "--always", "--dirty"], cwd)
+
+    porcelain = _run_git(["git", "status", "--porcelain"], cwd) or ""
+
+    modified, staged, untracked, deleted = [], [], [], []
+
+    for line in porcelain.splitlines():
+        if len(line) < 3:
+            continue
+        index_status = line[0]
+        worktree_status = line[1]
+        filepath = line[3:]
+
+        # Staged changes (index)
+        if index_status in ("M", "A", "R", "C", "T"):
+            staged.append(filepath)
+        # Worktree changes
+        if worktree_status == "M":
+            modified.append(filepath)
+        elif worktree_status == "D":
+            deleted.append(filepath)
+        # Untracked
+        if index_status == "?" and worktree_status == "?":
+            untracked.append(filepath)
+
+    is_clean = not (modified or staged or untracked or deleted)
+
+    return {
+        "branch": branch,
+        "commit": commit,
+        "commit_short": commit_short,
+        "tag": tag,
+        "modified": modified,
+        "staged": staged,
+        "untracked": untracked,
+        "deleted": deleted,
+        "is_clean": is_clean,
+    }
+
 
 class ActionModule(ActionBase):
     def run(self, tmp=None, task_vars=None):
@@ -29,7 +112,6 @@ class ActionModule(ActionBase):
                 # Check if it's a JSON dict structure (internal Ansible format)
                 if next_arg.startswith('{'):
                     try:
-                        # Parse the JSON to extract semaphore_vars
                         extra_vars_dict = json.loads(next_arg)
                         if 'semaphore_vars' in extra_vars_dict:
                             semaphore_data = extra_vars_dict['semaphore_vars']
@@ -51,10 +133,14 @@ class ActionModule(ActionBase):
             else:
                 cleaned_argv.append(arg)
 
+        playbook_dir = (task_vars or {}).get("playbook_dir") or os.getcwd()
+        git_status = _get_git_status(playbook_dir)
+
         result.update({
             "changed": False,
             "ansible_playbook_argv": cleaned_argv,
             "ansible_playbook_cmd": " ".join(cleaned_argv),
             "semaphore_vars": semaphore_data if semaphore_data else None,
+            "git_status": git_status,
         })
         return result
