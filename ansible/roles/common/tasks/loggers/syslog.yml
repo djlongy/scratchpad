@@ -1,0 +1,13 @@
+---
+# loggers/syslog.yml
+# Variables:
+#   syslog_facility  (default: 'local0')
+#   syslog_priority  (default: 'info')
+
+- name: Write audit log to syslog
+  ansible.builtin.shell: |
+    logger -t ansible-audit -p {{ syslog_facility | default('local0') }}.{{ syslog_priority | default('info') }} '{{ audit_log_json }}'
+  args:
+    executable: /bin/bash
+  ignore_errors: true
+  changed_when: false

@@ -1,0 +1,113 @@
+---
+# roles/common/tasks/audit_logging.yml
+#
+# Ansible Audit Logging Framework
+# Collects execution metadata and routes to one or more logging backends.
+#
+# Usage:
+#   post_tasks:
+#     - name: Audit logging
+#       ansible.builtin.include_role:
+#         name: common
+#         tasks_from: audit_logging.yml
+#       apply:
+#         tags: always
+#       tags: always
+#
+# Configure logging backends via the `audit_loggers` list variable:
+#   audit_loggers:
+#     - file
+#     - syslog
+#     - elasticsearch
+#     - fluentd
+#     - splunk
+#     - cloudwatch
+#     - rsyslog
+
+- name: Ansible Audit Logging
+  block:
+
+    #### Gather Audit Metadata ####
+
+    - name: Get ansible-playbook CLI arguments
+      get_cli_args:
+      register: cli_args
+      changed_when: false
+      # Custom action plugin - see action_plugins/get_cli_args/get_cli_args.py
+      # Returns: ansible_playbook_argv, ansible_playbook_cmd, semaphore_vars, git_status
+
+    - name: Get list of roles executed in this playbook
+      ansible.builtin.set_fact:
+        executed_roles: "{{ ansible_play_role_names | default([]) | join(', ') }}"
+
+    - name: Get local username
+      ansible.builtin.command: /usr/bin/whoami
+      register: local_user
+      changed_when: false
+
+    - name: Get control node hostname
+      ansible.builtin.command: /usr/bin/hostname
+      register: control_node_hostname
+      changed_when: false
+
+    #### Build Structured Audit Log ####
+
+    - name: Build JSON audit log payload
+      ansible.builtin.set_fact:
+        audit_log_json: "{{ audit_log_data | to_json }}"
+        audit_log_data: "{{ audit_log_data }}"
+      vars:
+        audit_log_data:
+          timestamp:           "{{ ansible_date_time.iso8601 }}"
+          user:                "{{ local_user.stdout }}"
+          control_node:        "{{ control_node_hostname.stdout }}"
+          playbook:            "{{ ansible_play_name | default('unnamed') }}"
+          roles:               "{{ executed_roles | default('none') }}"
+          hosts:               "{{ ansible_play_hosts }}"
+          status:              "{{ audit_status | default('success') }}"
+          ansible_command:     "{{ cli_args.ansible_playbook_cmd | default('unknown') }}"
+          semaphore_vars:      "{{ cli_args.semaphore_vars | default(omit) }}"
+          run_tags:            "{{ ansible_run_tags | default('all') }}"
+          skip_tags:           "{{ ansible_skip_tags | default([]) | join(', ') }}"
+          git_branch:          "{{ cli_args.git_status.branch | default('unknown') }}"
+          git_commit:          "{{ cli_args.git_status.commit | default('unknown') }}"
+          git_tag:             "{{ cli_args.git_status.tag | default('unknown') }}"
+          git_is_clean:        "{{ cli_args.git_status.is_clean | default(true) }}"
+          git_modified_files:  "{{ cli_args.git_status.modified | default([]) }}"
+          git_staged_files:    "{{ cli_args.git_status.staged | default([]) }}"
+          git_untracked_files: "{{ cli_args.git_status.untracked | default([]) }}"
+
+    #### Logger Backend Selection ####
+
+    - name: Send to CloudWatch Logs
+      ansible.builtin.include_tasks: loggers/cloudwatch.yml
+      when: audit_loggers is defined and 'cloudwatch' in audit_loggers
+
+    - name: Send to Syslog
+      ansible.builtin.include_tasks: loggers/syslog.yml
+      when: audit_loggers is defined and 'syslog' in audit_loggers
+
+    - name: Send to Fluentd
+      ansible.builtin.include_tasks: loggers/fluentd.yml
+      when: audit_loggers is defined and 'fluentd' in audit_loggers
+
+    - name: Send to Elasticsearch
+      ansible.builtin.include_tasks: loggers/elasticsearch.yml
+      when: audit_loggers is defined and 'elasticsearch' in audit_loggers
+
+    - name: Send to Splunk
+      ansible.builtin.include_tasks: loggers/splunk.yml
+      when: audit_loggers is defined and 'splunk' in audit_loggers
+
+    - name: Send to Local File
+      ansible.builtin.include_tasks: loggers/file.yml
+      when: audit_loggers is defined and 'file' in audit_loggers
+
+    - name: Send to rsyslog
+      ansible.builtin.include_tasks: loggers/rsyslog.yml
+      when: audit_loggers is defined and 'rsyslog' in audit_loggers
+
+  delegate_to: localhost
+  become: false
+  run_once: true
+  # no_log: true  # Uncomment if playbook handles sensitive data

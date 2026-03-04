@@ -1,0 +1,41 @@
+---
+# loggers/cloudwatch.yml
+# Variables:
+#   cloudwatch_profile    (default: 'default')    AWS CLI profile
+#   cloudwatch_log_group  (default: '/ansible/audit')  CloudWatch log group
+
+- name: Ensure CloudWatch log group exists
+  ansible.builtin.command: >
+    /usr/local/bin/aws logs create-log-group
+    --profile {{ cloudwatch_profile | default('default') }}
+    --log-group-name {{ cloudwatch_log_group | default('/ansible/audit') }}
+  register: create_log_group
+  failed_when:
+    - create_log_group.rc != 0
+    - "'ResourceAlreadyExistsException' not in create_log_group.stderr"
+  changed_when: create_log_group.rc == 0
+
+- name: Ensure CloudWatch log stream exists
+  ansible.builtin.command: >
+    /usr/local/bin/aws logs create-log-stream
+    --profile {{ cloudwatch_profile | default('default') }}
+    --log-group-name {{ cloudwatch_log_group | default('/ansible/audit') }}
+    --log-stream-name {{ local_user.stdout }}
+  register: create_log_stream
+  failed_when:
+    - create_log_stream.rc != 0
+    - "'ResourceAlreadyExistsException' not in create_log_stream.stderr"
+  changed_when: create_log_stream.rc == 0
+
+- name: Write audit log to CloudWatch
+  ansible.builtin.shell: |
+    LOG_MESSAGE=$(echo '{{ audit_log_json }}' | sed 's/"/\\"/g')
+    /usr/local/bin/aws logs put-log-events \
+      --profile {{ cloudwatch_profile | default('default') }} \
+      --log-group-name {{ cloudwatch_log_group | default('/ansible/audit') }} \
+      --log-stream-name {{ local_user.stdout }} \
+      --log-events timestamp={{ ansible_date_time.epoch }}000,message=\""$LOG_MESSAGE"\"
+  args:
+    executable: /bin/bash
+  ignore_errors: true
+  changed_when: false

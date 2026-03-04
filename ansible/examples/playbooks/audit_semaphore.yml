@@ -1,0 +1,34 @@
+---
+# examples/playbooks/audit_semaphore.yml
+#
+# Example for Semaphore CI/CD: captures Semaphore task metadata
+# (project ID, task ID, username) automatically via get_cli_args plugin.
+# No extra configuration needed — semaphore_vars are auto-extracted.
+
+- name: Example Semaphore-triggered deployment with audit logging
+  hosts: all
+  gather_facts: true
+
+  vars:
+    audit_loggers:
+      - file
+      - syslog
+    audit_log_file: /var/log/ansible/audit.jsonl
+
+  roles:
+    - your_role_here
+
+  post_tasks:
+    - name: Write audit log (includes semaphore_vars automatically)
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: audit_logging.yml
+      apply:
+        tags: always
+      tags: always
+
+    - name: Show captured Semaphore context (debug)
+      ansible.builtin.debug:
+        msg: "Triggered by Semaphore task {{ audit_log_data.semaphore_vars.task_details.id }}"
+      when: audit_log_data.semaphore_vars is defined and audit_log_data.semaphore_vars is not none
+      tags: always
