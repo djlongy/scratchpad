@@ -1,0 +1,22 @@
+---
+# loggers/elasticsearch.yml
+# Variables:
+#   elasticsearch_url             (required)
+#   elasticsearch_index           (default: 'ansible-audit')
+#   elasticsearch_user            (optional)
+#   elasticsearch_password        (optional)
+#   elasticsearch_validate_certs  (default: true)
+
+- name: Write audit log to Elasticsearch
+  ansible.builtin.uri:
+    url: "{{ elasticsearch_url }}/{{ elasticsearch_index | default('ansible-audit') }}/_doc"
+    method: POST
+    body_format: json
+    body: "{{ audit_log_data }}"
+    headers:
+      Content-Type: "application/json"
+    user: "{{ elasticsearch_user | default(omit) }}"
+    password: "{{ elasticsearch_password | default(omit) }}"
+    validate_certs: "{{ elasticsearch_validate_certs | default(true) }}"
+    status_code: [200, 201]
+  ignore_errors: true

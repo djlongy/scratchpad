@@ -1,0 +1,13 @@
+---
+# loggers/rsyslog.yml
+# Variables:
+#   rsyslog_host  (required)
+#   rsyslog_port  (default: 514)
+
+- name: Write audit log to remote rsyslog
+  ansible.builtin.shell: |
+    echo '{{ audit_log_json }}' | nc -w1 -u {{ rsyslog_host }} {{ rsyslog_port | default(514) }}
+  args:
+    executable: /bin/bash
+  ignore_errors: true
+  changed_when: false

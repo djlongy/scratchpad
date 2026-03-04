@@ -1,0 +1,16 @@
+---
+# loggers/fluentd.yml
+# Variables:
+#   fluentd_url  (default: 'http://localhost:9880')
+#   fluentd_tag  (default: 'ansible.audit')
+
+- name: Write audit log to Fluentd
+  ansible.builtin.uri:
+    url: "{{ fluentd_url | default('http://localhost:9880') }}/{{ fluentd_tag | default('ansible.audit') }}"
+    method: POST
+    body_format: json
+    body: "{{ audit_log_data }}"
+    headers:
+      Content-Type: "application/json"
+    status_code: [200, 201]
+  ignore_errors: true

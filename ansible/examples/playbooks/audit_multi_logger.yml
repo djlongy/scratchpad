@@ -1,0 +1,41 @@
+---
+# examples/playbooks/audit_multi_logger.yml
+#
+# Multi-backend example: simultaneously log to Elasticsearch, syslog,
+# and a local file. Enable only the backends you need.
+
+- name: Example deployment with multi-backend audit logging
+  hosts: webservers
+  gather_facts: true
+
+  vars:
+    audit_loggers:
+      - elasticsearch
+      - syslog
+      - file
+
+    # Elasticsearch
+    elasticsearch_url: https://elasticsearch.example.com:9200
+    elasticsearch_index: ansible-audit-prod
+    elasticsearch_user: ansible
+    elasticsearch_password: "{{ vault_elastic_password }}"  # Use ansible-vault
+    elasticsearch_validate_certs: true
+
+    # Syslog
+    syslog_facility: local1
+    syslog_priority: notice
+
+    # File fallback
+    audit_log_file: /var/log/ansible/audit.jsonl
+
+  roles:
+    - your_role_here
+
+  post_tasks:
+    - name: Write audit log
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: audit_logging.yml
+      apply:
+        tags: always
+      tags: always

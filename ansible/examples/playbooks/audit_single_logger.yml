@@ -1,0 +1,26 @@
+---
+# examples/playbooks/audit_single_logger.yml
+#
+# Minimal example: audit log to a local file after every run.
+# Drop-in ready — just set audit_log_file to your preferred path.
+
+- name: Example deployment with file audit logging
+  hosts: webservers
+  gather_facts: true
+
+  vars:
+    audit_loggers:
+      - file
+    audit_log_file: /var/log/ansible/audit.jsonl
+
+  roles:
+    - your_role_here
+
+  post_tasks:
+    - name: Write audit log
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: audit_logging.yml
+      apply:
+        tags: always
+      tags: always

@@ -1,0 +1,23 @@
+---
+# loggers/splunk.yml
+# Variables:
+#   splunk_hec_url         (required)
+#   splunk_hec_token       (required)
+#   splunk_sourcetype      (default: 'ansible:audit')
+#   splunk_index           (default: 'ansible')
+#   splunk_validate_certs  (default: true)
+
+- name: Write audit log to Splunk HEC
+  ansible.builtin.uri:
+    url: "{{ splunk_hec_url }}/services/collector/event"
+    method: POST
+    body_format: json
+    body:
+      event: "{{ audit_log_data }}"
+      sourcetype: "{{ splunk_sourcetype | default('ansible:audit') }}"
+      index: "{{ splunk_index | default('ansible') }}"
+    headers:
+      Authorization: "Splunk {{ splunk_hec_token }}"
+    validate_certs: "{{ splunk_validate_certs | default(true) }}"
+    status_code: [200]
+  ignore_errors: true
