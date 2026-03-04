@@ -4,9 +4,9 @@ Installation instructions for [vmware/vsphere-automation-sdk-python](https://git
 
 ## Requirements
 
-- Python **3.10–3.12** (Python 3.14 breaks the install due to stricter `file://` URL handling in `urllib`)
-- pip, setuptools
-- git
+- Python **3.10–3.12** recommended (see [Python 3.13+ note](#oserror-file-scheme-is-supported-only-on-localhost) below)
+- pip, git
+- `setuptools<81` — see [pkg_resources note](#modulenotfounderror-no-module-named-pkg_resources) below
 
 ## macOS
 
@@ -18,14 +18,15 @@ brew install python@3.12
 python3.12 -m venv ~/venvs/vsphere-sdk-venv
 source ~/venvs/vsphere-sdk-venv/bin/activate
 
-pip install --upgrade pip setuptools
+# Pin setuptools before installing (see Troubleshooting)
+pip install --upgrade pip "setuptools<81"
 
 pip install --upgrade git+https://github.com/vmware/vsphere-automation-sdk-python.git
 ```
 
 ### Verify
 
-```python
+```bash
 python3 -c "from vmware.vapi.vsphere.client import create_vsphere_client; print('OK')"
 ```
 
@@ -34,7 +35,7 @@ python3 -c "from vmware.vapi.vsphere.client import create_vsphere_client; print(
 ## Oracle Linux 8 / 9
 
 ```bash
-# OL9 — install Python 3.12
+# OL9
 sudo dnf install python3.12 python3.12-pip git -y
 
 # OL8 — Python 3.11 via module stream
@@ -43,40 +44,105 @@ sudo dnf install python3.12 python3.12-pip git -y
 python3.12 -m venv ~/vsphere-sdk-venv
 source ~/vsphere-sdk-venv/bin/activate
 
-pip install --upgrade pip setuptools
+pip install --upgrade pip "setuptools<81"
 
 pip install --upgrade git+https://github.com/vmware/vsphere-automation-sdk-python.git
 ```
 
 ### Verify
 
-```python
+```bash
 python3 -c "from vmware.vapi.vsphere.client import create_vsphere_client; print('OK')"
+```
+
+---
+
+## Requirements files (pinned, verified working)
+
+Use these for reproducible installs.
+
+### Python 3.11 — [`requirements-py311.txt`](requirements-py311.txt)
+
+```bash
+pip install -r requirements-py311.txt
+```
+
+### Python 3.14 — [`requirements-py314.txt`](requirements-py314.txt)
+
+On Python 3.13+, `pip install git+https://...` fails (see below). Install deps from PyPI
+first, then clone and install the SDK wrapper separately:
+
+```bash
+pip install -r requirements-py314.txt
+git clone https://github.com/vmware/vsphere-automation-sdk-python.git
+pip install -e ./vsphere-automation-sdk-python
 ```
 
 ---
 
 ## Troubleshooting
 
-### `OSError: file:// scheme is supported only on localhost`
+### `ModuleNotFoundError: No module named 'pkg_resources'`
 
-Caused by Python 3.13+ tightening `urllib` file URL handling. **Use Python 3.12.**
+`vmware-vapi-runtime` imports `pkg_resources` at startup, which was removed from setuptools
+in v81 (released mid-2025). This affects **all Python versions**.
 
-Workaround if you must use a newer Python — install deps manually then install SDK:
+```
+File ".../vmware/vapi/l10n/bundle.py", line 59, in __init__
+    from pkg_resources import resource_string
+ModuleNotFoundError: No module named 'pkg_resources'
+```
+
+**Fix:** pin setuptools before installing anything else:
 
 ```bash
-pip install lxml "pyVmomi==8.0.3.0.1" "vmware-vapi-runtime==2.52.0" \
-    "vmware-vcenter==8.0.3.0" "vmware-vapi-common-client==2.52.0"
+pip install "setuptools<81"
+```
+
+Or if already installed into the venv:
+
+```bash
+pip install --force-reinstall "setuptools<81"
+```
+
+A deprecation warning (`pkg_resources is deprecated as an API`) on import is harmless —
+the SDK still works.
+
+---
+
+### `OSError: file:// scheme is supported only on localhost`
+
+Python 3.13+ tightened `urllib` to reject non-localhost `file://` URLs. The SDK's build
+process triggers this internally, so `pip install git+https://...` fails on 3.13/3.14.
+
+```
+ERROR: Could not install packages due to an OSError:
+<urlopen error file:// scheme is supported only on localhost>
+```
+
+**Fix A (recommended):** Use Python 3.11 or 3.12.
+
+**Fix B:** Install SDK dependencies individually from PyPI (they're all there), then clone
+and install the SDK package separately:
+
+```bash
+pip install "setuptools<81" lxml "pyVmomi==9.0.0.0" \
+    "vmware-vapi-runtime==2.61.2" "vmware-vcenter==9.0.0.0" \
+    "vmware-vapi-common-client==2.61.2"
 
 git clone https://github.com/vmware/vsphere-automation-sdk-python.git
 pip install -e ./vsphere-automation-sdk-python
 ```
+
+---
 
 ### SSL certificate errors (macOS)
 
 ```bash
 /Applications/Python\ 3.x/Install\ Certificates.command
 ```
+
+---
 
 ### Air-gap / offline install
 

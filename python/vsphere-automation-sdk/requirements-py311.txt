@@ -1,0 +1,11 @@
+# Verified working with Python 3.11 (tested 3.11.14)
+# setuptools MUST be <81 — pkg_resources was removed in 81+ and vmware-vapi-runtime still depends on it
+# Install: pip install -r requirements-py311.txt
+
+setuptools<81
+lxml==6.0.2
+pyVmomi==8.0.3.0.1
+vmware-vapi-runtime==2.52.0
+vmware-vcenter==8.0.3.0
+vmware-vapi-common-client==2.52.0
+vsphere-automation-sdk @ git+https://github.com/vmware/vsphere-automation-sdk-python.git@3b0c9899d3e431e29963fe118dc17300deed3f2b
