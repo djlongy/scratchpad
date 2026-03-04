@@ -11,6 +11,7 @@ Drop onto any machine with minimal dependencies — no frameworks, no package sp
 | [`bash/git-functions`](bash/git-functions/README.md) | fzf interactive branch picker, prune gone branches | bash, fzf |
 | [`bash/ohmybash`](bash/ohmybash/README.md) | Powerline prompt with git/venv/time, deploy script, Nerd Font installer | bash, git |
 | [`ansible/action_plugins/get_cli_args`](ansible/action_plugins/get_cli_args/README.md) | Expose `ansible-playbook` CLI args and Semaphore vars to tasks | Python, Ansible |
+| [`python/vsphere-automation-sdk`](python/vsphere-automation-sdk/README.md) | Install instructions for VMware vSphere Automation SDK (macOS + Oracle Linux) | Python 3.12, git |
 
 ## Structure
 
@@ -21,9 +22,11 @@ scratchpad/
 ├── bash/
 │   ├── git-functions/      fzf git helpers
 │   └── ohmybash/           Oh My Bash prompt theme + deploy tooling
-└── ansible/
-    └── action_plugins/
-        └── get_cli_args/   Ansible action plugin
+├── ansible/
+│   └── action_plugins/
+│       └── get_cli_args/   Ansible action plugin
+└── python/
+    └── vsphere-automation-sdk/  VMware vSphere SDK install guide
 ```
 
 New tools get their own folder under the relevant language/category directory.
