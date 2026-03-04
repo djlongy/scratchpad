@@ -4,9 +4,9 @@ Unlock Ansible Vault using an environment variable instead of storing the passwo
 
 ## Setup
 
-### 1. (Optional) Add the shell function to your shell profile
+### 1. Add the shell function to your shell profile
 
-The script will prompt for the password automatically if `VAULT_PASSWORD` is not set, so this step is optional. Use it if you want to enter the password once and reuse it across multiple playbook runs in the same session.
+The `vault-unlock` function prompts for the password once and caches it in `VAULT_PASSWORD` for the rest of your shell session. This is the recommended approach — it avoids re-prompting on every playbook run and ensures a wrong password is caught early on the first run rather than silently cached.
 
 **Zsh** (`~/.zshrc`):
 
@@ -49,21 +49,22 @@ vault_password_file = scripts/vault-env-client.sh
 ## Usage
 
 ```bash
-# Option A: Just run a playbook — you'll be prompted for the password
-ansible-playbook playbooks/my-playbook.yml
-
-# Option B: Set the password once, reuse across multiple runs
+# Set the password once per session (hidden input)
 vault-unlock
+
+# Run as many playbooks as needed — no further prompts
 ansible-playbook playbooks/first.yml
-ansible-playbook playbooks/second.yml   # no prompt
+ansible-playbook playbooks/second.yml
 ```
+
+If you forget to run `vault-unlock`, the script will prompt interactively as a fallback. However, this prompts on every playbook run since the password can't be cached back into the parent shell from a subprocess.
 
 ## How It Works
 
+- `vault-unlock` prompts once and exports `VAULT_PASSWORD` for the shell session
 - `ansible.cfg` points `vault_password_file` at `vault-env-client.sh`
 - Ansible calls the script, which echoes `$VAULT_PASSWORD` back
-- If the variable is unset, the script prompts interactively via `/dev/tty`
-- The optional `vault-unlock` function pre-sets the env var so you're only prompted once per session
+- If the variable is unset, the script falls back to an interactive prompt via `/dev/tty`
 
 ## Notes
 
