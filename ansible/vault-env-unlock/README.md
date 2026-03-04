@@ -4,7 +4,9 @@ Unlock Ansible Vault using an environment variable instead of storing the passwo
 
 ## Setup
 
-### 1. Add the shell function to your shell profile
+### 1. (Optional) Add the shell function to your shell profile
+
+The script will prompt for the password automatically if `VAULT_PASSWORD` is not set, so this step is optional. Use it if you want to enter the password once and reuse it across multiple playbook runs in the same session.
 
 **Zsh** (`~/.zshrc`):
 
@@ -47,19 +49,21 @@ vault_password_file = scripts/vault-env-client.sh
 ## Usage
 
 ```bash
-# Set the password for the current shell session (hidden input)
-vault-unlock
-
-# Run playbooks as normal — vault decryption is automatic
+# Option A: Just run a playbook — you'll be prompted for the password
 ansible-playbook playbooks/my-playbook.yml
+
+# Option B: Set the password once, reuse across multiple runs
+vault-unlock
+ansible-playbook playbooks/first.yml
+ansible-playbook playbooks/second.yml   # no prompt
 ```
 
 ## How It Works
 
-- `vault-unlock` prompts for a password with hidden input and exports it as `VAULT_PASSWORD`
 - `ansible.cfg` points `vault_password_file` at `vault-env-client.sh`
 - Ansible calls the script, which echoes `$VAULT_PASSWORD` back
-- If the variable is unset, the script exits non-zero with a clear error message
+- If the variable is unset, the script prompts interactively via `/dev/tty`
+- The optional `vault-unlock` function pre-sets the env var so you're only prompted once per session
 
 ## Notes
 
