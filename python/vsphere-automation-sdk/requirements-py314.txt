@@ -1,0 +1,18 @@
+# Verified working with Python 3.14 (tested 3.14.2)
+# setuptools MUST be <81 — pkg_resources was removed in 81+ and vmware-vapi-runtime still depends on it
+#
+# NOTE: `pip install git+https://...` FAILS on Python 3.13+ due to urllib blocking non-localhost
+# file:// URLs. Install packages individually from PyPI instead (as listed below),
+# then install the SDK wrapper with `pip install -e ./vsphere-automation-sdk-python`.
+#
+# Install:
+#   pip install -r requirements-py314.txt
+#   git clone https://github.com/vmware/vsphere-automation-sdk-python.git
+#   pip install -e ./vsphere-automation-sdk-python
+
+setuptools<81
+lxml>=4.3.0
+pyVmomi==9.0.0.0
+vmware-vapi-runtime==2.61.2
+vmware-vcenter==9.0.0.0
+vmware-vapi-common-client==2.61.2
