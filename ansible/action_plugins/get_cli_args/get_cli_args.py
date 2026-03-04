@@ -58,7 +58,7 @@ def _get_git_status(playbook_dir):
             continue
         index_status = line[0]
         worktree_status = line[1]
-        filepath = line[3:]
+        filepath = line[2:].lstrip(" ")
 
         # Staged changes (index)
         if index_status in ("M", "A", "R", "C", "T"):
