@@ -4,9 +4,11 @@ Unlock Ansible Vault using an environment variable instead of storing the passwo
 
 ## Setup
 
-### 1. Add the shell function to your `.bashrc` or `.zshrc`
+### 1. Add the shell function to your shell profile
 
-```bash
+**Zsh** (`~/.zshrc`):
+
+```zsh
 vault-unlock() {
   read -rs 'pw?Vault Password: '
   echo
@@ -15,7 +17,18 @@ vault-unlock() {
 }
 ```
 
-Reload your shell: `source ~/.zshrc`
+**Bash** (`~/.bashrc`):
+
+```bash
+vault-unlock() {
+  read -rsp 'Vault Password: ' pw
+  echo
+  export VAULT_PASSWORD="$pw"
+  echo "VAULT_PASSWORD set for this shell session"
+}
+```
+
+Reload your shell: `source ~/.zshrc` or `source ~/.bashrc`
 
 ### 2. Copy the password script into your Ansible project
 
