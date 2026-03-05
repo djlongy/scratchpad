@@ -110,10 +110,12 @@
         audit_log_data: "{{ audit_log_data }}"
       vars:
         audit_log_data:
-          # Requires gather_facts: true on at least one play in the run:
-          timestamp:           "{{ ansible_date_time.iso8601 }}"
-          # Use this instead when gather_facts: false across all plays:
-          # timestamp:           "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          # Auto-selects source: uses ansible_date_time when facts are gathered,
+          # falls back to a shell lookup when gather_facts: false.
+          # To pin one method, comment out the auto line and uncomment the explicit one.
+          timestamp:           "{{ ansible_date_time.iso8601 if ansible_date_time is defined else lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          # gather_facts: true  (explicit): "{{ ansible_date_time.iso8601 }}"
+          # gather_facts: false (explicit): "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
           user:                "{{ local_user.stdout }}"
           control_node:        "{{ control_node_hostname.stdout }}"
           # playbook: name of the first play (or the single play for single-play runs)
