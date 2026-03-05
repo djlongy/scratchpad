@@ -1,6 +1,20 @@
 ---
 # Dynamic inventory for VMware vSphere using vmware.vmware.vms.
 #
+# COLLECTION NOTE:
+#   This uses the vmware.vmware collection (official Broadcom/VMware collection),
+#   NOT community.vmware. They are separate; install the right one:
+#
+#     ansible-galaxy collection install vmware.vmware
+#
+#   The vmware.vmware collection requires a Python binding package. Install it
+#   from the collection's own requirements file (path varies by install location):
+#
+#     pip install -r ~/.ansible/collections/ansible_collections/vmware/vmware/requirements.txt
+#
+#   If you only have community.vmware installed, use community.vmware.vmware_vm_inventory
+#   instead — the two plugins are not interchangeable.
+#
 # Design goals:
 # - Stable, human-readable hostnames built from folder path + VM name
 # - Easy multitenancy targeting via folder/tenant groups
@@ -11,6 +25,9 @@
 plugin: vmware.vmware.vms
 
 # Fail-open parsing. Missing optional attributes will not kill inventory load.
+# TRADEOFF: strict: false silently ignores missing properties — handy during
+# initial setup but masks typos in compose/keyed_groups expressions in production.
+# Consider switching to strict: true once the template is stable.
 strict: false
 
 # Set true if your controller trusts vCenter cert chain.
@@ -32,19 +49,36 @@ group_by_paths_prefix: path_
 # username: svc_ansible@vsphere.local
 # password: "{{ vault_vmware_password }}"
 
-# Optional: narrow query scope for speed in very large inventories.
+# ---------------------------------------------------------------------------
+# Scope — narrow query for speed on large vSphere estates
+# ---------------------------------------------------------------------------
+# Omitting search_paths queries the entire vCenter. On large estates (500+ VMs)
+# this can be slow. Scope it to the folders you actually manage.
+#
 # search_paths:
 #   - /DC1/vm/tenantA
 #   - /DC1/vm/tenantB
+#   - /DC2/vm
 
+# ---------------------------------------------------------------------------
+# Hostname strategy
+# ---------------------------------------------------------------------------
 # Pick inventory_hostname format:
 # 1) preferred: folder path under /vm + VM name (unique in most real estates)
-# 2) fallback: VM name + instance UUID (always unique)
+# 2) fallback: VM name + instance UUID (always unique, but ugly)
+#
+# The UUID fallback fires when two VMs share a name (common in multi-tenant or
+# template-heavy environments). Without it, one host silently wins.
 hostnames:
   - "(((path | split('/'))[3:] | join('_')) if (((path | split('/')) | length) > 3) else 'vm_root') + '_' + config.name"
   - "config.name + '_' + config.instanceUuid"
 
-# Keep property set small for faster inventory while still useful.
+# ---------------------------------------------------------------------------
+# Properties fetched from vCenter per VM
+# ---------------------------------------------------------------------------
+# Keep this list small — every extra property adds round-trip cost at inventory
+# time, especially across hundreds of VMs. Add fields here only if you reference
+# them in compose or keyed_groups.
 properties:
   - config.name
   - config.guestId
@@ -55,18 +89,27 @@ properties:
   - resourcePool
   - summary.runtime.powerState
 
-# Required for tag-based grouping.
+# Required for tag-based grouping (adds a vCenter Tag API call per VM).
 gather_tags: true
 
+# ---------------------------------------------------------------------------
+# Host variable composition
+# ---------------------------------------------------------------------------
 compose:
-  # Preferred SSH IP selection from VM NIC list.
-  # Update CIDR prefixes to your local/private networks.
+  # SSH IP selection from VM NIC list.
+  # IMPORTANT: guest.net is only populated when VMware Tools is running inside
+  # the VM. If Tools is not installed or the VM just booted, guest.net will be
+  # empty and this falls back to guest.ipAddress (also Tools-dependent).
+  # For VMs without Tools, ansible_host will be empty — handle this with a
+  # static override or a separate host_vars file.
+  #
+  # Update CIDR prefixes to match your management/private network ranges:
   ansible_host: >-
     (guest.net
     | selectattr('ipAddress')
     | map(attribute='ipAddress')
     | flatten
-    | select('match', '^(10\\.42\\.|10\\.43\\.|192\\.168\\.50\\.)')
+    | select('match', '^(10\\.0\\.|10\\.1\\.|192\\.168\\.)')
     | list
     | first)
     | default(guest.ipAddress | default(''), true)
@@ -84,8 +127,22 @@ compose:
   vsphere_tenant: "((path | split('/'))[3]) if (((path | split('/')) | length) > 4) else 'vm_root'"
   vsphere_folder_parent: "((path | split('/'))[-2]) if (((path | split('/')) | length) > 4) else 'vm_root'"
 
-# Inventory filtering.
-# IMPORTANT: filter_expressions exclude hosts where expression evaluates True.
+  # ── Multi-environment compose extras ───────────────────────────────────────
+  # Derive environment tier from the Environment tag category.
+  # Useful for per-env variable loading in group_vars/env_prod.yml etc.
+  # Requires gather_tags: true and a Tag Category named "Environment".
+  #
+  # vsphere_env: "tags_by_category.Environment | default([{}]) | map('dict2items') | flatten | map(attribute='value') | first | default('unknown')"
+  #
+  # ── Maintenance window / change freeze flag ────────────────────────────────
+  # If you tag VMs with a "freeze" tag to block automation during change windows:
+  # vsphere_freeze: "'freeze' in (tags.values() | default([]))"
+
+# ---------------------------------------------------------------------------
+# Inventory filtering
+# ---------------------------------------------------------------------------
+# IMPORTANT: filter_expressions EXCLUDE hosts where the expression is True.
+# (Opposite of a "where" clause — think of it as "drop if...")
 filter_expressions:
   # Keep only powered-on VMs.
   - 'summary.runtime.powerState != "poweredOn"'
@@ -94,8 +151,15 @@ filter_expressions:
   - '(guest.net | selectattr("ipAddress") | map(attribute="ipAddress") | flatten | list | length) == 0'
 
   # Optional hard gate: keep only hosts with resolved ansible_host.
+  # Uncomment if you want plays to fail-fast rather than attempt an empty host:
   # - "ansible_host | default('') == ''"
 
+  # Optional: exclude VMs tagged with "exclude-ansible" to opt specific VMs out:
+  # - "'exclude-ansible' in (tags.values() | default([]))"
+
+# ---------------------------------------------------------------------------
+# Grouping
+# ---------------------------------------------------------------------------
 keyed_groups:
   # Tag groups.
   # Example output groups: tag_db, tag_web, tag_critical
@@ -104,7 +168,7 @@ keyed_groups:
     separator: ""
 
   # Convention-based category groups.
-  # Expect categories like Environment={dev,prod}, Group={web,db,iam,vault}
+  # Expect tag categories like Environment={dev,prod}, Group={web,db,iam,vault}
   - key: tags_by_category.Environment | default([]) | map('dict2items') | flatten | map(attribute='value')
     prefix: env_
     separator: ""
@@ -131,7 +195,52 @@ keyed_groups:
     prefix: power_
     separator: ""
 
-# Optional readability/safety switches:
-# sanitize_property_names: true      # converts names to snake_case
-# flatten_nested_properties: true    # flattens nested objects
-# gather_compute_objects: true       # adds cluster/esxi_host info (slower)
+  # ── Multi-datacenter grouping ─────────────────────────────────────────────
+  # Useful when one vCenter manages multiple datacenters (common in stretched
+  # clusters or DR setups). Derives DC name from folder path segment [1].
+  #
+  # - key: "(path | split('/'))[1] | default('unknown_dc')"
+  #   prefix: dc_
+  #   separator: ""
+
+# ---------------------------------------------------------------------------
+# Caching (strongly recommended for estates with 200+ VMs)
+# ---------------------------------------------------------------------------
+# Without caching, every `ansible-inventory` or playbook run makes a full
+# vCenter API walk. Cache buys ~10-60s on large inventories at the cost of
+# stale data during the TTL window. Set cache_timeout to match your VM churn
+# rate — 300s (5 min) is a safe starting point.
+cache: true
+cache_plugin: jsonfile
+cache_timeout: 300
+cache_connection: /tmp/ansible_vmware_cache
+# To force-refresh the cache without changing config:
+#   ansible-inventory -i vmware_vms.yml --list --flush-cache
+
+# ---------------------------------------------------------------------------
+# Optional readability/safety switches
+# ---------------------------------------------------------------------------
+# sanitize_property_names: true      # converts dotted names to snake_case (e.g. config_name)
+# flatten_nested_properties: true    # flattens nested objects into top-level hostvars
+# gather_compute_objects: true       # adds cluster and esxi_host info per VM (noticeably slower)
+
+# ---------------------------------------------------------------------------
+# Multi-vCenter federation tip
+# ---------------------------------------------------------------------------
+# To query multiple vCenters in one Ansible run, create one YAML per vCenter
+# and point ansible.cfg (or -i) at the directory:
+#
+#   inventory/
+#     vmware_prod.yml     <- source VMWARE_HOST=vcenter-prod.example.com
+#     vmware_dr.yml       <- source VMWARE_HOST=vcenter-dr.example.com
+#     vmware_staging.yml  <- source VMWARE_HOST=vcenter-stg.example.com
+#
+#   ansible.cfg:
+#     [defaults]
+#     inventory = inventory/
+#
+#     [inventory]
+#     enable_plugins = vmware.vmware.vms, yaml, ini
+#
+# Each file can have its own search_paths and filters so prod/DR/staging VMs
+# land in predictable groups across all three vCenters simultaneously.
