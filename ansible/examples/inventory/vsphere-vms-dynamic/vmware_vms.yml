@@ -1,0 +1,137 @@
+---
+# Dynamic inventory for VMware vSphere using vmware.vmware.vms.
+#
+# Design goals:
+# - Stable, human-readable hostnames built from folder path + VM name
+# - Easy multitenancy targeting via folder/tenant groups
+# - Clean dev/prod segmentation using tags and folder hierarchy
+# - SSH-friendly ansible_host selection when VMs have multiple NICs/IPs
+# - Inventory trimmed to operational VMs only (powered on + has IP)
+
+plugin: vmware.vmware.vms
+
+# Fail-open parsing. Missing optional attributes will not kill inventory load.
+strict: false
+
+# Set true if your controller trusts vCenter cert chain.
+validate_certs: false
+
+# Avoid warnings for reserved variable names like "name" and "tags".
+# The plugin will expose them as vmware_inventory_name, vmware_inventory_tags.
+rename_reserved_variables: true
+
+# Build path groups (great for messy tenant environments):
+#   path_dc1_vm_tenantA_prod
+group_by_paths: true
+group_by_paths_prefix: path_
+
+# Use environment variables for credentials (recommended):
+#   VMWARE_HOST, VMWARE_USER, VMWARE_PASSWORD
+# Optional explicit fields (uncomment if preferred):
+# hostname: vcsa.example.com
+# username: svc_ansible@vsphere.local
+# password: "{{ vault_vmware_password }}"
+
+# Optional: narrow query scope for speed in very large inventories.
+# search_paths:
+#   - /DC1/vm/tenantA
+#   - /DC1/vm/tenantB
+
+# Pick inventory_hostname format:
+# 1) preferred: folder path under /vm + VM name (unique in most real estates)
+# 2) fallback: VM name + instance UUID (always unique)
+hostnames:
+  - "(((path | split('/'))[3:] | join('_')) if (((path | split('/')) | length) > 3) else 'vm_root') + '_' + config.name"
+  - "config.name + '_' + config.instanceUuid"
+
+# Keep property set small for faster inventory while still useful.
+properties:
+  - config.name
+  - config.guestId
+  - config.instanceUuid
+  - guest.ipAddress
+  - guest.net
+  - path
+  - resourcePool
+  - summary.runtime.powerState
+
+# Required for tag-based grouping.
+gather_tags: true
+
+compose:
+  # Preferred SSH IP selection from VM NIC list.
+  # Update CIDR prefixes to your local/private networks.
+  ansible_host: >-
+    (guest.net
+    | selectattr('ipAddress')
+    | map(attribute='ipAddress')
+    | flatten
+    | select('match', '^(10\\.42\\.|10\\.43\\.|192\\.168\\.50\\.)')
+    | list
+    | first)
+    | default(guest.ipAddress | default(''), true)
+
+  # Friendly hostvars for reporting/templating.
+  vsphere_name: config.name
+  vsphere_uuid: config.instanceUuid
+  vsphere_guestos: config.guestId | default('unknown')
+  vsphere_resource_pool: resourcePool.name | default(resourcePool._moId | default('unknown'))
+  vsphere_folder_path: path | default('/unknown')
+  vsphere_ips_all: guest.net | selectattr('ipAddress') | map(attribute='ipAddress') | flatten | list
+
+  # Hierarchy helpers.
+  # /DC1/vm/tenantA/prod/app/web01 => tenant=tenantA, folder_parent=app
+  vsphere_tenant: "((path | split('/'))[3]) if (((path | split('/')) | length) > 4) else 'vm_root'"
+  vsphere_folder_parent: "((path | split('/'))[-2]) if (((path | split('/')) | length) > 4) else 'vm_root'"
+
+# Inventory filtering.
+# IMPORTANT: filter_expressions exclude hosts where expression evaluates True.
+filter_expressions:
+  # Keep only powered-on VMs.
+  - 'summary.runtime.powerState != "poweredOn"'
+
+  # Keep only VMs with at least one allocated IP.
+  - '(guest.net | selectattr("ipAddress") | map(attribute="ipAddress") | flatten | list | length) == 0'
+
+  # Optional hard gate: keep only hosts with resolved ansible_host.
+  # - "ansible_host | default('') == ''"
+
+keyed_groups:
+  # Tag groups.
+  # Example output groups: tag_db, tag_web, tag_critical
+  - key: tags.values() | default([])
+    prefix: tag_
+    separator: ""
+
+  # Convention-based category groups.
+  # Expect categories like Environment={dev,prod}, Group={web,db,iam,vault}
+  - key: tags_by_category.Environment | default([]) | map('dict2items') | flatten | map(attribute='value')
+    prefix: env_
+    separator: ""
+  - key: tags_by_category.Group | default([]) | map('dict2items') | flatten | map(attribute='value')
+    prefix: role_
+    separator: ""
+
+  # Topology groups.
+  - key: vsphere_tenant
+    prefix: tenant_
+    separator: ""
+  - key: vsphere_folder_parent
+    prefix: folder_
+    separator: ""
+  - key: vsphere_resource_pool
+    prefix: rp_
+    separator: ""
+
+  # Platform groups.
+  - key: vsphere_guestos
+    prefix: guestos_
+    separator: ""
+  - key: summary.runtime.powerState
+    prefix: power_
+    separator: ""
+
+# Optional readability/safety switches:
+# sanitize_property_names: true      # converts names to snake_case
+# flatten_nested_properties: true    # flattens nested objects
+# gather_compute_objects: true       # adds cluster/esxi_host info (slower)
