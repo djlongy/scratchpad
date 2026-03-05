@@ -1,14 +1,22 @@
 ---
 # loggers/file.yml
 # Variables:
-#   audit_log_file  (default: '/var/log/ansible/audit.jsonl')
+#   audit_log_file        (default: '/var/log/ansible/audit.jsonl')
+#   audit_log_become      (default: true — set false when writing to user-writable paths)
+
+- name: Check if audit log directory exists
+  ansible.builtin.stat:
+    path: "{{ audit_log_file | default('/var/log/ansible/audit.jsonl') | dirname }}"
+  register: _audit_log_dir
+  become: false
 
 - name: Ensure audit log directory exists
   ansible.builtin.file:
     path: "{{ audit_log_file | default('/var/log/ansible/audit.jsonl') | dirname }}"
     state: directory
     mode: '0750'
-  become: true
+  become: "{{ audit_log_become | default(true) }}"
+  when: not _audit_log_dir.stat.exists
 
 - name: Write audit log to local file
   ansible.builtin.lineinfile:
@@ -16,5 +24,5 @@
     line: "{{ audit_log_json }}"
     create: true
     mode: '0640'
-  become: true
+  become: "{{ audit_log_become | default(true) }}"
   ignore_errors: true

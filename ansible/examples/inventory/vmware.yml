@@ -1,0 +1,147 @@
+---
+# VMware vSphere Dynamic Inventory Plugin
+# Plugin: community.vmware.vmware_vm_inventory (community.vmware >= 4.0)
+#
+# Credentials are supplied via environment variables (no secrets in this file).
+# Source them before running:
+#   source scripts/load_vmware_env.sh [vcenter_host]
+#
+# Usage:
+#   ansible-inventory -i inventory/vmware.yml --list
+#   ansible -i inventory/vmware.yml all -m ping
+
+plugin: community.vmware.vmware_vm_inventory
+
+# ---------------------------------------------------------------------------
+# Connection (resolved from environment variables)
+# ---------------------------------------------------------------------------
+hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+username: "{{ lookup('env', 'VMWARE_USER') }}"
+password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+validate_certs: false          # Set to true in production with trusted certs
+port: 443
+
+# ---------------------------------------------------------------------------
+# Scope — what to enumerate
+# ---------------------------------------------------------------------------
+with_tags: true                # Requires vCenter Tag API (vSphere 6.5+)
+with_path: true                # Expose vm_path / datacenter / cluster in hostvars
+
+# Properties fetched from vCenter per VM. Limit to what you actually use
+# to keep inventory fast on large vSphere estates.
+properties:
+  - name
+  - config.guestFullName
+  - config.hardware.numCPU
+  - config.hardware.memoryMB
+  - guest.ipAddress
+  - guest.guestState
+  - runtime.powerState
+  - summary.config.annotation
+  - summary.runtime.powerState
+
+# ---------------------------------------------------------------------------
+# Grouping
+# ---------------------------------------------------------------------------
+# Group VMs by their vSphere resource-pool / folder path
+with_path: true
+
+# Group by custom attribute or tag (requires with_tags: true)
+# Uncomment the keyed_groups that match your tagging strategy.
+keyed_groups:
+
+  # Group by power state (e.g., group "poweredOn")
+  - key: summary.runtime.powerState
+    prefix: power
+
+  # Group by guest OS family (e.g., group "guestFamily_linuxGuest")
+  - key: config.guestFullName
+    prefix: os
+    separator: "_"
+
+  # ── Multi-environment grouping ──────────────────────────────────────────
+  # Requires a vSphere Tag Category named "environment" with tags like:
+  #   prod, staging, dev, dr
+  #
+  # - key: tags.environment
+  #   prefix: env
+  #
+  # Or derive environment from folder structure:
+  # - key: vm_path | regex_replace('^.*/(prod|staging|dev|dr)/.*$', '\\1')
+  #   prefix: env
+
+  # ── Multi-tenant grouping ───────────────────────────────────────────────
+  # Requires a vSphere Tag Category named "tenant" or "customer":
+  #
+  # - key: tags.tenant
+  #   prefix: tenant
+  #
+  # Example result: groups tenant_acme, tenant_globex, tenant_initech
+
+  # ── Cluster / datacenter grouping ──────────────────────────────────────
+  # Useful when a single vCenter manages multiple datacenters or clusters:
+  #
+  # - key: cluster
+  #   prefix: cluster
+  #
+  # - key: datacenter
+  #   prefix: dc
+
+# ---------------------------------------------------------------------------
+# Host variable composition
+# ---------------------------------------------------------------------------
+compose:
+  # Prefer the guest-reported IP; fall back to first NIC if tools not running
+  ansible_host: >-
+    guest.ipAddress
+    if guest.ipAddress is defined and guest.ipAddress != ''
+    else ''
+
+  # Map guest OS to ansible_network_os for network-aware playbooks
+  # ansible_network_os: "'eos' if 'vEOS' in config.guestFullName else 'linux'"
+
+  # ── Multi-environment vars ───────────────────────────────────────────────
+  # Pull environment tier from a custom attribute called "env_tier":
+  # env_tier: "customValue | selectattr('key', 'eq', 'env_tier') | map(attribute='value') | first | default('unknown')"
+
+  # ── Tenant-aware vars ────────────────────────────────────────────────────
+  # Expose tenant name as a host var for use in playbooks / templates:
+  # tenant_name: "tags.tenant | default('default')"
+
+# ---------------------------------------------------------------------------
+# Filtering (only include VMs that match ALL filters)
+# ---------------------------------------------------------------------------
+filters:
+  - runtime.powerState == "poweredOn"
+  # Exclude template VMs:
+  # - config.template == false
+  # Only include VMs with a specific tag:
+  # - "'managed' in tags.get('role', [])"
+  # Only include VMs in a specific datacenter:
+  # - datacenter == "DC-PROD"
+
+# ---------------------------------------------------------------------------
+# Caching (recommended for large inventories)
+# ---------------------------------------------------------------------------
+cache: true
+cache_plugin: jsonfile
+cache_timeout: 300             # seconds; tune for your change rate
+cache_connection: /tmp/ansible_vmware_cache
+
+# ---------------------------------------------------------------------------
+# Advanced — multi-vCenter / multi-tenant federation
+# ---------------------------------------------------------------------------
+# To federate multiple vCenters, create one YAML per vCenter and use
+# an inventory directory or ansible.cfg [inventory] sources list:
+#
+# inventory/
+#   vmware_prod.yml      <- VMWARE_HOST=vcenter-prod.example.com
+#   vmware_dr.yml        <- VMWARE_HOST=vcenter-dr.example.com
+#   vmware_staging.yml   <- VMWARE_HOST=vcenter-staging.example.com
+#
+# Then group them in ansible.cfg or a wrapper hosts.yml:
+#   [inventory]
+#   enable_plugins = community.vmware.vmware_vm_inventory, yaml
+#
+# Each file can have its own keyed_groups + filters so prod/DR/staging
+# VMs land in the right groups even when queried together.

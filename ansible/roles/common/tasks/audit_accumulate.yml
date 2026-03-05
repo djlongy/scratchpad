@@ -1,0 +1,57 @@
+---
+# roles/common/tasks/audit_accumulate.yml
+#
+# Accumulates per-play metadata into a dummy host (__audit_buffer__) that
+# persists across plays within a single playbook run.
+#
+# Call this in EACH play's post_tasks of a multi-play monolithic playbook.
+# Call audit_logging.yml only in the FINAL play's post_tasks to write the
+# consolidated log entry.
+#
+# For single-play playbooks, skip this entirely and call audit_logging.yml
+# directly — it handles both modes transparently.
+#
+# Usage (each non-final play):
+#   post_tasks:
+#     - name: Accumulate audit data for this play
+#       ansible.builtin.include_role:
+#         name: common
+#         tasks_from: audit_accumulate.yml
+#       apply:
+#         tags: always
+#       tags: always
+
+- name: Audit Accumulate — buffer this play's metadata
+  block:
+
+    - name: Record current play into audit buffer
+      ansible.builtin.add_host:
+        name: __audit_buffer__
+        # Append this play's entry to the running list.
+        # add_host merges variables, so we read the existing list first.
+        audit_plays: >-
+          {{
+            (hostvars['__audit_buffer__']['audit_plays'] | default([]))
+            + [_this_play]
+          }}
+        # Accumulate the flat union of all roles seen so far.
+        audit_roles_all: >-
+          {{
+            (hostvars['__audit_buffer__']['audit_roles_all'] | default([]))
+            | union(ansible_play_role_names | default([]))
+          }}
+        # Record the playbook command once (it doesn't change between plays).
+        audit_play_count: >-
+          {{
+            (hostvars['__audit_buffer__']['audit_play_count'] | default(0)) + 1
+          }}
+      vars:
+        _this_play:
+          play_name: "{{ ansible_play_name | default('unnamed') }}"
+          hosts:     "{{ ansible_play_hosts | default([]) }}"
+          roles:     "{{ ansible_play_role_names | default([]) }}"
+      changed_when: false
+
+  delegate_to: localhost
+  become: false
+  run_once: true
