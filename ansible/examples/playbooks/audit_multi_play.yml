@@ -1,0 +1,78 @@
+---
+# examples/playbooks/audit_multi_play.yml
+#
+# Multi-play monolithic playbook with consolidated audit logging.
+#
+# The audit framework captures metadata from ALL plays into a single JSONL
+# log entry using an add_host accumulator buffer (__audit_buffer__).
+#
+# Pattern:
+#   - Every play (except the last) calls audit_accumulate.yml in post_tasks
+#   - The final play calls audit_logging.yml which reads the buffer and
+#     writes one consolidated entry covering all plays, roles, and hosts.
+#
+# The resulting log entry includes:
+#   plays[]     — per-play breakdown (name, hosts, roles)
+#   play_count  — total number of plays in the run
+#   roles       — deduplicated union of all roles across all plays
+#   hosts       — deduplicated union of all target hosts
+
+- name: Play 1 - Network Configuration
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    audit_log_file: /var/log/ansible/audit.jsonl
+    
+    audit_loggers:
+      - file
+
+  roles:
+    - mock_network
+
+  post_tasks:
+    - name: Accumulate audit data for Play 1
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: audit_accumulate.yml
+      tags: always
+
+- name: Play 2 - Application Deployment
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    audit_log_file: /var/log/ansible/audit.jsonl
+    
+    audit_loggers:
+      - file
+
+  roles:
+    - mock_app
+
+  post_tasks:
+    - name: Accumulate audit data for Play 2
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: audit_accumulate.yml
+      tags: always
+
+- name: Play 3 - Post-Deploy Verification
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    audit_log_file: /var/log/ansible/audit.jsonl
+    
+    audit_loggers:
+      - file
+
+  roles:
+    - mock_checks
+
+  post_tasks:
+    - name: Write consolidated audit log (all plays)
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: audit_logging.yml
+      tags: always

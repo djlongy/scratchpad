@@ -4,9 +4,20 @@
 # Ansible Audit Logging Framework
 # Collects execution metadata and routes to one or more logging backends.
 #
+# ── Single-play playbooks ────────────────────────────────────────────────────
+# Call this once in post_tasks. It captures the current play's context.
+#
+# ── Multi-play (monolithic) playbooks ────────────────────────────────────────
+# Call audit_accumulate.yml in EACH play's post_tasks to park per-play
+# metadata into a cross-play buffer. Then call this task ONLY in the final
+# play's post_tasks to write one consolidated audit log entry covering all
+# plays in the run.
+#
+# This task detects the buffer automatically — no configuration required.
+#
 # Usage:
 #   post_tasks:
-#     - name: Audit logging
+#     - name: Write audit log
 #       ansible.builtin.include_role:
 #         name: common
 #         tasks_from: audit_logging.yml
@@ -36,19 +47,60 @@
       # Custom action plugin - see action_plugins/get_cli_args/get_cli_args.py
       # Returns: ansible_playbook_argv, ansible_playbook_cmd, semaphore_vars, git_status
 
-    - name: Get list of roles executed in this playbook
-      ansible.builtin.set_fact:
-        executed_roles: "{{ ansible_play_role_names | default([]) | join(', ') }}"
-
     - name: Get local username
       ansible.builtin.command: /usr/bin/whoami
       register: local_user
       changed_when: false
 
     - name: Get control node hostname
-      ansible.builtin.command: /usr/bin/hostname
+      ansible.builtin.command: hostname
       register: control_node_hostname
       changed_when: false
+
+    #### Resolve multi-play buffer (if present) ####
+
+    # When audit_accumulate.yml has been called per play, __audit_buffer__
+    # holds the accumulated history. Fall back to the current play's context
+    # for single-play playbooks so this task works in both modes.
+    - name: Resolve accumulated play buffer
+      ansible.builtin.set_fact:
+        _audit_buffer:     "{{ hostvars['__audit_buffer__'] | default({}) }}"
+        _current_play_entry:
+          play_name: "{{ ansible_play_name | default('unnamed') }}"
+          hosts:     "{{ ansible_play_hosts | default([]) }}"
+          roles:     "{{ ansible_play_role_names | default([]) }}"
+
+    - name: Build consolidated plays list
+      ansible.builtin.set_fact:
+        # Multi-play mode: use buffer + append final play.
+        # Single-play mode: buffer is empty, just wrap current play.
+        _audit_plays: >-
+          {{
+            ((_audit_buffer.audit_plays | default([])) + [_current_play_entry])
+            if (_audit_buffer.audit_plays | default([]) | length > 0)
+            else [_current_play_entry]
+          }}
+
+    - name: Build consolidated roles list
+      ansible.builtin.set_fact:
+        _audit_roles_all: >-
+          {{
+            ((_audit_buffer.audit_roles_all | default([]))
+            | union(ansible_play_role_names | default([])))
+            | unique | sort
+          }}
+
+    - name: Build consolidated hosts list
+      ansible.builtin.set_fact:
+        _audit_hosts_all: >-
+          {{
+            _audit_plays
+            | map(attribute='hosts')
+            | flatten
+            | unique
+            | sort
+            | list
+          }}
 
     #### Build Structured Audit Log ####
 
@@ -61,9 +113,15 @@
           timestamp:           "{{ ansible_date_time.iso8601 }}"
           user:                "{{ local_user.stdout }}"
           control_node:        "{{ control_node_hostname.stdout }}"
-          playbook:            "{{ ansible_play_name | default('unnamed') }}"
-          roles:               "{{ executed_roles | default('none') }}"
-          hosts:               "{{ ansible_play_hosts }}"
+          # playbook: name of the first play (or the single play for single-play runs)
+          playbook:            "{{ _audit_plays[0].play_name | default('unnamed') }}"
+          # plays: full per-play breakdown — name, hosts, roles for each play
+          plays:               "{{ _audit_plays }}"
+          play_count:          "{{ _audit_plays | length }}"
+          # roles: deduplicated union of all roles across all plays
+          roles:               "{{ _audit_roles_all | join(', ') }}"
+          # hosts: deduplicated union of all target hosts across all plays
+          hosts:               "{{ _audit_hosts_all }}"
           status:              "{{ audit_status | default('success') }}"
           ansible_command:     "{{ cli_args.ansible_playbook_cmd | default('unknown') }}"
           semaphore_vars:      "{{ cli_args.semaphore_vars | default(omit) }}"
