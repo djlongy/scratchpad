@@ -33,9 +33,9 @@ def _get_git_status(playbook_dir):
         commit_short  - 7-char short SHA
         tag           - nearest tag (git describe), or None
         modified      - list of modified tracked files (not staged)
-        staged        - list of staged files
+        staged        - list of staged files (destination path for renames)
         untracked     - list of untracked files
-        deleted       - list of deleted tracked files
+        deleted       - list of deleted tracked files (unstaged)
         is_clean      - True if working tree and index are clean
         error         - set if git is unavailable or dir is not a repo
     """
@@ -54,21 +54,38 @@ def _get_git_status(playbook_dir):
     modified, staged, untracked, deleted = [], [], [], []
 
     for line in porcelain.splitlines():
-        if len(line) < 3:
+        # Porcelain v1 format: XY<space>filepath
+        # X = index (staged) status, Y = worktree status
+        # Minimum valid line is 4 chars: XY<space><char>
+        if len(line) < 4:
             continue
+
         index_status = line[0]
         worktree_status = line[1]
-        filepath = line[2:].lstrip(" ")
+        # line[2] is always the space separator; use line[3:] to avoid
+        # accidentally stripping a filename that begins with a space.
+        filepath = line[3:]
 
-        # Staged changes (index)
-        if index_status in ("M", "A", "R", "C", "T"):
-            staged.append(filepath)
-        # Worktree changes
+        # Staged changes (index column).
+        # For renames/copies, porcelain v1 encodes the entry as
+        # "old_path -> new_path". We record only the destination so that
+        # callers see the file that now exists, not the one that was removed.
+        # Staged deletions (D) are also included — the file is gone from the
+        # working tree but the removal is recorded in the index.
+        if index_status in ("M", "A", "D", "R", "C", "T"):
+            if index_status in ("R", "C") and " -> " in filepath:
+                staged_path = filepath.split(" -> ", 1)[1]
+            else:
+                staged_path = filepath
+            staged.append(staged_path)
+
+        # Worktree changes (not yet staged).
         if worktree_status == "M":
             modified.append(filepath)
         elif worktree_status == "D":
             deleted.append(filepath)
-        # Untracked
+
+        # Untracked files (?? in both columns).
         if index_status == "?" and worktree_status == "?":
             untracked.append(filepath)
 
