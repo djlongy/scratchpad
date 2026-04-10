@@ -1,0 +1,38 @@
+---
+# Deploy a fapolicyd rule and reload.
+#
+# Include from any role:
+#   - ansible.builtin.include_tasks: roles/common/tasks/fapolicyd.yml
+#     vars:
+#       fapolicyd_rule_template: templates/31-myapp.rules.j2
+#       fapolicyd_rule_name: 31-myapp.rules
+#
+# Required vars:
+#   fapolicyd_rule_template  - Jinja2 template path (relative to calling role)
+#   fapolicyd_rule_name      - Destination filename in /etc/fapolicyd/rules.d/
+#
+# Fails loudly if fapolicyd is not installed. If you're deploying a rule,
+# fapolicyd should be there — silent skips hide broken playbooks.
+
+- name: "fapolicyd | deploy {{ fapolicyd_rule_name }}"
+  ansible.builtin.template:
+    src: "{{ fapolicyd_rule_template }}"
+    dest: "/etc/fapolicyd/rules.d/{{ fapolicyd_rule_name }}"
+    owner: root
+    group: fapolicyd
+    mode: "0644"
+  register: _fapolicyd_deployed
+
+- name: "fapolicyd | check service state"
+  ansible.builtin.systemd_service:
+    name: fapolicyd
+  register: _fapolicyd_svc
+  changed_when: false
+  when: _fapolicyd_deployed.changed
+
+- name: "fapolicyd | reload rules"
+  ansible.builtin.command: /sbin/fagenrules --load
+  changed_when: true
+  when:
+    - _fapolicyd_deployed.changed
+    - _fapolicyd_svc.status.ActiveState == "running"

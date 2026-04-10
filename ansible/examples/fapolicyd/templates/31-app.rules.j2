@@ -1,0 +1,27 @@
+{# fapolicyd allow rules template.
+   Deploy to /etc/fapolicyd/rules.d/31-<appname>.rules
+
+   Required vars:
+     fapolicyd_entries  - list of dicts with 'exe' and 'dir' keys
+       exe: "all" for any caller, or a binary path to scope access
+       dir: directory to allow (trailing slash required)
+
+   Examples:
+
+     # Desktop app — allow everything in the install directory
+     fapolicyd_entries:
+       - { exe: "all", dir: "/usr/share/code/" }
+
+     # Java app — scope to the interpreter, resolve symlink with stat first
+     fapolicyd_entries:
+       - { exe: "{{ java_path.stat.lnk_source }}", dir: "/opt/nifi/" }
+       - { exe: "{{ java_path.stat.lnk_source }}", dir: "/tmp" }
+
+     # Python app — scope to interpreter + venv
+     fapolicyd_entries:
+       - { exe: "/usr/bin/python3", dir: "/opt/myapp/" }
+       - { exe: "/usr/bin/python3", dir: "/opt/myapp/venv/" }
+#}
+{% for entry in fapolicyd_entries %}
+allow perm=any exe={{ entry.exe }} : dir={{ entry.dir }}
+{% endfor %}
