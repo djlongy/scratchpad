@@ -8,7 +8,7 @@ Shell functions to set credentials via environment variables instead of storing 
 
 #### 1. Add the shell function to your shell profile
 
-The `unlock-ansible` function prompts for the password once and caches it in `VAULT_PASSWORD` for the rest of your shell session. This is the recommended approach — it avoids re-prompting on every playbook run and ensures a wrong password is caught early on the first run rather than silently cached.
+The `unlock-ansible` function prompts for the password once and caches it in `ANSIBLE_VAULT` for the rest of your shell session. This is the recommended approach — it avoids re-prompting on every playbook run and ensures a wrong password is caught early on the first run rather than silently cached.
 
 **Zsh** (`~/.zshrc`):
 
@@ -16,8 +16,8 @@ The `unlock-ansible` function prompts for the password once and caches it in `VA
 unlock-ansible() {
   read -rs 'pw?Vault Password: '
   echo
-  export VAULT_PASSWORD="$pw"
-  echo "VAULT_PASSWORD set for this shell session"
+  export ANSIBLE_VAULT="$pw"
+  echo "ANSIBLE_VAULT set for this shell session"
 }
 ```
 
@@ -27,8 +27,8 @@ unlock-ansible() {
 unlock-ansible() {
   read -rsp 'Vault Password: ' pw
   echo
-  export VAULT_PASSWORD="$pw"
-  echo "VAULT_PASSWORD set for this shell session"
+  export ANSIBLE_VAULT="$pw"
+  echo "ANSIBLE_VAULT set for this shell session"
 }
 ```
 
@@ -61,9 +61,9 @@ If you forget to run `unlock-ansible`, the script will prompt interactively as a
 
 ### How It Works
 
-- `unlock-ansible` prompts once and exports `VAULT_PASSWORD` for the shell session
+- `unlock-ansible` prompts once and exports `ANSIBLE_VAULT` for the shell session
 - `ansible.cfg` points `vault_password_file` at `vault-env-client.sh`
-- Ansible calls the script, which echoes `$VAULT_PASSWORD` back
+- Ansible calls the script, which echoes `$ANSIBLE_VAULT` back
 - If the variable is unset, the script falls back to an interactive prompt via `/dev/tty`
 
 ---

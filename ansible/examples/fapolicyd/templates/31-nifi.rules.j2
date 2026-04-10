@@ -1,0 +1,4 @@
+# Apache NiFi — Java application, scoped to interpreter
+allow perm=any exe={{ java_path.stat.lnk_source }} : dir=/opt/nifi/nifi-{{ nifi_vers }}/
+allow perm=any exe={{ java_path.stat.lnk_source }} : dir=/opt/nifi/nifi-toolkit-{{ nifi_vers }}/
+allow perm=any exe={{ java_path.stat.lnk_source }} : dir=/tmp

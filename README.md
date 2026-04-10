@@ -13,6 +13,8 @@ Drop onto any machine with minimal dependencies — no frameworks, no package sp
 | [`ansible/action_plugins/get_cli_args`](ansible/action_plugins/get_cli_args/README.md) | Expose `ansible-playbook` CLI args and Semaphore vars to tasks | Python, Ansible |
 | [`ansible/examples/inventory/vsphere-vms-dynamic`](ansible/examples/inventory/vsphere-vms-dynamic/README.md) | Sanitized dynamic vSphere inventory template with multitenancy/dev-prod grouping | Ansible, vmware.vmware |
 | [`python/vsphere-automation-sdk`](python/vsphere-automation-sdk/README.md) | Install instructions for VMware vSphere Automation SDK (macOS + Oracle Linux) | Python 3.12, git |
+| [`ansible/examples/fapolicyd`](ansible/examples/fapolicyd/README.md) | fapolicyd troubleshooting, whitelisting (trust.d + rules.d), Ansible tasks/templates | RHEL/OL 9, fapolicyd |
+| [`ansible/examples/kickstart`](ansible/examples/kickstart/ks-el9-hardened.cfg) | Hardened EL9 kickstart: GNOME, fapolicyd, STIG, FIPS, VMware Fusion fixes | EL9 ISO |
 
 ## Structure
 
@@ -29,8 +31,11 @@ scratchpad/
 │   └── examples/
 │       └── inventory/
 │           └── vsphere-vms-dynamic/  Sanitized dynamic vSphere inventory example
-└── python/
-    └── vsphere-automation-sdk/  VMware vSphere SDK install guide
+├── python/
+│   └── vsphere-automation-sdk/  VMware vSphere SDK install guide
+└── ansible/examples/
+    ├── fapolicyd/               Troubleshooting guide + Ansible templates
+    └── kickstart/               Hardened EL9 kickstart template
 ```
 
 New tools get their own folder under the relevant language/category directory.

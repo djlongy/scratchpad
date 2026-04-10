@@ -1,0 +1,23 @@
+{# fapolicyd rules for Java applications.
+   Deploy to /etc/fapolicyd/rules.d/31-<appname>.rules
+
+   Resolves the java alternatives symlink at deploy time so the rule
+   points at the real binary, not the symlink.
+
+   Required vars:
+     java_path        - registered stat result for /etc/alternatives/java
+     app_install_dir  - application install directory (e.g., /opt/nifi/nifi-1.27.0)
+
+   Usage:
+     - name: Resolve java symlink
+       ansible.builtin.stat:
+         path: /etc/alternatives/java
+       register: java_path
+
+     - ansible.builtin.include_tasks: roles/common/tasks/fapolicyd.yml
+       vars:
+         fapolicyd_rule_template: templates/31-java-app.rules.j2
+         fapolicyd_rule_name: 31-nifi.rules
+#}
+allow perm=any exe={{ java_path.stat.lnk_source }} : dir={{ app_install_dir }}/
+allow perm=any exe={{ java_path.stat.lnk_source }} : dir=/tmp
