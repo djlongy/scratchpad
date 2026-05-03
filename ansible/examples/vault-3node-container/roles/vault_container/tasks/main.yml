@@ -1,0 +1,82 @@
+---
+# Orchestrator. Phases are split into separate task files so callers
+# can target individual ones via --tags.
+
+- name: Validate caller inputs
+  ansible.builtin.assert:
+    that:
+      - vault_domain | length > 0
+      - groups['vault'] | length >= 3
+    fail_msg: >-
+      vault_container needs `vault_domain` set and at least 3 hosts in
+      the `vault` inventory group (Raft HA quorum).
+  tags: [always]
+
+- name: Install
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Self-signed TLS (lab)
+  ansible.builtin.import_tasks: selfsigned_tls.yml
+  tags: [tls, selfsigned]
+
+- name: Render config
+  ansible.builtin.import_tasks: config.yml
+  tags: [config]
+
+- name: Service
+  ansible.builtin.import_tasks: service.yml
+  tags: [service]
+
+- name: Cluster init + unseal
+  ansible.builtin.import_tasks: cluster_init.yml
+  tags: [cluster_init]
+
+# Resilience: unseal-vault.{sh,service} so the cluster auto-unseals
+# after host reboots / container restarts. Must run AFTER cluster_init
+# (the keys it reads from /opt/vault/keys/ are written by that step).
+- name: Auto-unseal on boot
+  ansible.builtin.import_tasks: auto_unseal.yml
+  tags: [auto_unseal]
+
+# Post-setup phase. Each step is a `block`-able include with a fact
+# load up front, so individual tags like --tags policies work.
+- name: Read root token (post_setup phases)
+  ansible.builtin.slurp:
+    src: "{{ vault_keys_dir }}/root_token.txt"
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  register: _root_token_slurp
+  no_log: true
+  tags: [post_setup, kv, policies, userpass, approle, ldap]
+
+- name: Set _vault_root_token fact
+  ansible.builtin.set_fact:
+    _vault_root_token: "{{ _root_token_slurp.content | b64decode }}"
+  no_log: true
+  tags: [post_setup, kv, policies, userpass, approle, ldap]
+
+- name: KV v2 mounts
+  ansible.builtin.import_tasks: kv_mounts.yml
+  when: vault_kv_mounts | length > 0
+  tags: [post_setup, kv]
+
+- name: ACL policies
+  ansible.builtin.import_tasks: policies.yml
+  when: vault_policies | length > 0
+  tags: [post_setup, policies]
+
+- name: Userpass auth + admin user
+  ansible.builtin.import_tasks: auth_userpass.yml
+  when: vault_userpass_enabled | bool
+  tags: [post_setup, userpass]
+
+- name: AppRole auth + roles
+  ansible.builtin.import_tasks: auth_approle.yml
+  when: vault_approles | length > 0
+  tags: [post_setup, approle]
+
+- name: LDAP auth (FreeIPA)
+  ansible.builtin.import_tasks: ldap_auth.yml
+  when: vault_ldap_enabled | bool
+  tags: [post_setup, ldap]

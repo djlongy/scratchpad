@@ -1,0 +1,42 @@
+---
+# Deploy the unseal-vault.{sh,service} pair so the cluster comes back
+# online by itself after a host reboot or container restart.
+#
+# unseal-vault.service is Type=oneshot After=vault.service Requires=
+# vault.service WantedBy=multi-user.target — it runs once on every
+# boot, polls the local API until reachable, then issues
+# `vault operator unseal` until Sealed=false.
+#
+# Lab-grade: reads the single Shamir share from /opt/vault/keys/.
+# For prod, replace with a KMS-backed seal so this script is unused.
+
+- name: Ensure jq is installed (used by unseal-vault.sh)
+  ansible.builtin.dnf:
+    name: jq
+    state: present
+
+- name: Deploy unseal-vault.sh
+  ansible.builtin.template:
+    src: unseal-vault.sh.j2
+    dest: /usr/local/bin/unseal-vault.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy unseal-vault.service unit
+  ansible.builtin.template:
+    src: unseal-vault.service.j2
+    dest: /etc/systemd/system/unseal-vault.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Reload systemd before enabling unseal-vault.service
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable + start unseal-vault.service
+  ansible.builtin.systemd:
+    name: unseal-vault
+    enabled: true
+    state: started

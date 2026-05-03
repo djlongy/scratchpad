@@ -1,0 +1,36 @@
+# ops-admin — daily operator policy
+#
+# WHO:  Human operators (your `admin` user via userpass / LDAP /
+#       OIDC). Bind to a FreeIPA / AD group via `auth/ldap/groups/<g>`
+#       or `auth/oidc/role/...`.
+# TTL:  24h token, 720h (30d) max — suitable for day-to-day work.
+#
+# Scope: full KV CRUD on every mount + full sys/auth/policy management,
+# but expects break-glass via ops-superadmin for any deeper recovery.
+
+# Full KV v2 access — every declared mount
+{% for kv in vault_kv_mounts %}
+path "{{ kv.mount }}/*"    { capabilities = ["create", "read", "update", "delete", "list"] }
+{% endfor %}
+
+# UI mount visibility
+path "sys/internal/ui/mounts"   { capabilities = ["read"] }
+path "sys/internal/ui/mounts/*" { capabilities = ["read"] }
+
+# Full sys management (mounts, auth, policies, identity)
+path "sys/mounts"          { capabilities = ["read", "list"] }
+path "sys/mounts/*"        { capabilities = ["create", "read", "update", "delete", "list"] }
+path "sys/auth"            { capabilities = ["read", "list"] }
+path "sys/auth/*"          { capabilities = ["create", "read", "update", "delete", "list"] }
+path "sys/policies/acl"    { capabilities = ["read", "list"] }
+path "sys/policies/acl/*"  { capabilities = ["create", "read", "update", "delete", "list"] }
+path "identity/*"          { capabilities = ["create", "read", "update", "delete", "list"] }
+
+# Token + capability checks
+path "auth/token/*"        { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }
+path "sys/capabilities-self" { capabilities = ["update"] }
+
+# Health + raft observability
+path "sys/health"          { capabilities = ["read"] }
+path "sys/seal-status"     { capabilities = ["read"] }
+path "sys/storage/raft/configuration" { capabilities = ["read"] }

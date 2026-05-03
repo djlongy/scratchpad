@@ -1,0 +1,31 @@
+---
+# Render systemd unit + start vault. Container runs as host vault uid
+# (passes through `--user`) and the entrypoint's setcap/chown side
+# effects are skipped via SKIP_SETCAP=1, SKIP_CHOWN=1 env (set in
+# vault_container_extra_args).
+
+- name: Deploy vault.service
+  ansible.builtin.template:
+    src: vault.service.j2
+    dest: /etc/systemd/system/vault.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vault
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable + start vault
+  ansible.builtin.service:
+    name: vault
+    state: started
+    enabled: true
+
+- name: Wait for vault API to come up (sealed is fine)
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ vault_api_port }}"
+    delay: 3
+    timeout: 60

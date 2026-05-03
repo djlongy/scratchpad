@@ -1,0 +1,9 @@
+# Common cruft.
+*.swp
+.DS_Store
+__pycache__/
+
+# vault.yml is committed ENCRYPTED (after `ansible-vault encrypt`).
+# Don't commit a decrypted plaintext copy by accident.
+*.plaintext.yml
+*.decrypted.yml

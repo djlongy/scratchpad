@@ -1,0 +1,88 @@
+---
+# Initialise raft on the leader, persist unseal key + root token, then
+# unseal the leader and every follower.
+#
+# The unseal key + root token are written to {{ vault_keys_dir }} on
+# the leader. For prod, replace this with a KMS-backed seal — having
+# both on disk on the leader is a lab convenience.
+
+- name: Detect existing init state on the leader
+  ansible.builtin.stat:
+    path: "{{ vault_keys_dir }}/vault_init.json"
+  register: _vault_init_stat
+  when: inventory_hostname == groups['vault_leader'][0]
+
+- name: Initialise vault on leader (first run only)
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      vault operator init
+        -format=json
+        -key-shares={{ vault_init_key_shares }}
+        -key-threshold={{ vault_init_key_threshold }}
+  args:
+    executable: /bin/bash
+  register: _vault_init
+  when:
+    - inventory_hostname == groups['vault_leader'][0]
+    - not _vault_init_stat.stat.exists
+  changed_when: _vault_init.rc == 0
+  no_log: true
+
+- name: Save init JSON to leader
+  ansible.builtin.copy:
+    dest: "{{ vault_keys_dir }}/vault_init.json"
+    content: "{{ _vault_init.stdout }}"
+    owner: vault
+    group: vault
+    mode: "0600"
+  when:
+    - inventory_hostname == groups['vault_leader'][0]
+    - _vault_init.changed | default(false)
+  no_log: true
+
+- name: Save unseal key (single-share lab seal)
+  ansible.builtin.copy:
+    dest: "{{ vault_keys_dir }}/unseal_key.txt"
+    content: "{{ (_vault_init.stdout | from_json).unseal_keys_b64[0] }}"
+    owner: vault
+    group: vault
+    mode: "0600"
+  when:
+    - inventory_hostname == groups['vault_leader'][0]
+    - _vault_init.changed | default(false)
+  no_log: true
+
+- name: Save root token
+  ansible.builtin.copy:
+    dest: "{{ vault_keys_dir }}/root_token.txt"
+    content: "{{ (_vault_init.stdout | from_json).root_token }}"
+    owner: vault
+    group: vault
+    mode: "0600"
+  when:
+    - inventory_hostname == groups['vault_leader'][0]
+    - _vault_init.changed | default(false)
+  no_log: true
+
+- name: Slurp unseal key from leader (for follower unseal)
+  ansible.builtin.slurp:
+    src: "{{ vault_keys_dir }}/unseal_key.txt"
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  register: _unseal_slurp
+  no_log: true
+
+- name: Unseal vault on every node
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      vault operator unseal {{ _unseal_slurp.content | b64decode }}
+  args:
+    executable: /bin/bash
+  register: _unseal_result
+  changed_when: "'Sealed' in _unseal_result.stdout and 'false' in _unseal_result.stdout"
+  failed_when:
+    - _unseal_result.rc != 0
+    - "'already unsealed' not in _unseal_result.stderr"
+  no_log: true

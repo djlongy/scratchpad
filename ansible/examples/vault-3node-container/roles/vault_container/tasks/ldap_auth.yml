@@ -1,0 +1,70 @@
+---
+# Optional: enable + configure auth/ldap, then create group→policy
+# mappings. Runs only on the leader (the API call replicates to
+# followers via raft).
+#
+# Inputs (defaults/main.yml):
+#   vault_ldap_enabled       — toggle (default false)
+#   vault_ldap_url           — e.g. ldaps://freeipa.example.com:636
+#   vault_ldap_userdn        — base DN for user lookups
+#   vault_ldap_groupdn       — base DN for group lookups
+#   vault_ldap_userattr      — attr that maps usernames (FreeIPA: uid)
+#   vault_ldap_groupattr     — attr that names groups   (FreeIPA: cn)
+#   vault_ldap_groupfilter   — LDAP filter to find a user's groups
+#   vault_ldap_binddn        — service account DN for the bind
+#   vault_ldap_bindpass      — bind password (encrypt in vault.yml)
+#   vault_ldap_insecure_tls  — skip server cert verification
+#   vault_ldap_group_policies — dict of <group>: [<policy>, ...]
+
+- name: Enable ldap auth method
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_TOKEN={{ _vault_root_token }}
+      vault auth enable ldap || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  register: _ldap_enable
+  changed_when: "'Enabled ldap' in _ldap_enable.stdout"
+  no_log: true
+
+- name: Configure ldap auth
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_TOKEN={{ _vault_root_token }}
+      vault write auth/ldap/config
+        url={{ vault_ldap_url | quote }}
+        userdn={{ vault_ldap_userdn | quote }}
+        userattr={{ vault_ldap_userattr | quote }}
+        groupdn={{ vault_ldap_groupdn | quote }}
+        groupattr={{ vault_ldap_groupattr | quote }}
+        groupfilter={{ vault_ldap_groupfilter | quote }}
+        binddn={{ vault_ldap_binddn | quote }}
+        bindpass={{ vault_ldap_bindpass | quote }}
+        insecure_tls={{ vault_ldap_insecure_tls | string | lower }}
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  changed_when: true
+  no_log: true
+
+- name: Map LDAP groups to vault policies
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_TOKEN={{ _vault_root_token }}
+      vault write auth/ldap/groups/{{ item.key }}
+        policies={{ item.value | join(',') }}
+  args:
+    executable: /bin/bash
+  loop: "{{ vault_ldap_group_policies | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} → {{ item.value | join(',') }}"
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  changed_when: true
+  no_log: true

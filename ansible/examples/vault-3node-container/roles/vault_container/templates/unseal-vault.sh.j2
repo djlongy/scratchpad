@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Vault auto-unseal script.
+# Runs on every boot via unseal-vault.service. Keeps the cluster
+# resilient to host reboots / container restarts without manual unseal.
+#
+# Reads the (lab-grade) Shamir key from disk. For prod, replace with a
+# KMS-backed seal so this script is never needed.
+set -euo pipefail
+
+VAULT_ADDR="https://127.0.0.1:{{ vault_api_port }}"
+VAULT_SKIP_VERIFY=true
+export VAULT_ADDR VAULT_SKIP_VERIFY
+
+UNSEAL_KEY_FILE="{{ vault_keys_dir }}/unseal_key.txt"
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S'): $*"
+}
+
+log "Starting Vault unseal script on host $(hostname -f)"
+log "VAULT_ADDR: $VAULT_ADDR"
+
+if [[ ! -r "$UNSEAL_KEY_FILE" ]]; then
+  log "ERROR: Unseal key file not found or not readable: $UNSEAL_KEY_FILE"
+  exit 1
+fi
+
+UNSEAL_KEY=$(<"$UNSEAL_KEY_FILE")
+
+MAX_RETRIES={{ vault_unseal_max_retries | default(30) }}
+RETRY=0
+SLEEP_INTERVAL={{ vault_unseal_sleep_interval | default(2) }}
+
+# Wait for Vault API to come up. The health endpoint returns 200/501/503
+# even when sealed/uninitialised; uninitcode/sealedcode/standbyok make
+# all of those count as "API reachable".
+log "Waiting for Vault API to become available..."
+until curl -sk --fail "$VAULT_ADDR/v1/sys/health?standbyok=true&uninitcode=200&sealedcode=200" >/dev/null 2>&1; do
+  ((RETRY++)) || true
+  if (( RETRY >= MAX_RETRIES )); then
+    log "ERROR: Vault API never became available after $MAX_RETRIES attempts"
+    exit 1
+  fi
+  log "Vault API not ready (attempt $RETRY/$MAX_RETRIES), waiting ${SLEEP_INTERVAL}s..."
+  sleep "$SLEEP_INTERVAL"
+done
+
+log "Vault API is reachable, checking seal status..."
+
+RETRY=0
+until vault status -format=json 2>/dev/null | jq -e '.sealed == false' > /dev/null 2>&1; do
+  log "Vault is sealed (attempt $((RETRY+1))/8), unsealing..."
+  vault operator unseal "$UNSEAL_KEY" || true   # ignore transient failures, retry
+
+  ((RETRY++)) || true
+  if (( RETRY >= 8 )); then
+    log "ERROR: Could not unseal after 8 attempts"
+    exit 1
+  fi
+  sleep 2
+done
+
+log "Vault is now unsealed."

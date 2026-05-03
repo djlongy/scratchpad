@@ -1,0 +1,26 @@
+[Unit]
+Description=Vault server (containerised)
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f {{ vault_container_name }}
+ExecStart=/usr/bin/docker run --name {{ vault_container_name }} \
+  --network host \
+  --restart {{ vault_container_restart_policy }} \
+  --user {{ vault_container_user }} \
+  -v {{ vault_config_dir }}:{{ vault_config_dir }}:ro \
+  -v {{ vault_host_data_dir }}:{{ vault_host_data_dir }} \
+  -v /var/log:/var/log \
+{% for arg in vault_container_extra_args %}
+  {{ arg }} \
+{% endfor %}
+  {{ vault_docker_image }} server -config={{ vault_config_dir }}/config.hcl
+ExecStop=/usr/bin/docker stop {{ vault_container_name }}
+ExecReload=/usr/bin/docker kill --signal=HUP {{ vault_container_name }}
+LimitNOFILE=65536
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
