@@ -1,0 +1,14 @@
+---
+# End-to-end Vault container deploy. Runs against the `vault` group;
+# the role itself uses run_once / leader-only tasks where appropriate.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+#     --ask-vault-pass
+
+- name: Deploy 3-node containerised Vault cluster
+  hosts: vault
+  gather_facts: true
+  become: true
+  roles:
+    - role: vault_container

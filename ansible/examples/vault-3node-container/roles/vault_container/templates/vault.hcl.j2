@@ -1,0 +1,39 @@
+# vault.hcl — rendered by vault_container role.
+#
+# Raft HA storage with retry_join blocks for each peer. Listener uses
+# the shared self-signed cert + key from /etc/vault.d/certs/. Followers
+# validate the leader's cert against the same CA file (the container
+# doesn't see the host's trust store).
+
+storage "raft" {
+  path    = "{{ vault_host_data_dir }}"
+  node_id = "{{ inventory_hostname }}"
+
+{% for h in groups['vault'] %}
+  retry_join {
+    leader_api_addr       = "https://{{ hostvars[h]['ansible_host'] }}:{{ vault_api_port }}"
+    leader_tls_servername = "{{ vault_domain }}"
+    leader_ca_cert_file   = "{{ vault_certs_dir }}/ca.crt"
+  }
+{% endfor %}
+}
+
+listener "tcp" {
+  address                  = "0.0.0.0:{{ vault_api_port }}"
+  cluster_address          = "0.0.0.0:{{ vault_cluster_port }}"
+  tls_cert_file            = "{{ vault_certs_dir }}/vault.crt"
+  tls_key_file             = "{{ vault_certs_dir }}/vault.key"
+  tls_client_ca_file       = "{{ vault_certs_dir }}/ca.crt"
+  tls_disable_client_certs = "true"
+}
+
+api_addr     = "https://{{ ansible_host }}:{{ vault_api_port }}"
+cluster_addr = "https://{{ ansible_host }}:{{ vault_cluster_port }}"
+
+ui            = true
+disable_mlock = true
+
+telemetry {
+  prometheus_retention_time = "24h"
+  disable_hostname          = true
+}

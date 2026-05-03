@@ -1,0 +1,13 @@
+---
+# Render the vault HCL config. Bind-mounted into the container at the
+# same path; the container reads it as the host vault user thanks to
+# the --user mapping in vault.service.j2.
+
+- name: Render vault.hcl
+  ansible.builtin.template:
+    src: vault.hcl.j2
+    dest: "{{ vault_config_dir }}/config.hcl"
+    owner: root
+    group: vault
+    mode: "0640"
+  notify: Restart vault

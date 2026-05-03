@@ -1,0 +1,23 @@
+# svc-automation — service account policy for Terraform / Ansible
+# (or any infra-as-code tooling). Read-only KV across all mounts +
+# child token creation for ephemeral tasks.
+#
+# WHO:  AppRole-bound (see auth_approle task) — no human logins.
+# TTL:  Default 8h / 24h max — long enough for a CI run, short
+#       enough that a leaked secret expires quickly.
+
+# Read-only KV across every declared mount (data + metadata).
+{% for kv in vault_kv_mounts %}
+path "{{ kv.mount }}/data/*"     { capabilities = ["read", "list"] }
+path "{{ kv.mount }}/metadata/*" { capabilities = ["read", "list"] }
+{% endfor %}
+
+# Mount visibility
+path "sys/internal/ui/mounts"   { capabilities = ["read"] }
+path "sys/internal/ui/mounts/*" { capabilities = ["read"] }
+
+# Child tokens (Terraform spawns child tokens for ephemeral state).
+path "auth/token/create" { capabilities = ["create", "update"] }
+
+# Capability self-check (helps tooling verify access before failing).
+path "sys/capabilities-self" { capabilities = ["update"] }

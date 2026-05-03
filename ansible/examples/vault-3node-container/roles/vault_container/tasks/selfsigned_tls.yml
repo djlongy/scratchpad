@@ -1,0 +1,109 @@
+---
+# Generate ONE shared self-signed CA + server cert covering every host
+# in the `vault` group, ship to /etc/vault.d/certs/, install CA into
+# host trust store. Single shared cert is intentional — every retry_join
+# block points at the same `leader_tls_servername`, so each peer must
+# serve a cert valid for that name.
+#
+# Replace this with a real CA (Let's Encrypt, internal PKI) before prod.
+
+- name: Build CA on the control node (run_once)
+  delegate_to: localhost
+  become: false
+  run_once: true
+  block:
+    - name: Ensure CA workdir exists
+      ansible.builtin.file:
+        path: "/tmp/vault-3node-ca"
+        state: directory
+        mode: "0700"
+
+    - name: Generate CA private key
+      community.crypto.openssl_privatekey:
+        path: "/tmp/vault-3node-ca/ca.key"
+        size: 4096
+        type: RSA
+
+    - name: Generate CA CSR
+      community.crypto.openssl_csr:
+        path: "/tmp/vault-3node-ca/ca.csr"
+        privatekey_path: "/tmp/vault-3node-ca/ca.key"
+        common_name: "vault-cluster CA"
+        basic_constraints: ["CA:TRUE"]
+        basic_constraints_critical: true
+        key_usage: [cRLSign, keyCertSign]
+        key_usage_critical: true
+
+    - name: Self-sign CA certificate
+      community.crypto.x509_certificate:
+        path: "/tmp/vault-3node-ca/ca.crt"
+        privatekey_path: "/tmp/vault-3node-ca/ca.key"
+        csr_path: "/tmp/vault-3node-ca/ca.csr"
+        provider: selfsigned
+        selfsigned_not_after: "+3650d"
+
+    - name: Generate shared server private key
+      community.crypto.openssl_privatekey:
+        path: "/tmp/vault-3node-ca/server.key"
+        size: 4096
+        type: RSA
+
+    - name: Generate shared server CSR (SANs cover every cluster node)
+      community.crypto.openssl_csr:
+        path: "/tmp/vault-3node-ca/server.csr"
+        privatekey_path: "/tmp/vault-3node-ca/server.key"
+        common_name: "{{ vault_domain }}"
+        subject_alt_name: >-
+          {{ ['DNS:' ~ vault_domain] +
+             (groups['vault'] | map('regex_replace', '^', 'DNS:') | list) +
+             (groups['vault'] | map('extract', hostvars, 'ansible_host') | map('regex_replace', '^', 'IP:') | list) +
+             ['IP:127.0.0.1'] }}
+        key_usage: [digitalSignature, keyEncipherment]
+        key_usage_critical: true
+        extended_key_usage: [serverAuth, clientAuth]
+
+    - name: Sign shared server cert with CA
+      community.crypto.x509_certificate:
+        path: "/tmp/vault-3node-ca/server.crt"
+        csr_path: "/tmp/vault-3node-ca/server.csr"
+        ownca_path: "/tmp/vault-3node-ca/ca.crt"
+        ownca_privatekey_path: "/tmp/vault-3node-ca/ca.key"
+        provider: ownca
+        ownca_not_after: "+365d"
+
+- name: Ship CA cert to node
+  ansible.builtin.copy:
+    src: "/tmp/vault-3node-ca/ca.crt"
+    dest: "{{ vault_certs_dir }}/ca.crt"
+    owner: root
+    group: vault
+    mode: "0644"
+
+- name: Ship shared server cert to node
+  ansible.builtin.copy:
+    src: "/tmp/vault-3node-ca/server.crt"
+    dest: "{{ vault_certs_dir }}/vault.crt"
+    owner: root
+    group: vault
+    mode: "0644"
+
+- name: Ship shared server key to node
+  ansible.builtin.copy:
+    src: "/tmp/vault-3node-ca/server.key"
+    dest: "{{ vault_certs_dir }}/vault.key"
+    owner: root
+    group: vault
+    mode: "0640"
+
+- name: Install CA into host trust store
+  ansible.builtin.copy:
+    src: "/tmp/vault-3node-ca/ca.crt"
+    dest: /etc/pki/ca-trust/source/anchors/vault-cluster-ca.crt
+    owner: root
+    group: root
+    mode: "0644"
+  register: _ca_install
+
+- name: Update CA trust store
+  ansible.builtin.command: update-ca-trust extract
+  when: _ca_install.changed

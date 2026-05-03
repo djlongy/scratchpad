@@ -1,0 +1,35 @@
+# ops-superadmin — break-glass policy (near-root)
+#
+# PURPOSE: Fix auth/policy/permission/path issues ONLY when ops-admin is
+# insufficient. Document every use.
+# WHO:     A dedicated `svc-superadmin` userpass account (credentials
+#          stored in your encrypted vault.yml; never share).
+# TTL:     1h token, 4h max, non-renewable — short-lived by design.
+
+# Full auth method management
+path "sys/auth"            { capabilities = ["read", "list"] }
+path "sys/auth/*"          { capabilities = ["create", "read", "update", "delete", "sudo", "list"] }
+
+# Full policy management
+path "sys/policies/acl"    { capabilities = ["read", "list"] }
+path "sys/policies/acl/*"  { capabilities = ["create", "read", "update", "delete", "list"] }
+
+# Full secrets engine management
+path "sys/mounts"          { capabilities = ["read", "list"] }
+path "sys/mounts/*"        { capabilities = ["create", "read", "update", "delete", "sudo", "list"] }
+
+# Identity (entities, groups)
+path "identity/*"          { capabilities = ["create", "read", "update", "delete", "list"] }
+
+# Full KV CRUD on every mount
+{% for kv in vault_kv_mounts %}
+path "{{ kv.mount }}/*"    { capabilities = ["create", "read", "update", "delete", "list"] }
+{% endfor %}
+
+# Sealing / raft / health
+path "sys/seal-status"     { capabilities = ["read"] }
+path "sys/health"          { capabilities = ["read"] }
+path "sys/storage/raft/*"  { capabilities = ["create", "read", "update", "delete", "list"] }
+
+# Capability checking
+path "sys/capabilities-self" { capabilities = ["update"] }

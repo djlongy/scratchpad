@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────
+# EXAMPLE — rename to vault.yml and `ansible-vault encrypt` it.
+# Variable names match what the role's tasks reference.
+# ─────────────────────────────────────────────────────────────────────
+
+# Userpass break-glass admin password.
+# Used by tasks/auth_userpass.yml to set the password on
+# auth/userpass/users/<vault_userpass_admin_user>. Pick a strong value
+# and keep it out of plaintext anywhere except this encrypted file.
+vault_userpass_admin_password: "REPLACE-ME-with-a-strong-passphrase"
+
+# LDAP bind credential for the Vault → FreeIPA bind. Use a service
+# account in production, not the FreeIPA admin.
+vault_ldap_bindpass: "REPLACE-ME-with-FreeIPA-bind-password"

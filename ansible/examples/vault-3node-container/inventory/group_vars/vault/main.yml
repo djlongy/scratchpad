@@ -1,0 +1,39 @@
+---
+# Non-secret tunables for the vault_container role. Pair with a
+# vault.yml in the same group_vars dir for credentials (encrypt with
+# `ansible-vault encrypt`).
+
+# Image + version
+vault_docker_image: "hashicorp/vault:1.19"
+vault_version: "1.19.5"
+
+# Network
+vault_domain: "vault.example.com"
+vault_api_port: 8200
+vault_cluster_port: 8201
+
+# Storage / data dir on host (ext4 on a dedicated disk recommended)
+vault_host_data_dir: /opt/vault
+
+# Lab-grade Shamir seal (single key, single share). Bump for prod.
+vault_init_key_shares: 1
+vault_init_key_threshold: 1
+
+# ── LDAP via FreeIPA ────────────────────────────────────────────────
+# Toggle to skip the LDAP setup task entirely.
+vault_ldap_enabled: false
+
+# Bind target. Use ldaps://<ip-or-host> when you have a real cert.
+vault_ldap_url: "ldaps://freeipa.example.com:636"
+vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"
+vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
+vault_ldap_userattr: uid
+vault_ldap_groupattr: cn
+vault_ldap_groupfilter: "(&(objectClass=groupOfNames)(member={{ '{{' }}.UserDN{{ '}}' }}))"
+vault_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=example,dc=com"
+vault_ldap_insecure_tls: true     # set false once you ship a CA file
+
+# FreeIPA group → Vault policies. Users in the LDAP group get the
+# listed policies attached to their token at login.
+vault_ldap_group_policies:
+  admins: [default, ops-admin]

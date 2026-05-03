@@ -1,0 +1,126 @@
+---
+# Packages, vault user, Docker, host CLI binary, container image.
+
+- name: Install prerequisites
+  ansible.builtin.dnf:
+    name:
+      - python3-pip
+      - unzip
+      - dnf-plugins-core
+    state: present
+
+- name: Add Docker CE repo
+  ansible.builtin.yum_repository:
+    name: docker-ce-stable
+    description: Docker CE Stable - $basearch
+    baseurl: "https://download.docker.com/linux/centos/$releasever/$basearch/stable"
+    gpgcheck: true
+    gpgkey: "https://download.docker.com/linux/centos/gpg"
+    enabled: true
+
+- name: Install Docker CE
+  ansible.builtin.dnf:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+
+- name: Enable + start Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Open firewall ports for Vault
+  ansible.posix.firewalld:
+    port: "{{ item }}/tcp"
+    permanent: true
+    state: enabled
+    immediate: true
+    zone: public
+  loop:
+    - "{{ vault_api_port }}"
+    - "{{ vault_cluster_port }}"
+
+- name: Ensure vault group exists
+  ansible.builtin.group:
+    name: vault
+    system: true
+
+- name: Ensure vault user exists
+  ansible.builtin.user:
+    name: vault
+    group: vault
+    system: true
+    shell: /sbin/nologin
+    home: "{{ vault_host_data_dir }}"
+    create_home: false
+
+- name: Create CLI version directory
+  ansible.builtin.file:
+    path: "{{ vault_cli_install_dir }}/{{ vault_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download + extract Vault CLI binary
+  ansible.builtin.unarchive:
+    src: "{{ vault_cli_zip_url }}"
+    dest: "{{ vault_cli_install_dir }}/{{ vault_version }}"
+    remote_src: true
+    creates: "{{ vault_cli_install_dir }}/{{ vault_version }}/vault"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Vault CLI binary
+  ansible.builtin.copy:
+    src: "{{ vault_cli_install_dir }}/{{ vault_version }}/vault"
+    dest: /usr/local/bin/vault
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+
+# Some AlmaLinux non-interactive shells don't have /usr/local/bin in
+# PATH; symlink so any future task using `vault` finds it.
+- name: Symlink /usr/bin/vault → /usr/local/bin/vault
+  ansible.builtin.file:
+    src: /usr/local/bin/vault
+    dest: /usr/bin/vault
+    state: link
+
+- name: Pull Vault container image
+  community.docker.docker_image:
+    name: "{{ vault_docker_image }}"
+    source: pull
+
+- name: Get vault user uid
+  ansible.builtin.command: id -u vault
+  register: _vault_user_uid
+  changed_when: false
+
+- name: Get vault group gid
+  ansible.builtin.command: getent group vault
+  register: _vault_group_entry
+  changed_when: false
+
+- name: Set Vault container user mapping
+  ansible.builtin.set_fact:
+    vault_container_user: "{{ _vault_user_uid.stdout }}:{{ _vault_group_entry.stdout.split(':')[2] }}"
+
+- name: Create Vault config + data dirs
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ vault_config_dir }}",  owner: root,  group: vault, mode: "0750" }
+    - { path: "{{ vault_certs_dir }}",   owner: root,  group: vault, mode: "0750" }
+    - { path: "{{ vault_host_data_dir }}", owner: vault, group: vault, mode: "0750" }
+    - { path: "{{ vault_keys_dir }}",    owner: vault, group: vault, mode: "0700" }

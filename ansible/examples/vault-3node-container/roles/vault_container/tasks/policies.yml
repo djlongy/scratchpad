@@ -1,0 +1,21 @@
+---
+# Apply Vault ACL policies from templates/policies/<name>.hcl.j2.
+#
+# Each entry in vault_policies is just a name + description; the role
+# expects a matching template under templates/policies/<name>.hcl.j2
+# that gets rendered (so the policy can reference KV mount names from
+# vault_kv_mounts).
+
+- name: Apply Vault ACL policies
+  community.hashi_vault.vault_write:
+    url: "https://{{ ansible_host }}:{{ vault_api_port }}"
+    token: "{{ _vault_root_token }}"
+    ca_cert: "{{ vault_certs_dir }}/ca.crt"
+    path: "sys/policies/acl/{{ item.name }}"
+    data:
+      policy: "{{ lookup('template', 'policies/' + item.name + '.hcl.j2') }}"
+  loop: "{{ vault_policies }}"
+  loop_control:
+    label: "{{ item.name }} — {{ item.description | default('') }}"
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true

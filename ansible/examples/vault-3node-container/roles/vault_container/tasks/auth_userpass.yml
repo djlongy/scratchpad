@@ -1,0 +1,42 @@
+---
+# Enable userpass auth + create the operator user.
+# Used as a fallback / break-glass when LDAP / OIDC is unavailable.
+#
+# Inputs:
+#   vault_userpass_admin_user      — username (e.g. svc-superadmin)
+#   vault_userpass_admin_password  — encrypted in vault.yml
+#   vault_userpass_admin_policies  — list of policy names
+
+- name: Enable userpass auth method
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_TOKEN={{ _vault_root_token }}
+      vault auth enable userpass || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  register: _userpass_enable
+  changed_when: "'Enabled userpass' in _userpass_enable.stdout"
+  no_log: true
+
+- name: Create / update userpass admin
+  ansible.builtin.shell:
+    cmd: >-
+      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_TOKEN={{ _vault_root_token }}
+      vault write auth/userpass/users/{{ vault_userpass_admin_user }}
+        password={{ vault_userpass_admin_password | quote }}
+        token_policies={{ vault_userpass_admin_policies | join(',') }}
+        token_ttl={{ vault_userpass_admin_ttl | default('1h') }}
+        token_max_ttl={{ vault_userpass_admin_max_ttl | default('4h') }}
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['vault_leader'][0] }}"
+  run_once: true
+  changed_when: true
+  no_log: true
+  when:
+    - vault_userpass_admin_user | length > 0
+    - vault_userpass_admin_password | length > 0
