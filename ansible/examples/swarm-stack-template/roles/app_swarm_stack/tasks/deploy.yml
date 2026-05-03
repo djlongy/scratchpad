@@ -1,0 +1,41 @@
+---
+# Render the caller's stack template (with swarm_stack_config_names /
+# _secret_names / _secret_values resolved) and deploy via
+# community.docker.docker_stack.
+
+- name: Ensure stack staging dir exists
+  ansible.builtin.file:
+    path: "{{ swarm_stack_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render stack file
+  ansible.builtin.template:
+    src: "{{ swarm_stack_template }}"
+    dest: "{{ swarm_stack_dir }}/stack.yml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Deploy stack
+  community.docker.docker_stack:
+    name: "{{ swarm_stack_name }}"
+    state: present
+    compose:
+      - "{{ swarm_stack_dir }}/stack.yml"
+    resolve_image: always
+    with_registry_auth: false
+    prune: false
+  register: _swst_deploy
+
+- name: List stack tasks
+  community.docker.docker_stack_task_info:
+    name: "{{ swarm_stack_name }}"
+  register: _swst_tasks
+  changed_when: false
+
+- name: Stack summary
+  ansible.builtin.debug:
+    msg: "{{ swarm_stack_name }}: {{ _swst_tasks.tasks | default([]) | length }} task(s)"

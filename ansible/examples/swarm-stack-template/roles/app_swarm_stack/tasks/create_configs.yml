@@ -1,0 +1,53 @@
+---
+# Render each config template to disk on the manager (template module
+# always produces a string file — avoids the lookup('template') JSON
+# auto-parse that turns a JSON file into a Python dict repr), then
+# slurp + b64-pass to community.docker.docker_config.
+
+- name: Ensure config staging dir exists
+  ansible.builtin.file:
+    path: "{{ swarm_stack_dir }}/configs"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render config templates to disk
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ swarm_stack_dir }}/configs/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0640"
+  loop: "{{ swarm_stack_configs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Slurp rendered config content
+  ansible.builtin.slurp:
+    src: "{{ swarm_stack_dir }}/configs/{{ item.name }}"
+  loop: "{{ swarm_stack_configs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _swst_config_slurps
+
+- name: Create docker configs (rolling versions)
+  community.docker.docker_config:
+    name: "{{ item.0.name }}"
+    data: "{{ item.1.content }}"
+    data_is_b64: true
+    rolling_versions: true
+    state: present
+    labels:
+      app_swarm_stack: "{{ swarm_stack_name }}"
+      app_swarm_stack_role: "{{ item.0.name }}"
+  loop: "{{ swarm_stack_configs | zip(_swst_config_slurps.results) | list }}"
+  loop_control:
+    label: "{{ item.0.name }}"
+  register: _swst_config_results
+
+- name: Build resolved config-name registry
+  ansible.builtin.set_fact:
+    swarm_stack_config_names: >-
+      {{ dict(swarm_stack_configs | map(attribute='name')
+              | zip(_swst_config_results.results | map(attribute='config_name'))) }}

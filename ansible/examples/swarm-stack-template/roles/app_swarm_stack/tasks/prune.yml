@@ -1,0 +1,45 @@
+---
+# Drop labeled configs/secrets that aren't in the current resolved-name
+# registries. community.docker.docker_host_info doesn't expose
+# configs/secrets filters in 3.x, so we list via docker CLI then call
+# the modules with state: absent (which handles the in-use case).
+
+- name: List existing configs for this stack
+  ansible.builtin.command:
+    cmd: "docker config ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }}"
+  register: _swst_configs_existing
+  changed_when: false
+
+- name: List existing secrets for this stack
+  ansible.builtin.command:
+    cmd: "docker secret ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }}"
+  register: _swst_secrets_existing
+  changed_when: false
+
+- name: Remove obsolete configs (skip in-use)
+  community.docker.docker_config:
+    name: "{{ item }}"
+    state: absent
+    force: true
+  loop: "{{ _swst_configs_existing.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: item not in (swarm_stack_config_names.values() | list)
+  register: _swst_config_rm
+  failed_when:
+    - _swst_config_rm is failed
+    - "'is in use by the following service' not in (_swst_config_rm.msg | default(''))"
+
+- name: Remove obsolete secrets (skip in-use)
+  community.docker.docker_secret:
+    name: "{{ item }}"
+    state: absent
+    force: true
+  loop: "{{ _swst_secrets_existing.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: item not in (swarm_stack_secret_names.values() | list)
+  register: _swst_secret_rm
+  failed_when:
+    - _swst_secret_rm is failed
+    - "'is in use by the following service' not in (_swst_secret_rm.msg | default(''))"

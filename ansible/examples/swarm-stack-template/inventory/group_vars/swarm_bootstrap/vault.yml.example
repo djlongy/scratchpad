@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────────────────────────────────
+# EXAMPLE — rename to vault.yml and encrypt with `ansible-vault encrypt`.
+# Variable names here match what app_mattermost_swarm/tasks/main.yml
+# references via `var:`. Generate strong values yourself (see notes).
+# ─────────────────────────────────────────────────────────────────────────
+
+# Postgres password — any reasonable strong string.
+vault_mm_pg_password: "REPLACE-ME-with-a-strong-passphrase"
+
+# Mattermost AtRestEncryptKey — MUST be ≥ 32 characters. Once set, do
+# not rotate without re-encrypting existing data at rest.
+vault_mm_at_rest_key: "REPLACE-ME-with-32+chars-passphrase-for-data-encryption"
+
+# Mattermost PublicLinkSalt — MUST be ≥ 32 characters. Rotating
+# invalidates any outstanding public file-share links.
+vault_mm_public_link_salt: "REPLACE-ME-with-32+chars-passphrase-for-public-link-salt"
+
+# Initial admin password — used by tooling (mmctl) to seed the first
+# admin account. Mattermost itself doesn't read this; you'll inject it
+# manually when bootstrapping the admin user.
+vault_mm_admin_password: "REPLACE-ME-with-a-strong-passphrase"
+
+# After populating, encrypt the file:
+#   ansible-vault encrypt inventory/group_vars/swarm_bootstrap/vault.yml

@@ -1,0 +1,50 @@
+---
+# Defaults for app_mattermost_swarm — thin wrapper over app_swarm_stack.
+# Override any of these via inventory group_vars/host_vars.
+
+mattermost_stack_name: mattermost
+mattermost_stack_dir: /opt/swarm-stacks/mattermost
+
+# NFS backend.
+#   _host:   inventory hostname of the NFS server (used for
+#            delegate_to mkdir on subpath ensure)
+#   _server: address the swarm workers use to mount the share —
+#            typically an IP, since DNS may not resolve from inside
+#            overlay-attached containers.
+#   _base:   export root on that host.
+mattermost_nfs_host: ""
+mattermost_nfs_server: ""
+mattermost_nfs_base: /srv/nfs
+
+# Postgres image runs as uid/gid 999 by default (alpine variant), so
+# that's what owns mm_pgdata. Mattermost team-edition runs as uid 2000.
+mattermost_pgdata_subpath: mattermost-postgres
+mattermost_data_subpath: mattermost-data
+mattermost_pg_uid: 999
+mattermost_pg_gid: 999
+mattermost_app_uid: 2000
+mattermost_app_gid: 2000
+
+# Vault path that backs the docker secrets. The role auto-generates any
+# missing fields on first run and writes them here. Override per-env.
+mattermost_vault_path: "kv-<env>/apps/mattermost/runtime"
+
+# Postgres connection
+mattermost_pg_db: mattermost
+mattermost_pg_user: mmuser
+
+# Mattermost app
+mattermost_image: "mattermost/mattermost-team-edition:9.11"
+mattermost_replicas: 3
+mattermost_max_per_node: 1
+mattermost_published_port: 8065
+mattermost_site_url: "https://mattermost.example.com"
+mattermost_timezone: "UTC"
+
+# Postgres can't safely run multi-replica on shared NFS — pin to a
+# single worker node. Empty = no pin (assumes external HA postgres).
+mattermost_pg_pinned_node: ""
+
+# Worker placement constraint. Empty list = any worker.
+mattermost_app_placement_constraints:
+  - "node.role == worker"

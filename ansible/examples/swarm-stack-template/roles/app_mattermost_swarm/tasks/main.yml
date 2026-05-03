@@ -1,0 +1,68 @@
+---
+# Thin wrapper over app_swarm_stack. Captures this role's path up front
+# (role_path inside the include_role vars block lazily resolves to the
+# *included* role's path), then hands a complete swarm_stack_* spec to
+# the generic role.
+#
+# Secret values are read from Ansible variables defined in your
+# ansible-vault-encrypted YAML file (e.g. group_vars/swarm/vault.yml):
+#
+#   ---
+#   $ANSIBLE_VAULT;1.1;AES256
+#   <encrypted blob>
+#
+#   # Decrypted contents:
+#   vault_mm_pg_password:        "..."
+#   vault_mm_at_rest_key:        "..."             # >= 32 chars
+#   vault_mm_public_link_salt:   "..."             # >= 32 chars
+#   vault_mm_admin_password:     "..."
+
+- name: Capture wrapper role path
+  ansible.builtin.set_fact:
+    _mm_role_path: "{{ role_path }}"
+
+- name: Deploy mattermost via app_swarm_stack
+  ansible.builtin.include_role:
+    name: app_swarm_stack
+  vars:
+    swarm_stack_name: "{{ mattermost_stack_name }}"
+    swarm_stack_dir: "{{ mattermost_stack_dir }}"
+    swarm_stack_template: "{{ _mm_role_path }}/templates/stack.yml.j2"
+
+    swarm_stack_nfs:
+      host: "{{ mattermost_nfs_host }}"
+      server: "{{ mattermost_nfs_server }}"
+      base: "{{ mattermost_nfs_base }}"
+
+    swarm_stack_volumes:
+      - name: mm_pgdata
+        subpath: "{{ mattermost_pgdata_subpath }}"
+        uid: "{{ mattermost_pg_uid }}"
+        gid: "{{ mattermost_pg_gid }}"
+        mode: "0700"
+      - name: mm_app_data
+        subpath: "{{ mattermost_data_subpath }}"
+        uid: "{{ mattermost_app_uid }}"
+        gid: "{{ mattermost_app_gid }}"
+        mode: "0750"
+
+    # Mattermost mutates config.json at runtime (writes version stamp on
+    # first boot) so it can't tolerate a read-only docker-config mount.
+    # Skip the config object for mm-app and drive everything via MM_*
+    # env vars in the stack template. The generic role's config feature
+    # is still in place for apps that DO tolerate read-only configs.
+    swarm_stack_configs: []
+
+    # Postgres reads its password via the *_FILE pattern (native).
+    # The other secrets are templated into MM_* env vars in stack.yml.j2
+    # via swarm_stack_secret_values. Each `var` references a variable
+    # defined in your ansible-vault-encrypted YAML.
+    swarm_stack_secrets:
+      - name: mm_pg_password
+        var: vault_mm_pg_password
+      - name: mm_at_rest_key
+        var: vault_mm_at_rest_key
+      - name: mm_public_link_salt
+        var: vault_mm_public_link_salt
+      - name: mm_admin_password
+        var: vault_mm_admin_password

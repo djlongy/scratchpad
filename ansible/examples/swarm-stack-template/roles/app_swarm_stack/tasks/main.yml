@@ -1,0 +1,45 @@
+---
+# Orchestrator. Each step is in its own file and tagged so callers can
+# target a single phase from the wrapper play.
+
+- name: Validate caller inputs
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_name | length > 0
+      - swarm_stack_template | length > 0
+    fail_msg: >-
+      app_swarm_stack requires swarm_stack_name and swarm_stack_template.
+  tags: [always]
+
+- name: Initialise resolved-name registers
+  ansible.builtin.set_fact:
+    swarm_stack_config_names: {}
+    swarm_stack_secret_names: {}
+    swarm_stack_secret_values: {}
+  tags: [always]
+
+- name: Ensure NFS subpaths
+  ansible.builtin.import_tasks: ensure_nfs_subpaths.yml
+  when: swarm_stack_volumes | length > 0
+  tags: [swarm_stack, nfs]
+
+# Secrets must be created BEFORE configs so config templates can
+# reference swarm_stack_secret_values to bake values into rendered
+# config files.
+- name: Create docker secrets
+  ansible.builtin.import_tasks: create_secrets.yml
+  when: swarm_stack_secrets | length > 0
+  tags: [swarm_stack, secrets]
+
+- name: Create docker configs
+  ansible.builtin.import_tasks: create_configs.yml
+  when: swarm_stack_configs | length > 0
+  tags: [swarm_stack, configs]
+
+- name: Deploy stack
+  ansible.builtin.import_tasks: deploy.yml
+  tags: [swarm_stack, deploy]
+
+- name: Prune old hashed objects
+  ansible.builtin.import_tasks: prune.yml
+  tags: [swarm_stack, prune]

@@ -1,0 +1,17 @@
+---
+# Deploy Mattermost (postgres + app) to an existing Docker Swarm.
+#
+# Prereq: docker swarm already initialized; NFS server reachable; an
+# encrypted vault file in inventory/group_vars/swarm_bootstrap/vault.yml
+# (see vault.yml.example for the variable names this expects).
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/mattermost_swarm.yml \
+#     --ask-vault-pass
+
+- name: Deploy Mattermost stack to Docker Swarm
+  hosts: swarm_bootstrap
+  gather_facts: false
+  become: true
+  roles:
+    - role: app_mattermost_swarm
