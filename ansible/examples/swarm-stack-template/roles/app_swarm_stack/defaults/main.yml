@@ -1,0 +1,65 @@
+---
+# app_swarm_stack — generic Docker Swarm stack deployer.
+#
+# Caller supplies the stack template, NFS volume layout, docker-config
+# templates, and a list of secrets (referencing variables loaded from
+# an ansible-vault-encrypted YAML file). This role does:
+#   1. mkdir each NFS subpath on the NFS server (delegated)
+#   2. docker secret create  — rolling versions (_v1, _v2, ...) so a
+#      changed value rolls the service. Values come from Ansible
+#      variables (typically loaded from group_vars/.../vault.yml)
+#   3. docker config create  — rolling versions; rendered from a Jinja
+#      template (which can reference swarm_stack_secret_values to bake
+#      a credential into a config file when the app doesn't read
+#      /run/secrets directly)
+#   4. docker stack deploy   — passes resolved names + values to the
+#      caller's stack.yml.j2
+#   5. prune obsolete labeled objects (skip in-use)
+#
+# This template assumes secrets live in an ansible-vault-encrypted YAML
+# file (group_vars/<group>/vault.yml or similar). When you adopt
+# HashiCorp Vault, swap the secret read step in create_secrets.yml.
+
+# Stack identity
+swarm_stack_name: ""
+swarm_stack_template: ""        # absolute path to caller's stack.yml.j2
+swarm_stack_dir: "/opt/swarm-stacks/{{ swarm_stack_name }}"
+
+# NFS shared backend.
+#   host:   inventory_hostname of the NFS server (used for delegate_to
+#           mkdir on each volume's subpath)
+#   server: IP/host the swarm workers will mount the share from. Use an
+#           IP — overlay-attached containers may not resolve names.
+#   base:   export root on the NFS host (e.g. /srv/nfs)
+swarm_stack_nfs:
+  host: ""
+  server: ""
+  base: /srv/nfs
+
+# Volume list — each entry creates a directory under nfs.base/<subpath>.
+# Owner/mode let you match the container's runtime UID (e.g. postgres
+# wants 999:999, mattermost wants 2000:2000).
+#   - name:    logical name used inside the stack template
+#     subpath: directory under nfs.base
+#     uid:     numeric uid for chown   (default 0)
+#     gid:     numeric gid for chown   (default 0)
+#     mode:    chmod string            (default "0755")
+swarm_stack_volumes: []
+
+# Docker config objects. Rendered from a Jinja template at deploy time,
+# then created via community.docker.docker_config with rolling_versions.
+# Caller's stack template references the resolved versioned name via
+# swarm_stack_config_names[name].
+#   - name: logical key
+#     src:  absolute path to the template file
+swarm_stack_configs: []
+
+# Docker secret objects. Each entry references an Ansible variable that
+# holds the secret value (typically defined in an ansible-vault-encrypted
+# group_vars file). Resolved versioned name lands in
+# swarm_stack_secret_names[name]; raw value lands in
+# swarm_stack_secret_values[name] for templates that bake a credential
+# into a config file (with no_log on the producing task).
+#   - name: logical key (used in the stack template)
+#     var:  Ansible variable name to read the value from
+swarm_stack_secrets: []

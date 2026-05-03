@@ -1,0 +1,18 @@
+---
+# Variables consumed by the wrapper roles (run against a single manager).
+# This is where you tune the stack to your environment without editing
+# the roles themselves.
+
+# ── Shared NFS backend (server provisioned out-of-band) ────────────────────
+swarm_nfs_host: "swarm-nfs-01"        # inventory_hostname for delegate_to
+swarm_nfs_server: "10.0.0.40"          # IP for the NFS mount option
+swarm_nfs_base: "/srv/nfs"
+
+# ── Mattermost overrides (consumed by app_mattermost_swarm) ────────────────
+mattermost_nfs_host: "{{ swarm_nfs_host }}"
+mattermost_nfs_server: "{{ swarm_nfs_server }}"
+mattermost_nfs_base: "{{ swarm_nfs_base }}"
+mattermost_site_url: "https://mattermost.example.com"
+mattermost_pg_pinned_node: "swarm-wkr-01"
+mattermost_replicas: 3
+mattermost_timezone: "UTC"

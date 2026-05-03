@@ -1,0 +1,16 @@
+---
+# Create each volume's subpath on the NFS server with caller-specified
+# ownership/mode so the container's runtime UID can write to it.
+
+- name: Ensure NFS subpaths exist
+  ansible.builtin.file:
+    path: "{{ swarm_stack_nfs.base }}/{{ item.subpath }}"
+    state: directory
+    owner: "{{ item.uid | default(0) }}"
+    group: "{{ item.gid | default(0) }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop: "{{ swarm_stack_volumes }}"
+  loop_control:
+    label: "{{ item.subpath }}"
+  delegate_to: "{{ swarm_stack_nfs.host }}"
+  become: true
