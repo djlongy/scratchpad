@@ -1,0 +1,92 @@
+---
+# Generate an xkcd-style passphrase with a random digit injected and a
+# random special character as the word delimiter. The result is exposed
+# as the fact `passphrase`.
+#
+# Usage: include this task file from any role/play. Wrap the include
+# in a block with `delegate_to: localhost` if the calling play targets
+# a remote host — the xkcdpass tool needs to run on the control node
+# (and remote hosts may not have it installed). Do NOT use
+# `delegate_facts: true` — we want the resulting `passphrase` fact to
+# land on the calling host's vars, not on localhost.
+#
+# Example:
+#   - name: Make a passphrase
+#     block:
+#       - ansible.builtin.include_tasks: generate_passphrase.yml
+#     delegate_to: localhost
+#     become: false
+#
+#   - name: Use it
+#     ansible.builtin.debug:
+#       msg: "Generated: {{ passphrase }}"
+
+- name: Ensure xkcdpass is installed on the control node
+  block:
+    - name: Check if xkcdpass is already installed
+      ansible.builtin.command: /usr/bin/which xkcdpass
+      register: xkcdpass_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install xkcdpass via pip if not already installed
+      ansible.builtin.pip:
+        name: xkcdpass
+        executable: pip
+      when: xkcdpass_check.rc != 0
+  delegate_to: localhost
+  become: false
+
+- name: Set minimum length + special-char allow/deny lists
+  ansible.builtin.set_fact:
+    minimum_length: 29
+    special_chars: ['^', '-', '=', '+', '_']
+    special_chars_exclude: ['!', '"', '#', '$', '%', '&', '(', ')', '*', ',', '.', '/', ':', ';', '?', '@', '[', ']', '{', '}']
+  no_log: true
+
+- name: Build allowed special-char list
+  ansible.builtin.set_fact:
+    allowed_special_chars: "{{ special_chars | difference(special_chars_exclude) }}"
+  no_log: true
+
+- name: Pick a random special character to use as the word delimiter
+  ansible.builtin.set_fact:
+    special_delimiter: "{{ allowed_special_chars | random }}"
+  no_log: true
+
+- name: Generate the base passphrase (retry until it meets minimum length)
+  ansible.builtin.set_fact:
+    generated_password: "{{ lookup('community.general.random_words', numwords=4, delimiter=special_delimiter, case='capitalize', min_length=7) }}"
+  until: generated_password | length >= minimum_length
+  retries: 10000
+  delay: 0
+  no_log: true
+
+- name: Split the generated passphrase into its component words
+  ansible.builtin.set_fact:
+    password_parts: "{{ generated_password.split(special_delimiter) }}"
+  no_log: true
+
+- name: Pick a random word index + a random digit to inject
+  ansible.builtin.set_fact:
+    random_index: "{{ password_parts | length | random }}"
+    random_number: "{{ 9 | random }}"
+  no_log: true
+
+- name: Rebuild the passphrase with the digit suffixed onto a random word
+  ansible.builtin.set_fact:
+    passphrase: >-
+      {{
+        (
+          password_parts[:random_index | int]
+          + [ (password_parts[random_index | int] ~ (random_number | string)) ]
+          + password_parts[(random_index | int + 1):]
+        )
+        | join(special_delimiter)
+      }}
+  no_log: true
+
+- name: Show passphrase length only (value stays hidden)
+  ansible.builtin.debug:
+    msg: "Passphrase length is {{ passphrase | length }}"
+    verbosity: 1
