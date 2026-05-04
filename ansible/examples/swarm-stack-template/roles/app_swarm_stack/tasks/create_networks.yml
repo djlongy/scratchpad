@@ -1,0 +1,21 @@
+---
+# Pre-create overlay networks (attachable + encrypted) so the stack
+# template can reference them as external: true. Encryption (IPSec) is
+# opt-in for swarm overlays — without `--opt encrypted` the east-west
+# VXLAN traffic between swarm hosts is in the clear.
+#
+# Runs on the swarm manager — overlay networks are swarm-wide objects
+# in raft, so creating once on a manager is sufficient.
+
+- name: Create overlay networks for the stack
+  community.docker.docker_network:
+    name: "{{ item.name }}"
+    driver: overlay
+    attachable: "{{ item.attachable | default(true) }}"
+    driver_options:
+      encrypted: "{{ (item.encrypted | default(true)) | string | lower }}"
+    labels:
+      app_swarm_stack: "{{ swarm_stack_name }}"
+  loop: "{{ swarm_stack_networks }}"
+  loop_control:
+    label: "{{ item.name }} (encrypted={{ item.encrypted | default(true) }})"

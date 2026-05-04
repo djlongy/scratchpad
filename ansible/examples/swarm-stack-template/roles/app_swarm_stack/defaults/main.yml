@@ -36,15 +36,39 @@ swarm_stack_nfs:
   server: ""
   base: /srv/nfs
 
-# Volume list — each entry creates a directory under nfs.base/<subpath>.
-# Owner/mode let you match the container's runtime UID (e.g. postgres
-# wants 999:999, mattermost wants 2000:2000).
-#   - name:    logical name used inside the stack template
+# Volume list — each entry both:
+#   1. creates a directory under nfs.base/<subpath> on the NFS server, and
+#   2. pre-creates a `local`-driver NFS-backed docker volume on every
+#      host in `swarm_stack_volume_hosts` so when swarm schedules a
+#      service that references the volume `external: true`, every
+#      candidate worker already has the volume present.
+#   - name:    docker volume name (referenced as external: true in stack)
 #     subpath: directory under nfs.base
 #     uid:     numeric uid for chown   (default 0)
 #     gid:     numeric gid for chown   (default 0)
 #     mode:    chmod string            (default "0755")
 swarm_stack_volumes: []
+
+# Hosts on which the NFS-backed volumes get pre-created. Defaults to
+# every swarm worker (where stateful services typically run via
+# node.role == worker constraints).
+swarm_stack_volume_hosts: "{{ groups['swarm_workers'] | default(groups['swarm_cluster'] | default([])) }}"
+
+# Overlay networks. Pre-created via docker_network with
+# `attachable: true` and `encrypted: true` (IPSec) before the stack
+# deploys. Stack template references each as external: true.
+#
+# NOTE: encrypted overlays wrap VXLAN in ESP (protocol 50) — every
+# swarm host's firewalld must allow ESP + UDP 4500 (NAT-T) or
+# east-west traffic on the encrypted overlay times out at the TCP
+# layer. Add to your swarm-baseline role:
+#   firewall-cmd --permanent --add-protocol=esp
+#   firewall-cmd --permanent --add-port=4500/udp
+#
+#   - name:       docker network name
+#     attachable: bool, default true
+#     encrypted:  bool, default true
+swarm_stack_networks: []
 
 # Docker config objects. Rendered from a Jinja template at deploy time,
 # then created via community.docker.docker_config with rolling_versions.

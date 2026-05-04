@@ -34,6 +34,11 @@
       server: "{{ mattermost_nfs_server }}"
       base: "{{ mattermost_nfs_base }}"
 
+    swarm_stack_networks:
+      - name: mm_overlay
+        attachable: true
+        encrypted: true
+
     swarm_stack_volumes:
       - name: mm_pgdata
         subpath: "{{ mattermost_pgdata_subpath }}"
