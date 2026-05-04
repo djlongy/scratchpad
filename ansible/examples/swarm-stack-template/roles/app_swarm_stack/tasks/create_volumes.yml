@@ -1,0 +1,24 @@
+---
+# Pre-create NFS-backed `local`-driver docker volumes on every host in
+# swarm_stack_volume_hosts so the stack template can reference them as
+# external: true. Local-driver volumes aren't replicated by swarm —
+# each node creates its own mount handle — so they have to exist on
+# every node where a service might be scheduled.
+#
+# Same name + same NFS driver_opts means containers attach to the same
+# NFS export everywhere; data is preserved across stack rm/redeploy.
+
+- name: Pre-create NFS-backed docker volumes on every candidate host
+  community.docker.docker_volume:
+    name: "{{ item.0.name }}"
+    driver: local
+    driver_options:
+      type: nfs
+      o: "addr={{ swarm_stack_nfs.server }},rw,nfsvers=4.1,hard"
+      device: ":{{ swarm_stack_nfs.base }}/{{ item.0.subpath }}"
+    labels:
+      app_swarm_stack: "{{ swarm_stack_name }}"
+  delegate_to: "{{ item.1 }}"
+  loop: "{{ swarm_stack_volumes | product(swarm_stack_volume_hosts) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} on {{ item.1 }}"

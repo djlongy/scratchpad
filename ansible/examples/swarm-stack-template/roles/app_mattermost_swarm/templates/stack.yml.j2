@@ -17,24 +17,23 @@
 
 version: "3.9"
 
+{# Networks and NFS-backed volumes are pre-created by app_swarm_stack
+   (encrypted attachable overlay via docker_network; local-driver NFS
+   volumes pre-mounted on every candidate worker via docker_volume +
+   delegate_to). Stack just references them as external: true so swarm
+   doesn't try to recreate or rebind them at deploy time. #}
 networks:
   mm_overlay:
-    driver: overlay
-    attachable: true
+    name: mm_overlay
+    external: true
 
 volumes:
   mm_pgdata:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: "addr={{ swarm_stack_nfs.server }},rw,nfsvers=4.1,hard"
-      device: ":{{ swarm_stack_nfs.base }}/{{ mattermost_pgdata_subpath }}"
+    name: mm_pgdata
+    external: true
   mm_app_data:
-    driver: local
-    driver_opts:
-      type: nfs
-      o: "addr={{ swarm_stack_nfs.server }},rw,nfsvers=4.1,hard"
-      device: ":{{ swarm_stack_nfs.base }}/{{ mattermost_data_subpath }}"
+    name: mm_app_data
+    external: true
 
 secrets:
   mm_pg_password:

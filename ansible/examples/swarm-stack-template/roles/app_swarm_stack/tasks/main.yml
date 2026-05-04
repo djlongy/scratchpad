@@ -36,6 +36,16 @@
   when: swarm_stack_configs | length > 0
   tags: [swarm_stack, configs]
 
+- name: Pre-create overlay networks (attachable + encrypted)
+  ansible.builtin.import_tasks: create_networks.yml
+  when: swarm_stack_networks | length > 0
+  tags: [swarm_stack, networks]
+
+- name: Pre-create NFS-backed volumes on every candidate host
+  ansible.builtin.import_tasks: create_volumes.yml
+  when: swarm_stack_volumes | length > 0
+  tags: [swarm_stack, volumes]
+
 - name: Deploy stack
   ansible.builtin.import_tasks: deploy.yml
   tags: [swarm_stack, deploy]
