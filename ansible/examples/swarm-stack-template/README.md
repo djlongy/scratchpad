@@ -9,8 +9,8 @@ Two roles:
 
 - **`app_swarm_stack`** — the generic role. Owns the mechanics:
   NFS subpath ensure (delegated to the NFS host), docker secret/config
-  create with `rolling_versions: true`, `docker stack deploy`, and
-  prune of obsolete labeled objects.
+  create with `rolling_versions: true`, deploy (compose-file or
+  per-service module), and prune of obsolete labeled objects.
 
 - **`app_mattermost_swarm`** — a thin wrapper. Calls `app_swarm_stack`
   with mattermost-specific volumes, secrets, and a stack template.
@@ -49,6 +49,29 @@ swarm-stack-template/
      `swarm_stack_config_names`, `_secret_names`, and `_secret_values`.
    - `docker stack deploy` via `community.docker.docker_stack`.
    - Prunes labeled objects no longer referenced (skips in-use).
+
+## Deploy modes
+
+The role supports two deploy backends, selected via
+`swarm_stack_deploy_mode`:
+
+- **`stack`** (default) — caller supplies a `stack.yml.j2` Jinja
+  template. The role renders it, drops it on the manager, and applies
+  via `community.docker.docker_stack`. Best when you want the full
+  Compose schema or already have a stack file.
+
+- **`services`** — caller supplies `swarm_stack_services`, a list
+  where each entry is the kwargs dict for
+  `community.docker.docker_swarm_service`. The role iterates and
+  applies one service at a time. Best when you prefer Ansible-native
+  idempotency over a compose file, or want to keep service definitions
+  inline with role data.
+
+Either mode reuses the same secrets / configs / networks / volumes
+phases, so callers reference resolved names via
+`swarm_stack_secret_names[<key>]` and `swarm_stack_config_names[<key>]`
+in either case. Prune still runs in both modes (services get the
+`app_swarm_stack=<stack-name>` label automatically).
 
 ## Secret pattern
 

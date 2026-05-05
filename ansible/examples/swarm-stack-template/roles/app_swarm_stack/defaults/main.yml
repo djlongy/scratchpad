@@ -87,3 +87,34 @@ swarm_stack_configs: []
 #   - name: logical key (used in the stack template)
 #     var:  Ansible variable name to read the value from
 swarm_stack_secrets: []
+
+# Deploy mode.
+#   stack    — render swarm_stack_template and apply via
+#              community.docker.docker_stack (the original behaviour).
+#              Requires swarm_stack_template.
+#   services — iterate swarm_stack_services and apply each via
+#              community.docker.docker_swarm_service. No compose file
+#              is rendered. Requires swarm_stack_services.
+swarm_stack_deploy_mode: stack
+
+# Service definitions used when swarm_stack_deploy_mode == 'services'.
+# Each entry is a dict of kwargs for community.docker.docker_swarm_service.
+# Reference resolved secret/config names via swarm_stack_secret_names[<key>]
+# and swarm_stack_config_names[<key>]; reference plaintext secret values
+# (rare — apps that don't read /run/secrets/) via swarm_stack_secret_values[<key>].
+#
+# Example:
+#   - name: mm-app
+#     image: mattermost/mattermost-team-edition:7.10
+#     mode: replicated
+#     replicas: 1
+#     networks:
+#       - name: mm_overlay
+#     secrets:
+#       - secret_name: "{{ swarm_stack_secret_names['mm_pg_password'] }}"
+#         filename: /run/secrets/mm_pg_password
+#     env:
+#       MM_SQLSETTINGS_DRIVERNAME: postgres
+#     placement:
+#       constraints: ["node.role == worker"]
+swarm_stack_services: []

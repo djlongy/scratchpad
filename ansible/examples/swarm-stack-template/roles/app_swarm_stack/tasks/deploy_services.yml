@@ -1,0 +1,85 @@
+---
+# Per-service deploy mode. Iterates swarm_stack_services and calls
+# community.docker.docker_swarm_service for each. No compose file is
+# rendered — caller defines the full module kwargs per service.
+#
+# Resolved secret/config names land in swarm_stack_secret_names[<key>]
+# and swarm_stack_config_names[<key>] before this runs (those phases
+# happen in main.yml ahead of deploy). Caller references them inside
+# each service entry, e.g.:
+#
+#   secrets:
+#     - secret_name: "{{ swarm_stack_secret_names['mm_pg_password'] }}"
+#       filename: /run/secrets/mm_pg_password
+#
+# Each entry's `name` becomes the swarm service name. The role labels
+# the service with app_swarm_stack=<stack-name> for parity with the
+# stack-deploy mode (so prune still works).
+
+- name: Validate services list
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_services | length > 0
+      - swarm_stack_services | map(attribute='name') | list | length
+        == swarm_stack_services | length
+    fail_msg: >-
+      swarm_stack_deploy_mode=services requires swarm_stack_services
+      with at least one entry, and every entry must have `name`.
+
+- name: Deploy swarm services
+  community.docker.docker_swarm_service:
+    name: "{{ item.name }}"
+    state: "{{ item.state | default('present') }}"
+    image: "{{ item.image | default(omit) }}"
+    mode: "{{ item.mode | default(omit) }}"
+    replicas: "{{ item.replicas | default(omit) }}"
+    networks: "{{ item.networks | default(omit) }}"
+    secrets: "{{ item.secrets | default(omit) }}"
+    configs: "{{ item.configs | default(omit) }}"
+    env: "{{ item.env | default(omit) }}"
+    mounts: "{{ item.mounts | default(omit) }}"
+    publish: "{{ item.publish | default(omit) }}"
+    placement: "{{ item.placement | default(omit) }}"
+    resolve_image: "{{ item.resolve_image | default(omit) }}"
+    restart_config: "{{ item.restart_config | default(omit) }}"
+    update_config: "{{ item.update_config | default(omit) }}"
+    rollback_config: "{{ item.rollback_config | default(omit) }}"
+    resources: "{{ item.resources | default(omit) }}"
+    healthcheck: "{{ item.healthcheck | default(omit) }}"
+    logging: "{{ item.logging | default(omit) }}"
+    labels: >-
+      {{ (item.labels | default({}))
+         | combine({'app_swarm_stack': swarm_stack_name}) }}
+    container_labels: "{{ item.container_labels | default(omit) }}"
+    command: "{{ item.command | default(omit) }}"
+    args: "{{ item.args | default(omit) }}"
+    entrypoint: "{{ item.entrypoint | default(omit) }}"
+    hostname: "{{ item.hostname | default(omit) }}"
+    user: "{{ item.user | default(omit) }}"
+    groups: "{{ item.groups | default(omit) }}"
+    working_dir: "{{ item.working_dir | default(omit) }}"
+    read_only: "{{ item.read_only | default(omit) }}"
+    tty: "{{ item.tty | default(omit) }}"
+    init: "{{ item.init | default(omit) }}"
+    stop_grace_period: "{{ item.stop_grace_period | default(omit) }}"
+    stop_signal: "{{ item.stop_signal | default(omit) }}"
+    cap_add: "{{ item.cap_add | default(omit) }}"
+    cap_drop: "{{ item.cap_drop | default(omit) }}"
+    sysctls: "{{ item.sysctls | default(omit) }}"
+    dns: "{{ item.dns | default(omit) }}"
+    dns_search: "{{ item.dns_search | default(omit) }}"
+    dns_options: "{{ item.dns_options | default(omit) }}"
+    hosts: "{{ item.hosts | default(omit) }}"
+    force_update: "{{ item.force_update | default(omit) }}"
+  loop: "{{ swarm_stack_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _swst_service_results
+
+- name: Service summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ swarm_stack_name }}:
+      {{ _swst_service_results.results
+         | selectattr('changed', 'equalto', true) | list | length }} changed,
+      {{ _swst_service_results.results | length }} total
