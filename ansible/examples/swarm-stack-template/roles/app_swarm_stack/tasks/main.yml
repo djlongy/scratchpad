@@ -6,9 +6,16 @@
   ansible.builtin.assert:
     that:
       - swarm_stack_name | length > 0
-      - swarm_stack_template | length > 0
+      - swarm_stack_deploy_mode in ['stack', 'services']
+      - (swarm_stack_deploy_mode == 'stack')
+        | ternary(swarm_stack_template | length > 0, true)
+      - (swarm_stack_deploy_mode == 'services')
+        | ternary(swarm_stack_services | length > 0, true)
     fail_msg: >-
-      app_swarm_stack requires swarm_stack_name and swarm_stack_template.
+      app_swarm_stack requires swarm_stack_name and either
+      swarm_stack_template (deploy_mode=stack) or swarm_stack_services
+      (deploy_mode=services). swarm_stack_deploy_mode must be
+      'stack' or 'services'.
   tags: [always]
 
 - name: Initialise resolved-name registers
@@ -46,8 +53,14 @@
   when: swarm_stack_volumes | length > 0
   tags: [swarm_stack, volumes]
 
-- name: Deploy stack
+- name: Deploy stack (compose-file mode)
   ansible.builtin.import_tasks: deploy.yml
+  when: swarm_stack_deploy_mode == 'stack'
+  tags: [swarm_stack, deploy]
+
+- name: Deploy services (per-service module mode)
+  ansible.builtin.import_tasks: deploy_services.yml
+  when: swarm_stack_deploy_mode == 'services'
   tags: [swarm_stack, deploy]
 
 - name: Prune old hashed objects
