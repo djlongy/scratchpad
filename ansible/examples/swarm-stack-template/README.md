@@ -341,6 +341,27 @@ directory-data issue: the FreeIPA user has no `mail` attribute. Fix
 in FreeIPA (`ipa user-mod <uid> --email=<uid>@<domain>`), don't
 chase it in Mattermost config.
 
+### TLS verification against a self-signed CA
+
+`MM_LDAPSETTINGS_PUBLICCERTIFICATEFILE` (which the role wires up
+through the docker config we ship) is the path to the **mTLS client**
+cert Mattermost would present to an LDAP server that requires client
+auth — NOT a "trust this CA when verifying the server cert" override.
+Go's `crypto/tls` only consults the system CA pool for server
+verification, and the FIPS image's pool doesn't include your
+self-signed FreeIPA CA. There's no other `MM_LDAPSETTINGS_*` knob to
+override that — your two real options are:
+
+1. Rebuild `mm-app` with the FreeIPA CA dropped into `/etc/ssl/certs`
+   and `update-ca-certificates` run during build; OR
+2. Switch the FreeIPA LDAP service to a publicly-trusted cert (Let's
+   Encrypt, etc.).
+
+Until one of those lands, set
+`mattermost_ldap_skip_certificate_verification: true` in inventory.
+The CA cert is still shipped as a docker config so the future image
+rebuild can wire up trust without changing the role.
+
 ## Notes for porting
 
 This template was extracted from a working homelab deployment. The
