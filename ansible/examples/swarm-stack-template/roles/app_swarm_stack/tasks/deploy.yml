@@ -79,6 +79,12 @@
     update_config: "{{ item.get('update', omit) }}"
     healthcheck: "{{ item.healthcheck | default(omit) }}"
     limits: "{{ item.limits | default(omit) }}"
+    # Per-service logging beats stack-wide; omit if neither is set so
+    # docker keeps its daemon default (typically json-file). Shape is
+    # `{driver_name: <str>, options: <dict>}`. For syslog, set
+    # options.mode=non-blocking + a sensible max-buffer-size, otherwise
+    # an unreachable syslog endpoint can stall the container's stdio.
+    logging: "{{ item.logging | default(swarm_stack_logging | default(omit)) }}"
     env: >-
       {{ ((lookup('template', item.env_template) | from_yaml)
           if (item.env_template is defined and (item.env_template | length) > 0)

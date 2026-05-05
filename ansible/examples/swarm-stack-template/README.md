@@ -362,6 +362,57 @@ Until one of those lands, set
 The CA cert is still shipped as a docker config so the future image
 rebuild can wire up trust without changing the role.
 
+## Logging (optional)
+
+By default every service uses the docker daemon's default log driver
+(usually `json-file`). To ship container stdio to a remote syslog
+collector — your own rsyslog/syslog-ng box, a Splunk universal
+forwarder receiver, a SIEM, etc. — set `swarm_stack_logging` in
+inventory:
+
+```yaml
+# inventory/group_vars/swarm_bootstrap/main.yml
+swarm_stack_logging:
+  driver_name: syslog
+  options:
+    syslog-address: "tcp://syslog.example.com:514"
+    syslog-facility: "local0"
+    syslog-format: "rfc5424"
+    tag: "{% raw %}{{.Name}}/{{.ID}}{% endraw %}"
+    mode: "non-blocking"
+    max-buffer-size: "25m"
+```
+
+Every service in every wrapper that uses `app_swarm_stack` inherits
+this. Override per-service by adding a `logging:` field on a
+`swarm_stack_services` entry — same shape — which beats the
+stack-wide default. To restore the docker default for a single
+service while keeping a stack-wide setting, pass
+`logging: { driver_name: json-file, options: {} }` explicitly.
+
+### Don't omit `mode: non-blocking`
+
+In the **default blocking mode**, docker calls `write(2)` on the log
+driver's pipe and waits for it to return. If your syslog endpoint
+goes down or gets slow, the container's stdout fills, the write
+blocks, and your app stalls — sometimes invisibly, since it's
+happening in the runtime layer below your code. `non-blocking` mode
+buffers up to `max-buffer-size` in memory and drops overflow on the
+floor. Losing a few log lines under outage beats losing the service.
+
+The `tag: "{{.Name}}/{{.ID}}"` template is rendered by docker (NOT
+Ansible) at container-start time — that's what the `{% raw %}`
+escaping in the YAML is for, so Ansible passes the literal Go
+template string through.
+
+### Other drivers
+
+The role passes the dict straight to
+`community.docker.docker_swarm_service`, so any driver docker knows
+about works: `journald`, `gelf`, `fluentd`, `awslogs`, `splunk`,
+`gcplogs`, etc. The options dict's keys are exactly what
+`docker run --log-opt key=value` expects for that driver.
+
 ## Notes for porting
 
 This template was extracted from a working homelab deployment. The

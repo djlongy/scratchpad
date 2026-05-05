@@ -22,6 +22,27 @@ swarm_overlay_subnets:
   mattermost: "10.40.10.0/24"
   # next free: 10.40.11.0/24
 
+# ── Logging (optional) ────────────────────────────────────────────────────
+# Stack-wide log driver — every service in every wrapper inherits this
+# unless they set their own `logging:` field. Omit (leave commented)
+# to use the docker daemon default (json-file). Shape matches the
+# community.docker.docker_swarm_service `logging:` parameter.
+#
+# CAUTION: the syslog driver can BLOCK container stdio if the syslog
+# endpoint is unreachable, which may stall an app under load. Always
+# pair it with mode=non-blocking and a buffer ceiling so docker drops
+# overflow rather than back-pressuring the writer.
+#
+# swarm_stack_logging:
+#   driver_name: syslog
+#   options:
+#     syslog-address: "tcp://syslog.example.com:514"
+#     syslog-facility: "local0"
+#     syslog-format: "rfc5424"
+#     tag: "{% raw %}{{.Name}}/{{.ID}}{% endraw %}"
+#     mode: "non-blocking"
+#     max-buffer-size: "25m"
+
 # ── Mattermost overrides (consumed by app_mattermost_swarm) ────────────────
 mattermost_nfs_host: "{{ swarm_nfs_host }}"
 mattermost_nfs_server: "{{ swarm_nfs_server }}"
