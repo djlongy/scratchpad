@@ -50,6 +50,28 @@ swarm-stack-template/
    - `docker stack deploy` via `community.docker.docker_stack`.
    - Prunes labeled objects no longer referenced (skips in-use).
 
+## Mount types
+
+`swarm_stack_volumes` entries declare a `type` field that matches the
+docker mount type the consuming service will reference. The role
+provisions the host-side resources accordingly:
+
+- `type: volume` (default — NFS-backed local-driver). Role mkdirs the
+  NFS subpath and pre-creates a local-driver docker volume with NFS
+  driver_opts on every host in `swarm_stack_volume_hosts`. Caller
+  references it as a docker volume by name.
+- `type: bind`. Role mkdirs `source` on every host in `bind_hosts`
+  (defaults to `swarm_stack_volume_hosts`). Caller mounts it directly
+  via `type=bind, source=<host path>` in the service spec. Use this
+  for services that don't tolerate NFS storage, e.g. Elasticsearch.
+  Pin the consuming service to `bind_hosts` via placement constraints
+  — bind mounts can't be shared.
+- `type: tmpfs`. Role does nothing host-side. Caller declares the
+  mount via `type=tmpfs` in the service spec.
+
+Untyped entries are treated as `type: volume` so existing wrappers
+keep working without changes.
+
 ## Deploy modes
 
 The role supports two deploy backends, selected via

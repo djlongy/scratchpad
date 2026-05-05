@@ -36,17 +36,50 @@ swarm_stack_nfs:
   server: ""
   base: /srv/nfs
 
-# Volume list — each entry both:
-#   1. creates a directory under nfs.base/<subpath> on the NFS server, and
-#   2. pre-creates a `local`-driver NFS-backed docker volume on every
-#      host in `swarm_stack_volume_hosts` so when swarm schedules a
-#      service that references the volume `external: true`, every
-#      candidate worker already has the volume present.
-#   - name:    docker volume name (referenced as external: true in stack)
-#     subpath: directory under nfs.base
-#     uid:     numeric uid for chown   (default 0)
-#     gid:     numeric gid for chown   (default 0)
-#     mode:    chmod string            (default "0755")
+# Volume / mount list. Each entry's `type` field controls which backend
+# the role provisions for it. `type` matches the docker mount types so
+# callers reference the same value verbatim in their service mount spec.
+# Untyped entries default to `volume` for back-compat.
+#
+# type: volume   — NFS-backed local-driver docker volume.
+#   - mkdirs `swarm_stack_nfs.base/<subpath>` on swarm_stack_nfs.host
+#     (delegated)
+#   - pre-creates a local-driver volume named `<name>` with NFS
+#     driver_opts on every host in swarm_stack_volume_hosts so the
+#     stack template / service spec can reference it as external: true
+#   Fields: name, subpath, uid, gid, mode
+#
+# type: bind     — host-path bind mount.
+#   - mkdirs `<source>` on each host in `bind_hosts` (delegated)
+#   - no docker volume is created; caller mounts directly with
+#     type=bind, source=<source>, target=<container path> in their
+#     service mount spec
+#   - bind mounts can't be shared by multiple replicas — pin the
+#     consuming service to bind_hosts via placement constraints
+#   Fields: name, source, bind_hosts (default = volume_hosts), uid, gid, mode
+#
+# type: tmpfs    — RAM-backed tmpfs.
+#   - role does nothing host-side; caller declares the mount with
+#     type=tmpfs in their service spec
+#   Fields: name (logical only)
+#
+# Examples:
+#   - name: mm_pgdata          # NFS-backed (back-compat — no type field)
+#     subpath: mattermost/pgdata
+#     uid: 999
+#     gid: 999
+#     mode: "0700"
+#
+#   - name: es_data            # bind, pinned to one worker
+#     type: bind
+#     source: /var/lib/swarm-data/es
+#     bind_hosts: [worker_1]
+#     uid: 1000
+#     gid: 0
+#     mode: "0750"
+#
+#   - name: scratch            # tmpfs (RAM)
+#     type: tmpfs
 swarm_stack_volumes: []
 
 # Hosts on which the NFS-backed volumes get pre-created. Defaults to
