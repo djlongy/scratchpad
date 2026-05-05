@@ -1,0 +1,144 @@
+---
+# Sibling of app_mattermost_swarm — same secrets, same NFS-backed
+# volumes, same encrypted overlay, but deploys each service via
+# community.docker.docker_swarm_service instead of `docker stack deploy`.
+#
+# Use this pattern when you want Ansible-native per-service idempotency
+# or when you'd rather keep service definitions inline with the role
+# data instead of a compose template.
+#
+# Vault file shape is identical to the stack-mode wrapper (see
+# roles/app_mattermost_swarm/tasks/main.yml header for the variable list).
+
+- name: Deploy mattermost via app_swarm_stack (services mode)
+  ansible.builtin.include_role:
+    name: app_swarm_stack
+  vars:
+    swarm_stack_name: "{{ mattermost_stack_name }}"
+    swarm_stack_dir: "{{ mattermost_stack_dir }}"
+    swarm_stack_deploy_mode: services
+
+    swarm_stack_nfs:
+      host: "{{ mattermost_nfs_host }}"
+      server: "{{ mattermost_nfs_server }}"
+      base: "{{ mattermost_nfs_base }}"
+
+    swarm_stack_networks:
+      - name: mm_overlay
+        attachable: true
+        encrypted: true
+
+    # Both NFS-backed (type defaults to 'volume'). Switch one to
+    # type: bind if your postgres or mattermost storage doesn't
+    # tolerate NFS — see the role-level docs for the bind shape.
+    swarm_stack_volumes:
+      - name: mm_pgdata
+        subpath: "{{ mattermost_pgdata_subpath }}"
+        uid: "{{ mattermost_pg_uid }}"
+        gid: "{{ mattermost_pg_gid }}"
+        mode: "0700"
+      - name: mm_app_data
+        subpath: "{{ mattermost_data_subpath }}"
+        uid: "{{ mattermost_app_uid }}"
+        gid: "{{ mattermost_app_gid }}"
+        mode: "0750"
+
+    # Mattermost mutates config.json on first boot, so we skip the
+    # docker config object and drive everything via MM_* env vars
+    # baked from swarm_stack_secret_values (same approach the
+    # stack-mode wrapper uses).
+    swarm_stack_configs: []
+
+    swarm_stack_secrets:
+      - name: mm_pg_password
+        var: vault_mm_pg_password
+      - name: mm_at_rest_key
+        var: vault_mm_at_rest_key
+      - name: mm_public_link_salt
+        var: vault_mm_public_link_salt
+      - name: mm_admin_password
+        var: vault_mm_admin_password
+
+    swarm_stack_services:
+      # ────────────────────────────────────────────────────────────
+      # Postgres — pinned single replica, password from /run/secrets.
+      # ────────────────────────────────────────────────────────────
+      - name: mm-postgres
+        image: postgres:15-alpine
+        mode: replicated
+        replicas: 1
+        networks:
+          - name: mm_overlay
+        env:
+          POSTGRES_DB: "{{ mattermost_pg_db }}"
+          POSTGRES_USER: "{{ mattermost_pg_user }}"
+          POSTGRES_PASSWORD_FILE: /run/secrets/mm_pg_password
+        secrets:
+          - secret_name: "{{ swarm_stack_secret_names.mm_pg_password }}"
+            filename: /run/secrets/mm_pg_password
+        mounts:
+          - source: mm_pgdata
+            target: /var/lib/postgresql/data
+            type: volume
+        placement:
+          constraints: >-
+            {{ ['node.role == worker']
+               + (['node.hostname == ' ~ mattermost_pg_pinned_node]
+                  if mattermost_pg_pinned_node else []) }}
+        restart_config:
+          condition: any
+          delay: 10s
+        limits:
+          memory: "{{ mattermost_pg_limit_memory }}"
+
+      # ────────────────────────────────────────────────────────────
+      # Mattermost app — N replicas, MM_* env vars override the
+      # bundled config.json. depends_on is compose-only; mattermost
+      # retries the DB connection on its own.
+      # ────────────────────────────────────────────────────────────
+      - name: mm-app
+        image: "{{ mattermost_image }}"
+        mode: replicated
+        replicas: "{{ mattermost_replicas }}"
+        networks:
+          - name: mm_overlay
+        env:
+          MM_SQLSETTINGS_DRIVERNAME: postgres
+          MM_SQLSETTINGS_DATASOURCE: >-
+            postgres://{{ mattermost_pg_user }}:{{ swarm_stack_secret_values.mm_pg_password }}@mm-postgres:5432/{{ mattermost_pg_db }}?sslmode=disable&connect_timeout=10&binary_parameters=yes
+          MM_SQLSETTINGS_ATRESTENCRYPTKEY: "{{ swarm_stack_secret_values.mm_at_rest_key }}"
+          MM_FILESETTINGS_PUBLICLINKSALT: "{{ swarm_stack_secret_values.mm_public_link_salt }}"
+          MM_SERVICESETTINGS_SITEURL: "{{ mattermost_site_url }}"
+          MM_SERVICESETTINGS_LISTENADDRESS: ":8065"
+          MM_SERVICESETTINGS_FORWARD80TO443: "false"
+          MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER: "X-Forwarded-For"
+          MM_TEAMSETTINGS_SITENAME: "Mattermost"
+          MM_LOGSETTINGS_ENABLECONSOLE: "true"
+          MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
+          MM_LOGSETTINGS_CONSOLEJSON: "true"
+          TZ: "{{ mattermost_timezone }}"
+        mounts:
+          - source: mm_app_data
+            target: /mattermost/data
+            type: volume
+        publish:
+          - published_port: "{{ mattermost_published_port }}"
+            target_port: 8065
+            protocol: tcp
+            mode: ingress
+        placement:
+          constraints: "{{ mattermost_app_placement_constraints }}"
+          replicas_max_per_node: "{{ mattermost_max_per_node }}"
+        update_config:
+          parallelism: 1
+          delay: 30s
+          # max_replicas_per_node:1 leaves no spare slot — start-first
+          # would deadlock waiting for a free node.
+          order: stop-first
+          failure_action: rollback
+        restart_config:
+          condition: any
+          delay: 15s
+          max_attempts: 5
+        limits:
+          memory: "{{ mattermost_app_limit_memory }}"

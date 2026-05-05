@@ -132,22 +132,20 @@ swarm_stack_deploy_mode: stack
 
 # Service definitions used when swarm_stack_deploy_mode == 'services'.
 # Each entry is a dict of kwargs for community.docker.docker_swarm_service.
-# Reference resolved secret/config names via swarm_stack_secret_names[<key>]
-# and swarm_stack_config_names[<key>]; reference plaintext secret values
-# (rare — apps that don't read /run/secrets/) via swarm_stack_secret_values[<key>].
+# Callers (wrapper roles) populate this — see roles/app_mattermost_swarm_services
+# for a worked translation of a compose-style stack into per-service
+# kwargs. Notable schema differences from a compose `services:` block:
 #
-# Example:
-#   - name: mm-app
-#     image: mattermost/mattermost-team-edition:7.10
-#     mode: replicated
-#     replicas: 1
-#     networks:
-#       - name: mm_overlay
-#     secrets:
-#       - secret_name: "{{ swarm_stack_secret_names['mm_pg_password'] }}"
-#         filename: /run/secrets/mm_pg_password
-#     env:
-#       MM_SQLSETTINGS_DRIVERNAME: postgres
-#     placement:
-#       constraints: ["node.role == worker"]
+#   - `deploy:` block is flattened up: replicas, placement, restart_config,
+#     update_config, limits, reservations are top-level kwargs
+#   - `volumes: ["name:path"]` shorthand → `mounts: [{ source, target, type }]`
+#   - `ports: ["8065:80"]` shorthand → `publish: [{ published_port,
+#     target_port, protocol, mode }]`
+#   - secrets reference resolved versioned names directly:
+#       secrets: [{ secret_name: "{{ swarm_stack_secret_names.<key> }}",
+#                   filename: /run/secrets/<key> }]
+#   - configs same shape: { config_name, filename }
+#   - `env:` (dict) replaces compose's `environment:`
+#   - `depends_on:` is compose-only and isn't honoured here — apps must
+#     retry on connect (or use a healthcheck dependency outside swarm)
 swarm_stack_services: []

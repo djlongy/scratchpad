@@ -44,7 +44,8 @@
     restart_config: "{{ item.restart_config | default(omit) }}"
     update_config: "{{ item.update_config | default(omit) }}"
     rollback_config: "{{ item.rollback_config | default(omit) }}"
-    resources: "{{ item.resources | default(omit) }}"
+    limits: "{{ item.limits | default(omit) }}"
+    reservations: "{{ item.reservations | default(omit) }}"
     healthcheck: "{{ item.healthcheck | default(omit) }}"
     logging: "{{ item.logging | default(omit) }}"
     labels: >-
@@ -75,6 +76,10 @@
   loop_control:
     label: "{{ item.name }}"
   register: _swst_service_results
+  # Service entries may bake plaintext secrets into env vars (apps that
+  # don't read /run/secrets directly). Suppress display; the register
+  # value is still captured for the summary task below.
+  no_log: true
 
 - name: Service summary
   ansible.builtin.debug:
