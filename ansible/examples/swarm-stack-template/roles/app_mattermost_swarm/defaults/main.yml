@@ -74,10 +74,22 @@ mattermost_app_placement_constraints:
 # it on the FreeIPA `svc-mattermost` user, so the bind end and the
 # directory end always agree.
 #
-# CA cert for LDAPS is read from `vault_freeipa_ca_cert` (PEM string,
-# multi-line) and shipped as a docker config mounted into mm-app.
-# Pointing Mattermost at a self-managed cert avoids
-# InsecureSkipVerify, which the FIPS edition treats as a misconfig.
+# CA cert: Mattermost's MM_LDAPSETTINGS_PUBLICCERTIFICATEFILE setting
+# is the path to the mTLS *client* certificate Mattermost would present
+# to a server that requires client auth — NOT a "trust this CA when
+# verifying the server cert" override. Go's crypto/tls only verifies
+# server certs against the system CA pool. We still ship the FreeIPA
+# CA as a docker config (slurped from groups['freeipa'][0] at deploy
+# time) so a future image rebuild that adds it to /etc/ssl/certs and
+# runs update-ca-certificates can use it without changing the role.
+#
+# Until that's in place, set
+# `mattermost_ldap_skip_certificate_verification: true` in inventory
+# when running against a self-signed FreeIPA CA. Skipping cert
+# verification on a closed network with a known directory is not
+# the same risk as skipping it on the public internet — but if you're
+# adopting this template for production, plan to either rebuild the
+# image or get a publicly-trusted cert on the LDAP service.
 mattermost_ldap_enabled: false
 mattermost_ldap_host: "freeipa-01.example.com"
 mattermost_ldap_port: 636
