@@ -25,10 +25,45 @@
     swarm_stack_secret_values: {}
   tags: [always]
 
+# Classify volume entries by mount type. Untyped entries default to
+# 'volume' (NFS-backed local-driver) for back-compat with wrappers
+# written before the type field existed.
+- name: Classify volume entries by mount type
+  ansible.builtin.set_fact:
+    _swst_vols_volume: >-
+      {{ (swarm_stack_volumes | rejectattr('type', 'defined') | list)
+         + (swarm_stack_volumes | selectattr('type', 'defined')
+            | selectattr('type', 'eq', 'volume') | list) }}
+    _swst_vols_bind: >-
+      {{ swarm_stack_volumes | selectattr('type', 'defined')
+         | selectattr('type', 'eq', 'bind') | list }}
+    _swst_vols_tmpfs: >-
+      {{ swarm_stack_volumes | selectattr('type', 'defined')
+         | selectattr('type', 'eq', 'tmpfs') | list }}
+  tags: [always]
+
+- name: Validate volume types are supported
+  ansible.builtin.assert:
+    that:
+      - item.type | default('volume') in ['volume', 'bind', 'tmpfs']
+    fail_msg: >-
+      swarm_stack_volumes entry '{{ item.name | default('?') }}' has
+      unsupported type '{{ item.type | default('volume') }}'. Allowed:
+      volume (NFS-backed local-driver), bind, tmpfs.
+  loop: "{{ swarm_stack_volumes }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  tags: [always]
+
 - name: Ensure NFS subpaths
   ansible.builtin.import_tasks: ensure_nfs_subpaths.yml
-  when: swarm_stack_volumes | length > 0
-  tags: [swarm_stack, nfs]
+  when: _swst_vols_volume | length > 0
+  tags: [swarm_stack, nfs, volumes]
+
+- name: Ensure bind-mount host paths
+  ansible.builtin.import_tasks: ensure_bind_paths.yml
+  when: _swst_vols_bind | length > 0
+  tags: [swarm_stack, volumes]
 
 # Secrets must be created BEFORE configs so config templates can
 # reference swarm_stack_secret_values to bake values into rendered
@@ -50,7 +85,7 @@
 
 - name: Pre-create NFS-backed volumes on every candidate host
   ansible.builtin.import_tasks: create_volumes.yml
-  when: swarm_stack_volumes | length > 0
+  when: _swst_vols_volume | length > 0
   tags: [swarm_stack, volumes]
 
 - name: Deploy stack (compose-file mode)

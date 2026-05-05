@@ -1,0 +1,54 @@
+---
+# Create the host-side directory for each bind-mount entry on every
+# host listed in `bind_hosts` (defaults to swarm_stack_volume_hosts).
+# Bind mounts can't be shared by multiple replicas, so callers should
+# pin the consuming service to the same host(s) via placement
+# constraints — the role doesn't enforce that.
+#
+# An entry shape (in swarm_stack_volumes) looks like:
+#   - name: es_data           # logical key (used in caller's mount spec)
+#     type: bind
+#     source: /var/lib/swarm-data/es   # host path, used as `source` in
+#                                      # the service's bind mount
+#     bind_hosts: [worker_1]   # optional; defaults to volume_hosts
+#     uid: 1000
+#     gid: 0
+#     mode: "0750"
+
+- name: Validate bind entries
+  ansible.builtin.assert:
+    that:
+      - item.source | default('') | length > 0
+    fail_msg: >-
+      bind volume '{{ item.name | default('?') }}' requires a `source`
+      (absolute host path).
+  loop: "{{ _swst_vols_bind }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+# Flatten each (entry, host) pair so we can drive a single delegate_to
+# loop. Each entry's hosts default to swarm_stack_volume_hosts when not
+# explicitly set.
+- name: Build bind (entry × host) pair list
+  ansible.builtin.set_fact:
+    _swst_bind_pairs: >-
+      {{ (_swst_bind_pairs | default([]))
+         + ([item]
+            | product(item.bind_hosts | default(swarm_stack_volume_hosts))
+            | list) }}
+  loop: "{{ _swst_vols_bind }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: Ensure bind-mount directories exist
+  ansible.builtin.file:
+    path: "{{ item.0.source }}"
+    state: directory
+    owner: "{{ item.0.uid | default(0) }}"
+    group: "{{ item.0.gid | default(0) }}"
+    mode: "{{ item.0.mode | default('0755') }}"
+  delegate_to: "{{ item.1 }}"
+  become: true
+  loop: "{{ _swst_bind_pairs }}"
+  loop_control:
+    label: "{{ item.0.source }} on {{ item.1 }}"

@@ -19,6 +19,6 @@
     labels:
       app_swarm_stack: "{{ swarm_stack_name }}"
   delegate_to: "{{ item.1 }}"
-  loop: "{{ swarm_stack_volumes | product(swarm_stack_volume_hosts) | list }}"
+  loop: "{{ _swst_vols_volume | product(swarm_stack_volume_hosts) | list }}"
   loop_control:
     label: "{{ item.0.name }} on {{ item.1 }}"

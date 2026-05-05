@@ -9,7 +9,7 @@
     owner: "{{ item.uid | default(0) }}"
     group: "{{ item.gid | default(0) }}"
     mode: "{{ item.mode | default('0755') }}"
-  loop: "{{ swarm_stack_volumes }}"
+  loop: "{{ _swst_vols_volume }}"
   loop_control:
     label: "{{ item.subpath }}"
   delegate_to: "{{ swarm_stack_nfs.host }}"
