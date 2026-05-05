@@ -1,0 +1,91 @@
+---
+# playbooks/mattermost_freeipa_prep.yml
+#
+# One-shot, idempotent prep step that must run BEFORE the main
+# mattermost_swarm.yml deploy when mattermost_ldap_enabled is true.
+#
+# What it does:
+#   - Creates / updates the `svc-mattermost` FreeIPA service account
+#     and sets its password to whatever value you've put in
+#     `vault_mm_ldap_bind_password` (your ansible-vault YAML).
+#     `state: present` + `update_password: always` make this idempotent
+#     and self-healing — re-running the play after rotating the vault
+#     value pushes the new password to FreeIPA.
+#
+# Why a separate playbook + delegate_to:
+#   - The deploy play targets a swarm manager (where docker_swarm_*
+#     lives). The FreeIPA bits need to run on a host with the
+#     `freeipa.ansible_freeipa.ipauser` collection installed — usually
+#     a FreeIPA server itself. delegate_to keeps the logic in one
+#     playbook while letting Ansible run each task against the right
+#     host.
+#
+# Required ansible-vault variables (see vault.yml.example):
+#   vault_freeipa_admin_password   FreeIPA admin Kerberos password
+#   vault_mm_ldap_bind_password    new bind password for svc-mattermost
+#                                  (also consumed by the stack deploy)
+#
+# Required inventory: a `freeipa` group containing at least one host.
+# The play uses `groups['freeipa'][0]` for the delegate_to.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/mattermost_freeipa_prep.yml \
+#     --ask-vault-pass
+#
+# Then proceed with the swarm deploy:
+#   ansible-playbook -i inventory/hosts.yml playbooks/mattermost_swarm.yml \
+#     --ask-vault-pass --tags redeploy
+
+- name: Provision FreeIPA prereqs for Mattermost LDAP
+  hosts: localhost
+  gather_facts: false
+  vars:
+    mm_svc_user: svc-mattermost
+    mm_svc_first: Mattermost
+    mm_svc_last: Service Account
+
+  tasks:
+
+    - name: Sanity-check that required vault vars are set
+      ansible.builtin.assert:
+        that:
+          - vault_freeipa_admin_password is defined
+          - vault_freeipa_admin_password | length > 0
+          - vault_mm_ldap_bind_password is defined
+          - vault_mm_ldap_bind_password | length > 0
+        fail_msg: >-
+          vault_freeipa_admin_password and vault_mm_ldap_bind_password
+          must be defined in your ansible-vault file.
+          See vault.yml.example.
+      no_log: true
+
+    - name: Sanity-check that the freeipa inventory group exists
+      ansible.builtin.assert:
+        that:
+          - "'freeipa' in groups"
+          - groups['freeipa'] | length > 0
+        fail_msg: >-
+          inventory must define a `freeipa` group with at least one
+          host that has the `freeipa.ansible_freeipa` collection
+          installed.
+
+    - name: Create / update svc-mattermost FreeIPA user
+      freeipa.ansible_freeipa.ipauser:
+        ipaadmin_principal: admin
+        ipaadmin_password: "{{ vault_freeipa_admin_password }}"
+        name: "{{ mm_svc_user }}"
+        first: "{{ mm_svc_first }}"
+        last: "{{ mm_svc_last }}"
+        password: "{{ vault_mm_ldap_bind_password }}"
+        update_password: always
+        state: present
+      delegate_to: "{{ groups['freeipa'][0] }}"
+      become: false
+      no_log: true
+
+    - name: Confirm
+      ansible.builtin.debug:
+        msg: >-
+          svc-mattermost provisioned in FreeIPA. The same
+          vault_mm_ldap_bind_password is wired into the stack on the
+          next mattermost_swarm.yml deploy.

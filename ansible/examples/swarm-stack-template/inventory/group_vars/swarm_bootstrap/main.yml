@@ -30,3 +30,16 @@ mattermost_site_url: "https://mattermost.example.com"
 mattermost_pg_pinned_node: "swarm-wkr-01"
 mattermost_replicas: 3
 mattermost_timezone: "UTC"
+
+# ── LDAP / FreeIPA (optional) ──────────────────────────────────────────────
+# Enable to wire Mattermost's LDAP authentication against a FreeIPA
+# realm. The role's defaults already match FreeIPA conventions for
+# `dc=example,dc=com` (uid attribute, person/groupOfNames classes,
+# `cn=users,cn=accounts` user container). Override the host below to
+# point at your FreeIPA server. Run `playbooks/mattermost_freeipa_prep.yml`
+# BEFORE this stack deploy so the svc-mattermost user exists with the
+# right bind password.
+mattermost_ldap_enabled: false
+# mattermost_ldap_host: "freeipa-01.example.com"
+# mattermost_ldap_base_dn: "dc=example,dc=com"
+# mattermost_ldap_bind_username: "uid=svc-mattermost,cn=users,cn=accounts,dc=example,dc=com"

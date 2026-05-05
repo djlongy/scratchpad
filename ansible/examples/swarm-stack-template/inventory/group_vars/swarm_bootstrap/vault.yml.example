@@ -20,5 +20,27 @@ vault_mm_public_link_salt: "REPLACE-ME-with-32+chars-passphrase-for-public-link-
 # manually when bootstrapping the admin user.
 vault_mm_admin_password: "REPLACE-ME-with-a-strong-passphrase"
 
+# ─────────────────────────────────────────────────────────────────────────
+# LDAP / FreeIPA — only needed when mattermost_ldap_enabled is true.
+# ─────────────────────────────────────────────────────────────────────────
+
+# FreeIPA admin Kerberos password — used by mattermost_freeipa_prep.yml
+# to create / update the svc-mattermost service account. The play
+# only reads this; FreeIPA's `admin` Kerberos principal is unchanged.
+vault_freeipa_admin_password: "REPLACE-ME-with-the-FreeIPA-admin-password"
+
+# Mattermost LDAP bind password — set BOTH on the FreeIPA
+# svc-mattermost user (by mattermost_freeipa_prep.yml) AND used by
+# Mattermost itself for the bind. Generate any reasonable strong
+# string. Rotating means re-running the prep play and redeploying
+# the swarm stack.
+vault_mm_ldap_bind_password: "REPLACE-ME-with-a-strong-passphrase"
+
+# Note: the FreeIPA CA cert is NOT a vault variable. The role
+# slurps it from /etc/ipa/ca.crt on groups['freeipa'][0] at deploy
+# time (override the source path via mattermost_freeipa_ca_cert_src
+# if your install puts it elsewhere). The cert is public — LDAPS
+# verifiers need it — so vaulting it would just be ceremony.
+
 # After populating, encrypt the file:
 #   ansible-vault encrypt inventory/group_vars/swarm_bootstrap/vault.yml

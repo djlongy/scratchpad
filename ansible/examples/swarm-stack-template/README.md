@@ -260,6 +260,87 @@ referenced by the current spec; in-use objects are skipped.
 - `vault_mm_at_rest_key` and `vault_mm_public_link_salt` MUST be ≥ 32
   chars or mattermost refuses to start.
 
+## LDAP / SSO against FreeIPA (optional)
+
+Mattermost's Enterprise Edition image (the FIPS-edition variant too)
+runs as **Mattermost Entry** when no license is loaded — and Entry
+covers LDAP, SAML, and OpenID, so SSO works without paying. The
+template ships a plug-in path for FreeIPA-backed LDAP login via
+`MM_LDAPSETTINGS_*` env vars, gated by `mattermost_ldap_enabled`. The
+defaults already match FreeIPA conventions (uid attribute,
+person/groupOfNames classes, `cn=users,cn=accounts` user container).
+
+Two-step deploy:
+
+```bash
+# 1. Provision the svc-mattermost user in FreeIPA + set its bind password
+ansible-playbook -i inventory/hosts.yml \
+                 playbooks/mattermost_freeipa_prep.yml --ask-vault-pass
+
+# 2. Deploy / redeploy the stack with LDAP wired
+ansible-playbook -i inventory/hosts.yml \
+                 playbooks/mattermost_swarm.yml --ask-vault-pass --tags redeploy
+```
+
+What you fill in:
+
+- `inventory/group_vars/swarm_bootstrap/main.yml` — flip
+  `mattermost_ldap_enabled` to `true`, set `mattermost_ldap_host` to
+  your FreeIPA server's FQDN. The base-DN, bind username, and
+  attribute names default to FreeIPA's conventions; override only if
+  you've customised your directory.
+- `inventory/group_vars/swarm_bootstrap/vault.yml` — add two values:
+    - `vault_freeipa_admin_password` — for the prep play's `ipauser`
+      call
+    - `vault_mm_ldap_bind_password` — same value gets set on the
+      FreeIPA user AND used for the LDAPS bind from Mattermost
+  The CA cert is **not** vaulted — the role slurps it from
+  `/etc/ipa/ca.crt` on `groups['freeipa'][0]` at deploy time. It's
+  public, so vaulting it would just be ceremony.
+- `inventory/hosts.yml` — add a `freeipa` group containing at least
+  one host that's enrolled in your FreeIPA realm and has
+  `freeipa.ansible_freeipa` installed (every FreeIPA server does).
+  The deploy controller needs SSH to that host (the slurp uses
+  `delegate_to`).
+
+How it composes:
+
+- The wrapper role conditionally extends `swarm_stack_secrets` with
+  `mm_ldap_bind_password` (sourced from `vault_mm_ldap_bind_password`)
+  and turns `swarm_stack_configs` from `[]` into a one-entry list
+  containing `mm_freeipa_ca_cert`. The CA cert is slurped from
+  `mattermost_freeipa_ca_cert_src` on `groups['freeipa'][0]` and
+  stored in a fact the template references — no vaulting, no
+  copy/paste. mm-app picks up the cert via its `configs:` list,
+  mounted at `mattermost_ldap_ca_cert_path`.
+- The env template grows a `MM_LDAPSETTINGS_*` block under an
+  `{% if mattermost_ldap_enabled %}` guard, including
+  `MM_LDAPSETTINGS_BINDPASSWORD` baked from `swarm_stack_secret_values`
+  and `MM_LDAPSETTINGS_PUBLICCERTIFICATEFILE` pointing at the docker
+  config mount.
+
+Verification (post-deploy):
+
+```bash
+# Login as the first admin user (you create this via the web UI or API)
+curl -k -X POST -d '{"login_id":"admin","password":"..."}' \
+     https://mattermost.example.com/api/v4/users/login -i
+
+# Then with the returned token:
+curl -k -X POST -H "Authorization: Bearer <token>" \
+     https://mattermost.example.com/api/v4/ldap/test
+# {"status":"OK"}
+
+curl -k -X POST -H "Authorization: Bearer <token>" \
+     https://mattermost.example.com/api/v4/ldap/sync
+# {"status":"OK"}
+```
+
+If real LDAP login fails with `User.IsValid: Invalid email`, that's a
+directory-data issue: the FreeIPA user has no `mail` attribute. Fix
+in FreeIPA (`ipa user-mod <uid> --email=<uid>@<domain>`), don't
+chase it in Mattermost config.
+
 ## Notes for porting
 
 This template was extracted from a working homelab deployment. The

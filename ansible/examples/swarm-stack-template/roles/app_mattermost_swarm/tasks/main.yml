@@ -28,6 +28,67 @@
     _mm_role_path: "{{ role_path }}"
   tags: [always]
 
+# When mattermost_ldap_enabled, we extend the secrets list and turn
+# swarm_stack_configs from [] into a one-entry list (the FreeIPA CA
+# cert). Composing via set_fact instead of inline-conditionals keeps
+# the literal lists in include_role's vars block readable.
+- name: Compose swarm_stack_secrets list
+  ansible.builtin.set_fact:
+    _mm_swarm_stack_secrets: >-
+      {{
+        [
+          {'name': 'mm_pg_password',      'var': 'vault_mm_pg_password'},
+          {'name': 'mm_at_rest_key',      'var': 'vault_mm_at_rest_key'},
+          {'name': 'mm_public_link_salt', 'var': 'vault_mm_public_link_salt'},
+          {'name': 'mm_admin_password',   'var': 'vault_mm_admin_password'}
+        ]
+        + (
+          [{'name': 'mm_ldap_bind_password', 'var': 'vault_mm_ldap_bind_password'}]
+          if mattermost_ldap_enabled else []
+        )
+      }}
+  tags: [always]
+
+- name: Compose swarm_stack_configs list
+  ansible.builtin.set_fact:
+    _mm_swarm_stack_configs: >-
+      {{
+        (
+          [{'name':   'mm_freeipa_ca_cert',
+            'src':    _mm_role_path + '/templates/mm-freeipa-ca-cert.j2',
+            'target': mattermost_ldap_ca_cert_path,
+            'mode':   '0444'}]
+          if mattermost_ldap_enabled else []
+        )
+      }}
+  tags: [always]
+
+- name: Compose mm-app config refs
+  ansible.builtin.set_fact:
+    _mm_app_configs: >-
+      {{ ['mm_freeipa_ca_cert'] if mattermost_ldap_enabled else [] }}
+  tags: [always]
+
+# Slurp the FreeIPA CA cert at deploy time from a FreeIPA server's
+# canonical path. The cert is public (LDAPS verifiers need it), so it
+# doesn't belong in ansible-vault. The fact then feeds the
+# mm-freeipa-ca-cert.j2 template, which app_swarm_stack renders on the
+# manager and ships as a docker config to mm-app.
+- name: Slurp FreeIPA CA cert
+  ansible.builtin.slurp:
+    src: "{{ mattermost_freeipa_ca_cert_src }}"
+  delegate_to: "{{ groups['freeipa'][0] }}"
+  become: true
+  register: _mm_freeipa_ca_cert_slurp
+  when: mattermost_ldap_enabled
+  tags: [always]
+
+- name: Decode CA cert into a fact
+  ansible.builtin.set_fact:
+    _mm_freeipa_ca_cert_pem: "{{ _mm_freeipa_ca_cert_slurp.content | b64decode }}"
+  when: mattermost_ldap_enabled
+  tags: [always]
+
 - name: Deploy mattermost via app_swarm_stack
   ansible.builtin.include_role:
     name: app_swarm_stack
@@ -69,27 +130,18 @@
         mode: "0750"
 
     # Mattermost mutates config.json at runtime (writes version stamp
-    # on first boot) so it can't tolerate a read-only docker-config
-    # mount. Skip the config object for mm-app and drive everything
-    # via MM_* env vars in the env template. The generic role's
-    # config feature is still in place for apps that DO tolerate
-    # read-only configs.
-    swarm_stack_configs: []
+    # on first boot) so we can't ship config.json itself as a docker
+    # config. We DO ship the FreeIPA CA cert as a docker config when
+    # LDAP is on — Mattermost only reads that file, never writes it.
+    swarm_stack_configs: "{{ _mm_swarm_stack_configs }}"
 
     # Postgres reads its password via the *_FILE pattern (native).
     # The other secrets are templated into MM_* env vars in the
     # mm-app.env.yml.j2 template via swarm_stack_secret_values. Each
     # `var` references a variable defined in your ansible-vault-
-    # encrypted YAML.
-    swarm_stack_secrets:
-      - name: mm_pg_password
-        var: vault_mm_pg_password
-      - name: mm_at_rest_key
-        var: vault_mm_at_rest_key
-      - name: mm_public_link_salt
-        var: vault_mm_public_link_salt
-      - name: mm_admin_password
-        var: vault_mm_admin_password
+    # encrypted YAML. The LDAP bind password joins that list when
+    # mattermost_ldap_enabled.
+    swarm_stack_secrets: "{{ _mm_swarm_stack_secrets }}"
 
     swarm_stack_services:
       - name: mm-postgres
@@ -121,6 +173,7 @@
           - source: mm_app_data
             target: /mattermost/data
             type: volume
+        configs: "{{ _mm_app_configs }}"
         publish:
           - target_port: 8065
             published_port: "{{ mattermost_published_port }}"

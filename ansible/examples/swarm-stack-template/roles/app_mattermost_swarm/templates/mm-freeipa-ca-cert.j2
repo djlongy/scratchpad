@@ -1,0 +1,10 @@
+{# Renders the FreeIPA CA cert into a docker-config file mounted at
+   mattermost_ldap_ca_cert_path inside mm-app, so Mattermost's LDAP
+   client can verify the LDAPS handshake without InsecureSkipVerify
+   (which the FIPS edition treats as a misconfig).
+
+   The cert content is slurped at deploy time from a FreeIPA server
+   (mattermost_freeipa_ca_cert_src on groups['freeipa'][0]) — it's
+   public, so it doesn't belong in ansible-vault. See
+   roles/app_mattermost_swarm/tasks/main.yml for the slurp + b64decode. #}
+{{ _mm_freeipa_ca_cert_pem }}
