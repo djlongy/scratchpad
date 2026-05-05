@@ -1,0 +1,48 @@
+---
+# Defaults for app_mattermost_swarm_services — sibling of
+# app_mattermost_swarm. Same vault inputs and same overall behaviour;
+# the only difference is that this wrapper deploys via per-service
+# docker_swarm_service module calls instead of a rendered stack file.
+#
+# Override any of these via inventory group_vars/host_vars.
+
+mattermost_stack_name: mattermost
+mattermost_stack_dir: /opt/swarm-stacks/mattermost   # unused in services mode
+
+# NFS backend.
+mattermost_nfs_host: ""
+mattermost_nfs_server: ""
+mattermost_nfs_base: /srv/nfs
+
+# Volume layout — same as the stack-mode wrapper.
+mattermost_pgdata_subpath: mattermost-postgres
+mattermost_data_subpath: mattermost-data
+mattermost_pg_uid: 999
+mattermost_pg_gid: 999
+mattermost_app_uid: 2000
+mattermost_app_gid: 2000
+
+# Postgres connection
+mattermost_pg_db: mattermost
+mattermost_pg_user: mmuser
+
+# Mattermost app
+mattermost_image: "mattermost/mattermost-team-edition:9.11"
+mattermost_replicas: 3
+mattermost_max_per_node: 1
+mattermost_published_port: 8065
+mattermost_site_url: "https://mattermost.example.com"
+mattermost_timezone: "UTC"
+
+# Postgres can't safely run multi-replica on shared NFS — pin to a
+# single worker node. Empty = no pin (assumes external HA postgres).
+mattermost_pg_pinned_node: ""
+
+# Worker placement constraint. Empty list = any worker.
+mattermost_app_placement_constraints:
+  - "node.role == worker"
+
+# Postgres resource limits.
+mattermost_pg_limit_memory: 512M
+# App resource limits.
+mattermost_app_limit_memory: 1G

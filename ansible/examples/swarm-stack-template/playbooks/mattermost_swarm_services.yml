@@ -1,0 +1,18 @@
+---
+# Deploy Mattermost (postgres + app) to an existing Docker Swarm via
+# the per-service module wrapper (sibling of mattermost_swarm.yml).
+#
+# Same prereqs as the stack-mode play: docker swarm initialised, NFS
+# server reachable, encrypted vault file at
+# inventory/group_vars/swarm_bootstrap/vault.yml.
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml \
+#     playbooks/mattermost_swarm_services.yml --ask-vault-pass
+
+- name: Deploy Mattermost to Docker Swarm (services mode)
+  hosts: swarm_bootstrap
+  gather_facts: false
+  become: true
+  roles:
+    - role: app_mattermost_swarm_services

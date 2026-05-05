@@ -12,9 +12,19 @@ Two roles:
   create with `rolling_versions: true`, deploy (compose-file or
   per-service module), and prune of obsolete labeled objects.
 
-- **`app_mattermost_swarm`** — a thin wrapper. Calls `app_swarm_stack`
-  with mattermost-specific volumes, secrets, and a stack template.
-  Use it as the pattern for adding new apps (`app_<svc>_swarm`).
+- **`app_mattermost_swarm`** — a thin wrapper using **stack mode**.
+  Calls `app_swarm_stack` with mattermost-specific volumes, secrets,
+  and a `stack.yml.j2` template that gets rendered + applied via
+  `docker stack deploy`. Use it as the pattern for adding new apps
+  with a compose-style template.
+
+- **`app_mattermost_swarm_services`** — sibling wrapper using
+  **services mode**. Same secrets, volumes, and overlay as above, but
+  each service is defined as a kwargs dict and deployed via
+  `community.docker.docker_swarm_service`. No stack template — the
+  service definitions live inline in the role's `tasks/main.yml`.
+  Use this pattern when you'd rather have Ansible-native per-service
+  idempotency and keep service definitions next to the wrapper data.
 
 ## Layout
 
@@ -27,10 +37,12 @@ swarm-stack-template/
 │           ├── swarm_bootstrap.yml   # non-secret tunables
 │           └── vault.yml.example     # secret values (ansible-vault)
 ├── playbooks/
-│   └── mattermost_swarm.yml          # deploy entry point
+│   ├── mattermost_swarm.yml          # stack-mode deploy entry point
+│   └── mattermost_swarm_services.yml # services-mode deploy entry point
 └── roles/
     ├── app_swarm_stack/              # generic
-    └── app_mattermost_swarm/         # example wrapper
+    ├── app_mattermost_swarm/         # stack-mode wrapper
+    └── app_mattermost_swarm_services/# services-mode wrapper
 ```
 
 ## How a deploy flows
