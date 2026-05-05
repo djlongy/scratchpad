@@ -56,7 +56,7 @@ swarm_stack_nfs:
 # Lets the wrapper/inventory swap registries without touching service
 # definitions, and keeps every URL in one place per stack.
 #   key:   friendly name (referenced via image_key in swarm_stack_services)
-#   value: full URL with tag, e.g. "harbor.lid.newen.au/library/postgres:15-alpine"
+#   value: full URL with tag, e.g. "registry.example.com/library/postgres:17-alpine"
 swarm_stack_images: {}
 
 # ── Volume list ───────────────────────────────────────────────────────
