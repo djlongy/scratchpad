@@ -53,6 +53,9 @@ secring.*
 .env.*
 !.env.example
 !.env.sample
+# Ansible task files named after Docker secrets/configs are not secrets — allow them.
+!**/tasks/create_secrets.yml
+!**/tasks/create_configs.yml
 
 # Vault / encrypted files
 *.vault
