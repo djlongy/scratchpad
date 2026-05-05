@@ -1,36 +1,63 @@
 ---
-# Sibling of app_mattermost_swarm — same secrets, same NFS-backed
-# volumes, same encrypted overlay, but deploys each service via
-# community.docker.docker_swarm_service instead of `docker stack deploy`.
+# Wrapper over app_swarm_stack — feeds it a complete swarm_stack_*
+# spec for a Mattermost (postgres + app) deploy.
 #
-# Use this pattern when you want Ansible-native per-service idempotency
-# or when you'd rather keep service definitions inline with the role
-# data instead of a compose template.
+# RESILIENCE: every value in swarm_stack_services below is a top-level
+# scalar or a reference to a wrapper-defaults / inventory variable. No
+# entry references swarm_stack_secret_values or swarm_stack_secret_names
+# inline — those late-bound values are baked in via env_template, which
+# the generic role renders AFTER the secrets phase populates the
+# registry. See the resilience note at the top of
+# app_swarm_stack/defaults/main.yml.
 #
-# Vault file shape is identical to the stack-mode wrapper (see
-# roles/app_mattermost_swarm/tasks/main.yml header for the variable list).
+# Vault file shape:
+#
+#   ---
+#   $ANSIBLE_VAULT;1.1;AES256
+#   <encrypted blob>
+#
+#   # Decrypted contents:
+#   vault_mm_pg_password:        "..."
+#   vault_mm_at_rest_key:        "..."             # >= 32 chars
+#   vault_mm_public_link_salt:   "..."             # >= 32 chars
+#   vault_mm_admin_password:     "..."
 
-- name: Deploy mattermost via app_swarm_stack (services mode)
+# role_path inside an include_role's vars: block lazily resolves to the
+# *included* role's path, not the wrapper's. Capture the wrapper path
+# here so env_template entries can reference it.
+- name: Capture wrapper role path
+  ansible.builtin.set_fact:
+    _mms_role_path: "{{ role_path }}"
+  tags: [always]
+
+- name: Deploy mattermost via app_swarm_stack
   ansible.builtin.include_role:
     name: app_swarm_stack
+  tags: [always]
   vars:
     swarm_stack_name: "{{ mattermost_stack_name }}"
     swarm_stack_dir: "{{ mattermost_stack_dir }}"
-    swarm_stack_deploy_mode: services
 
     swarm_stack_nfs:
       host: "{{ mattermost_nfs_host }}"
       server: "{{ mattermost_nfs_server }}"
       base: "{{ mattermost_nfs_base }}"
 
+    # Centralised image map. Swap registry/tag here once and every
+    # service that references the key picks it up.
+    swarm_stack_images:
+      mm_postgres: "{{ mattermost_postgres_image }}"
+      mm_app: "{{ mattermost_app_image }}"
+
+    # Subnet pinned via the swarm_overlay_subnets registry in
+    # group_vars/all.yml — single source of truth so collisions are
+    # caught at PR review, not at runtime.
     swarm_stack_networks:
       - name: mm_overlay
         attachable: true
         encrypted: true
+        subnet: "{{ swarm_overlay_subnets[mattermost_stack_name] }}"
 
-    # Both NFS-backed (type defaults to 'volume'). Switch one to
-    # type: bind if your postgres or mattermost storage doesn't
-    # tolerate NFS — see the role-level docs for the bind shape.
     swarm_stack_volumes:
       - name: mm_pgdata
         subpath: "{{ mattermost_pgdata_subpath }}"
@@ -44,11 +71,16 @@
         mode: "0750"
 
     # Mattermost mutates config.json on first boot, so we skip the
-    # docker config object and drive everything via MM_* env vars
-    # baked from swarm_stack_secret_values (same approach the
-    # stack-mode wrapper uses).
+    # docker config object and drive everything via MM_* env vars in
+    # the env template. The generic role's config feature is still in
+    # place for apps that DO tolerate read-only configs.
     swarm_stack_configs: []
 
+    # Postgres reads its password via the *_FILE pattern (native).
+    # The other secrets are templated into MM_* env vars in the
+    # mm-app.env.yml.j2 template via swarm_stack_secret_values. Each
+    # `var` references a variable defined in your ansible-vault-
+    # encrypted YAML.
     swarm_stack_secrets:
       - name: mm_pg_password
         var: vault_mm_pg_password
@@ -64,32 +96,24 @@
       # Postgres — pinned single replica, password from /run/secrets.
       # ────────────────────────────────────────────────────────────
       - name: mm-postgres
-        image: postgres:15-alpine
-        mode: replicated
+        image_key: mm_postgres
+        hostname: mm-postgres
         replicas: 1
-        networks:
-          - name: mm_overlay
-        env:
-          POSTGRES_DB: "{{ mattermost_pg_db }}"
-          POSTGRES_USER: "{{ mattermost_pg_user }}"
-          POSTGRES_PASSWORD_FILE: /run/secrets/mm_pg_password
-        secrets:
-          - secret_name: "{{ swarm_stack_secret_names.mm_pg_password }}"
-            filename: /run/secrets/mm_pg_password
+        networks: [mm_overlay]
         mounts:
           - source: mm_pgdata
             target: /var/lib/postgresql/data
             type: volume
-        placement:
-          constraints: >-
-            {{ ['node.role == worker']
-               + (['node.hostname == ' ~ mattermost_pg_pinned_node]
-                  if mattermost_pg_pinned_node else []) }}
-        restart_config:
+        secrets: [mm_pg_password]
+        placement: "{{ ['node.role == worker']
+                       + (['node.hostname == ' ~ mattermost_pg_pinned_node]
+                          if (mattermost_pg_pinned_node | length > 0) else []) }}"
+        restart:
           condition: any
           delay: 10s
         limits:
           memory: "{{ mattermost_pg_limit_memory }}"
+        env_template: "{{ _mms_role_path }}/templates/mm-postgres.env.yml.j2"
 
       # ────────────────────────────────────────────────────────────
       # Mattermost app — N replicas, MM_* env vars override the
@@ -97,48 +121,32 @@
       # retries the DB connection on its own.
       # ────────────────────────────────────────────────────────────
       - name: mm-app
-        image: "{{ mattermost_image }}"
-        mode: replicated
+        image_key: mm_app
+        hostname: mm-app
         replicas: "{{ mattermost_replicas }}"
-        networks:
-          - name: mm_overlay
-        env:
-          MM_SQLSETTINGS_DRIVERNAME: postgres
-          MM_SQLSETTINGS_DATASOURCE: >-
-            postgres://{{ mattermost_pg_user }}:{{ swarm_stack_secret_values.mm_pg_password }}@mm-postgres:5432/{{ mattermost_pg_db }}?sslmode=disable&connect_timeout=10&binary_parameters=yes
-          MM_SQLSETTINGS_ATRESTENCRYPTKEY: "{{ swarm_stack_secret_values.mm_at_rest_key }}"
-          MM_FILESETTINGS_PUBLICLINKSALT: "{{ swarm_stack_secret_values.mm_public_link_salt }}"
-          MM_SERVICESETTINGS_SITEURL: "{{ mattermost_site_url }}"
-          MM_SERVICESETTINGS_LISTENADDRESS: ":8065"
-          MM_SERVICESETTINGS_FORWARD80TO443: "false"
-          MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER: "X-Forwarded-For"
-          MM_TEAMSETTINGS_SITENAME: "Mattermost"
-          MM_LOGSETTINGS_ENABLECONSOLE: "true"
-          MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
-          MM_LOGSETTINGS_CONSOLEJSON: "true"
-          TZ: "{{ mattermost_timezone }}"
+        networks: [mm_overlay]
         mounts:
           - source: mm_app_data
             target: /mattermost/data
             type: volume
         publish:
-          - published_port: "{{ mattermost_published_port }}"
-            target_port: 8065
+          - target_port: 8065
+            published_port: "{{ mattermost_published_port }}"
             protocol: tcp
             mode: ingress
-        placement:
-          constraints: "{{ mattermost_app_placement_constraints }}"
-          replicas_max_per_node: "{{ mattermost_max_per_node }}"
-        update_config:
+        placement: "{{ mattermost_app_placement_constraints }}"
+        placement_max_replicas_per_node: "{{ mattermost_max_per_node }}"
+        update:
           parallelism: 1
           delay: 30s
           # max_replicas_per_node:1 leaves no spare slot — start-first
           # would deadlock waiting for a free node.
           order: stop-first
           failure_action: rollback
-        restart_config:
+        restart:
           condition: any
           delay: 15s
           max_attempts: 5
         limits:
           memory: "{{ mattermost_app_limit_memory }}"
+        env_template: "{{ _mms_role_path }}/templates/mm-app.env.yml.j2"
