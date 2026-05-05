@@ -16,12 +16,20 @@ mattermost_nfs_host: ""
 mattermost_nfs_server: ""
 mattermost_nfs_base: /srv/nfs
 
-# Postgres image runs as uid/gid 999 by default (alpine variant), so
-# that's what owns mm_pgdata. Mattermost team-edition runs as uid 2000.
+# IMPORTANT: postgres image uid varies BY VARIANT.
+#   - postgres:*-alpine                  → uid/gid 70    (the busybox/postgres user)
+#   - postgres:* (Debian)                → uid/gid 999
+# The role chowns the NFS subpath to {pg_uid:pg_gid} on the NFS server,
+# so this MUST match the variant in mattermost_postgres_image. Setting
+# the wrong one usually still "works" because postgres's entrypoint
+# self-chowns on init, but that's a brittle accident — image hardening
+# (or a future entrypoint change) breaks it silently. Match it
+# explicitly here.
+# Mattermost team-edition runs as uid 2000.
 mattermost_pgdata_subpath: mattermost-postgres
 mattermost_data_subpath: mattermost-data
-mattermost_pg_uid: 999
-mattermost_pg_gid: 999
+mattermost_pg_uid: 70
+mattermost_pg_gid: 70
 mattermost_app_uid: 2000
 mattermost_app_gid: 2000
 
