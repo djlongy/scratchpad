@@ -1,30 +1,26 @@
 # Swarm-stack template
 
 Reusable pattern for deploying any application stack onto an existing
-Docker Swarm: NFS-backed volumes, docker secrets backed by an
-ansible-vault YAML file, optional rendered-config-as-docker-config,
-content-versioned rolling updates.
+Docker Swarm. Built on `community.docker.docker_swarm_service` with
+externalised resources (encrypted overlay network with pinned subnet,
+NFS-backed local-driver volumes pre-created on every candidate worker,
+content-versioned docker secrets and configs) and a per-service
+deploy loop. Designed to be resilient to Ansible's lazy variable
+evaluation and to support full destroy → recreate via a single tag.
 
-Two roles:
+## Roles
 
-- **`app_swarm_stack`** — the generic role. Owns the mechanics:
-  NFS subpath ensure (delegated to the NFS host), docker secret/config
-  create with `rolling_versions: true`, deploy (compose-file or
-  per-service module), and prune of obsolete labeled objects.
+- **`app_swarm_stack`** — generic. Owns the mechanics: NFS subpath
+  ensure (delegated to the NFS host), encrypted overlay network with
+  optional pinned subnet, NFS-backed volume pre-creation on every
+  worker, docker secret/config create with `rolling_versions: true`,
+  per-service deploy via `docker_swarm_service`, prune of obsolete
+  labeled objects, and a teardown phase gated behind `--tags redeploy`
+  or `--tags teardown`.
 
-- **`app_mattermost_swarm`** — a thin wrapper using **stack mode**.
-  Calls `app_swarm_stack` with mattermost-specific volumes, secrets,
-  and a `stack.yml.j2` template that gets rendered + applied via
-  `docker stack deploy`. Use it as the pattern for adding new apps
-  with a compose-style template.
-
-- **`app_mattermost_swarm_services`** — sibling wrapper using
-  **services mode**. Same secrets, volumes, and overlay as above, but
-  each service is defined as a kwargs dict and deployed via
-  `community.docker.docker_swarm_service`. No stack template — the
-  service definitions live inline in the role's `tasks/main.yml`.
-  Use this pattern when you'd rather have Ansible-native per-service
-  idempotency and keep service definitions next to the wrapper data.
+- **`app_mattermost_swarm`** — thin wrapper showing the pattern.
+  Hands a complete `swarm_stack_*` spec to the generic role and
+  references the registry for its overlay subnet.
 
 ## Layout
 
@@ -34,102 +30,160 @@ swarm-stack-template/
 │   ├── hosts.yml
 │   └── group_vars/
 │       └── swarm_bootstrap/
-│           ├── swarm_bootstrap.yml   # non-secret tunables
-│           └── vault.yml.example     # secret values (ansible-vault)
+│           ├── main.yml             # tunables + swarm_overlay_subnets registry
+│           └── vault.yml.example    # secret values (ansible-vault)
 ├── playbooks/
-│   ├── mattermost_swarm.yml          # stack-mode deploy entry point
-│   └── mattermost_swarm_services.yml # services-mode deploy entry point
+│   └── mattermost_swarm.yml         # deploy entry point
 └── roles/
-    ├── app_swarm_stack/              # generic
-    ├── app_mattermost_swarm/         # stack-mode wrapper
-    └── app_mattermost_swarm_services/# services-mode wrapper
+    ├── app_swarm_stack/             # generic
+    └── app_mattermost_swarm/        # thin wrapper
 ```
 
 ## How a deploy flows
 
 1. Caller play targets `swarm_bootstrap` (one swarm manager).
-2. Wrapper role assembles `swarm_stack_*` variables and includes the
-   generic role.
+2. Wrapper role assembles `swarm_stack_*` variables and `include_role`s
+   the generic role.
 3. Generic role:
+   - Asserts every entry in `swarm_stack_services` has a `name` and a
+     valid `image_key` referencing `swarm_stack_images`.
    - mkdirs the NFS subpaths (delegate_to the NFS host).
    - Reads each declared secret value from Ansible's variable scope
-     (which loads them from `group_vars/.../vault.yml`).
-   - Creates a docker secret per entry, name suffixed `_v1`, `_v2`, …
-     when content changes.
+     (loaded from `group_vars/.../vault.yml`), creates a docker secret
+     per entry, name suffixed `_v1`, `_v2`, … on content change.
    - Renders + creates docker configs (same versioning).
-   - Renders the wrapper's `stack.yml.j2`, fed
-     `swarm_stack_config_names`, `_secret_names`, and `_secret_values`.
-   - `docker stack deploy` via `community.docker.docker_stack`.
+   - Pre-creates the encrypted overlay network with the pinned subnet.
+   - Pre-creates each NFS-backed local-driver volume on every candidate
+     worker (so swarm can schedule there without on-demand mounts).
+   - Iterates `swarm_stack_services` and calls `docker_swarm_service`
+     per entry. Each service's env block can come from either:
+     - `env_template` — a Jinja YAML file rendered LATE so it can
+       reference `swarm_stack_secret_values` and `_config_names`, or
+     - `env_static` — a literal dict for services with no late-binding.
    - Prunes labeled objects no longer referenced (skips in-use).
 
-## Mount types
+## Resilience to lazy var eval
 
-`swarm_stack_volumes` entries declare a `type` field that matches the
-docker mount type the consuming service will reference. The role
-provisions the host-side resources accordingly:
+The whole point of splitting `swarm_stack_services` (top-level scalars)
+from `env_template` (file path resolved lazily) is to avoid a sharp
+edge in Ansible's `include_role` semantics. The vars block on
+`include_role` is evaluated EAGERLY when the role is included — so any
+expression inside `swarm_stack_services` that references something the
+role itself populates (`swarm_stack_secret_values.x`,
+`swarm_stack_config_names.y`) blows up before the role even gets to
+the secrets/configs phase. By moving those references into a separate
+template file referenced by *path*, the role can render them at deploy
+time when the secret/config registries are populated.
 
-- `type: volume` (default — NFS-backed local-driver). Role mkdirs the
-  NFS subpath and pre-creates a local-driver docker volume with NFS
-  driver_opts on every host in `swarm_stack_volume_hosts`. Caller
-  references it as a docker volume by name.
-- `type: bind`. Role mkdirs `source` on every host in `bind_hosts`
-  (defaults to `swarm_stack_volume_hosts`). Caller mounts it directly
-  via `type=bind, source=<host path>` in the service spec. Use this
-  for services that don't tolerate NFS storage, e.g. Elasticsearch.
-  Pin the consuming service to `bind_hosts` via placement constraints
-  — bind mounts can't be shared.
-- `type: tmpfs`. Role does nothing host-side. Caller declares the
-  mount via `type=tmpfs` in the service spec.
+The role only ever reads top-level fields from each service entry
+(`item.name`, `item.image_key`, `item.networks`, etc), and uses
+`item.get('update', omit)` for the `update` key — `update` is a dict
+method name and `item.update` resolves to the bound method, not the
+dict value, which Ansible chokes on with "builtin_function_or_method
+is not JSON serializable". Don't fall into that trap when adding new
+fields named after dict methods (`update`, `keys`, `values`, `items`,
+`get`, `pop`, `clear`, `copy`, `setdefault`).
 
-Untyped entries are treated as `type: volume` so existing wrappers
-keep working without changes.
+## Image URL map
 
-## Deploy modes
+`swarm_stack_images` centralises every image URL the stack uses.
+Services reference an entry by `image_key`. Swap registry or tag once
+in the wrapper and every service that uses that key picks it up — no
+search-and-replace across templates.
 
-The role supports two deploy backends, selected via
-`swarm_stack_deploy_mode`:
+```yaml
+swarm_stack_images:
+  mm_postgres: "{{ mattermost_postgres_image }}"
+  mm_app: "{{ mattermost_app_image }}"
 
-- **`stack`** (default) — caller supplies a `stack.yml.j2` Jinja
-  template. The role renders it, drops it on the manager, and applies
-  via `community.docker.docker_stack`. Best when you want the full
-  Compose schema or already have a stack file.
+swarm_stack_services:
+  - name: mm-postgres
+    image_key: mm_postgres
+    ...
+  - name: mm-app
+    image_key: mm_app
+    ...
+```
 
-- **`services`** — caller supplies `swarm_stack_services`, a list
-  where each entry is the kwargs dict for
-  `community.docker.docker_swarm_service`. The role iterates and
-  applies one service at a time. Best when you prefer Ansible-native
-  idempotency over a compose file, or want to keep service definitions
-  inline with role data.
+## Overlay subnet registry
 
-Either mode reuses the same secrets / configs / networks / volumes
-phases, so callers reference resolved names via
-`swarm_stack_secret_names[<key>]` and `swarm_stack_config_names[<key>]`
-in either case. Prune still runs in both modes (services get the
-`app_swarm_stack=<stack-name>` label automatically).
+Pin every overlay's subnet via a single map in inventory:
+
+```yaml
+# inventory/group_vars/swarm_bootstrap/main.yml
+swarm_overlay_subnets:
+  mattermost: "10.40.10.0/24"
+  splunk:     "10.40.11.0/24"
+  # next free: 10.40.12.0/24
+```
+
+Each wrapper looks up its subnet by stack name:
+
+```yaml
+swarm_stack_networks:
+  - name: mm_overlay
+    attachable: true
+    encrypted: true
+    subnet: "{{ swarm_overlay_subnets[mattermost_stack_name] }}"
+```
+
+The registry is the single source of truth — collisions between
+overlays show up as a diff to one file at PR review, not as silent
+east-west traffic black-holes between two stacks that happened to grab
+overlapping ranges from swarm's default pool.
+
+## Redeploy + teardown
+
+Three tag-gated flows:
+
+- **default (no tags)** — full create/update chain (idempotent).
+- **`--tags redeploy`** — destroy everything this stack owns
+  (services, then label-scoped secrets/configs/networks/volumes), then
+  re-run the full create chain. NFS data on disk is preserved.
+- **`--tags teardown`** — destroy only, leave nothing running.
+- **`--tags wipe-data`** (combined with redeploy or teardown) — also
+  rm -rf the NFS data directories. Destructive.
+
+```bash
+ansible-playbook -i inventory playbooks/mattermost_swarm.yml                      # idempotent update
+ansible-playbook -i inventory playbooks/mattermost_swarm.yml --tags redeploy      # full destroy + recreate, data preserved
+ansible-playbook -i inventory playbooks/mattermost_swarm.yml --tags teardown      # destroy only
+ansible-playbook -i inventory playbooks/mattermost_swarm.yml --tags redeploy,wipe-data  # destroy + wipe data + recreate
+```
+
+Service discovery for teardown filters on both `app_swarm_stack=<name>`
+label (services this role created) AND name prefix `<stack>_`
+(services left over from a legacy `docker stack deploy` that didn't
+carry the role's label) so cutover from a stack-deployed predecessor
+works.
 
 ## Secret pattern
 
 Two kinds of secrets fit cleanly:
 
 - **File-as-secret** (postgres, redis, anything that reads `*_FILE`).
-  Listed in `swarm_stack_secrets` and the stack template references
-  `secrets:` + mounts at `/run/secrets/<name>`. Use
-  `POSTGRES_PASSWORD_FILE: /run/secrets/mm_pg_password`.
+  Listed in `swarm_stack_secrets`, then referenced by name in a
+  service's `secrets:` list. Role mounts the file at
+  `/run/secrets/<name>` and resolves the hashed name automatically.
+  Use `POSTGRES_PASSWORD_FILE: /run/secrets/mm_pg_password` in the
+  service env.
 
-- **Bake-into-config-or-env** (apps that don't read `/run/secrets/`).
-  Same `swarm_stack_secrets` entry, but the stack/config template
-  references `swarm_stack_secret_values.<name>` to template the value
-  in directly. The plaintext lives only in raft (encrypted) inside the
-  service spec.
+- **Bake-into-env** (apps that don't read `/run/secrets/`). Same
+  `swarm_stack_secrets` entry, but the env_template references
+  `swarm_stack_secret_values.<name>` to bake the value into the env
+  dict. Plaintext lives only in raft (encrypted) inside the service
+  spec.
 
-Mattermost is in the second camp — it can't run with a read-only
-config.json mount (writes its version stamp on first boot), so this
-template uses `MM_*` env vars rendered from `swarm_stack_secret_values`.
+Mattermost is in the second camp for most of its secrets — it can't
+run with a read-only config.json mount (writes its version stamp on
+first boot), so this template uses `MM_*` env vars in a per-service
+env template that pulls from `swarm_stack_secret_values`.
 
 ## Worker node setup (one-time)
 
 The `community.docker.docker_*` modules need the Docker Python SDK on
-the swarm manager. On AlmaLinux/Rocky/RHEL 9:
+both the manager AND every worker (the `delegate_to` volume creation
+runs the module against each worker). On AlmaLinux/Rocky/RHEL 9:
 
 ```bash
 sudo dnf install -y python3-docker python3-requests python3-jsondiff
@@ -137,17 +191,39 @@ sudo dnf install -y python3-docker python3-requests python3-jsondiff
 
 (`python3-jsondiff` lives in EPEL.)
 
+## Encrypted overlay firewall (one-time)
+
+Encrypted overlays wrap VXLAN in ESP (protocol 50) and NAT-T (UDP
+4500). Without firewall rules for both, east-west traffic between
+swarm hosts on the encrypted overlay times out at the TCP layer with
+no obvious error. On every swarm host:
+
+```bash
+sudo firewall-cmd --permanent --add-protocol=esp
+sudo firewall-cmd --permanent --add-port=4500/udp
+sudo firewall-cmd --reload
+```
+
 ## Adding a new app
 
 1. Copy `roles/app_mattermost_swarm/` to `roles/app_<svc>_swarm/`.
-2. Edit `defaults/main.yml` for the new app's tunables.
-3. Edit `tasks/main.yml` — change the `swarm_stack_*` vars (volumes,
-   secrets list, configs list).
-4. Replace `templates/stack.yml.j2` with the new app's compose YAML,
-   referencing `swarm_stack_secret_names`, `_config_names`, and
-   `_secret_values` for the bits the role resolves.
+2. Edit `defaults/main.yml` for the new app's tunables (NFS paths,
+   image URLs, replica counts, port, vault path placeholders).
+3. Edit `tasks/main.yml` — change the `swarm_stack_*` block:
+   - `swarm_stack_images` map for the new app's images.
+   - `swarm_stack_networks` referencing
+     `swarm_overlay_subnets[<stack_name>]`.
+   - `swarm_stack_volumes` for NFS subpaths.
+   - `swarm_stack_secrets` referencing your vault variables.
+   - `swarm_stack_services` with one entry per swarm service —
+     `image_key`, `networks`, `mounts`, `publish`, `secrets`,
+     `placement`, etc.
+4. Add per-service env templates under `templates/<service>.env.yml.j2`
+   for any service whose env needs late-bound secret/config values.
 5. Add a playbook in `playbooks/` that invokes the new wrapper role.
-6. Add the app's secret variables to your encrypted vault file.
+6. Add `<stack_name>: "<subnet>"` to `swarm_overlay_subnets` in
+   `inventory/group_vars/swarm_bootstrap/main.yml`.
+7. Add the app's secret variables to your encrypted vault file.
 
 ## Vault file
 
@@ -157,34 +233,32 @@ Copy `vault.yml.example` to `vault.yml`, populate values, then encrypt:
 ansible-vault encrypt inventory/group_vars/swarm_bootstrap/vault.yml
 ```
 
-Run plays with `--ask-vault-pass` (or configure
-`vault_password_file` in `ansible.cfg`).
+Run plays with `--ask-vault-pass` (or configure `vault_password_file`
+in `ansible.cfg`).
 
 When you adopt HashiCorp Vault later, swap `tasks/create_secrets.yml`
-to read via `vault kv get` (or `community.hashi_vault.vault_kv2_get`)
-instead of `vars[item.var]` — the rest of the role doesn't change.
+to read via `vault kv get` (or
+`community.hashi_vault.vault_kv2_get`) instead of `vars[item.var]` —
+the rest of the role doesn't change.
 
 ## Rolling-version mechanics
 
-`docker_secret`/`docker_config` with `rolling_versions: true` inspects
-existing objects matching `<name>_v[0-9]+`. If the latest version's
-content matches what you're submitting, it's a no-op. If different, it
-creates `<name>_v(N+1)` and your stack template's `external: true`
-reference picks up the new name on the next deploy → swarm rolls.
-
-The `prune` step deletes labeled objects no longer referenced by the
-current stack file. In-use objects are skipped (docker refuses to
-remove them; the role treats that as a no-op).
+`docker_secret` / `docker_config` with `rolling_versions: true`
+inspects existing objects matching `<name>_v[0-9]+`. If the latest
+version's content matches what you're submitting, it's a no-op. If
+different, it creates `<name>_v(N+1)` and the next deploy uses the new
+hashed name → swarm rolls. Prune deletes labeled objects no longer
+referenced by the current spec; in-use objects are skipped.
 
 ## Knobs worth knowing
 
 - `mattermost_pg_pinned_node` — postgres can't safely run multi-replica
   on shared NFS. Pin to a single worker.
-- `mattermost_max_per_node: 1` + `update_config.order: stop-first` —
-  combined, this lets a 3-replica/3-worker stack roll without a
+- `mattermost_max_per_node: 1` + `update.order: stop-first` —
+  combined, this lets a 3-replica / 3-worker stack roll without a
   deadlock (start-first would wait forever for a free slot).
-- `mattermost_at_rest_key` and `_public_link_salt` MUST be ≥ 32 chars
-  or mattermost refuses to start.
+- `vault_mm_at_rest_key` and `vault_mm_public_link_salt` MUST be ≥ 32
+  chars or mattermost refuses to start.
 
 ## Notes for porting
 
@@ -192,4 +266,6 @@ This template was extracted from a working homelab deployment. The
 homelab version reads secrets from HashiCorp Vault (CLI-driven) and
 auto-generates missing values via a passphrase generator. This
 template strips that out in favour of an ansible-vault YAML file —
-appropriate when you don't have HCV stood up yet.
+appropriate when you don't have HCV stood up yet. The contract at the
+wrapper boundary stays the same `{name, var}` shape, so the swap to
+HCV later is local to `tasks/create_secrets.yml`.
