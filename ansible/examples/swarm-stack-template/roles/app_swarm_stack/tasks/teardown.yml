@@ -1,0 +1,121 @@
+---
+# Tear down everything this stack owns: services first (they hold
+# references to the secrets/configs/networks/volumes), then sweep
+# labeled secrets/configs, then networks, then per-host local volumes.
+#
+# NFS data on disk is preserved by default. To also wipe data, run with
+# `--tags wipe-data` in addition to redeploy/teardown.
+#
+# Service discovery uses two filters and dedupes: by our own
+# `app_swarm_stack=<name>` label (services this role created) AND by
+# name prefix `<stack>_` (services left over from a legacy stack
+# deploy that didn't carry our label).
+
+- name: Discover existing services for this stack
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      ( docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }};
+        docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter name={{ swarm_stack_name }}_ ) | sort -u
+    executable: /bin/bash
+  register: _swst_existing_services
+  changed_when: false
+
+- name: Remove services
+  community.docker.docker_swarm_service:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ _swst_existing_services.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Wait for service tasks to drain
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      ( docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }};
+        docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter name={{ swarm_stack_name }}_ ) | sort -u
+    executable: /bin/bash
+  register: _swst_drain
+  retries: 30
+  delay: 2
+  until: _swst_drain.stdout_lines | default([]) | length == 0
+  changed_when: false
+
+- name: Discover existing configs for this stack
+  ansible.builtin.command:
+    cmd: "docker config ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }}"
+  register: _swst_existing_configs
+  changed_when: false
+
+- name: Remove all stack configs
+  community.docker.docker_config:
+    name: "{{ item }}"
+    state: absent
+    force: true
+  loop: "{{ _swst_existing_configs.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Discover existing secrets for this stack
+  ansible.builtin.command:
+    cmd: "docker secret ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }}"
+  register: _swst_existing_secrets
+  changed_when: false
+
+- name: Remove all stack secrets
+  community.docker.docker_secret:
+    name: "{{ item }}"
+    state: absent
+    force: true
+  loop: "{{ _swst_existing_secrets.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Remove overlay networks
+  community.docker.docker_network:
+    name: "{{ item.name }}"
+    state: absent
+    force: true
+  loop: "{{ swarm_stack_networks | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Kill any leftover stopped/exited containers on each candidate worker
+# that still hold a reference to the local-driver NFS volumes —
+# otherwise docker_volume(state=absent) hits 409 "volume is in use".
+- name: Prune stopped containers on each candidate worker
+  ansible.builtin.command:
+    cmd: "docker container prune -f"
+  delegate_to: "{{ item }}"
+  loop: "{{ swarm_stack_volume_hosts }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _swst_container_prune
+  changed_when: "'Total reclaimed space' in _swst_container_prune.stdout and 'Deleted Containers' in _swst_container_prune.stdout"
+
+- name: Remove local-driver NFS volumes from each candidate host
+  community.docker.docker_volume:
+    name: "{{ item.0.name }}"
+    state: absent
+  delegate_to: "{{ item.1 }}"
+  loop: "{{ swarm_stack_volumes | default([]) | product(swarm_stack_volume_hosts) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} on {{ item.1 }}"
+  register: _swst_volume_rm
+  retries: 6
+  delay: 5
+  until: _swst_volume_rm is not failed
+
+# DESTRUCTIVE — only fires when explicitly tagged. Wipes the on-disk NFS
+# data so the next deploy starts from empty.
+- name: Wipe NFS data directories (DESTRUCTIVE)
+  ansible.builtin.file:
+    path: "{{ swarm_stack_nfs.base }}/{{ item.subpath }}"
+    state: absent
+  loop: "{{ swarm_stack_volumes | default([]) }}"
+  loop_control:
+    label: "{{ item.subpath }}"
+  delegate_to: "{{ swarm_stack_nfs.host }}"
+  become: true
+  tags: [never, wipe-data]

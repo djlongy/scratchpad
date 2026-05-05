@@ -1,21 +1,34 @@
 ---
 # Orchestrator. Each step is in its own file and tagged so callers can
-# target a single phase from the wrapper play.
+# target a single phase. The full chain runs by default and on
+# `--tags redeploy`; teardown only fires on `--tags redeploy` or
+# `--tags teardown`.
 
-- name: Validate caller inputs
+- name: Validate caller inputs (top-level scalars only)
   ansible.builtin.assert:
     that:
       - swarm_stack_name | length > 0
-      - swarm_stack_deploy_mode in ['stack', 'services']
-      - (swarm_stack_deploy_mode == 'stack')
-        | ternary(swarm_stack_template | length > 0, true)
-      - (swarm_stack_deploy_mode == 'services')
-        | ternary(swarm_stack_services | length > 0, true)
+      - swarm_stack_services | length > 0
     fail_msg: >-
-      app_swarm_stack requires swarm_stack_name and either
-      swarm_stack_template (deploy_mode=stack) or swarm_stack_services
-      (deploy_mode=services). swarm_stack_deploy_mode must be
-      'stack' or 'services'.
+      app_swarm_stack requires swarm_stack_name and at least one entry
+      in swarm_stack_services.
+  tags: [always]
+
+- name: Validate each service references an image_key in swarm_stack_images
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name | length > 0
+      - item.image_key is defined
+      - item.image_key in swarm_stack_images
+    fail_msg: >-
+      service '{{ item.name | default("?") }}': name must be a non-empty
+      string and image_key must reference a key in swarm_stack_images.
+      Got image_key='{{ item.image_key | default("?") }}',
+      available keys={{ swarm_stack_images.keys() | list }}.
+  loop: "{{ swarm_stack_services }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
   tags: [always]
 
 - name: Initialise resolved-name registers
@@ -25,45 +38,15 @@
     swarm_stack_secret_values: {}
   tags: [always]
 
-# Classify volume entries by mount type. Untyped entries default to
-# 'volume' (NFS-backed local-driver) for back-compat with wrappers
-# written before the type field existed.
-- name: Classify volume entries by mount type
-  ansible.builtin.set_fact:
-    _swst_vols_volume: >-
-      {{ (swarm_stack_volumes | rejectattr('type', 'defined') | list)
-         + (swarm_stack_volumes | selectattr('type', 'defined')
-            | selectattr('type', 'eq', 'volume') | list) }}
-    _swst_vols_bind: >-
-      {{ swarm_stack_volumes | selectattr('type', 'defined')
-         | selectattr('type', 'eq', 'bind') | list }}
-    _swst_vols_tmpfs: >-
-      {{ swarm_stack_volumes | selectattr('type', 'defined')
-         | selectattr('type', 'eq', 'tmpfs') | list }}
-  tags: [always]
-
-- name: Validate volume types are supported
-  ansible.builtin.assert:
-    that:
-      - item.type | default('volume') in ['volume', 'bind', 'tmpfs']
-    fail_msg: >-
-      swarm_stack_volumes entry '{{ item.name | default('?') }}' has
-      unsupported type '{{ item.type | default('volume') }}'. Allowed:
-      volume (NFS-backed local-driver), bind, tmpfs.
-  loop: "{{ swarm_stack_volumes }}"
-  loop_control:
-    label: "{{ item.name | default('?') }}"
-  tags: [always]
+# Teardown — gated behind tags so default runs don't destroy state.
+- name: Tear down existing services + labeled docker objects
+  ansible.builtin.import_tasks: teardown.yml
+  tags: [never, redeploy, teardown]
 
 - name: Ensure NFS subpaths
   ansible.builtin.import_tasks: ensure_nfs_subpaths.yml
-  when: _swst_vols_volume | length > 0
-  tags: [swarm_stack, nfs, volumes]
-
-- name: Ensure bind-mount host paths
-  ansible.builtin.import_tasks: ensure_bind_paths.yml
-  when: _swst_vols_bind | length > 0
-  tags: [swarm_stack, volumes]
+  when: swarm_stack_volumes | length > 0
+  tags: [swarm_stack, nfs, redeploy]
 
 # Secrets must be created BEFORE configs so config templates can
 # reference swarm_stack_secret_values to bake values into rendered
@@ -71,33 +54,27 @@
 - name: Create docker secrets
   ansible.builtin.import_tasks: create_secrets.yml
   when: swarm_stack_secrets | length > 0
-  tags: [swarm_stack, secrets]
+  tags: [swarm_stack, secrets, redeploy]
 
 - name: Create docker configs
   ansible.builtin.import_tasks: create_configs.yml
   when: swarm_stack_configs | length > 0
-  tags: [swarm_stack, configs]
+  tags: [swarm_stack, configs, redeploy]
 
 - name: Pre-create overlay networks (attachable + encrypted)
   ansible.builtin.import_tasks: create_networks.yml
   when: swarm_stack_networks | length > 0
-  tags: [swarm_stack, networks]
+  tags: [swarm_stack, networks, redeploy]
 
 - name: Pre-create NFS-backed volumes on every candidate host
   ansible.builtin.import_tasks: create_volumes.yml
-  when: _swst_vols_volume | length > 0
-  tags: [swarm_stack, volumes]
+  when: swarm_stack_volumes | length > 0
+  tags: [swarm_stack, volumes, redeploy]
 
-- name: Deploy stack (compose-file mode)
+- name: Deploy services
   ansible.builtin.import_tasks: deploy.yml
-  when: swarm_stack_deploy_mode == 'stack'
-  tags: [swarm_stack, deploy]
-
-- name: Deploy services (per-service module mode)
-  ansible.builtin.import_tasks: deploy_services.yml
-  when: swarm_stack_deploy_mode == 'services'
-  tags: [swarm_stack, deploy]
+  tags: [swarm_stack, deploy, redeploy]
 
 - name: Prune old hashed objects
   ansible.builtin.import_tasks: prune.yml
-  tags: [swarm_stack, prune]
+  tags: [swarm_stack, prune, redeploy]

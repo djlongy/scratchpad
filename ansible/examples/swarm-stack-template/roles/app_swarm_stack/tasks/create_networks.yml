@@ -1,11 +1,19 @@
 ---
-# Pre-create overlay networks (attachable + encrypted) so the stack
-# template can reference them as external: true. Encryption (IPSec) is
+# Pre-create overlay networks (attachable + encrypted) so each service
+# can attach via name in swarm_stack_services. Encryption (IPSec) is
 # opt-in for swarm overlays — without `--opt encrypted` the east-west
 # VXLAN traffic between swarm hosts is in the clear.
 #
 # Runs on the swarm manager — overlay networks are swarm-wide objects
 # in raft, so creating once on a manager is sufficient.
+#
+# IPAM: if `subnet` is set on the entry, the network is created with an
+# explicit IPAM config (subnet + optional gateway + ip_range). Without
+# it, swarm picks from the default pool (10.0.0.0/8 by default), which
+# can collide unpredictably between stacks. Best practice is to pin
+# subnets via a central registry — see swarm_overlay_subnets in
+# group_vars/all.yml so every stack's overlay range is reviewable in
+# one place.
 
 - name: Create overlay networks for the stack
   community.docker.docker_network:
@@ -14,8 +22,19 @@
     attachable: "{{ item.attachable | default(true) }}"
     driver_options:
       encrypted: "{{ (item.encrypted | default(true)) | string | lower }}"
+    ipam_config: >-
+      {{ [{
+            'subnet':   item.subnet,
+            'gateway':  item.gateway   | default(omit),
+            'iprange':  item.ip_range  | default(omit)
+          }]
+         if (item.subnet is defined and (item.subnet | length) > 0)
+         else omit }}
     labels:
       app_swarm_stack: "{{ swarm_stack_name }}"
   loop: "{{ swarm_stack_networks }}"
   loop_control:
-    label: "{{ item.name }} (encrypted={{ item.encrypted | default(true) }})"
+    label: >-
+      {{ item.name }}
+      (encrypted={{ item.encrypted | default(true) }},
+      subnet={{ item.subnet | default('auto') }})

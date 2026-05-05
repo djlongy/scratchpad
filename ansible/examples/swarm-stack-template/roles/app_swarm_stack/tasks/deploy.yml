@@ -1,7 +1,16 @@
 ---
-# Render the caller's stack template (with swarm_stack_config_names /
-# _secret_names / _secret_values resolved) and deploy via
-# community.docker.docker_stack.
+# Per-service deploy via community.docker.docker_swarm_service. Each
+# entry in swarm_stack_services produces one swarm service named
+# `<stack>_<service>` with the `app_swarm_stack` label so teardown can
+# find it later.
+#
+# The service's env block is rendered LATE (here in deploy.yml) — after
+# secrets/configs are registered. The wrapper points env_template at a
+# Jinja YAML file; lookup('template', ...) renders it against the
+# current variable context, where swarm_stack_secret_values and
+# swarm_stack_config_names are now populated. This sidesteps the
+# include_role lazy-eval trap that would otherwise blow up the moment
+# we tried to loop over swarm_stack_services.
 
 - name: Ensure stack staging dir exists
   ansible.builtin.file:
@@ -11,31 +20,87 @@
     group: root
     mode: "0750"
 
-- name: Render stack file
-  ansible.builtin.template:
-    src: "{{ swarm_stack_template }}"
-    dest: "{{ swarm_stack_dir }}/stack.yml"
-    owner: root
-    group: root
-    mode: "0640"
+# Build a logical-name → mount-spec map for use inside the per-service
+# loop. docker_swarm_service expects a list of {secret_name, filename}
+# under the `secrets:` key.
+- name: Build secret-mount lookup
+  ansible.builtin.set_fact:
+    _swst_secret_mount_map: >-
+      {{ _swst_secret_mount_map | default({})
+         | combine({
+             item.name: {
+               'secret_name': swarm_stack_secret_names[item.name],
+               'filename':    '/run/secrets/' ~ item.name
+             }
+           }) }}
+  loop: "{{ swarm_stack_secrets | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-- name: Deploy stack
-  community.docker.docker_stack:
-    name: "{{ swarm_stack_name }}"
+- name: Build config-mount lookup
+  ansible.builtin.set_fact:
+    _swst_config_mount_map: >-
+      {{ _swst_config_mount_map | default({})
+         | combine({
+             item.name: {
+               'config_name': swarm_stack_config_names[item.name],
+               'filename':    item.target | default('/etc/' ~ item.name),
+               'mode':        item.mode   | default('0444') | int(base=8)
+             }
+           }) }}
+  loop: "{{ swarm_stack_configs | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Deploy each service
+  community.docker.docker_swarm_service:
+    name: "{{ swarm_stack_name }}_{{ item.name }}"
+    image: "{{ swarm_stack_images[item.image_key] }}"
+    hostname: "{{ item.hostname | default(omit) }}"
+    networks: "{{ item.networks | default([]) }}"
+    mounts: "{{ item.mounts | default([]) }}"
+    publish: "{{ item.publish | default([]) }}"
+    secrets: >-
+      {{ item.secrets | default([])
+         | map('extract', _swst_secret_mount_map | default({}))
+         | list }}
+    configs: >-
+      {{ item.configs | default([])
+         | map('extract', _swst_config_mount_map | default({}))
+         | list }}
+    placement:
+      constraints: "{{ item.placement | default([]) }}"
+      replicas_max_per_node: "{{ item.placement_max_replicas_per_node | default(omit) }}"
+    mode: replicated
+    replicas: "{{ item.replicas | default(1) | int }}"
+    # `item.get('update', ...)` not `item.update` — `update` is a built-in
+    # dict method and `item.update` resolves to the method object.
+    restart_config: "{{ item.restart | default(omit) }}"
+    update_config: "{{ item.get('update', omit) }}"
+    healthcheck: "{{ item.healthcheck | default(omit) }}"
+    limits: "{{ item.limits | default(omit) }}"
+    env: >-
+      {{ ((lookup('template', item.env_template) | from_yaml)
+          if (item.env_template is defined and (item.env_template | length) > 0)
+          else (item.env_static | default({}))) }}
+    labels:
+      app_swarm_stack: "{{ swarm_stack_name }}"
+      app_swarm_stack_role: "{{ item.name }}"
+    container_labels:
+      app_swarm_stack: "{{ swarm_stack_name }}"
+      app_swarm_stack_role: "{{ item.name }}"
     state: present
-    compose:
-      - "{{ swarm_stack_dir }}/stack.yml"
-    resolve_image: always
-    with_registry_auth: false
-    prune: false
-  register: _swst_deploy
+    resolve_image: true
+  loop: "{{ swarm_stack_services }}"
+  loop_control:
+    label: "{{ item.name }}"
 
-- name: List stack tasks
-  community.docker.docker_stack_task_info:
-    name: "{{ swarm_stack_name }}"
-  register: _swst_tasks
+- name: Summarise deployed services
+  ansible.builtin.command:
+    cmd: "docker service ls --format '{% raw %}{{.Name}}\t{{.Replicas}}\t{{.Image}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }}"
+  register: _swst_summary
   changed_when: false
 
-- name: Stack summary
+- name: Service summary
   ansible.builtin.debug:
-    msg: "{{ swarm_stack_name }}: {{ _swst_tasks.tasks | default([]) | length }} task(s)"
+    msg: "{{ _swst_summary.stdout_lines }}"

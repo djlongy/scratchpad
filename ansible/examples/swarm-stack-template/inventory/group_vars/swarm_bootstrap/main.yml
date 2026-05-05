@@ -8,6 +8,20 @@ swarm_nfs_host: "swarm-nfs-01"        # inventory_hostname for delegate_to
 swarm_nfs_server: "10.0.0.40"          # IP for the NFS mount option
 swarm_nfs_base: "/srv/nfs"
 
+# ── Swarm overlay subnet registry ─────────────────────────────────────────
+# Single source of truth for every encrypted overlay deployed via
+# app_swarm_stack. Each wrapper looks up its subnet here by stack name —
+# collisions are caught at PR review instead of at runtime (where they
+# manifest as silent east-west traffic black-holes between overlays).
+#
+# Convention: pick from 10.40.0.0/16 (avoid 10.0.0.0/8 which swarm uses
+# as its default pool). Step in /24s — that's plenty per stack and the
+# math stays obvious. Add a "next free" comment so the next PR doesn't
+# have to scan the whole map.
+swarm_overlay_subnets:
+  mattermost: "10.40.10.0/24"
+  # next free: 10.40.11.0/24
+
 # ── Mattermost overrides (consumed by app_mattermost_swarm) ────────────────
 mattermost_nfs_host: "{{ swarm_nfs_host }}"
 mattermost_nfs_server: "{{ swarm_nfs_server }}"
