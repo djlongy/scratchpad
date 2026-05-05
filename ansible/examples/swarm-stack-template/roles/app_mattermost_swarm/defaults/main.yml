@@ -40,7 +40,13 @@ mattermost_pg_user: mmuser
 # ── Image URLs ────────────────────────────────────────────────────────
 # Override these in inventory to swap registry (e.g. pull through your
 # internal registry instead of Docker Hub).
-mattermost_postgres_image: "postgres:15-alpine"
+# Mattermost requires PostgreSQL 14.0+ (per
+# https://docs.mattermost.com/deployment-guide/software-hardware-requirements.html)
+# and follows the postgres community 5y/major support window — no
+# upper bound. Default to the latest GA major (17). Bump as new GAs
+# land. Stick to the alpine variant; uid stays 70 across alpine major
+# bumps.
+mattermost_postgres_image: "postgres:17-alpine"
 mattermost_app_image: "mattermost/mattermost-team-edition:9.11"
 
 # ── Service tuning ────────────────────────────────────────────────────
