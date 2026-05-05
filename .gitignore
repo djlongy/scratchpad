@@ -56,6 +56,8 @@ secring.*
 # Ansible task files named after Docker secrets/configs are not secrets — allow them.
 !**/tasks/create_secrets.yml
 !**/tasks/create_configs.yml
+!**/generate-passphrase/ensure_secrets.yml
+!**/generate-passphrase/_ensure_one_secret.yml
 
 # Vault / encrypted files
 *.vault

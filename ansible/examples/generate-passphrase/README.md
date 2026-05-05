@@ -51,3 +51,47 @@ This pattern gives you:
 
 …in one fact, with `no_log` discipline so the value never lands in
 playbook output.
+
+## ensure_secrets.yml — declarative secret bootstrapping
+
+`ensure_secrets.yml` wraps the generator with a HashiCorp Vault
+fall-back so a wrapper role can declare which secrets it needs and
+have them resolve idempotently. Resolution order per entry:
+
+1. **Ansible variable scope** — value already defined and non-empty
+   in `vault.yml` / group_vars / host_vars / extra-vars → use as-is.
+2. **HashiCorp Vault** — read the entry's `vault_path[vault_field]`.
+   Found and non-empty → use, no generation.
+3. **Generate** — run `generate_passphrase.yml`, write the result to
+   Vault (read-merge-write with CAS so other fields at the same path
+   stay intact), use the new value.
+
+The resolved value is set as a fact under the entry's `var` name
+(defaults to `name`) and is also echoed via a `debug` task tagged
+with origin (`scope` / `vault` / `generated`) so you can see at a
+glance whether anything was created.
+
+```yaml
+- hosts: swarm_bootstrap
+  vars:
+    managed_secrets:
+      - name: mm_pg_password
+        var: vault_mm_pg_password
+        vault_mount: kv-mgt
+        vault_path: apps/mattermost/runtime
+        vault_field: pg_password
+      - name: mm_at_rest_key
+        var: vault_mm_at_rest_key
+        vault_mount: kv-mgt
+        vault_path: apps/mattermost/runtime
+        vault_field: at_rest_key
+  tasks:
+    - ansible.builtin.include_tasks: ensure_secrets.yml
+
+    - ansible.builtin.debug:
+        msg: "DSN uses {{ vault_mm_pg_password | length }}-char password"
+```
+
+Requires the `community.hashi_vault` collection on the control node
+plus a working Vault auth (token / approle / etc.) reachable from
+`localhost` — Vault reads/writes are delegated there.
