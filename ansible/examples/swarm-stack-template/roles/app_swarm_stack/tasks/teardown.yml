@@ -109,6 +109,16 @@
 
 # DESTRUCTIVE — only fires when explicitly tagged. Wipes the on-disk NFS
 # data so the next deploy starts from empty.
+#
+# Belt-and-braces gating: the [never, wipe-data] tags would normally be
+# enough to keep this task quiet on a default run, but Ansible merges
+# tags from the parent `import_tasks` directive (which is tagged
+# [never, redeploy, teardown] in main.yml). The merge means a user
+# running `--tags redeploy` accidentally matches on `redeploy` here
+# too, overriding the `never` and silently nuking their NFS data. The
+# explicit `when` on ansible_run_tags makes wipe-data's gate
+# inheritance-proof: it fires ONLY when the user explicitly types
+# `wipe-data`, regardless of how tags inherit.
 - name: Wipe NFS data directories (DESTRUCTIVE)
   ansible.builtin.file:
     path: "{{ swarm_stack_nfs.base }}/{{ item.subpath }}"
@@ -118,4 +128,5 @@
     label: "{{ item.subpath }}"
   delegate_to: "{{ swarm_stack_nfs.host }}"
   become: true
+  when: "'wipe-data' in ansible_run_tags"
   tags: [never, wipe-data]
