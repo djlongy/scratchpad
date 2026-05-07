@@ -414,9 +414,9 @@ sudo journalctl -u fapolicyd --no-pager --since "10 minutes ago" | grep deny
 
 A reusable common task and Jinja2 templates are provided in this repo:
 
-- [`roles/common/tasks/fapolicyd.yml`](../../roles/common/tasks/fapolicyd.yml) -- reusable include task (3 tasks, no tags, no silent skips)
-- [`templates/31-app.rules.j2`](templates/31-app.rules.j2) -- generic data-driven rule template
-- [`templates/31-java-app.rules.j2`](templates/31-java-app.rules.j2) -- Java app template with symlink resolution
+- [`ansible/roles/common/tasks/fapolicyd.yml`](../../ansible/roles/common/tasks/fapolicyd.yml) -- reusable include task (3 tasks, no tags, no silent skips)
+- [`ansible/files/fapolicyd-rule-templates/31-app.rules.j2`](../../ansible/files/fapolicyd-rule-templates/31-app.rules.j2) -- generic data-driven rule template
+- [`ansible/files/fapolicyd-rule-templates/31-java-app.rules.j2`](../../ansible/files/fapolicyd-rule-templates/31-java-app.rules.j2) -- Java app template with symlink resolution
 
 ### Design decisions
 
@@ -546,7 +546,7 @@ fapolicyd-cli --update
 %end
 ```
 
-A full example kickstart with GNOME, fapolicyd, STIG hardening, and FIPS is available at [`examples/kickstart/ks-el9-hardened.cfg`](../kickstart/ks-el9-hardened.cfg).
+A full example kickstart with GNOME, fapolicyd, STIG hardening, and FIPS is available at [`../kickstart/ks-el9-hardened.cfg`](../kickstart/ks-el9-hardened.cfg).
 
 ---
 
