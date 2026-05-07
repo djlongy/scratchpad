@@ -44,7 +44,7 @@
       get_cli_args:
       register: cli_args
       changed_when: false
-      # Custom action plugin - see action_plugins/get_cli_args/get_cli_args.py
+      # Custom action plugin - see plugins/action/get_cli_args.py
       # Returns: ansible_playbook_argv, ansible_playbook_cmd, semaphore_vars, git_status
 
     - name: Get local username
