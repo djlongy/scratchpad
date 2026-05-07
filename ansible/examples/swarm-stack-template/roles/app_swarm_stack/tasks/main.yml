@@ -70,6 +70,39 @@
     label: "{{ item.name | default('?') }}"
   tags: [always]
 
+# When the stack actually uses NFS-backed volumes, the role needs an
+# NFS host + server + base path AND at least one swarm host to
+# pre-create the local-driver volumes on. Asserting up front turns a
+# late, confusing "delegate_to ''" or empty-loop silent skip into a
+# clear failure at validate time. Stacks that are bind-only or
+# tmpfs-only don't need any of this set.
+- name: Validate NFS settings when NFS volumes are declared
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_nfs.host is defined and (swarm_stack_nfs.host | length) > 0
+      - swarm_stack_nfs.server is defined and (swarm_stack_nfs.server | length) > 0
+      - swarm_stack_nfs.base is defined and (swarm_stack_nfs.base | length) > 0
+    fail_msg: >-
+      swarm_stack_volumes contains NFS-backed entries (type=volume) but
+      swarm_stack_nfs is incomplete. Set swarm_stack_nfs.host (inventory
+      hostname for delegate_to), swarm_stack_nfs.server (IP/host for the
+      mount option), and swarm_stack_nfs.base (export root).
+  when: _swst_vols_volume | length > 0
+  tags: [always]
+
+- name: Validate swarm_stack_volume_hosts when NFS volumes are declared
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_volume_hosts | length > 0
+    fail_msg: >-
+      swarm_stack_volumes contains NFS-backed entries but
+      swarm_stack_volume_hosts resolved to an empty list. Define a
+      swarm_workers (or swarm_cluster) inventory group, or set
+      swarm_stack_volume_hosts explicitly to the hosts that should
+      pre-create the local-driver volumes.
+  when: _swst_vols_volume | length > 0
+  tags: [always]
+
 # Teardown — gated behind tags so default runs don't destroy state.
 - name: Tear down existing services + labeled docker objects
   ansible.builtin.import_tasks: teardown.yml
