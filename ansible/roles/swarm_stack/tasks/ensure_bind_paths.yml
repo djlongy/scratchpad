@@ -49,6 +49,11 @@
     mode: "{{ item.0.mode | default('0755') }}"
   delegate_to: "{{ item.1 }}"
   become: true
-  loop: "{{ _swst_bind_mount_host_pairs }}"
+  loop: "{{ _swst_bind_mount_host_pairs | default([]) }}"
   loop_control:
     label: "{{ item.0.source }} on {{ item.1 }}"
+  # Ansible 2.19's strict templating evaluates `delegate_to: item.1`
+  # even when the loop is empty — gate at the task level so we skip
+  # cleanly when there are no bind mounts (the parent import_tasks's
+  # `when:` doesn't shield us from delegate_to evaluation).
+  when: (_swst_bind_mount_host_pairs | default([])) | length > 0
