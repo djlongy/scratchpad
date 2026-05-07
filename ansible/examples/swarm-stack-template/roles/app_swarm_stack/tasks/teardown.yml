@@ -99,7 +99,11 @@
     name: "{{ item.0.name }}"
     state: absent
   delegate_to: "{{ item.1 }}"
-  loop: "{{ swarm_stack_volumes | default([]) | product(swarm_stack_volume_hosts) | list }}"
+  # Only the NFS-backed `volume` entries get a docker_volume — bind and
+  # tmpfs entries are host-path / RAM-only and have no docker_volume
+  # to remove. Iterating them here would be a wasteful no-op per host,
+  # and would surface confusing "no such volume" log lines.
+  loop: "{{ _swst_vols_volume | default([]) | product(swarm_stack_volume_hosts | default([])) | list }}"
   loop_control:
     label: "{{ item.0.name }} on {{ item.1 }}"
   register: _swst_volume_rm
@@ -123,7 +127,12 @@
   ansible.builtin.file:
     path: "{{ swarm_stack_nfs.base }}/{{ item.subpath }}"
     state: absent
-  loop: "{{ swarm_stack_volumes | default([]) }}"
+  # Only NFS-backed volume entries have a `subpath` field. Bind entries
+  # carry a `source` (host path that's outside the role's lifecycle) and
+  # tmpfs entries have nothing on disk. Iterating swarm_stack_volumes
+  # here would dereference an undefined item.subpath on bind/tmpfs and
+  # raise AnsibleUndefinedError mid-loop.
+  loop: "{{ _swst_vols_volume | default([]) }}"
   loop_control:
     label: "{{ item.subpath }}"
   delegate_to: "{{ swarm_stack_nfs.host }}"
