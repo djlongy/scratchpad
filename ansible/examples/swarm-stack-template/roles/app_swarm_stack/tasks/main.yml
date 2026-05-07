@@ -45,14 +45,14 @@
 # resulting sub-lists, so this MUST run before any of them.
 - name: Classify volume entries by mount type
   ansible.builtin.set_fact:
-    _swst_vols_volume: >-
+    _swst_nfs_volumes: >-
       {{ (swarm_stack_volumes | rejectattr('type', 'defined') | list)
          + (swarm_stack_volumes | selectattr('type', 'defined')
             | selectattr('type', 'eq', 'volume') | list) }}
-    _swst_vols_bind: >-
+    _swst_bind_mounts: >-
       {{ swarm_stack_volumes | selectattr('type', 'defined')
          | selectattr('type', 'eq', 'bind') | list }}
-    _swst_vols_tmpfs: >-
+    _swst_tmpfs_mounts: >-
       {{ swarm_stack_volumes | selectattr('type', 'defined')
          | selectattr('type', 'eq', 'tmpfs') | list }}
   tags: [always]
@@ -87,7 +87,7 @@
       swarm_stack_nfs is incomplete. Set swarm_stack_nfs.host (inventory
       hostname for delegate_to), swarm_stack_nfs.server (IP/host for the
       mount option), and swarm_stack_nfs.base (export root).
-  when: _swst_vols_volume | length > 0
+  when: _swst_nfs_volumes | length > 0
   tags: [always]
 
 - name: Validate swarm_stack_volume_hosts when NFS volumes are declared
@@ -100,7 +100,7 @@
       swarm_workers (or swarm_cluster) inventory group, or set
       swarm_stack_volume_hosts explicitly to the hosts that should
       pre-create the local-driver volumes.
-  when: _swst_vols_volume | length > 0
+  when: _swst_nfs_volumes | length > 0
   tags: [always]
 
 # Teardown — gated behind tags so default runs don't destroy state.
@@ -110,12 +110,12 @@
 
 - name: Ensure NFS subpaths
   ansible.builtin.import_tasks: ensure_nfs_subpaths.yml
-  when: _swst_vols_volume | length > 0
+  when: _swst_nfs_volumes | length > 0
   tags: [swarm_stack, nfs, redeploy]
 
 - name: Ensure bind-mount host paths
   ansible.builtin.import_tasks: ensure_bind_paths.yml
-  when: _swst_vols_bind | length > 0
+  when: _swst_bind_mounts | length > 0
   tags: [swarm_stack, volumes, redeploy]
 
 # Secrets must be created BEFORE configs so config templates can
@@ -138,7 +138,7 @@
 
 - name: Pre-create NFS-backed volumes on every candidate host
   ansible.builtin.import_tasks: create_volumes.yml
-  when: _swst_vols_volume | length > 0
+  when: _swst_nfs_volumes | length > 0
   tags: [swarm_stack, volumes, redeploy]
 
 - name: Deploy services
