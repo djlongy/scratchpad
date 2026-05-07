@@ -3,23 +3,21 @@
 # random special character as the word delimiter. The result is exposed
 # as the fact `passphrase`.
 #
-# Usage: include this task file from any role/play. Wrap the include
-# in a block with `delegate_to: localhost` if the calling play targets
-# a remote host — the xkcdpass tool needs to run on the control node
-# (and remote hosts may not have it installed). Do NOT use
-# `delegate_facts: true` — we want the resulting `passphrase` fact to
-# land on the calling host's vars, not on localhost.
+# Lives in roles/common/tasks/. Call as a tasks_from entrypoint:
 #
-# Example:
 #   - name: Make a passphrase
-#     block:
-#       - ansible.builtin.include_tasks: generate_passphrase.yml
-#     delegate_to: localhost
-#     become: false
+#     ansible.builtin.import_role:
+#       name: common
+#       tasks_from: generate_passphrase
 #
 #   - name: Use it
 #     ansible.builtin.debug:
 #       msg: "Generated: {{ passphrase }}"
+#
+# The xkcdpass install step is internally delegated to localhost (so
+# remote-targeted plays still work without the tool on the target).
+# Do NOT wrap the import_role in `delegate_facts: true` — we want the
+# resulting `passphrase` fact on the *calling* host's vars.
 
 - name: Ensure xkcdpass is installed on the control node
   block:
