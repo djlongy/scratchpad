@@ -103,7 +103,7 @@
   # tmpfs entries are host-path / RAM-only and have no docker_volume
   # to remove. Iterating them here would be a wasteful no-op per host,
   # and would surface confusing "no such volume" log lines.
-  loop: "{{ _swst_vols_volume | default([]) | product(swarm_stack_volume_hosts | default([])) | list }}"
+  loop: "{{ _swst_nfs_volumes | default([]) | product(swarm_stack_volume_hosts | default([])) | list }}"
   loop_control:
     label: "{{ item.0.name }} on {{ item.1 }}"
   register: _swst_volume_rm
@@ -132,7 +132,7 @@
   # tmpfs entries have nothing on disk. Iterating swarm_stack_volumes
   # here would dereference an undefined item.subpath on bind/tmpfs and
   # raise AnsibleUndefinedError mid-loop.
-  loop: "{{ _swst_vols_volume | default([]) }}"
+  loop: "{{ _swst_nfs_volumes | default([]) }}"
   loop_control:
     label: "{{ item.subpath }}"
   delegate_to: "{{ swarm_stack_nfs.host }}"
