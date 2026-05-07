@@ -1,0 +1,149 @@
+---
+# Orchestrator. Each step is in its own file and tagged so callers can
+# target a single phase. The full chain runs by default and on
+# `--tags redeploy`; teardown only fires on `--tags redeploy` or
+# `--tags teardown`.
+
+- name: Validate caller inputs (top-level scalars only)
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_name | length > 0
+      - swarm_stack_services | length > 0
+    fail_msg: >-
+      swarm_stack requires swarm_stack_name and at least one entry
+      in swarm_stack_services.
+  tags: [always]
+
+- name: Validate each service has a name and an image
+  ansible.builtin.assert:
+    that:
+      - item.name is string
+      - item.name | length > 0
+      - item.image is string
+      - item.image | length > 0
+    fail_msg: >-
+      service '{{ item.name | default("?") }}': both `name` and `image`
+      must be non-empty strings. Got name='{{ item.name | default("?") }}',
+      image='{{ item.image | default("?") }}'.
+  loop: "{{ swarm_stack_services }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  tags: [always]
+
+- name: Initialise resolved-name registers
+  ansible.builtin.set_fact:
+    swarm_stack_config_names: {}
+    swarm_stack_secret_names: {}
+    swarm_stack_secret_values: {}
+  tags: [always]
+
+# Classify volume entries by mount type. Untyped entries default to
+# 'volume' (NFS-backed local-driver) for back-compat with wrappers
+# written before the type field existed. ensure_nfs_subpaths.yml,
+# ensure_bind_paths.yml and create_volumes.yml all loop on the
+# resulting sub-lists, so this MUST run before any of them.
+- name: Classify volume entries by mount type
+  ansible.builtin.set_fact:
+    _swst_nfs_volumes: >-
+      {{ (swarm_stack_volumes | rejectattr('type', 'defined') | list)
+         + (swarm_stack_volumes | selectattr('type', 'defined')
+            | selectattr('type', 'eq', 'volume') | list) }}
+    _swst_bind_mounts: >-
+      {{ swarm_stack_volumes | selectattr('type', 'defined')
+         | selectattr('type', 'eq', 'bind') | list }}
+    _swst_tmpfs_mounts: >-
+      {{ swarm_stack_volumes | selectattr('type', 'defined')
+         | selectattr('type', 'eq', 'tmpfs') | list }}
+  tags: [always]
+
+- name: Validate volume types are supported
+  ansible.builtin.assert:
+    that:
+      - item.type | default('volume') in ['volume', 'bind', 'tmpfs']
+    fail_msg: >-
+      swarm_stack_volumes entry '{{ item.name | default('?') }}' has
+      unsupported type '{{ item.type | default('volume') }}'. Allowed:
+      volume (NFS-backed local-driver), bind, tmpfs.
+  loop: "{{ swarm_stack_volumes }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  tags: [always]
+
+# When the stack actually uses NFS-backed volumes, the role needs an
+# NFS host + server + base path AND at least one swarm host to
+# pre-create the local-driver volumes on. Asserting up front turns a
+# late, confusing "delegate_to ''" or empty-loop silent skip into a
+# clear failure at validate time. Stacks that are bind-only or
+# tmpfs-only don't need any of this set.
+- name: Validate NFS settings when NFS volumes are declared
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_nfs.host is defined and (swarm_stack_nfs.host | length) > 0
+      - swarm_stack_nfs.server is defined and (swarm_stack_nfs.server | length) > 0
+      - swarm_stack_nfs.base is defined and (swarm_stack_nfs.base | length) > 0
+    fail_msg: >-
+      swarm_stack_volumes contains NFS-backed entries (type=volume) but
+      swarm_stack_nfs is incomplete. Set swarm_stack_nfs.host (inventory
+      hostname for delegate_to), swarm_stack_nfs.server (IP/host for the
+      mount option), and swarm_stack_nfs.base (export root).
+  when: _swst_nfs_volumes | length > 0
+  tags: [always]
+
+- name: Validate swarm_stack_volume_hosts when NFS volumes are declared
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_volume_hosts | length > 0
+    fail_msg: >-
+      swarm_stack_volumes contains NFS-backed entries but
+      swarm_stack_volume_hosts resolved to an empty list. Define a
+      swarm_workers (or swarm_cluster) inventory group, or set
+      swarm_stack_volume_hosts explicitly to the hosts that should
+      pre-create the local-driver volumes.
+  when: _swst_nfs_volumes | length > 0
+  tags: [always]
+
+# Teardown — gated behind tags so default runs don't destroy state.
+- name: Tear down existing services + labeled docker objects
+  ansible.builtin.import_tasks: teardown.yml
+  tags: [never, redeploy, teardown]
+
+- name: Ensure NFS subpaths
+  ansible.builtin.import_tasks: ensure_nfs_subpaths.yml
+  when: _swst_nfs_volumes | length > 0
+  tags: [swarm_stack, nfs, redeploy]
+
+- name: Ensure bind-mount host paths
+  ansible.builtin.import_tasks: ensure_bind_paths.yml
+  when: _swst_bind_mounts | length > 0
+  tags: [swarm_stack, volumes, redeploy]
+
+# Secrets must be created BEFORE configs so config templates can
+# reference swarm_stack_secret_values to bake values into rendered
+# config files.
+- name: Create docker secrets
+  ansible.builtin.import_tasks: create_secrets.yml
+  when: swarm_stack_secrets | length > 0
+  tags: [swarm_stack, secrets, redeploy]
+
+- name: Create docker configs
+  ansible.builtin.import_tasks: create_configs.yml
+  when: swarm_stack_configs | length > 0
+  tags: [swarm_stack, configs, redeploy]
+
+- name: Pre-create overlay networks (attachable + encrypted)
+  ansible.builtin.import_tasks: create_networks.yml
+  when: swarm_stack_networks | length > 0
+  tags: [swarm_stack, networks, redeploy]
+
+- name: Pre-create NFS-backed volumes on every candidate host
+  ansible.builtin.import_tasks: create_volumes.yml
+  when: _swst_nfs_volumes | length > 0
+  tags: [swarm_stack, volumes, redeploy]
+
+- name: Deploy services
+  ansible.builtin.import_tasks: deploy.yml
+  tags: [swarm_stack, deploy, redeploy]
+
+- name: Prune old hashed objects
+  ansible.builtin.import_tasks: prune.yml
+  tags: [swarm_stack, prune, redeploy]
