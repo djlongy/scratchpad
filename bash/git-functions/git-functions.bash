@@ -52,24 +52,28 @@ gci() {
 
 # ── git stash wrapper ────────────────────────────────────────────────────────
 #
-#   gst save <name>     Stash tracked changes with a named message.
-#                       Rejects if a stash with that exact name already exists.
-#   gst pop  [name]     Pop a stash. With <name>: match by exact message.
-#                       Without args: fzf picker with diff preview.
-#   gst apply [name]    Apply a stash (keeps it after restoring).
-#                       With <name>: match by exact message.
-#                       Without args: fzf picker with diff preview.
-#   gst list            Show all stashes (alias: ls)
-#   gst help            Show usage
+#   gstash save <name>     Stash tracked changes with a named message.
+#                          Rejects if a stash with that exact name already exists.
+#   gstash pop  [name]     Pop a stash. With <name>: match by exact message.
+#                          Without args: fzf picker with diff preview.
+#   gstash apply [name]    Apply a stash (keeps it after restoring).
+#                          With <name>: match by exact message.
+#                          Without args: fzf picker with diff preview.
+#   gstash list            Show all stashes (alias: ls)
+#   gstash help            Show usage
 #
-gst() {
+# Named "gstash" rather than "gst" because oh-my-bash's git plugin aliases
+# `gst` to `git status` — the alias gets expanded inside any function definition
+# that starts with `gst`, producing a parse error.
+#
+gstash() {
   if ! command -v fzf &>/dev/null; then
-    echo "gst: fzf is not installed. Install it via your OS package manager (e.g. brew/apt/dnf/pacman)." >&2
+    echo "gstash: fzf is not installed. Install it via your OS package manager (e.g. brew/apt/dnf/pacman)." >&2
     return 1
   fi
 
   if ! git rev-parse --git-dir &>/dev/null; then
-    echo "gst: not inside a git repository" >&2
+    echo "gstash: not inside a git repository" >&2
     return 1
   fi
 
@@ -77,14 +81,14 @@ gst() {
   (( $# > 0 )) && shift
 
   case "$subcmd" in
-    save)            _gst_save "$@" ;;
-    pop)             _gst_restore pop "$@" ;;
-    apply)           _gst_restore apply "$@" ;;
+    save)            _gstash_save "$@" ;;
+    pop)             _gstash_restore pop "$@" ;;
+    apply)           _gstash_restore apply "$@" ;;
     list|ls)         git stash list ;;
-    help|-h|--help)  _gst_help ;;
+    help|-h|--help)  _gstash_help ;;
     *)
-      echo "gst: unknown subcommand '${subcmd}'" >&2
-      _gst_help >&2
+      echo "gstash: unknown subcommand '${subcmd}'" >&2
+      _gstash_help >&2
       return 1
       ;;
   esac
@@ -93,31 +97,31 @@ gst() {
 # Help is printed line-by-line (rather than via a heredoc) so the function
 # remains syntactically valid even when pasted into editors that auto-indent
 # the terminator — heredocs require their terminator at column 0.
-_gst_help() {
+_gstash_help() {
   printf '%s\n' \
-    'gst — named git stash wrapper' \
+    'gstash — named git stash wrapper' \
     '' \
     'Usage:' \
-    '  gst save <name>     Stash tracked changes with a named message' \
-    '                      (rejects if a stash named <name> already exists)' \
-    '  gst pop  [name]     Pop a stash. With <name>: match by exact message.' \
-    '                      Without args: fzf picker with diff preview.' \
-    '  gst apply [name]    Apply a stash (keeps it). With <name>: match by exact message.' \
-    '                      Without args: fzf picker with diff preview.' \
-    '  gst list            Show all stashes' \
-    '  gst help            Show this help'
+    '  gstash save <name>     Stash tracked changes with a named message' \
+    '                         (rejects if a stash named <name> already exists)' \
+    '  gstash pop  [name]     Pop a stash. With <name>: match by exact message.' \
+    '                         Without args: fzf picker with diff preview.' \
+    '  gstash apply [name]    Apply a stash (keeps it). With <name>: match by exact message.' \
+    '                         Without args: fzf picker with diff preview.' \
+    '  gstash list            Show all stashes' \
+    '  gstash help            Show this help'
 }
 
-_gst_save() {
+_gstash_save() {
   local name="${1:-}"
   if [[ -z "$name" ]]; then
-    echo "gst save: missing <name>" >&2
-    echo "Usage: gst save <name>" >&2
+    echo "gstash save: missing <name>" >&2
+    echo "Usage: gstash save <name>" >&2
     return 1
   fi
 
   if git diff --quiet && git diff --cached --quiet; then
-    echo "gst save: nothing to stash (no tracked changes)" >&2
+    echo "gstash save: nothing to stash (no tracked changes)" >&2
     return 1
   fi
 
@@ -125,19 +129,19 @@ _gst_save() {
   # (or "WIP on <branch>: <hash> <subject>" for unnamed stashes); strip the
   # prefix up to the first ": " before comparing.
   if git stash list --format='%gs' | sed -E 's/^[^:]*: //' | grep -Fxq -- "$name"; then
-    echo "gst save: a stash named '${name}' already exists. Pop it or pick a different name." >&2
+    echo "gstash save: a stash named '${name}' already exists. Pop it or pick a different name." >&2
     return 1
   fi
 
   git stash push -m "$name"
 }
 
-_gst_restore() {
+_gstash_restore() {
   local mode="$1"; shift
   local name="${1:-}"
 
   if [[ -z "$(git stash list)" ]]; then
-    echo "gst ${mode}: no stashes" >&2
+    echo "gstash ${mode}: no stashes" >&2
     return 1
   fi
 
@@ -153,11 +157,11 @@ _gst_restore() {
     ')
     count=$(printf '%s' "$matches" | grep -c . || true)
     if [[ "$count" -eq 0 ]]; then
-      echo "gst ${mode}: no stash matches name '${name}'" >&2
+      echo "gstash ${mode}: no stash matches name '${name}'" >&2
       return 1
     fi
     if [[ "$count" -gt 1 ]]; then
-      echo "gst ${mode}: multiple stashes match '${name}'; run 'gst ${mode}' without a name to choose interactively" >&2
+      echo "gstash ${mode}: multiple stashes match '${name}'; run 'gstash ${mode}' without a name to choose interactively" >&2
       return 1
     fi
     target="$matches"
