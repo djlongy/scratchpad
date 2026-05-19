@@ -214,13 +214,14 @@ function _omb_theme_devops_powerline_ps1() {
     # This makes the arrow blend seamlessly between adjacent segment colours.
     # The same fg/bg logic works with ▶/◀ (Unicode fallback) as with Nerd Font
     # glyphs — the visual quality is slightly different but correct.
-    local FG_PATH_CLOSE FG_GIT_ON_PATH FG_GIT_CLOSE
+    local FG_GIT_ON_PATH FG_PATH_BG_AS_FG
     local FG_STATUS_OPEN FG_VENV_ON_STATUS FG_TIME_ON_STATUS FG_TIME_ON_VENV
 
-    FG_PATH_CLOSE=$(__dp_fg   $_DP_C_PATH_BG)    # blue     — path  → default
-    FG_GIT_ON_PATH=$(__dp_fg  $_DP_C_GIT_BG)     # amber on path bg → git
-    FG_GIT_CLOSE=$(__dp_fg    $_DP_C_GIT_BG)     # amber    — git   → default
-    FG_STATUS_OPEN=$(__dp_fg  $status_bg)          # status-colour → open status
+    FG_GIT_ON_PATH=$(__dp_fg     $_DP_C_GIT_BG)  # amber on path bg → git
+    FG_PATH_BG_AS_FG=$(__dp_fg   $_DP_C_PATH_BG) # blue used as fg — for the
+                                                 # closing chevron's triangle,
+                                                 # mirroring path→git in reverse
+    FG_STATUS_OPEN=$(__dp_fg     $status_bg)     # status-colour → open status
     FG_VENV_ON_STATUS=$(__dp_fg $_DP_C_VENV_BG)  # teal on status bg → venv
     FG_TIME_ON_STATUS=$(__dp_fg $_DP_C_TIME_BG)  # light on status bg → time (no venv)
     FG_TIME_ON_VENV=$(__dp_fg $_DP_C_TIME_BG)    # light on venv bg → time
@@ -232,11 +233,21 @@ function _omb_theme_devops_powerline_ps1() {
     line1+="${BG_PATH}${FG_PATH}${path_text}${_DP_RESET}"
 
     if [[ -n "$git_branch" ]]; then
-        line1+="${BG_PATH}${FG_GIT_ON_PATH}${_DP_SEP_R}${_DP_RESET}"
+        # path→git chevron. U+E0B0's filled triangle has its base on the LEFT
+        # edge of the cell and its tip on the right; the non-triangle wedges
+        # sit in the top-right and bottom-right corners. So for the chevron to
+        # blend cleanly into both rects, fg (triangle) needs the colour of the
+        # rect on the LEFT (path/blue) and bg (wedges) needs the colour of the
+        # rect on the RIGHT (git/amber).
+        line1+="${BG_GIT}${FG_PATH_BG_AS_FG}${_DP_SEP_R}${_DP_RESET}"
         line1+="${BG_GIT}${_DP_BOLD}${FG_GIT}${git_text}${_DP_RESET}"
-        line1+="${FG_GIT_CLOSE}${_DP_SEP_R}${_DP_RESET}"
+        # Closing arrow into the fill — original two-tone (amber on default).
+        # Works because there is no coloured segment on the right to demand a
+        # blend; the chevron reads as the tapered end of the git rect.
+        line1+="${FG_GIT_ON_PATH}${_DP_SEP_R}${_DP_RESET}"
     else
-        line1+="${FG_PATH_CLOSE}${_DP_SEP_R}${_DP_RESET}"
+        # Closing arrow with no git — path tapers into the fill.
+        line1+="${FG_PATH_BG_AS_FG}${_DP_SEP_R}${_DP_RESET}"
     fi
 
     # Fill
