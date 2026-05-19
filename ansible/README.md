@@ -36,7 +36,8 @@ ansible/
 │   ├── vault-env-client.sh      # ansible-vault password from env var
 │   └── load_vmware_env.sh       # source VMWARE_* from HCV
 └── docs/                    # ansible-specific long-form guides
-    └── vault-env-unlock.md      # unlock-ansible / unlock-vmware shell helpers
+    ├── ansible-design-principles.md  # community-standard playbook/role/tag/var conventions
+    └── vault-env-unlock.md           # unlock-ansible / unlock-vmware shell helpers
 ```
 
 OS-level reference docs (fapolicyd troubleshooting, EL9 kickstart) live
