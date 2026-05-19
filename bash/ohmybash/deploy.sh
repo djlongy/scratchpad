@@ -86,7 +86,7 @@ install_blesh_if_enabled() {
     exit 1
   }
   command -v make >/dev/null 2>&1 || {
-    echo "ERROR: --with-blesh requested but make is missing"
+    echo "ERROR: --with-blesh requested but make is missing. Install it via your OS package manager (e.g. brew/apt/dnf/pacman)."
     exit 1
   }
 
@@ -258,7 +258,7 @@ if [[ "${WITH_BLESH}" == "1" ]]; then
     exit 1
   }
   command -v make >/dev/null 2>&1 || {
-    echo "ERROR: --with-blesh requested but make is missing on remote host"
+    echo "ERROR: --with-blesh requested but make is missing on remote host. Install it via the host's OS package manager (e.g. apt/dnf/pacman)."
     exit 1
   }
 
