@@ -21,21 +21,26 @@ Select a branch and press Enter to check it out.
 
 **Requires:** `fzf`
 
-### `gst` — Named stash save / pop / apply
+### `gstash` — Named stash save / pop / apply
 
 Wrapper around `git stash` that lets you give stashes a memorable name and
 retrieve them later either by that name or via an fzf picker with a diff
 preview.
 
 ```bash
-gst save <name>     # stash tracked changes with a named message
-                    # (rejects if a stash named <name> already exists)
-gst pop  [name]     # pop a stash. With <name>: match by exact message.
-                    #               Without args: fzf picker.
-gst apply [name]    # apply a stash (keeps it). Same matching rules as pop.
-gst list            # show all stashes (alias: gst ls)
-gst help            # usage
+gstash save <name>     # stash tracked changes with a named message
+                       # (rejects if a stash named <name> already exists)
+gstash pop  [name]     # pop a stash. With <name>: match by exact message.
+                       #              Without args: fzf picker.
+gstash apply [name]    # apply a stash (keeps it). Same matching rules as pop.
+gstash list            # show all stashes (alias: gstash ls)
+gstash help            # usage
 ```
+
+> The name `gstash` (rather than the shorter `gst`) is deliberate: oh-my-bash's
+> git plugin already aliases `gst` to `git status`. Defining a function called
+> `gst` after that alias is loaded causes bash to alias-expand the function
+> name inside its own definition line, producing a parse error.
 
 The picker shows ref / age / message in the list and `git stash show -p`
 output in the preview pane on the right:
@@ -81,7 +86,7 @@ Or copy just the functions you want directly into your `~/.bashrc`.
 |------|-------|
 | bash 4.0+ | Ships on RHEL 8+, Ubuntu 20.04+, macOS (system bash is 3.x — install via brew) |
 | git | Any recent version |
-| fzf | Required for `gci` and `gst`. Install: `brew install fzf` / `dnf install fzf` / [github.com/junegunn/fzf](https://github.com/junegunn/fzf) |
+| fzf | Required for `gci` and `gstash`. Install: `brew install fzf` / `dnf install fzf` / [github.com/junegunn/fzf](https://github.com/junegunn/fzf) |
 
 ## Files
 
