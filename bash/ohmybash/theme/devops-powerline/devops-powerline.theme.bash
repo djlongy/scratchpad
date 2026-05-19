@@ -71,17 +71,22 @@ _DP_DIM='\[\e[2m\]'
 
 # ── Helpers ───────────────────────────────────────────────────────────────────────
 
-# Returns current dir with ~ for home, truncated if deeply nested.
+# Returns current dir. Inside $HOME, substitutes ~ and truncates deeply
+# nested paths. Outside $HOME, always returns the full $PWD untruncated.
 # Uses explicit if/elif — avoids bash 5.x delimiter ambiguity in ${var/#$HOME/~}
 # when HOME contains slash characters.
 function __dp_short_path() {
+    # Outside $HOME: always show full $PWD, no truncation.
+    if [[ "$PWD" != "$HOME" && "$PWD" != "$HOME/"* ]]; then
+        echo "$PWD"
+        return
+    fi
+
     local raw
     if [[ "$PWD" == "$HOME" ]]; then
         raw="~"
-    elif [[ "$PWD" == "$HOME/"* ]]; then
-        raw="~${PWD#"$HOME"}"
     else
-        raw="$PWD"
+        raw="~${PWD#"$HOME"}"
     fi
 
     local max=45
@@ -90,7 +95,7 @@ function __dp_short_path() {
         return
     fi
 
-    # Truncate deep paths: keep root + first dir + … + last two components
+    # Truncate deep paths under home: keep root + first dir + … + last two components
     local IFS='/'
     read -ra parts <<< "$raw"
     local total=${#parts[@]}
