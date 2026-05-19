@@ -90,20 +90,22 @@ gst() {
   esac
 }
 
+# Help is printed line-by-line (rather than via a heredoc) so the function
+# remains syntactically valid even when pasted into editors that auto-indent
+# the terminator — heredocs require their terminator at column 0.
 _gst_help() {
-  cat <<'EOF'
-gst — named git stash wrapper
-
-Usage:
-  gst save <name>     Stash tracked changes with a named message
-                      (rejects if a stash named <name> already exists)
-  gst pop  [name]     Pop a stash. With <name>: match by exact message.
-                      Without args: fzf picker with diff preview.
-  gst apply [name]    Apply a stash (keeps it). With <name>: match by exact message.
-                      Without args: fzf picker with diff preview.
-  gst list            Show all stashes
-  gst help            Show this help
-EOF
+  printf '%s\n' \
+    'gst — named git stash wrapper' \
+    '' \
+    'Usage:' \
+    '  gst save <name>     Stash tracked changes with a named message' \
+    '                      (rejects if a stash named <name> already exists)' \
+    '  gst pop  [name]     Pop a stash. With <name>: match by exact message.' \
+    '                      Without args: fzf picker with diff preview.' \
+    '  gst apply [name]    Apply a stash (keeps it). With <name>: match by exact message.' \
+    '                      Without args: fzf picker with diff preview.' \
+    '  gst list            Show all stashes' \
+    '  gst help            Show this help'
 }
 
 _gst_save() {
