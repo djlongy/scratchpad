@@ -1,0 +1,18 @@
+---
+- name: Remove orphaned firewalld service XML files
+  ansible.builtin.file:
+    path: "/etc/firewalld/services/{{ item }}.xml"
+    state: absent
+  loop: "{{ firewalld_services_remove }}"
+  loop_control:
+    label: "{{ item }}"
+  notify: Reload firewalld
+
+- name: Remove orphaned firewalld zone XML files
+  ansible.builtin.file:
+    path: "/etc/firewalld/zones/{{ item }}.xml"
+    state: absent
+  loop: "{{ firewalld_zones_remove }}"
+  loop_control:
+    label: "{{ item }}"
+  notify: Reload firewalld

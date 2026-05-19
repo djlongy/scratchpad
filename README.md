@@ -23,6 +23,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | Project | What it does | Lives in |
 |---|---|---|
 | [Ansible Design Principles](ansible/docs/ansible-design-principles.md) | Opinionated, source-cited reference for designing maintainable Ansible repos at scale. Playbook structure, role naming, tag schools, variable scoping, hostvars discipline, lint hygiene, migration strategy for inheriting an unprincipled codebase. | `ansible/docs/` |
+| [`firewalld`](ansible/roles/firewalld/) | XML-template firewalld services + zones (the declarative firewalld-native way), source-CIDR and interface bindings, default-zone management, legacy `firewall_rules` back-compat, optional cleanup. Multi-distro via `ansible.builtin.package`. Behavioural defaults; env-specific bindings via inventory. | `ansible/roles/` |
 | [`vault_container`](ansible/roles/vault_container/) | 3-node HashiCorp Vault Raft HA cluster as a Docker container. Self-signed TLS, Shamir unseal, KV mounts, ACL policies, optional FreeIPA LDAP. | `ansible/roles/` |
 | [`swarm_stack`](ansible/roles/swarm_stack/) | Generic engine for deploying any application stack onto Docker Swarm. Encrypted overlays, NFS volumes, content-versioned secrets/configs, redeploy + teardown via tags. | `ansible/roles/` |
 | [`mattermost_swarm`](ansible/roles/mattermost_swarm/) | Worked-example wrapper over `swarm_stack` deploying Mattermost (postgres + app) with optional FreeIPA LDAP/SSO. | `ansible/roles/` |

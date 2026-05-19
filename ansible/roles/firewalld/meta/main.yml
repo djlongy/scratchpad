@@ -1,0 +1,24 @@
+---
+galaxy_info:
+  role_name: firewalld
+  author: longy
+  description: >-
+    Manages firewalld via XML templates for services and zones, plus runtime
+    source/interface-to-zone bindings. Multi-distro (EL + Debian families).
+    Env-agnostic — all configuration via inventory variables.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+    - name: Debian
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+  galaxy_tags:
+    - firewall
+    - firewalld
+    - security
+    - networking
+
+dependencies: []

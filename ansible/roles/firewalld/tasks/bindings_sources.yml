@@ -1,0 +1,11 @@
+---
+- name: Bind source CIDRs to zones
+  ansible.posix.firewalld:
+    zone: "{{ item.zone }}"
+    source: "{{ item.source }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewalld_source_zone_bindings }}"
+  loop_control:
+    label: "{{ item.source }} -> {{ item.zone }}"

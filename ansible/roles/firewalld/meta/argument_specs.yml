@@ -1,0 +1,83 @@
+---
+argument_specs:
+  main:
+    short_description: "Configure firewalld via XML templates and runtime bindings"
+    description:
+      - "Installs firewalld, renders custom service/zone XML, applies source/interface bindings."
+      - "Back-compat: accepts the legacy `firewall_rules` variable in both string and dict shapes."
+    options:
+      firewalld_enabled:
+        description: "Master toggle. Set false to skip the role entirely."
+        type: bool
+        default: true
+      firewalld_service_state:
+        description: "systemd state of the firewalld unit."
+        type: str
+        choices: [started, stopped, restarted]
+        default: started
+      firewalld_service_enabled:
+        description: "Whether firewalld is enabled at boot."
+        type: bool
+        default: true
+      firewalld_default_zone:
+        description: "Default zone for unclassified traffic. Empty string = leave unchanged."
+        type: str
+        default: ""
+      firewalld_reload:
+        description: "Reload firewalld after XML changes."
+        type: bool
+        default: true
+      firewalld_packages:
+        description: "Packages to install."
+        type: list
+        elements: str
+        default: [firewalld]
+      firewalld_services:
+        description: "Custom service definitions. See defaults/main.yml for schema."
+        type: list
+        elements: dict
+        default: []
+      firewalld_services_remove:
+        description: "Service short names to delete from /etc/firewalld/services/."
+        type: list
+        elements: str
+        default: []
+      firewalld_zones:
+        description: "Custom zone definitions. See defaults/main.yml for schema."
+        type: list
+        elements: dict
+        default: []
+      firewalld_zones_remove:
+        description: "Zone short names to delete from /etc/firewalld/zones/."
+        type: list
+        elements: str
+        default: []
+      firewalld_source_zone_bindings:
+        description: "Source-CIDR -> zone bindings (L3 segregation pattern)."
+        type: list
+        elements: dict
+        default: []
+        options:
+          zone:
+            type: str
+            required: true
+          source:
+            type: str
+            required: true
+      firewalld_interface_zone_bindings:
+        description: "Interface -> zone bindings (L2 segregation; use sparingly)."
+        type: list
+        elements: dict
+        default: []
+        options:
+          zone:
+            type: str
+            required: true
+          interface:
+            type: str
+            required: true
+      firewall_rules:
+        description: "Legacy variable, kept for back-compat. Accepts string or dict form."
+        type: list
+        elements: raw
+        default: []

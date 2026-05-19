@@ -1,0 +1,60 @@
+---
+# firewalld — firewalld config via XML templates + runtime bindings.
+# Distribution-agnostic: ansible.builtin.package resolves "firewalld" on both
+# EL (dnf) and Debian (apt) families.
+
+- name: Skip firewalld config (firewalld_enabled is false)
+  ansible.builtin.debug:
+    msg: "firewalld_enabled is false — skipping firewalld"
+  when: not firewalld_enabled
+  tags: [always]
+
+- name: Configure firewalld
+  when: firewalld_enabled
+  block:
+
+    - name: Install firewalld and start the service
+      ansible.builtin.include_tasks: install.yml
+      tags: [install, firewalld]
+
+    - name: Render custom service XML definitions
+      ansible.builtin.include_tasks: services.yml
+      tags: [services, firewalld]
+
+    - name: Render custom zone XML definitions
+      ansible.builtin.include_tasks: zones.yml
+      tags: [zones, firewalld]
+
+    - name: Remove orphaned service/zone XML definitions
+      ansible.builtin.include_tasks: cleanup.yml
+      when:
+        - firewalld_services_remove | length > 0
+          or firewalld_zones_remove | length > 0
+      tags: [cleanup, firewalld]
+
+    # Flush handlers HERE so the reload happens before we try to bind
+    # sources/interfaces to zones (firewalld needs to know the zones exist
+    # before the firewalld module can target them).
+    - name: Reload firewalld before applying runtime bindings
+      ansible.builtin.meta: flush_handlers
+      tags: [reload, firewalld]
+
+    - name: Set the default zone
+      ansible.builtin.include_tasks: default_zone.yml
+      when: firewalld_default_zone | length > 0
+      tags: [default_zone, firewalld]
+
+    - name: Bind source CIDRs to zones (L3 segregation)
+      ansible.builtin.include_tasks: bindings_sources.yml
+      when: firewalld_source_zone_bindings | length > 0
+      tags: [bindings, firewalld]
+
+    - name: Bind interfaces to zones (L2 segregation — use sparingly)
+      ansible.builtin.include_tasks: bindings_interfaces.yml
+      when: firewalld_interface_zone_bindings | length > 0
+      tags: [bindings, firewalld]
+
+    - name: Apply legacy firewall_rules (back-compat)
+      ansible.builtin.include_tasks: legacy_rules.yml
+      when: firewall_rules | length > 0
+      tags: [legacy_rules, firewalld]

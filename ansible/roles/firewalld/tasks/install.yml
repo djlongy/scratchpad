@@ -1,0 +1,20 @@
+---
+- name: Install firewalld packages
+  ansible.builtin.package:
+    name: "{{ firewalld_packages }}"
+    state: present
+
+- name: Ensure firewalld service state
+  ansible.builtin.systemd:
+    name: firewalld
+    state: "{{ firewalld_service_state }}"
+    enabled: "{{ firewalld_service_enabled }}"
+    daemon_reload: true
+
+- name: Probe firewalld is responsive
+  ansible.builtin.command: firewall-cmd --state
+  register: _firewalld_state
+  changed_when: false
+  retries: 3
+  delay: 2
+  until: _firewalld_state.rc == 0

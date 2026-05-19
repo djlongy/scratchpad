@@ -11,6 +11,7 @@ ansible/
 ├── ansible.cfg              # roles_path, inventory, action_plugins
 ├── roles/                   # portable roles (each has its own README.md)
 │   ├── common/                  # function-like task helpers (tasks_from: …)
+│   ├── firewalld/               # XML-template firewalld service + zone management
 │   ├── vault_container/         # 3-node HashiCorp Vault Raft HA on Docker
 │   ├── swarm_stack/             # generic Docker Swarm deploy engine
 │   ├── mattermost_swarm/        # wrapper: Mattermost via swarm_stack

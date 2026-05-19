@@ -1,0 +1,32 @@
+---
+# Back-compat shim for the legacy `firewall_rules` variable.
+#
+# Accepts two formats (both used historically in this repo):
+#
+#   firewall_rules:
+#     - "22/tcp/ssh"                                      # string
+#     - { port: 22, protocol: tcp, service: ssh }         # dict
+#
+# Each rule is opened in `firewalld_default_zone` (falls back to "public" if unset).
+# New code should prefer firewalld_services + firewalld_zones instead.
+
+- name: Open legacy firewall_rules ports in default zone
+  ansible.posix.firewalld:
+    zone: "{{ firewalld_default_zone if firewalld_default_zone | length > 0 else 'public' }}"
+    port: >-
+      {{
+        (item.port ~ '/' ~ item.protocol)
+        if (item is mapping)
+        else (item.split('/')[0] ~ '/' ~ item.split('/')[1])
+      }}
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_rules }}"
+  loop_control:
+    label: >-
+      {{
+        (item.port ~ '/' ~ item.protocol ~ ' (' ~ (item.service | default('')) ~ ')')
+        if (item is mapping)
+        else item
+      }}
