@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+{#
+  Generic firewalld zone XML template.
+  Schema: see roles/conf_firewall/defaults/main.yml -> firewalld_zones
+  Reference: https://firewalld.org/documentation/man-pages/firewalld.zone.html
+#}
+<zone{% if item.target | default('default') != 'default' %} target="{{ item.target }}"{% endif %}>
+{% if item.short is defined and item.short | length > 0 %}
+  <short>{{ item.short }}</short>
+{% endif %}
+{% if item.description is defined and item.description | length > 0 %}
+  <description>{{ item.description }}</description>
+{% endif %}
+{% for iface in item.interfaces | default([]) %}
+  <interface name="{{ iface }}"/>
+{% endfor %}
+{% for src in item.sources | default([]) %}
+  <source address="{{ src }}"/>
+{% endfor %}
+{% for svc in item.services | default([]) %}
+  <service name="{{ svc }}"/>
+{% endfor %}
+{% for p in item.ports | default([]) %}
+  <port port="{{ p.port }}" protocol="{{ p.protocol }}"/>
+{% endfor %}
+{% for proto in item.protocols | default([]) %}
+  <protocol value="{{ proto }}"/>
+{% endfor %}
+{% for sp in item.source_ports | default([]) %}
+  <source-port port="{{ sp.port }}" protocol="{{ sp.protocol }}"/>
+{% endfor %}
+{% for icmp in item.icmp_blocks | default([]) %}
+  <icmp-block name="{{ icmp }}"/>
+{% endfor %}
+{% if item.icmp_block_inversion | default(false) %}
+  <icmp-block-inversion/>
+{% endif %}
+{% if item.masquerade | default(false) %}
+  <masquerade/>
+{% endif %}
+{% if item.forward | default(false) %}
+  <forward/>
+{% endif %}
+{% for rule in item.rich_rules | default([]) %}
+  <rule>{{ rule }}</rule>
+{% endfor %}
+</zone>

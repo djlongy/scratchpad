@@ -1,0 +1,121 @@
+---
+# roles/firewalld/defaults/main.yml
+#
+# All values are empty/null by default — env-specific configuration lives in
+# group_vars/<env>/<group>.yml or host_vars/<host>.yml per repo convention.
+# Override anything below at the inventory level.
+
+# ── Service lifecycle ────────────────────────────────────────────────────────
+
+# Set to false to skip the entire role (useful for hosts where firewalld is
+# managed externally, or for canary debugging).
+firewalld_enabled: true
+
+# State for the firewalld systemd unit. Valid: started | stopped | restarted.
+firewalld_service_state: started
+
+# Whether the firewalld unit should be enabled at boot.
+firewalld_service_enabled: true
+
+# Default zone applied to unclassified traffic. Empty string ("") = leave the
+# firewalld-managed default unchanged.
+firewalld_default_zone: ""
+
+# Reload firewalld after XML changes (set false to defer reload — e.g. during
+# multi-role bootstrap where another role will reload at the end).
+firewalld_reload: true
+
+# ── Custom service definitions ───────────────────────────────────────────────
+#
+# Each entry renders /etc/firewalld/services/<name>.xml from the generic
+# service.xml.j2 template, then reloads firewalld so the service becomes
+# available to bind in a zone.
+#
+# Schema:
+#   - name: harbor                       # filename: <name>.xml — REQUIRED
+#     short: "Harbor Registry"           # display name shown in firewall-cmd --info-service
+#     description: "Container registry"  # longer description
+#     ports:                             # list of port openings
+#       - { port: 80,  protocol: tcp }
+#       - { port: 443, protocol: tcp }
+#       - { port: "8000-8100", protocol: tcp }   # port ranges supported
+#     protocols: []                      # raw IP protocols: icmp, esp, ah, etc.
+#     source_ports: []                   # same shape as ports — for source-port rules
+#     module_helpers: []                 # conntrack helpers: ftp, sip, tftp, etc.
+#     destination:                       # optional destination filter
+#       ipv4: ""                         # e.g. "192.0.2.0/24"
+#       ipv6: ""                         # e.g. "2001:db8::/32"
+#     includes: []                       # other firewalld services to include
+firewalld_services: []
+
+# Services to remove (idempotent — deletes /etc/firewalld/services/<name>.xml
+# then reloads). List of service short names.
+firewalld_services_remove: []
+
+# ── Custom zone definitions ──────────────────────────────────────────────────
+#
+# Each entry renders /etc/firewalld/zones/<name>.xml from zone.xml.j2 and
+# reloads firewalld so the zone becomes available for source/interface binding.
+#
+# Schema:
+#   - name: dmz-ingress                  # filename: <name>.xml — REQUIRED
+#     short: "DMZ Ingress"
+#     description: "Public-facing services"
+#     target: default                    # default | ACCEPT | DROP | %%REJECT%%
+#     services: [ssh, http, https, harbor]   # service names (built-in or custom)
+#     ports: []                          # ad-hoc port opens (same shape as service ports)
+#     protocols: []                      # raw IP protocols
+#     source_ports: []
+#     icmp_blocks: []                    # block specific ICMP types
+#     icmp_block_inversion: false
+#     masquerade: false
+#     forward: false                     # intra-zone forwarding (firewalld 0.9+)
+#     sources: []                        # CIDRs bound at zone-creation time (also see firewalld_source_zone_bindings)
+#     rich_rules: []                     # raw rich-rule strings
+firewalld_zones: []
+
+# Zones to remove. List of zone short names. Built-in zones (public, trusted,
+# internal, etc.) cannot be removed by firewalld — this only affects
+# /etc/firewalld/zones/<name>.xml files.
+firewalld_zones_remove: []
+
+# ── Runtime zone bindings ────────────────────────────────────────────────────
+#
+# These use the ansible.posix.firewalld module to bind sources/interfaces to
+# zones. Run AFTER zones are rendered + firewalld reloaded.
+
+# Bind source CIDRs to zones (L3 segregation pattern — preferred).
+# Schema:
+#   - { zone: trusted-mgmt, source: 192.0.2.0/24 }
+#   - { zone: dmz-ingress,  source: 198.51.100.0/24 }
+firewalld_source_zone_bindings: []
+
+# Bind physical/virtual interfaces to zones (L2 segregation — use only if you
+# have a real reason: dedicated storage NIC, PCI passthrough, etc.).
+# Schema:
+#   - { zone: storage, interface: ens224 }
+firewalld_interface_zone_bindings: []
+
+# ── Back-compat: legacy firewall_rules variable ──────────────────────────────
+#
+# Accepts two formats (both used historically in this repo):
+#
+#   firewall_rules:
+#     - "22/tcp/ssh"                     # string: "PORT/PROTO/COMMENT"
+#     - "5000-5100/tcp/elasticsearch"    # ranges supported
+#
+#   firewall_rules:
+#     - { port: 22, protocol: tcp, service: ssh }      # dict form
+#
+# Rules are opened in `firewalld_default_zone` (falls back to "public" if the
+# default is unset). This path is kept ONLY for compatibility — new code should
+# prefer firewalld_services + firewalld_zones.
+firewall_rules: []
+
+# ── Package management ───────────────────────────────────────────────────────
+
+# Package name(s) to install. Default uses ansible.builtin.package which
+# resolves "firewalld" correctly on both EL and Debian families. Override only
+# if you need a custom package (e.g. backports).
+firewalld_packages:
+  - firewalld

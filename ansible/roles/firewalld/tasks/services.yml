@@ -1,0 +1,26 @@
+---
+# Render /etc/firewalld/services/<name>.xml for each entry in firewalld_services.
+# Changes notify the 'reload firewalld' handler (flushed in main.yml).
+
+- name: Validate firewalld_services entries
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | length > 0
+    fail_msg: "Each firewalld_services entry requires a 'name' field. Offending entry: {{ item }}"
+    quiet: true
+  loop: "{{ firewalld_services }}"
+  loop_control:
+    label: "{{ item.name | default('(missing name)') }}"
+
+- name: Render firewalld service XML files
+  ansible.builtin.template:
+    src: service.xml.j2
+    dest: "/etc/firewalld/services/{{ item.name }}.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ firewalld_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload firewalld

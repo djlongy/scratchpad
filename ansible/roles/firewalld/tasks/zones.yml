@@ -1,0 +1,23 @@
+---
+- name: Validate firewalld_zones entries
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | length > 0
+    fail_msg: "Each firewalld_zones entry requires a 'name' field. Offending entry: {{ item }}"
+    quiet: true
+  loop: "{{ firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name | default('(missing name)') }}"
+
+- name: Render firewalld zone XML files
+  ansible.builtin.template:
+    src: zone.xml.j2
+    dest: "/etc/firewalld/zones/{{ item.name }}.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload firewalld

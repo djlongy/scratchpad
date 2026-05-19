@@ -1,0 +1,10 @@
+---
+- name: Get the current default zone
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  register: _firewalld_current_default_zone
+  changed_when: false
+
+- name: Set the default zone
+  ansible.builtin.command: "firewall-cmd --set-default-zone={{ firewalld_default_zone }}"
+  when: _firewalld_current_default_zone.stdout | trim != firewalld_default_zone
+  changed_when: true

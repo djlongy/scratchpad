@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+{#
+  Generic firewalld service XML template.
+  Schema: see roles/conf_firewall/defaults/main.yml -> firewalld_services
+  Reference: https://firewalld.org/documentation/man-pages/firewalld.service.html
+#}
+<service>
+{% if item.short is defined and item.short | length > 0 %}
+  <short>{{ item.short }}</short>
+{% endif %}
+{% if item.description is defined and item.description | length > 0 %}
+  <description>{{ item.description }}</description>
+{% endif %}
+{% for p in item.ports | default([]) %}
+  <port port="{{ p.port }}" protocol="{{ p.protocol }}"/>
+{% endfor %}
+{% for proto in item.protocols | default([]) %}
+  <protocol value="{{ proto }}"/>
+{% endfor %}
+{% for sp in item.source_ports | default([]) %}
+  <source-port port="{{ sp.port }}" protocol="{{ sp.protocol }}"/>
+{% endfor %}
+{% for helper in item.module_helpers | default([]) %}
+  <module name="{{ helper }}"/>
+{% endfor %}
+{% if item.destination is defined %}
+{%   if item.destination.ipv4 | default('') | length > 0 or item.destination.ipv6 | default('') | length > 0 %}
+  <destination{% if item.destination.ipv4 | default('') | length > 0 %} ipv4="{{ item.destination.ipv4 }}"{% endif %}{% if item.destination.ipv6 | default('') | length > 0 %} ipv6="{{ item.destination.ipv6 }}"{% endif %}/>
+{%   endif %}
+{% endif %}
+{% for inc in item.includes | default([]) %}
+  <include service="{{ inc }}"/>
+{% endfor %}
+</service>
