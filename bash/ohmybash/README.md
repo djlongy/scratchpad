@@ -48,11 +48,17 @@ chmod +x deploy.sh
 # Local install + ble.sh autosuggestions (optional)
 ./deploy.sh --local --with-blesh
 
+# Local install + also provision /root so sudo'ing keeps the prompt working
+./deploy.sh --local --for-root
+
 # Optional remote install
 ./deploy.sh --remote host01.example.com user
 
 # Optional remote install + ble.sh autosuggestions
 ./deploy.sh --remote host01.example.com user --with-blesh
+
+# Optional remote install + also provision /root on the remote box
+./deploy.sh --remote host01.example.com user --for-root
 
 # Backward-compatible remote syntax
 ./deploy.sh host01.example.com user
@@ -65,6 +71,17 @@ The script:
 4. Appends or updates OMB config in `~/.bashrc`
 
 Optional: with `--with-blesh`, it also installs `ble.sh` and enables inline autosuggestions/history prediction in `~/.bashrc`.
+
+### `--for-root` — keep the prompt alive under sudo
+
+The theme rebuilds `PS1` every prompt via `PROMPT_COMMAND`. When you `sudo -i` / `sudo bash` / `sudo su -` to root, root's shell sources `/root/.bashrc` — and if that file doesn't load Oh My Bash, no `PROMPT_COMMAND` is registered and `PS1` freezes at whatever the parent shell inherited. The current working directory stops updating, which is confusing while troubleshooting.
+
+`--for-root` runs the same install a second time against `/root` via `sudo -H bash`, so root gets its own `/root/.bashrc`, `/root/.oh-my-bash`, and theme copy. After deploying:
+
+- Locally: `sudo -i` (or `sudo bash`) picks up the new prompt.
+- Remotely: SSH in, then `sudo -i` — same result.
+
+Requires sudo (locally, or on the remote box). Without `NOPASSWD`, remote runs allocate a TTY (`ssh -t`) so sudo can prompt for the password.
 
 Open a new shell (or run `source ~/.bashrc`) after deployment.
 
