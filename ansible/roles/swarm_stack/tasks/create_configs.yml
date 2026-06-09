@@ -29,7 +29,7 @@
   loop: "{{ swarm_stack_configs }}"
   loop_control:
     label: "{{ item.name }}"
-  register: _swst_config_slurps
+  register: _swarm_stack_config_slurps
 
 - name: Create docker configs (rolling versions)
   community.docker.docker_config:
@@ -41,13 +41,13 @@
     labels:
       swarm_stack: "{{ swarm_stack_name }}"
       swarm_stack_service: "{{ item.0.name }}"
-  loop: "{{ swarm_stack_configs | zip(_swst_config_slurps.results) | list }}"
+  loop: "{{ swarm_stack_configs | zip(_swarm_stack_config_slurps.results) | list }}"
   loop_control:
     label: "{{ item.0.name }}"
-  register: _swst_config_results
+  register: _swarm_stack_config_results
 
 - name: Build resolved config-name registry
   ansible.builtin.set_fact:
     swarm_stack_config_names: >-
       {{ dict(swarm_stack_configs | map(attribute='name')
-              | zip(_swst_config_results.results | map(attribute='config_name'))) }}
+              | zip(_swarm_stack_config_results.results | map(attribute='config_name'))) }}

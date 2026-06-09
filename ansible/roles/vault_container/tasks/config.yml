@@ -6,7 +6,7 @@
 - name: Render vault.hcl
   ansible.builtin.template:
     src: vault.hcl.j2
-    dest: "{{ vault_config_dir }}/config.hcl"
+    dest: "{{ vault_container_config_dir }}/config.hcl"
     owner: root
     group: vault
     mode: "0640"

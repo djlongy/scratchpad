@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: docker_swarm
+  author: longy
+  description: >-
+    Provision a Docker Swarm cluster end-to-end: install Docker CE,
+    configure firewall for overlay traffic, initialise the cluster on a
+    bootstrap manager, join additional managers + workers via tokens, and
+    optionally mount a shared NFS root for stack staging. Fully portable —
+    all environment-specific config lives in inventory.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+  galaxy_tags:
+    - docker
+    - swarm
+    - container
+    - orchestration
+
+dependencies: []

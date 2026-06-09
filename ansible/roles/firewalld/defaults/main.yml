@@ -109,8 +109,9 @@ firewalld_interface_zone_bindings: []
 #
 # Rules are opened in `firewalld_default_zone` (falls back to "public" if the
 # default is unset). This path is kept ONLY for compatibility — new code should
-# prefer firewalld_services + firewalld_zones.
-firewall_rules: []
+# prefer firewalld_services + firewalld_zones. The non-role-prefixed name is
+# deliberate (it IS the legacy alias), so the var-naming idiom is suppressed.
+firewall_rules: []  # noqa: var-naming[no-role-prefix]
 
 # ── Package management ───────────────────────────────────────────────────────
 

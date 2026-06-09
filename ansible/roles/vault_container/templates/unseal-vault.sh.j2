@@ -7,11 +7,11 @@
 # KMS-backed seal so this script is never needed.
 set -euo pipefail
 
-VAULT_ADDR="https://127.0.0.1:{{ vault_api_port }}"
+VAULT_ADDR="https://127.0.0.1:{{ vault_container_api_port }}"
 VAULT_SKIP_VERIFY=true
 export VAULT_ADDR VAULT_SKIP_VERIFY
 
-UNSEAL_KEY_FILE="{{ vault_keys_dir }}/unseal_key.txt"
+UNSEAL_KEY_FILE="{{ vault_container_keys_dir }}/unseal_key.txt"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S'): $*"
@@ -27,9 +27,9 @@ fi
 
 UNSEAL_KEY=$(<"$UNSEAL_KEY_FILE")
 
-MAX_RETRIES={{ vault_unseal_max_retries | default(30) }}
+MAX_RETRIES={{ vault_container_unseal_max_retries | default(30) }}
 RETRY=0
-SLEEP_INTERVAL={{ vault_unseal_sleep_interval | default(2) }}
+SLEEP_INTERVAL={{ vault_container_unseal_sleep_interval | default(2) }}
 
 # Wait for Vault API to come up. The health endpoint returns 200/501/503
 # even when sealed/uninitialised; uninitcode/sealedcode/standbyok make

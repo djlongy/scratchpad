@@ -25,7 +25,7 @@ referencing `harbor` in a zone is firewalld's native, declarative model. It:
 ## Quickstart
 
 ```yaml
-# inventories/mgt/group_vars/docker_hosts.yml
+# inventories/group_vars/docker_hosts.yml
 firewalld_default_zone: trusted-mgmt
 
 firewalld_services:
@@ -89,8 +89,7 @@ Then in a playbook:
 Run only the binding phase:
 
 ```bash
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/L3_platform/baseline.yml \
-  --tags bindings
+ansible-playbook -i inventories/hosts.yml playbooks/firewalld.yml --tags bindings
 ```
 
 ## Variables
@@ -112,8 +111,8 @@ Full schema in `defaults/main.yml`. Key options:
 
 ## Back-compat with `firewall_rules`
 
-Several inventories (`prod/group_vars/all.yml`, multiple `host_vars/*.yml`) still
-use the old `firewall_rules` variable. Both formats are supported transparently:
+Some inventories may still use the older `firewall_rules` variable. Both formats
+are supported transparently:
 
 ```yaml
 # String form (older — appears in group_vars)

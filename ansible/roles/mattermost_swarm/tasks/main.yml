@@ -25,16 +25,16 @@
 
 - name: Capture wrapper role path
   ansible.builtin.set_fact:
-    _mm_role_path: "{{ role_path }}"
+    _mattermost_swarm_role_path: "{{ role_path }}"
   tags: [always]
 
-# When mattermost_ldap_enabled, we extend the secrets list and turn
+# When mattermost_swarm_ldap_enabled, we extend the secrets list and turn
 # swarm_stack_configs from [] into a one-entry list (the FreeIPA CA
 # cert). Composing via set_fact instead of inline-conditionals keeps
 # the literal lists in include_role's vars block readable.
 - name: Compose swarm_stack_secrets list
   ansible.builtin.set_fact:
-    _mm_swarm_stack_secrets: >-
+    _mattermost_swarm_secrets: >-
       {{
         [
           {'name': 'mm_pg_password',      'var': 'vault_mm_pg_password'},
@@ -44,29 +44,29 @@
         ]
         + (
           [{'name': 'mm_ldap_bind_password', 'var': 'vault_mm_ldap_bind_password'}]
-          if mattermost_ldap_enabled else []
+          if mattermost_swarm_ldap_enabled else []
         )
       }}
   tags: [always]
 
 - name: Compose swarm_stack_configs list
   ansible.builtin.set_fact:
-    _mm_swarm_stack_configs: >-
+    _mattermost_swarm_configs: >-
       {{
         (
           [{'name':   'mm_freeipa_ca_cert',
-            'src':    _mm_role_path + '/templates/mm-freeipa-ca-cert.j2',
-            'target': mattermost_ldap_ca_cert_path,
+            'src':    _mattermost_swarm_role_path + '/templates/mm-freeipa-ca-cert.j2',
+            'target': mattermost_swarm_ldap_ca_cert_path,
             'mode':   '0444'}]
-          if mattermost_ldap_enabled else []
+          if mattermost_swarm_ldap_enabled else []
         )
       }}
   tags: [always]
 
 - name: Compose mm-app config refs
   ansible.builtin.set_fact:
-    _mm_app_configs: >-
-      {{ ['mm_freeipa_ca_cert'] if mattermost_ldap_enabled else [] }}
+    _mattermost_swarm_app_configs: >-
+      {{ ['mm_freeipa_ca_cert'] if mattermost_swarm_ldap_enabled else [] }}
   tags: [always]
 
 # Slurp the FreeIPA CA cert at deploy time from a FreeIPA server's
@@ -76,17 +76,17 @@
 # manager and ships as a docker config to mm-app.
 - name: Slurp FreeIPA CA cert
   ansible.builtin.slurp:
-    src: "{{ mattermost_freeipa_ca_cert_src }}"
+    src: "{{ mattermost_swarm_freeipa_ca_cert_src }}"
   delegate_to: "{{ groups['freeipa'][0] }}"
   become: true
-  register: _mm_freeipa_ca_cert_slurp
-  when: mattermost_ldap_enabled
+  register: _mattermost_swarm_freeipa_ca_cert_slurp
+  when: mattermost_swarm_ldap_enabled
   tags: [always]
 
 - name: Decode CA cert into a fact
   ansible.builtin.set_fact:
-    _mm_freeipa_ca_cert_pem: "{{ _mm_freeipa_ca_cert_slurp.content | b64decode }}"
-  when: mattermost_ldap_enabled
+    _mattermost_swarm_freeipa_ca_cert_pem: "{{ _mattermost_swarm_freeipa_ca_cert_slurp.content | b64decode }}"
+  when: mattermost_swarm_ldap_enabled
   tags: [always]
 
 - name: Deploy mattermost via swarm_stack
@@ -94,13 +94,13 @@
     name: swarm_stack
   tags: [always]
   vars:
-    swarm_stack_name: "{{ mattermost_stack_name }}"
-    swarm_stack_dir: "{{ mattermost_stack_dir }}"
+    swarm_stack_name: "{{ mattermost_swarm_stack_name }}"
+    swarm_stack_dir: "{{ mattermost_swarm_stack_dir }}"
 
     swarm_stack_nfs:
-      host: "{{ mattermost_nfs_host }}"
-      server: "{{ mattermost_nfs_server }}"
-      base: "{{ mattermost_nfs_base }}"
+      host: "{{ mattermost_swarm_nfs_host }}"
+      server: "{{ mattermost_swarm_nfs_server }}"
+      base: "{{ mattermost_swarm_nfs_base }}"
 
     # Subnet pinned via the swarm_overlay_subnets registry in
     # group_vars/all.yml — single source of truth so collisions are
@@ -109,37 +109,37 @@
       - name: mm_overlay
         attachable: true
         encrypted: true
-        subnet: "{{ swarm_overlay_subnets[mattermost_stack_name] }}"
+        subnet: "{{ swarm_overlay_subnets[mattermost_swarm_stack_name] }}"
 
     swarm_stack_volumes:
       - name: mm_pgdata
-        subpath: "{{ mattermost_pgdata_subpath }}"
-        uid: "{{ mattermost_pg_uid }}"
-        gid: "{{ mattermost_pg_gid }}"
+        subpath: "{{ mattermost_swarm_pgdata_subpath }}"
+        uid: "{{ mattermost_swarm_pg_uid }}"
+        gid: "{{ mattermost_swarm_pg_gid }}"
         mode: "0700"
       - name: mm_app_data
-        subpath: "{{ mattermost_data_subpath }}"
-        uid: "{{ mattermost_app_uid }}"
-        gid: "{{ mattermost_app_gid }}"
+        subpath: "{{ mattermost_swarm_data_subpath }}"
+        uid: "{{ mattermost_swarm_app_uid }}"
+        gid: "{{ mattermost_swarm_app_gid }}"
         mode: "0750"
 
     # Mattermost mutates config.json at runtime (writes version stamp
     # on first boot) so we can't ship config.json itself as a docker
     # config. We DO ship the FreeIPA CA cert as a docker config when
     # LDAP is on — Mattermost only reads that file, never writes it.
-    swarm_stack_configs: "{{ _mm_swarm_stack_configs }}"
+    swarm_stack_configs: "{{ _mattermost_swarm_configs }}"
 
     # Postgres reads its password via the *_FILE pattern (native).
     # The other secrets are templated into MM_* env vars in the
     # mm-app.env.yml.j2 template via swarm_stack_secret_values. Each
     # `var` references a variable defined in your ansible-vault-
     # encrypted YAML. The LDAP bind password joins that list when
-    # mattermost_ldap_enabled.
-    swarm_stack_secrets: "{{ _mm_swarm_stack_secrets }}"
+    # mattermost_swarm_ldap_enabled.
+    swarm_stack_secrets: "{{ _mattermost_swarm_secrets }}"
 
     swarm_stack_services:
       - name: mm-postgres
-        image: "{{ mattermost_postgres_image }}"
+        image: "{{ mattermost_swarm_postgres_image }}"
         hostname: mm-postgres
         replicas: 1
         networks: [mm_overlay]
@@ -149,32 +149,32 @@
             type: volume
         secrets: [mm_pg_password]
         placement: "{{ ['node.role == worker']
-                       + (['node.hostname == ' ~ mattermost_pg_pinned_node]
-                          if (mattermost_pg_pinned_node | length > 0) else []) }}"
+                       + (['node.hostname == ' ~ mattermost_swarm_pg_pinned_node]
+                          if (mattermost_swarm_pg_pinned_node | length > 0) else []) }}"
         restart:
           condition: any
           delay: 10s
         limits:
-          memory: 512M
-        env_template: "{{ _mm_role_path }}/templates/mm-postgres.env.yml.j2"
+          memory: "{{ mattermost_swarm_pg_limit_memory }}"
+        env_template: "{{ _mattermost_swarm_role_path }}/templates/mm-postgres.env.yml.j2"
 
       - name: mm-app
-        image: "{{ mattermost_app_image }}"
+        image: "{{ mattermost_swarm_app_image }}"
         hostname: mm-app
-        replicas: "{{ mattermost_replicas }}"
+        replicas: "{{ mattermost_swarm_replicas }}"
         networks: [mm_overlay]
         mounts:
           - source: mm_app_data
             target: /mattermost/data
             type: volume
-        configs: "{{ _mm_app_configs }}"
+        configs: "{{ _mattermost_swarm_app_configs }}"
         publish:
           - target_port: 8065
-            published_port: "{{ mattermost_published_port }}"
+            published_port: "{{ mattermost_swarm_published_port }}"
             protocol: tcp
             mode: ingress
-        placement: "{{ mattermost_app_placement_constraints }}"
-        placement_max_replicas_per_node: "{{ mattermost_max_per_node }}"
+        placement: "{{ mattermost_swarm_app_placement_constraints }}"
+        placement_max_replicas_per_node: "{{ mattermost_swarm_max_per_node }}"
         update:
           parallelism: 1
           delay: 30s
@@ -185,5 +185,5 @@
           delay: 15s
           max_attempts: 5
         limits:
-          memory: 1G
-        env_template: "{{ _mm_role_path }}/templates/mm-app.env.yml.j2"
+          memory: "{{ mattermost_swarm_app_limit_memory }}"
+        env_template: "{{ _mattermost_swarm_role_path }}/templates/mm-app.env.yml.j2"

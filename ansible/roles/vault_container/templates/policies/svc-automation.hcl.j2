@@ -7,7 +7,7 @@
 #       enough that a leaked secret expires quickly.
 
 # Read-only KV across every declared mount (data + metadata).
-{% for kv in vault_kv_mounts %}
+{% for kv in vault_container_kv_mounts %}
 path "{{ kv.mount }}/data/*"     { capabilities = ["read", "list"] }
 path "{{ kv.mount }}/metadata/*" { capabilities = ["read", "list"] }
 {% endfor %}

@@ -1,0 +1,26 @@
+---
+galaxy_info:
+  role_name: mattermost_swarm
+  author: longy
+  description: >-
+    Deploy Mattermost (single-replica PostgreSQL + N app replicas) onto
+    Docker Swarm via the swarm_stack engine, with optional FreeIPA/LDAP
+    SSO. Secrets are read from Ansible variables (ansible-vault). Requires
+    the swarm_stack role on the roles path — it is invoked via include_role
+    at run time, NOT declared as a meta dependency (a meta dependency would
+    run swarm_stack standalone with no inputs and fail its input asserts).
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+  galaxy_tags:
+    - mattermost
+    - docker
+    - swarm
+    - postgresql
+    - ldap
+
+# swarm_stack is consumed via include_role with explicit vars, not as an
+# auto-run meta dependency. Ensure it is present on the roles path.
+dependencies: []

@@ -1,0 +1,43 @@
+---
+# Open Swarm ports via firewalld, grouped by traffic plane so multi-NIC
+# hosts land each plane in the right zone:
+#   control plane (2377, 7946) → docker_swarm_control_plane_zone (mgmt NIC)
+#   data plane    (4789, 4500) → docker_swarm_data_plane_zone    (data NIC)
+# Single-NIC: both default to docker_swarm_firewall_zone (one zone).
+#
+# The role does NOT bind interfaces to zones — the baseline/network role
+# owns interface→zone assignment and policy routing.
+#
+# Encrypted overlays wrap VXLAN in IPSec ESP; without the ESP allow rule
+# firewalld silently blocks the data plane and east-west traffic times out.
+
+- name: Open Swarm control-plane ports (cluster mgmt + gossip)
+  ansible.posix.firewalld:
+    zone: "{{ docker_swarm_control_plane_zone }}"
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ docker_swarm_control_plane_ports }}"
+
+- name: Open Swarm data-plane ports (overlay VXLAN + IPSec NAT-T)
+  ansible.posix.firewalld:
+    zone: "{{ docker_swarm_data_plane_zone }}"
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ docker_swarm_data_plane_ports }}"
+
+- name: Allow Swarm data-plane protocols (ESP for encrypted overlay IPSec)
+  ansible.builtin.command: >-
+    firewall-cmd --permanent
+    --zone={{ docker_swarm_data_plane_zone }}
+    --add-protocol={{ item }}
+  register: _proto_rule
+  changed_when: "'ALREADY_ENABLED' not in (_proto_rule.stderr | default(''))"
+  failed_when:
+    - _proto_rule.rc != 0
+    - "'ALREADY_ENABLED' not in (_proto_rule.stderr | default(''))"
+  loop: "{{ docker_swarm_data_plane_protocols }}"
+  notify: Reload firewalld

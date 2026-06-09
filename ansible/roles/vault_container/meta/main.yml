@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: vault_container
+  author: longy
+  description: >-
+    Run HashiCorp Vault as a Docker container with self-signed TLS, Shamir
+    seal + auto-unseal on boot, KV v2 mounts, ACL policies, and optional
+    userpass / AppRole / LDAP auth. Phase task files are tagged so callers
+    can target install, config, TLS, init, mounts, policies, and auth
+    independently.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+  galaxy_tags:
+    - vault
+    - hashicorp
+    - secrets
+    - docker
+    - tls
+
+dependencies: []

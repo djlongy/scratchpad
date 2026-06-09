@@ -1,0 +1,79 @@
+---
+# Tear down the swarm. Reached only when BOTH conditions hold:
+#   1. --tags destroy is supplied (the import is tagged [never, destroy]
+#      in tasks/main.yml)
+#   2. docker_swarm_destroy_confirm=true is set as an extra-var (the
+#      when: gate in tasks/main.yml)
+#
+# Order matters: workers + non-bootstrap managers leave first, then the
+# bootstrap last. Leaving the last manager dissolves the swarm.
+#
+# Does NOT uninstall Docker, remove the firewall rules, or wipe
+# /opt/docker. Reversibility is the role's job; data is not.
+
+# Defence-in-depth: if execution reaches this file without the explicit
+# confirm var, abort. Catches the case where main.yml is bypassed or
+# the import is invoked directly (e.g. include_tasks without re-checking).
+- name: Assert destroy was explicitly confirmed
+  ansible.builtin.assert:
+    that:
+      - docker_swarm_destroy_confirm | default(false) | bool
+    fail_msg: >-
+      docker_swarm destroy invoked without docker_swarm_destroy_confirm=true.
+      Refusing to dissolve the swarm. To proceed, re-run with
+      `-e docker_swarm_destroy_confirm=true --tags destroy`.
+
+- name: Read current swarm membership state (destroy phase)
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _destroy_swarm_state
+  changed_when: false
+
+# Re-derive the bootstrap pick here so destroy can run standalone without
+# depending on init_join.yml having populated _docker_swarm_bootstrap.
+# Run the set_fact tasks on every host (set_fact + run_once would leave
+# other hosts unable to reference _destroy_bootstrap). The computation
+# is deterministic.
+- name: Compute set of managers currently running an active swarm (destroy)
+  ansible.builtin.set_fact:
+    _destroy_active_managers: >-
+      {{ groups[docker_swarm_managers_group]
+         | map('extract', hostvars)
+         | selectattr('_destroy_swarm_state', 'defined')
+         | selectattr('_destroy_swarm_state.stdout', 'equalto', 'active')
+         | map(attribute='inventory_hostname')
+         | list }}
+
+- name: Compute bootstrap host (destroy)
+  ansible.builtin.set_fact:
+    _destroy_bootstrap: >-
+      {{ docker_swarm_bootstrap_host
+         if (docker_swarm_bootstrap_host | length > 0)
+         else (_destroy_active_managers | first
+               | default(groups[docker_swarm_managers_group][0])) }}
+
+# Phase 1: workers leave first
+- name: Leave swarm on worker nodes
+  ansible.builtin.command: >-
+    docker swarm leave
+    {% if docker_swarm_destroy_force | bool %}--force{% endif %}
+  when:
+    - inventory_hostname in groups[docker_swarm_workers_group]
+    - _destroy_swarm_state.stdout == "active"
+  changed_when: true
+
+# Phase 2: non-bootstrap managers leave (requires --force on managers)
+- name: Leave swarm on non-bootstrap managers
+  ansible.builtin.command: docker swarm leave --force
+  when:
+    - inventory_hostname in groups[docker_swarm_managers_group]
+    - inventory_hostname != _destroy_bootstrap
+    - _destroy_swarm_state.stdout == "active"
+  changed_when: true
+
+# Phase 3: bootstrap manager leaves last — this dissolves the swarm
+- name: Leave swarm on bootstrap manager (dissolves cluster)
+  ansible.builtin.command: docker swarm leave --force
+  when:
+    - inventory_hostname == _destroy_bootstrap
+    - _destroy_swarm_state.stdout == "active"
+  changed_when: true

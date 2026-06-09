@@ -1,0 +1,13 @@
+{# /etc/pip.conf — written only when docker_swarm_pip_conf_enabled=true.
+   Points pip at an internal index (e.g. Artifactory) on air-gapped /
+   enterprise fleets so the Docker SDK installs without reaching PyPI. #}
+[global]
+{% if docker_swarm_pip_index_url | length > 0 %}
+index-url = {{ docker_swarm_pip_index_url }}
+{% endif %}
+{% if docker_swarm_pip_extra_index_url | length > 0 %}
+extra-index-url = {{ docker_swarm_pip_extra_index_url }}
+{% endif %}
+{% if docker_swarm_pip_trusted_hosts | length > 0 %}
+trusted-host = {{ docker_swarm_pip_trusted_hosts | join(' ') }}
+{% endif %}

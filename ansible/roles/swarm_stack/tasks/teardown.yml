@@ -18,14 +18,14 @@
       ( docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }};
         docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter name={{ swarm_stack_name }}_ ) | sort -u
     executable: /bin/bash
-  register: _swst_existing_services
+  register: _swarm_stack_existing_services
   changed_when: false
 
 - name: Remove services
   community.docker.docker_swarm_service:
     name: "{{ item }}"
     state: absent
-  loop: "{{ _swst_existing_services.stdout_lines | default([]) }}"
+  loop: "{{ _swarm_stack_existing_services.stdout_lines | default([]) }}"
   loop_control:
     label: "{{ item }}"
 
@@ -36,16 +36,16 @@
       ( docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }};
         docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter name={{ swarm_stack_name }}_ ) | sort -u
     executable: /bin/bash
-  register: _swst_drain
+  register: _swarm_stack_drain
   retries: 30
   delay: 2
-  until: _swst_drain.stdout_lines | default([]) | length == 0
+  until: _swarm_stack_drain.stdout_lines | default([]) | length == 0
   changed_when: false
 
 - name: Discover existing configs for this stack
   ansible.builtin.command:
     cmd: "docker config ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }}"
-  register: _swst_existing_configs
+  register: _swarm_stack_existing_configs
   changed_when: false
 
 - name: Remove all stack configs
@@ -53,14 +53,14 @@
     name: "{{ item }}"
     state: absent
     force: true
-  loop: "{{ _swst_existing_configs.stdout_lines | default([]) }}"
+  loop: "{{ _swarm_stack_existing_configs.stdout_lines | default([]) }}"
   loop_control:
     label: "{{ item }}"
 
 - name: Discover existing secrets for this stack
   ansible.builtin.command:
     cmd: "docker secret ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }}"
-  register: _swst_existing_secrets
+  register: _swarm_stack_existing_secrets
   changed_when: false
 
 - name: Remove all stack secrets
@@ -68,7 +68,7 @@
     name: "{{ item }}"
     state: absent
     force: true
-  loop: "{{ _swst_existing_secrets.stdout_lines | default([]) }}"
+  loop: "{{ _swarm_stack_existing_secrets.stdout_lines | default([]) }}"
   loop_control:
     label: "{{ item }}"
 
@@ -91,8 +91,8 @@
   loop: "{{ swarm_stack_volume_hosts }}"
   loop_control:
     label: "{{ item }}"
-  register: _swst_container_prune
-  changed_when: "'Total reclaimed space' in _swst_container_prune.stdout and 'Deleted Containers' in _swst_container_prune.stdout"
+  register: _swarm_stack_container_prune
+  changed_when: "'Total reclaimed space' in _swarm_stack_container_prune.stdout and 'Deleted Containers' in _swarm_stack_container_prune.stdout"
 
 - name: Remove local-driver NFS volumes from each candidate host
   community.docker.docker_volume:
@@ -103,13 +103,13 @@
   # tmpfs entries are host-path / RAM-only and have no docker_volume
   # to remove. Iterating them here would be a wasteful no-op per host,
   # and would surface confusing "no such volume" log lines.
-  loop: "{{ _swst_nfs_volumes | default([]) | product(swarm_stack_volume_hosts | default([])) | list }}"
+  loop: "{{ _swarm_stack_nfs_volumes | default([]) | product(swarm_stack_volume_hosts | default([])) | list }}"
   loop_control:
     label: "{{ item.0.name }} on {{ item.1 }}"
-  register: _swst_volume_rm
+  register: _swarm_stack_volume_rm
   retries: 6
   delay: 5
-  until: _swst_volume_rm is not failed
+  until: _swarm_stack_volume_rm is not failed
 
 # DESTRUCTIVE — only fires when explicitly tagged. Wipes the on-disk NFS
 # data so the next deploy starts from empty.
@@ -132,7 +132,7 @@
   # tmpfs entries have nothing on disk. Iterating swarm_stack_volumes
   # here would dereference an undefined item.subpath on bind/tmpfs and
   # raise AnsibleUndefinedError mid-loop.
-  loop: "{{ _swst_nfs_volumes | default([]) }}"
+  loop: "{{ _swarm_stack_nfs_volumes | default([]) }}"
   loop_control:
     label: "{{ item.subpath }}"
   delegate_to: "{{ swarm_stack_nfs.host }}"

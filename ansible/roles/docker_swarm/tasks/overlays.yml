@@ -1,0 +1,58 @@
+---
+# Create shared / estate-wide application overlay networks on the bootstrap
+# manager. Self-contained (computes its own bootstrap pick) so it runs both
+# as part of a full converge AND standalone via `--tags overlays`.
+# Idempotent: an overlay that already exists is skipped — never recreated
+# (recreating a live overlay would disrupt attached services).
+#
+# Per-app roles (swarm_splunk, swarm_elk, …) create their own overlays; this
+# is only for overlays declared in inventory via docker_swarm_overlay_networks.
+
+- name: Read current swarm membership state (overlays phase)
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _ovl_swarm_state
+  changed_when: false
+
+- name: Compute set of managers currently running an active swarm (overlays)
+  ansible.builtin.set_fact:
+    _ovl_active_managers: >-
+      {{ groups[docker_swarm_managers_group]
+         | map('extract', hostvars)
+         | selectattr('_ovl_swarm_state', 'defined')
+         | selectattr('_ovl_swarm_state.stdout', 'equalto', 'active')
+         | map(attribute='inventory_hostname')
+         | list }}
+
+- name: Compute bootstrap host (overlays)
+  ansible.builtin.set_fact:
+    _ovl_bootstrap: >-
+      {{ docker_swarm_bootstrap_host
+         if (docker_swarm_bootstrap_host | length > 0)
+         else (_ovl_active_managers | first
+               | default(groups[docker_swarm_managers_group][0])) }}
+
+- name: List existing overlay networks
+  ansible.builtin.command: "docker network ls --filter driver=overlay --format '{% raw %}{{.Name}}{% endraw %}'"
+  register: _ovl_existing
+  changed_when: false
+  delegate_to: "{{ _ovl_bootstrap }}"
+  run_once: true
+
+- name: Create configured overlay networks
+  ansible.builtin.command:
+    cmd: >-
+      docker network create
+      --driver overlay
+      {% if (item.subnet | default('')) | length > 0 %}--subnet {{ item.subnet }}{% endif %}
+      {% if (item.gateway | default('')) | length > 0 %}--gateway {{ item.gateway }}{% endif %}
+      {% if (item.attachable | default(docker_swarm_overlay_default_attachable)) | bool %}--attachable{% endif %}
+      {% if (item.encrypted | default(docker_swarm_overlay_default_encrypted)) | bool %}--opt encrypted{% endif %}
+      --opt com.docker.network.driver.mtu={{ item.mtu | default(docker_swarm_overlay_default_mtu) }}
+      {{ item.name }}
+  loop: "{{ docker_swarm_overlay_networks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in _ovl_existing.stdout_lines
+  delegate_to: "{{ _ovl_bootstrap }}"
+  run_once: true
+  changed_when: true

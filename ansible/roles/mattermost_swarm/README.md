@@ -25,7 +25,7 @@ README for the engine-level docs.
   Docker Python SDK installed on every candidate worker (see
   `swarm_stack` README for the one-time worker setup).
 - A reachable NFS server providing the export path you point
-  `mattermost_nfs_*` at.
+  `mattermost_swarm_nfs_*` at.
 - An ansible-vault'd YAML file with the secret values listed below
   (`inventories/swarm/group_vars/swarm_bootstrap/vault.yml.example` is
   the template).
@@ -64,9 +64,9 @@ Defined in `vault.yml.example`, must end up defined as Ansible variables
 
 ## Knobs worth knowing
 
-- `mattermost_pg_pinned_node` — postgres can't safely run multi-replica
+- `mattermost_swarm_pg_pinned_node` — postgres can't safely run multi-replica
   on shared NFS. Pin to a single worker.
-- `mattermost_max_per_node: 1` + `update.order: stop-first` — combined,
+- `mattermost_swarm_max_per_node: 1` + `update.order: stop-first` — combined,
   this lets a 3-replica / 3-worker stack roll without a deadlock
   (start-first would wait forever for a free slot).
 - `vault_mm_at_rest_key` and `vault_mm_public_link_salt` MUST be ≥ 32
@@ -87,7 +87,7 @@ Mattermost's Enterprise Edition image (the FIPS-edition variant too)
 runs as **Mattermost Entry** when no license is loaded — and Entry
 covers LDAP, SAML, and OpenID, so SSO works without paying. The wrapper
 ships a plug-in path for FreeIPA-backed LDAP login via
-`MM_LDAPSETTINGS_*` env vars, gated by `mattermost_ldap_enabled`. The
+`MM_LDAPSETTINGS_*` env vars, gated by `mattermost_swarm_ldap_enabled`. The
 defaults already match FreeIPA conventions (uid attribute,
 person/groupOfNames classes, `cn=users,cn=accounts` user container).
 
@@ -106,7 +106,7 @@ ansible-playbook -i inventories/swarm/hosts.yml \
 What you fill in:
 
 - `inventories/swarm/group_vars/swarm_bootstrap/main.yml` — flip
-  `mattermost_ldap_enabled` to `true`, set `mattermost_ldap_host` to your
+  `mattermost_swarm_ldap_enabled` to `true`, set `mattermost_swarm_ldap_host` to your
   FreeIPA server's FQDN. The base-DN, bind username, and attribute names
   default to FreeIPA's conventions; override only if you've customised
   your directory.
@@ -130,12 +130,12 @@ How it composes:
   `mm_ldap_bind_password` (sourced from `vault_mm_ldap_bind_password`)
   and turns `swarm_stack_configs` from `[]` into a one-entry list
   containing `mm_freeipa_ca_cert`. The CA cert is slurped from
-  `mattermost_freeipa_ca_cert_src` on `groups['freeipa'][0]` and stored
+  `mattermost_swarm_freeipa_ca_cert_src` on `groups['freeipa'][0]` and stored
   in a fact the template references — no vaulting, no copy/paste. mm-app
   picks up the cert via its `configs:` list, mounted at
-  `mattermost_ldap_ca_cert_path`.
+  `mattermost_swarm_ldap_ca_cert_path`.
 - The env template grows a `MM_LDAPSETTINGS_*` block under an
-  `{% if mattermost_ldap_enabled %}` guard, including
+  `{% if mattermost_swarm_ldap_enabled %}` guard, including
   `MM_LDAPSETTINGS_BINDPASSWORD` baked from `swarm_stack_secret_values`
   and `MM_LDAPSETTINGS_PUBLICCERTIFICATEFILE` pointing at the docker
   config mount.
@@ -179,10 +179,10 @@ real options are:
    Encrypt, etc.).
 
 Until one of those lands, set
-`mattermost_ldap_skip_certificate_verification: true` in inventory. The
+`mattermost_swarm_ldap_skip_certificate_verification: true` in inventory. The
 CA cert is still shipped as a docker config so the future image rebuild
 can wire up trust without changing the role.
 
 ## Variables
 
-See `defaults/main.yml` for the full list of `mattermost_*` tunables.
+See `defaults/main.yml` for the full list of `mattermost_swarm_*` tunables.

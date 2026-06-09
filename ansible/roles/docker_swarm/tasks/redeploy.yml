@@ -1,0 +1,80 @@
+---
+# Rolling redeploy of a LIVE swarm: node-by-node drain → restart Docker
+# (or reboot) → return to active. Picks up daemon.json / kernel / SELinux
+# changes without dropping the whole cluster at once.
+#
+# OPT-IN and STANDALONE. Tagged `[never, redeploy]` in main.yml: it never
+# runs on a normal converge, runs on its own with `--tags redeploy`, and
+# requires NO other tag (the anti-pattern we are designing out). Node
+# availability is changed from the bootstrap manager; the restart/reboot
+# happens on the target host. For strict one-at-a-time behaviour drive the
+# calling play with `serial: 1`.
+#
+# CAUTION: rebooting a manager (especially the bootstrap) mid-run breaks the
+# delegate it issues node commands through. In practice scope a redeploy to
+# workers (`--limit swarm_workers`) or run with `serial: 1`.
+
+- name: Read current swarm membership state (redeploy)
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _redeploy_state
+  changed_when: false
+
+- name: Get this node's swarm NodeID (redeploy)
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.NodeID}}{% endraw %}'"
+  register: _redeploy_nodeid
+  changed_when: false
+  when: _redeploy_state.stdout == "active"
+
+- name: Compute set of managers currently running an active swarm (redeploy)
+  ansible.builtin.set_fact:
+    _redeploy_active_managers: >-
+      {{ groups[docker_swarm_managers_group]
+         | map('extract', hostvars)
+         | selectattr('_redeploy_state', 'defined')
+         | selectattr('_redeploy_state.stdout', 'equalto', 'active')
+         | map(attribute='inventory_hostname')
+         | list }}
+
+- name: Compute bootstrap host (redeploy)
+  ansible.builtin.set_fact:
+    _redeploy_bootstrap: >-
+      {{ docker_swarm_bootstrap_host
+         if (docker_swarm_bootstrap_host | length > 0)
+         else (_redeploy_active_managers | first
+               | default(groups[docker_swarm_managers_group][0])) }}
+
+- name: Drain this node (reschedule its tasks elsewhere)
+  ansible.builtin.command: "docker node update --availability drain {{ _redeploy_nodeid.stdout }}"
+  delegate_to: "{{ _redeploy_bootstrap }}"
+  when: _redeploy_state.stdout == "active"
+  changed_when: true
+
+- name: Let tasks reschedule off the drained node
+  ansible.builtin.pause:
+    seconds: "{{ docker_swarm_redeploy_drain_settle | int }}"
+  when: _redeploy_state.stdout == "active"
+
+- name: Reboot the node (redeploy_reboot)
+  ansible.builtin.reboot:
+  when: docker_swarm_redeploy_reboot | bool
+
+- name: Restart Docker (no-reboot redeploy)
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: not (docker_swarm_redeploy_reboot | bool)
+
+- name: Wait for this node to rejoin the swarm as active
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _redeploy_state_post
+  until: _redeploy_state_post.stdout == "active"
+  retries: 30
+  delay: 5
+  changed_when: false
+  when: _redeploy_state.stdout == "active"
+
+- name: Return this node to active availability
+  ansible.builtin.command: "docker node update --availability active {{ _redeploy_nodeid.stdout }}"
+  delegate_to: "{{ _redeploy_bootstrap }}"
+  when: _redeploy_state.stdout == "active"
+  changed_when: true

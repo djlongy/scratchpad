@@ -1,0 +1,292 @@
+---
+argument_specs:
+  main:
+    short_description: "Bootstrap a Docker Swarm cluster (managers + workers)"
+    description:
+      - >-
+        Installs Docker CE, configures firewalld, pre-creates docker_gwbridge
+        with custom MTU + subnet, initialises the swarm on an auto-picked
+        bootstrap manager, recreates the ingress overlay encrypted, and joins
+        additional managers + workers via tokens.
+      - >-
+        Two inventory groups only: swarm_managers, swarm_workers. The bootstrap
+        host is discovered by probing each manager for an existing active swarm
+        and falling back to the first manager.
+      - >-
+        Fully portable: every value lives in inventory. No env labels, IPs, or
+        domains are hardcoded in tasks or templates.
+      - "Destroy path is gated by the `never` tag — run with `--tags destroy`."
+
+    options:
+      docker_swarm_enabled:
+        type: bool
+        default: true
+        description: "Master switch. Set false to skip the role entirely."
+
+      docker_swarm_managers_group:
+        type: str
+        default: "swarm_managers"
+        description: "Inventory group name for manager nodes."
+      docker_swarm_workers_group:
+        type: str
+        default: "swarm_workers"
+        description: "Inventory group name for worker nodes."
+      docker_swarm_bootstrap_host:
+        type: str
+        default: ""
+        description: "Override for the bootstrap manager pick. Empty = auto (probe + fallback to first manager)."
+
+      docker_swarm_prepare_host_enabled:
+        type: bool
+        default: true
+        description: "Run host prep (kernel modules, sysctl, SELinux booleans)."
+      docker_swarm_install_docker_enabled:
+        type: bool
+        default: true
+      docker_swarm_manage_firewall:
+        type: bool
+        default: true
+      docker_swarm_manage_gwbridge:
+        type: bool
+        default: true
+      docker_swarm_manage_ingress:
+        type: bool
+        default: true
+      docker_swarm_manage_overlays:
+        type: bool
+        default: true
+        description: "Create the overlays in docker_swarm_overlay_networks on bootstrap."
+
+      docker_swarm_docker_ce_version:
+        type: str
+        default: ""
+      docker_swarm_docker_ce_cli_version:
+        type: str
+        default: ""
+      docker_swarm_containerd_version:
+        type: str
+        default: ""
+      docker_swarm_docker_repo_baseurl:
+        type: str
+      docker_swarm_docker_repo_gpgkey:
+        type: str
+      docker_swarm_python_packages:
+        type: list
+        elements: str
+      docker_swarm_sdk_install_method:
+        type: str
+        default: "dnf"
+        choices: ["dnf", "pip"]
+        description: "Install the Docker Python SDK via distro packages (dnf) or pip (version floor / internal index)."
+      docker_swarm_sdk_pip_packages:
+        type: list
+        elements: str
+        description: "Pip requirement specs when sdk_install_method=pip."
+      docker_swarm_pip_conf_enabled:
+        type: bool
+        default: false
+        description: "Render /etc/pip.conf to point pip at an internal index."
+      docker_swarm_pip_index_url:
+        type: str
+        default: ""
+      docker_swarm_pip_extra_index_url:
+        type: str
+        default: ""
+      docker_swarm_pip_trusted_hosts:
+        type: list
+        elements: str
+
+      docker_swarm_kernel_modules:
+        type: list
+        elements: str
+        description: "Kernel modules to load + persist (overlay, br_netfilter)."
+      docker_swarm_sysctl:
+        type: dict
+        description: "sysctl key/value map applied + persisted."
+      docker_swarm_selinux_booleans:
+        type: list
+        elements: str
+        description: "SELinux booleans to enable persistently (e.g. httpd_can_network_connect)."
+
+      docker_swarm_manage_docker_group:
+        type: bool
+        default: false
+        description: "Align the local docker group GID / add members for central (FreeIPA) socket access."
+      docker_swarm_docker_group_gid:
+        type: str
+        default: ""
+        description: "GID to align the local docker group to (the FreeIPA docker group GID). Empty = leave as-is."
+      docker_swarm_docker_group_members:
+        type: list
+        elements: str
+        description: "Extra LOCAL users to append to the docker group."
+
+      docker_swarm_use_data_disk:
+        type: bool
+        default: false
+        description: "Relocate Docker's data-root onto the data-disk mount."
+      docker_swarm_data_root:
+        type: str
+        default: "/opt/docker"
+        description: "data-root path when use_data_disk=true. Must be on the data disk."
+
+      docker_swarm_log_driver:
+        type: str
+        default: "json-file"
+      docker_swarm_log_max_size:
+        type: str
+        default: "10m"
+      docker_swarm_log_max_file:
+        type: int
+        default: 5
+      docker_swarm_metrics_enabled:
+        type: bool
+        default: false
+      docker_swarm_metrics_addr:
+        type: str
+        default: "0.0.0.0:9323"
+      docker_swarm_experimental:
+        type: bool
+        default: false
+      docker_swarm_log_opts:
+        type: dict
+        default: {}
+        description: "Free-form log-opts merged over max-size/max-file (e.g. syslog-address for a central collector)."
+      docker_swarm_dns:
+        type: list
+        elements: str
+        description: "Upstream container DNS resolvers (daemon.json dns)."
+      docker_swarm_dns_search:
+        type: list
+        elements: str
+      docker_swarm_insecure_registries:
+        type: list
+        elements: str
+        description: "Registries reachable over plain HTTP / self-signed TLS (e.g. Artifactory)."
+      docker_swarm_registry_mirrors:
+        type: list
+        elements: str
+      docker_swarm_default_address_pools:
+        type: list
+        elements: dict
+        description: "LOCAL bridge IPAM pools ({base, size}). Distinct from the swarm overlay pool."
+      docker_swarm_daemon_extra:
+        type: dict
+        default: {}
+        description: "Arbitrary extra keys merged into daemon.json last (highest precedence)."
+
+      docker_swarm_firewall_zone:
+        type: str
+        default: "public"
+        description: "Fallback zone both planes inherit in single-NIC deployments."
+      docker_swarm_control_plane_zone:
+        type: str
+        description: "firewalld zone for control-plane ports (mgmt NIC). Defaults to docker_swarm_firewall_zone."
+      docker_swarm_data_plane_zone:
+        type: str
+        description: "firewalld zone for data-plane ports (data NIC). Defaults to docker_swarm_firewall_zone."
+      docker_swarm_control_plane_ports:
+        type: list
+        elements: str
+        description: "Control-plane ports (Raft 2377, gossip 7946) → advertise_addr NIC."
+      docker_swarm_data_plane_ports:
+        type: list
+        elements: str
+        description: "Data-plane ports (overlay VXLAN 4789, NAT-T 4500) → data_path_addr NIC."
+      docker_swarm_data_plane_protocols:
+        type: list
+        elements: str
+        description: "Data-plane protocols (esp for encrypted overlay)."
+
+      docker_swarm_advertise_addr:
+        type: str
+        description: "Control-plane address peers use to reach this node. Defaults to ansible_host (single-NIC)."
+      docker_swarm_data_path_addr:
+        type: str
+        default: ""
+        description: "Overlay data-path (east-west) bind address. Empty = same as advertise. Set to the data vNIC IP for multi-NIC. Fixed at join time."
+      docker_swarm_listen_addr:
+        type: str
+        default: ""
+        description: "Control-plane listener bind address. Empty = same as advertise."
+
+      docker_swarm_default_addr_pool:
+        type: str
+        default: "10.40.0.0/16"
+      docker_swarm_default_addr_pool_subnet_size:
+        type: int
+        default: 24
+      docker_swarm_autolock:
+        type: bool
+        default: false
+      docker_swarm_task_history_retention_limit:
+        type: int
+        default: 5
+
+      docker_swarm_ingress_subnet:
+        type: str
+        default: "10.41.0.0/24"
+      docker_swarm_ingress_gateway:
+        type: str
+        default: "10.41.0.1"
+      docker_swarm_ingress_encrypted:
+        type: bool
+        default: true
+      docker_swarm_ingress_mtu:
+        type: int
+        default: 0
+        description: "Ingress overlay MTU. 0 = Docker default."
+
+      docker_swarm_gwbridge_subnet:
+        type: str
+        default: "10.42.0.0/24"
+      docker_swarm_gwbridge_gateway:
+        type: str
+        default: "10.42.0.1"
+      docker_swarm_gwbridge_mtu:
+        type: int
+        default: 1500
+      docker_swarm_gwbridge_enable_icc:
+        type: bool
+        default: false
+      docker_swarm_gwbridge_enable_ip_masquerade:
+        type: bool
+        default: true
+
+      docker_swarm_overlay_networks:
+        type: list
+        elements: dict
+        description: "Shared/estate-wide overlays created on bootstrap. Keys: name (req), subnet, gateway, mtu, encrypted, attachable."
+      docker_swarm_overlay_default_mtu:
+        type: int
+        default: 1450
+      docker_swarm_overlay_default_encrypted:
+        type: bool
+        default: true
+      docker_swarm_overlay_default_attachable:
+        type: bool
+        default: true
+
+      docker_swarm_destroy_force:
+        type: bool
+        default: true
+      docker_swarm_destroy_confirm:
+        type: bool
+        default: false
+        description: >-
+          Explicit confirm var. Must be true (via -e) to actually destroy.
+          Defence against play-level tag inheritance defeating the `never`
+          tag on the destroy import.
+
+      docker_swarm_redeploy_reboot:
+        type: bool
+        default: false
+        description: "Reboot each node during a rolling redeploy instead of just restarting Docker."
+      docker_swarm_redeploy_drain_settle:
+        type: int
+        default: 20
+        description: "Seconds to let tasks reschedule after draining a node during redeploy."
+      docker_swarm_reconcile_down_nodes:
+        type: bool
+        default: true
+        description: "Allow `--tags reconcile_nodes` to remove Down nodes. Secondary guard; the tag is the real gate."

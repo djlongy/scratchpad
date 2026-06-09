@@ -1,0 +1,36 @@
+---
+# Host preparation for Swarm overlay networking: load kernel modules, apply
+# sysctls, enable SELinux booleans. RHEL-family. Every input is a loop over
+# a list/dict, so a host needing an extra module / sysctl / boolean is a var
+# change in inventory, never a role edit. Each loop no-ops on an empty list.
+
+- name: Load kernel modules required for overlay networking
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+    persistent: present
+  loop: "{{ docker_swarm_kernel_modules }}"
+
+# bridge-nf-call-* sysctls only exist once br_netfilter is loaded — that is
+# why the modules run first. sysctl_set writes the running value; reload
+# persists it to /etc/sysctl.d.
+- name: Apply sysctl settings
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value | string }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ docker_swarm_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Enable SELinux booleans
+  ansible.posix.seboolean:
+    name: "{{ item }}"
+    state: true
+    persistent: true
+  loop: "{{ docker_swarm_selinux_booleans }}"
+  when:
+    - ansible_selinux is defined
+    - (ansible_selinux.status | default('disabled')) == 'enabled'

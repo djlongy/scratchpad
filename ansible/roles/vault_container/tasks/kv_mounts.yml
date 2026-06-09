@@ -1,5 +1,5 @@
 ---
-# Create KV v2 mounts. List comes from vault_kv_mounts.
+# Create KV v2 mounts. List comes from vault_container_kv_mounts.
 # `_vault_root_token` is set by main.yml's post_setup preamble.
 # Vault returns 400 "path is already in use" if a mount exists; treat
 # as success.
@@ -7,12 +7,12 @@
 - name: Enable KV v2 mounts
   ansible.builtin.shell:
     cmd: >-
-      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_ADDR=https://127.0.0.1:{{ vault_container_api_port }} VAULT_SKIP_VERIFY=true
       VAULT_TOKEN={{ _vault_root_token }}
       vault secrets enable -path={{ item.mount }} -description={{ (item.description | default('')) | quote }} kv-v2
   args:
     executable: /bin/bash
-  loop: "{{ vault_kv_mounts }}"
+  loop: "{{ vault_container_kv_mounts }}"
   loop_control:
     label: "{{ item.mount }}"
   delegate_to: "{{ groups['vault_leader'][0] }}"

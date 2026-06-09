@@ -1,0 +1,97 @@
+---
+# roles/docker_swarm/tasks/main.yml
+#
+# A NO-TAG run does the full, idempotent deploy, in order:
+#   prepare → install → access → firewall → gwbridge → swarm → overlays
+# Re-running is safe — every phase converges. "Deploy" is simply running
+# the role; it is never a tag you must remember to pass, and no tag is ever
+# a prerequisite for another tag.
+#
+# Tags are REFINEMENT (narrow a converge for fast iteration) or OPT-IN
+# (never-gated actions). They do not chain:
+#
+#   (no tags)               Full deploy / re-converge  (idempotent)
+#   --tags prepare          Kernel modules + sysctl + SELinux only
+#   --tags install          Host prep + Docker + daemon.json + socket access
+#   --tags firewall         Swarm firewall ports only
+#   --tags gwbridge         docker_gwbridge only
+#   --tags swarm            Init + encrypted ingress + join + overlays only
+#   --tags overlays         (Re)create configured app overlays only
+#   --tags redeploy         Rolling restart of the LIVE cluster   (OPT-IN)
+#   --tags reconcile_nodes  Remove Down nodes                     (OPT-IN)
+#   --tags destroy          Tear down the cluster                 (OPT-IN)
+#
+# redeploy / reconcile_nodes / destroy are `never`-tagged: skipped on a
+# normal run, runnable entirely on their own, and they NEVER require
+# chaining another tag. destroy additionally requires an explicit confirm
+# extra-var (defence against play-level tag inheritance defeating `never`).
+
+- name: Skip docker_swarm (docker_swarm_enabled is false)
+  ansible.builtin.debug:
+    msg: "docker_swarm_enabled is false — skipping role"
+  when: not (docker_swarm_enabled | bool)
+  tags: [always]
+
+- name: Provision Docker Swarm cluster
+  when: docker_swarm_enabled | bool
+  block:
+
+    - name: Prepare host (kernel modules, sysctl, SELinux booleans)
+      ansible.builtin.import_tasks: prepare_host.yml
+      when: docker_swarm_prepare_host_enabled | bool
+      tags: [prepare, install]
+
+    - name: Install Docker CE and configure daemon
+      ansible.builtin.import_tasks: install_docker.yml
+      when: docker_swarm_install_docker_enabled | bool
+      tags: [install]
+
+    - name: Configure Docker socket group access (FreeIPA / central directory)
+      ansible.builtin.import_tasks: docker_access.yml
+      when: docker_swarm_manage_docker_group | bool
+      tags: [access, install]
+
+    - name: Open firewall ports for Swarm overlay
+      ansible.builtin.import_tasks: firewall.yml
+      when: docker_swarm_manage_firewall | bool
+      tags: [firewall, install]
+
+    - name: Pre-create docker_gwbridge with custom MTU + subnet
+      ansible.builtin.import_tasks: gwbridge.yml
+      when: docker_swarm_manage_gwbridge | bool
+      tags: [gwbridge, install]
+
+    - name: Initialise + join Swarm cluster (incl. encrypted ingress)
+      ansible.builtin.import_tasks: init_join.yml
+      tags: [swarm, install]
+
+    - name: Create configured application overlay networks
+      ansible.builtin.import_tasks: overlays.yml
+      when:
+        - docker_swarm_manage_overlays | bool
+        - docker_swarm_overlay_networks | length > 0
+      tags: [overlays, swarm]
+
+# ── Opt-in actions (never-gated; standalone; never chained) ──────────────────
+
+# Rolling restart of a live cluster. Standalone: `--tags redeploy`.
+- name: Rolling redeploy (restart the live cluster node-by-node)
+  ansible.builtin.import_tasks: redeploy.yml
+  when: docker_swarm_enabled | bool
+  tags: [never, redeploy]
+
+# Remove Down nodes. Standalone: `--tags reconcile_nodes`.
+- name: Reconcile swarm membership (remove Down nodes)
+  ansible.builtin.import_tasks: reconcile_nodes.yml
+  when:
+    - docker_swarm_enabled | bool
+    - docker_swarm_reconcile_down_nodes | bool
+  tags: [never, reconcile_nodes]
+
+# Tear down. Gated by BOTH `--tags destroy` AND
+# `-e docker_swarm_destroy_confirm=true`. Either alone is a no-op. `never`
+# is the third layer in case the calling play carries no tags of its own.
+- name: Tear down Swarm cluster
+  ansible.builtin.import_tasks: destroy.yml
+  when: docker_swarm_destroy_confirm | default(false) | bool
+  tags: [never, destroy]

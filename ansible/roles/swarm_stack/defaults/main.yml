@@ -4,15 +4,14 @@
 # Caller supplies a list of services (top-level scalars only — see the
 # resilience note below), an image map, NFS volume layout, encrypted
 # overlay networks, optional docker-config templates, and a list of
-# secrets backed by Vault. This role does:
+# secrets read from Ansible variables. This role does:
 #   1. mkdir each NFS subpath on the NFS server (delegated)
-#   2. (optional) bootstrap missing Vault secrets with auto-generated passphrases
-#   3. docker config create (rolling versions, content-hashed name)
-#   4. docker secret create (rolling versions, value piped via stdin, no_log)
-#   5. docker_network for each overlay (attachable + encrypted IPSec)
-#   6. docker_volume on every candidate worker (NFS-backed local driver)
-#   7. docker_swarm_service per entry in swarm_stack_services
-#   8. prune obsolete labeled secrets/configs
+#   2. docker config create (rolling versions, content-hashed name)
+#   3. docker secret create (rolling versions, value piped via stdin, no_log)
+#   4. docker_network for each overlay (attachable + encrypted IPSec)
+#   5. docker_volume on every candidate worker (NFS-backed local driver)
+#   6. docker_swarm_service per entry in swarm_stack_services
+#   7. prune obsolete labeled secrets/configs
 #
 # RESILIENCE TO LAZY VAR EVAL
 # ──────────────────────────────────────────────────────────────────────

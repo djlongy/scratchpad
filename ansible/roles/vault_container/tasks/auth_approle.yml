@@ -1,10 +1,10 @@
 ---
-# Enable approle auth + create one role per entry in vault_approles.
+# Enable approle auth + create one role per entry in vault_container_approles.
 # Each role is bound to one or more vault policies (typically
 # svc-automation). Use for Terraform / Ansible / CI tooling.
 #
 # Inputs:
-#   vault_approles:
+#   vault_container_approles:
 #     - name: svc-terraform
 #       policies: [svc-automation]
 #       token_ttl: "8h"
@@ -13,7 +13,7 @@
 - name: Enable approle auth method
   ansible.builtin.shell:
     cmd: >-
-      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_ADDR=https://127.0.0.1:{{ vault_container_api_port }} VAULT_SKIP_VERIFY=true
       VAULT_TOKEN={{ _vault_root_token }}
       vault auth enable approle || true
   args:
@@ -27,7 +27,7 @@
 - name: Create / update approles
   ansible.builtin.shell:
     cmd: >-
-      VAULT_ADDR=https://127.0.0.1:{{ vault_api_port }} VAULT_SKIP_VERIFY=true
+      VAULT_ADDR=https://127.0.0.1:{{ vault_container_api_port }} VAULT_SKIP_VERIFY=true
       VAULT_TOKEN={{ _vault_root_token }}
       vault write auth/approle/role/{{ item.name }}
         token_policies={{ item.policies | join(',') }}
@@ -37,7 +37,7 @@
         secret_id_num_uses={{ item.secret_id_num_uses | default('0') }}
   args:
     executable: /bin/bash
-  loop: "{{ vault_approles }}"
+  loop: "{{ vault_container_approles }}"
   loop_control:
     label: "{{ item.name }} → {{ item.policies | join(',') }}"
   delegate_to: "{{ groups['vault_leader'][0] }}"

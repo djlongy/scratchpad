@@ -2,11 +2,12 @@
 # Defaults for vault_container. Override in group_vars/vault/main.yml.
 
 # Image + binary
-vault_docker_image: "hashicorp/vault:1.19"
-vault_version: "1.19.5"
-vault_cli_arch: amd64
-vault_cli_install_dir: /opt/vault-cli
-vault_cli_zip_url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_{{ vault_cli_arch }}.zip"
+vault_container_docker_image: "hashicorp/vault:1.19"
+vault_container_version: "1.19.5"
+vault_container_cli_arch: amd64
+vault_container_cli_install_dir: /opt/vault-cli
+vault_container_cli_zip_url: "https://releases.hashicorp.com/vault/{{ vault_container_version }}/\
+  vault_{{ vault_container_version }}_linux_{{ vault_container_cli_arch }}.zip"
 
 # Container runtime
 vault_container_name: vault
@@ -20,35 +21,35 @@ vault_container_extra_args:
   - "-e SKIP_CHOWN=1"
 
 # Network
-vault_domain: ""
-vault_api_port: 8200
-vault_cluster_port: 8201
+vault_container_domain: ""
+vault_container_api_port: 8200
+vault_container_cluster_port: 8201
 
 # Storage
-vault_host_data_dir: /opt/vault
-vault_keys_dir: "{{ vault_host_data_dir }}/keys"
-vault_config_dir: /etc/vault.d
-vault_certs_dir: "{{ vault_config_dir }}/certs"
+vault_container_host_data_dir: /opt/vault
+vault_container_keys_dir: "{{ vault_container_host_data_dir }}/keys"
+vault_container_config_dir: /etc/vault.d
+vault_container_certs_dir: "{{ vault_container_config_dir }}/certs"
 
 # Init / Shamir seal — bump for prod.
-vault_init_key_shares: 1
-vault_init_key_threshold: 1
+vault_container_init_key_shares: 1
+vault_container_init_key_threshold: 1
 
 # unseal-vault.sh tunables (auto-unseal on boot / container restart).
-vault_unseal_max_retries: 30
-vault_unseal_sleep_interval: 2
+vault_container_unseal_max_retries: 30
+vault_container_unseal_sleep_interval: 2
 
 # ── Post-setup: KV mounts ────────────────────────────────────────────
 # Each entry creates a `kv-v2` mount. Add per-env mounts
 # (kv-prod, kv-stage, kv-dev, etc.) as your environments grow.
-vault_kv_mounts:
+vault_container_kv_mounts:
   - mount: kv-default
     description: "Default workload secrets"
 
 # ── Post-setup: ACL policies ─────────────────────────────────────────
 # Each entry maps to templates/policies/<name>.hcl.j2. Templates can
-# reference vault_kv_mounts to enumerate paths dynamically.
-vault_policies:
+# reference vault_container_kv_mounts to enumerate paths dynamically.
+vault_container_policies:
   - name: ops-superadmin
     description: "Break-glass near-root. 1h non-renewable TTL."
   - name: ops-admin
@@ -57,15 +58,15 @@ vault_policies:
     description: "Read-only KV + child token creation. AppRole-bound."
 
 # ── Post-setup: userpass auth (break-glass) ──────────────────────────
-vault_userpass_enabled: true
-vault_userpass_admin_user: "svc-superadmin"
-vault_userpass_admin_password: ""        # encrypt in vault.yml
-vault_userpass_admin_policies: [ops-superadmin]
-vault_userpass_admin_ttl: "1h"
-vault_userpass_admin_max_ttl: "4h"
+vault_container_userpass_enabled: true
+vault_container_userpass_admin_user: "svc-superadmin"
+vault_container_userpass_admin_password: ""        # encrypt in vault.yml
+vault_container_userpass_admin_policies: [ops-superadmin]
+vault_container_userpass_admin_ttl: "1h"
+vault_container_userpass_admin_max_ttl: "4h"
 
 # ── Post-setup: AppRole auth (automation) ────────────────────────────
-vault_approles:
+vault_container_approles:
   - name: svc-terraform
     policies: [svc-automation]
     token_ttl: "8h"
@@ -76,14 +77,14 @@ vault_approles:
     token_max_ttl: "12h"
 
 # ── LDAP ─────────────────────────────────────────────────────────────
-vault_ldap_enabled: false
-vault_ldap_url: ""
-vault_ldap_userdn: ""
-vault_ldap_groupdn: ""
-vault_ldap_userattr: uid
-vault_ldap_groupattr: cn
-vault_ldap_groupfilter: ""
-vault_ldap_binddn: ""
-vault_ldap_bindpass: ""
-vault_ldap_insecure_tls: true
-vault_ldap_group_policies: {}
+vault_container_ldap_enabled: false
+vault_container_ldap_url: ""
+vault_container_ldap_userdn: ""
+vault_container_ldap_groupdn: ""
+vault_container_ldap_userattr: uid
+vault_container_ldap_groupattr: cn
+vault_container_ldap_groupfilter: ""
+vault_container_ldap_binddn: ""
+vault_container_ldap_bindpass: ""
+vault_container_ldap_insecure_tls: true
+vault_container_ldap_group_policies: {}

@@ -70,20 +70,20 @@ playbook at `playbooks/vault_cluster.yml`.
    reads the single Shamir share from `/opt/vault/keys/`. Replace with
    KMS-backed seal for prod and this step becomes unnecessary.
 7. **post-setup phases** (each tag-targetable):
-   - **kv** — create the KV v2 mounts listed in `vault_kv_mounts`
+   - **kv** — create the KV v2 mounts listed in `vault_container_kv_mounts`
      (default: `kv-default`; add `kv-prod`, `kv-stage`, `kv-dev` etc.).
    - **policies** — render + apply ACL policies. Each entry in
-     `vault_policies` maps to `templates/policies/<name>.hcl.j2`.
+     `vault_container_policies` maps to `templates/policies/<name>.hcl.j2`.
      Three sample policies ship with the role:
      - `ops-superadmin` — break-glass, 1h non-renewable.
      - `ops-admin` — daily operator, 24h.
      - `svc-automation` — read-only KV + child tokens for IaC tooling.
-     Templates reference `vault_kv_mounts` so adding a mount
+     Templates reference `vault_container_kv_mounts` so adding a mount
      automatically grants the right paths to ops-* policies.
    - **userpass** — enable userpass auth + create a break-glass admin
      bound to `ops-superadmin`. Password from the encrypted vault file.
    - **approle** — enable approle auth + create one role per entry in
-     `vault_approles` (samples: `svc-terraform`, `svc-ansible` bound
+     `vault_container_approles` (samples: `svc-terraform`, `svc-ansible` bound
      to `svc-automation`). Use `vault read auth/approle/role/<name>/role-id`
      and `vault write -f auth/approle/role/<name>/secret-id` to mint
      credentials for tooling.
@@ -152,10 +152,10 @@ can remove it (system trust store covers LE).
 
 `tasks/ldap_auth.yml` is opinionated for FreeIPA. To use:
 
-1. Set `vault_ldap_enabled: true` in inventory.
-2. Provide `vault_ldap_url`, `vault_ldap_userdn`, `vault_ldap_groupdn`,
+1. Set `vault_container_ldap_enabled: true` in inventory.
+2. Provide `vault_container_ldap_url`, `vault_container_ldap_userdn`, `vault_container_ldap_groupdn`,
    and the bind credential variable (typically encrypted in vault.yml).
-3. Define `vault_ldap_group_policies` as a dict of
+3. Define `vault_container_ldap_group_policies` as a dict of
    `<freeipa group>: [<vault policy>, ...]`.
 
 The task enables `auth/ldap`, writes the config, and creates a

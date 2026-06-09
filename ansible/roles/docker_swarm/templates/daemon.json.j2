@@ -1,0 +1,44 @@
+{# roles/docker_swarm/templates/daemon.json.j2
+   Rendered from defaults/main.yml. Order of precedence (low → high):
+     1. role-managed keys (log, dns, registries, pools, metrics, data-root)
+     2. docker_swarm_daemon_extra (merged last — wins over everything above)
+   Keys are emitted only when their input is set, so the file stays minimal.
+   live-restore is never emitted — it is incompatible with swarm mode and
+   dockerd refuses `swarm init` while it is enabled. #}
+{%- set _log_opts = {} -%}
+{%- if docker_swarm_log_driver in ['json-file', 'local'] -%}
+{%-   set _ = _log_opts.update({
+        "max-size": docker_swarm_log_max_size,
+        "max-file": docker_swarm_log_max_file | string,
+      }) -%}
+{%- endif -%}
+{%- set _ = _log_opts.update(docker_swarm_log_opts) -%}
+{%- set _base = {
+  "log-driver": docker_swarm_log_driver,
+  "experimental": docker_swarm_experimental | bool,
+} -%}
+{%- if _log_opts | length > 0 -%}
+{%-   set _ = _base.update({"log-opts": _log_opts}) -%}
+{%- endif -%}
+{%- if docker_swarm_metrics_enabled | bool -%}
+{%-   set _ = _base.update({"metrics-addr": docker_swarm_metrics_addr}) -%}
+{%- endif -%}
+{%- if docker_swarm_use_data_disk | bool -%}
+{%-   set _ = _base.update({"data-root": docker_swarm_data_root}) -%}
+{%- endif -%}
+{%- if docker_swarm_dns | length > 0 -%}
+{%-   set _ = _base.update({"dns": docker_swarm_dns}) -%}
+{%- endif -%}
+{%- if docker_swarm_dns_search | length > 0 -%}
+{%-   set _ = _base.update({"dns-search": docker_swarm_dns_search}) -%}
+{%- endif -%}
+{%- if docker_swarm_insecure_registries | length > 0 -%}
+{%-   set _ = _base.update({"insecure-registries": docker_swarm_insecure_registries}) -%}
+{%- endif -%}
+{%- if docker_swarm_registry_mirrors | length > 0 -%}
+{%-   set _ = _base.update({"registry-mirrors": docker_swarm_registry_mirrors}) -%}
+{%- endif -%}
+{%- if docker_swarm_default_address_pools | length > 0 -%}
+{%-   set _ = _base.update({"default-address-pools": docker_swarm_default_address_pools}) -%}
+{%- endif -%}
+{{ _base | combine(docker_swarm_daemon_extra, recursive=True) | to_nice_json(indent=2) }}

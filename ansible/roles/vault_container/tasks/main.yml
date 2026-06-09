@@ -5,10 +5,10 @@
 - name: Validate caller inputs
   ansible.builtin.assert:
     that:
-      - vault_domain | length > 0
+      - vault_container_domain | length > 0
       - groups['vault'] | length >= 3
     fail_msg: >-
-      vault_container needs `vault_domain` set and at least 3 hosts in
+      vault_container needs `vault_container_domain` set and at least 3 hosts in
       the `vault` inventory group (Raft HA quorum).
   tags: [always]
 
@@ -43,7 +43,7 @@
 # load up front, so individual tags like --tags policies work.
 - name: Read root token (post_setup phases)
   ansible.builtin.slurp:
-    src: "{{ vault_keys_dir }}/root_token.txt"
+    src: "{{ vault_container_keys_dir }}/root_token.txt"
   delegate_to: "{{ groups['vault_leader'][0] }}"
   run_once: true
   register: _root_token_slurp
@@ -58,25 +58,25 @@
 
 - name: KV v2 mounts
   ansible.builtin.import_tasks: kv_mounts.yml
-  when: vault_kv_mounts | length > 0
+  when: vault_container_kv_mounts | length > 0
   tags: [post_setup, kv]
 
 - name: ACL policies
   ansible.builtin.import_tasks: policies.yml
-  when: vault_policies | length > 0
+  when: vault_container_policies | length > 0
   tags: [post_setup, policies]
 
 - name: Userpass auth + admin user
   ansible.builtin.import_tasks: auth_userpass.yml
-  when: vault_userpass_enabled | bool
+  when: vault_container_userpass_enabled | bool
   tags: [post_setup, userpass]
 
 - name: AppRole auth + roles
   ansible.builtin.import_tasks: auth_approle.yml
-  when: vault_approles | length > 0
+  when: vault_container_approles | length > 0
   tags: [post_setup, approle]
 
 - name: LDAP auth (FreeIPA)
   ansible.builtin.import_tasks: ldap_auth.yml
-  when: vault_ldap_enabled | bool
+  when: vault_container_ldap_enabled | bool
   tags: [post_setup, ldap]

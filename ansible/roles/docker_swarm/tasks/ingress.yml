@@ -1,0 +1,78 @@
+---
+# Recreate the default ingress overlay with --opt encrypted + a configurable
+# subnet. Run on the bootstrap manager ONLY, between `swarm init` and the
+# first node join.
+#
+# Why recreation: Docker creates `ingress` automatically during `swarm init`
+# without encryption. To get encrypted ingress (so published-port traffic
+# between nodes is wrapped in IPSec ESP) we have to remove + recreate it.
+# The right moment is here — fresh cluster, no service tasks yet, nothing
+# to disrupt.
+#
+# `docker network rm ingress` is interactive. Pipe `y` in to confirm.
+
+- name: Inspect current ingress overlay
+  ansible.builtin.command: docker network inspect ingress
+  register: _ingress_inspect
+  changed_when: false
+  failed_when: false
+
+# Parse encryption + subnet from `docker network inspect` so we only
+# recreate when the config differs from the desired state.
+- name: Decode current ingress config (when present)
+  ansible.builtin.set_fact:
+    _ingress_current: "{{ (_ingress_inspect.stdout | from_json | first) | default({}) }}"
+  when: _ingress_inspect.rc == 0
+
+# Docker stores the encrypted flag in Options as `"encrypted": ""` —
+# the KEY is present (with an empty string value) when the network was
+# created with --opt encrypted. Don't check the value; check that the
+# key exists.
+- name: Compute current ingress subnet + encryption flag
+  ansible.builtin.set_fact:
+    _ingress_current_subnet: "{{ (_ingress_current.IPAM.Config | default([{}]) | first).Subnet | default('') }}"
+    _ingress_current_encrypted: "{{ 'encrypted' in (_ingress_current.Options | default({})) }}"
+  when: _ingress_current is defined
+
+- name: Decide whether ingress needs recreation
+  ansible.builtin.set_fact:
+    _ingress_needs_recreate: >-
+      {{
+        (_ingress_inspect.rc != 0) or
+        (_ingress_current_subnet != docker_swarm_ingress_subnet) or
+        ((_ingress_current_encrypted | bool) != (docker_swarm_ingress_encrypted | bool))
+      }}
+
+- name: Remove existing ingress overlay
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo y | docker network rm ingress
+  args:
+    executable: /bin/bash
+  when:
+    - _ingress_needs_recreate | bool
+    - _ingress_inspect.rc == 0
+  changed_when: true
+
+# Brief settle window — Docker propagates ingress removal through its
+# state store. Without this, `docker network create --ingress` occasionally
+# races with the removal and fails with "ingress already exists".
+- name: Wait for ingress removal to propagate
+  ansible.builtin.pause:
+    seconds: 3
+  when:
+    - _ingress_needs_recreate | bool
+    - _ingress_inspect.rc == 0
+
+- name: Create encrypted ingress overlay
+  ansible.builtin.command: >-
+    docker network create
+    --driver overlay
+    --ingress
+    --subnet {{ docker_swarm_ingress_subnet }}
+    --gateway {{ docker_swarm_ingress_gateway }}
+    {% if docker_swarm_ingress_encrypted | bool %}--opt encrypted{% endif %}
+    {% if docker_swarm_ingress_mtu | int > 0 %}--opt com.docker.network.driver.mtu={{ docker_swarm_ingress_mtu }}{% endif %}
+    ingress
+  when: _ingress_needs_recreate | bool
+  changed_when: true

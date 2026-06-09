@@ -1,0 +1,39 @@
+---
+# Pre-create docker_gwbridge with configurable MTU + subnet BEFORE the
+# node joins any swarm. Docker auto-creates this bridge the first time an
+# overlay is needed; if we want custom MTU/subnet, we have to create it
+# ourselves first.
+#
+# Constraints:
+#   * Only meaningful on hosts NOT yet in a swarm. Once a node is in a
+#     swarm and using overlays, the bridge is in use and cannot be
+#     replaced without leaving the swarm + stopping Docker.
+#   * If docker_gwbridge already exists (created by a previous run or by
+#     Docker on a now-departed swarm), we skip — replacing it would
+#     require stopping Docker.
+
+- name: Read current swarm membership state (gwbridge phase)
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _gwbridge_swarm_state
+  changed_when: false
+
+- name: Check whether docker_gwbridge already exists
+  ansible.builtin.command: docker network inspect docker_gwbridge
+  register: _gwbridge_exists
+  changed_when: false
+  failed_when: false
+
+- name: Pre-create docker_gwbridge with custom MTU + subnet
+  ansible.builtin.command: >-
+    docker network create
+    --subnet {{ docker_swarm_gwbridge_subnet }}
+    --gateway {{ docker_swarm_gwbridge_gateway }}
+    --opt com.docker.network.bridge.name=docker_gwbridge
+    --opt com.docker.network.bridge.enable_icc={{ docker_swarm_gwbridge_enable_icc | string | lower }}
+    --opt com.docker.network.bridge.enable_ip_masquerade={{ docker_swarm_gwbridge_enable_ip_masquerade | string | lower }}
+    --opt com.docker.network.driver.mtu={{ docker_swarm_gwbridge_mtu }}
+    docker_gwbridge
+  when:
+    - _gwbridge_swarm_state.stdout == "inactive"
+    - _gwbridge_exists.rc != 0
+  changed_when: true

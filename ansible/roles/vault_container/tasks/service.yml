@@ -26,6 +26,6 @@
 - name: Wait for vault API to come up (sealed is fine)
   ansible.builtin.wait_for:
     host: "127.0.0.1"
-    port: "{{ vault_api_port }}"
+    port: "{{ vault_container_api_port }}"
     delay: 3
     timeout: 60

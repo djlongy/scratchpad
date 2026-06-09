@@ -25,8 +25,8 @@
 # under the `secrets:` key.
 - name: Build secret-mount lookup
   ansible.builtin.set_fact:
-    _swst_secret_mount_map: >-
-      {{ _swst_secret_mount_map | default({})
+    _swarm_stack_secret_mount_map: >-
+      {{ _swarm_stack_secret_mount_map | default({})
          | combine({
              item.name: {
                'secret_name': swarm_stack_secret_names[item.name],
@@ -39,8 +39,8 @@
 
 - name: Build config-mount lookup
   ansible.builtin.set_fact:
-    _swst_config_mount_map: >-
-      {{ _swst_config_mount_map | default({})
+    _swarm_stack_config_mount_map: >-
+      {{ _swarm_stack_config_mount_map | default({})
          | combine({
              item.name: {
                'config_name': swarm_stack_config_names[item.name],
@@ -62,11 +62,11 @@
     publish: "{{ item.publish | default([]) }}"
     secrets: >-
       {{ item.secrets | default([])
-         | map('extract', _swst_secret_mount_map | default({}))
+         | map('extract', _swarm_stack_secret_mount_map | default({}))
          | list }}
     configs: >-
       {{ item.configs | default([])
-         | map('extract', _swst_config_mount_map | default({}))
+         | map('extract', _swarm_stack_config_mount_map | default({}))
          | list }}
     placement:
       constraints: "{{ item.placement | default([]) }}"
@@ -104,9 +104,9 @@
 - name: Summarise deployed services
   ansible.builtin.command:
     cmd: "docker service ls --format '{% raw %}{{.Name}}\t{{.Replicas}}\t{{.Image}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }}"
-  register: _swst_summary
+  register: _swarm_stack_summary
   changed_when: false
 
 - name: Service summary
   ansible.builtin.debug:
-    msg: "{{ _swst_summary.stdout_lines }}"
+    msg: "{{ _swarm_stack_summary.stdout_lines }}"

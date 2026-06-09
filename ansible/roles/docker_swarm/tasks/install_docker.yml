@@ -1,0 +1,113 @@
+---
+# Install Docker CE + Python SDK, render daemon.json (with optional
+# data-root relocation), start the daemon. live-restore stays OFF —
+# dockerd refuses `swarm init` while it is enabled.
+
+- name: Install Docker CE prerequisites
+  ansible.builtin.dnf:
+    name:
+      - dnf-plugins-core
+      - device-mapper-persistent-data
+      - lvm2
+    state: present
+
+- name: Add Docker CE repo
+  ansible.builtin.yum_repository:
+    name: docker-ce-stable
+    description: "Docker CE Stable - $basearch"
+    baseurl: "{{ docker_swarm_docker_repo_baseurl }}"
+    gpgcheck: true
+    gpgkey: "{{ docker_swarm_docker_repo_gpgkey }}"
+    enabled: true
+
+- name: Install Docker CE engine + CLI + containerd
+  ansible.builtin.dnf:
+    name:
+      - "docker-ce{% if docker_swarm_docker_ce_version | length > 0 %}-{{ docker_swarm_docker_ce_version }}{% endif %}"
+      - "docker-ce-cli{% if docker_swarm_docker_ce_cli_version | length > 0 %}-{{ docker_swarm_docker_ce_cli_version }}{% endif %}"
+      - "containerd.io{% if docker_swarm_containerd_version | length > 0 %}-{{ docker_swarm_containerd_version }}{% endif %}"
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+
+# Required by community.docker.* modules. Managers run docker_stack /
+# docker_config / docker_secret / docker_network. All hosts get the SDK
+# so plays can delegate freely.
+#
+# Two install methods (docker_swarm_sdk_install_method):
+#   dnf — distro packages. Fast, but the RHEL build of python3-docker can
+#         lag the version community.docker wants.
+#   pip — install from PyPI / an internal index with a version floor, for
+#         when the distro SDK is too old. Optionally via /etc/pip.conf.
+- name: Install Docker Python SDK via dnf
+  ansible.builtin.dnf:
+    name: "{{ docker_swarm_python_packages }}"
+    state: present
+  when: docker_swarm_sdk_install_method == 'dnf'
+
+- name: Ensure pip is available (pip SDK method)
+  ansible.builtin.dnf:
+    name: python3-pip
+    state: present
+  when: docker_swarm_sdk_install_method == 'pip'
+
+- name: Configure /etc/pip.conf (internal index)
+  ansible.builtin.template:
+    src: pip.conf.j2
+    dest: /etc/pip.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - docker_swarm_sdk_install_method == 'pip'
+    - docker_swarm_pip_conf_enabled | bool
+
+- name: Install Docker Python SDK via pip
+  ansible.builtin.pip:
+    name: "{{ docker_swarm_sdk_pip_packages }}"
+    state: present
+    executable: pip3
+  when: docker_swarm_sdk_install_method == 'pip'
+
+- name: Ensure /etc/docker exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Pre-create data-root BEFORE rendering daemon.json. dockerd will create
+# it on its own at startup, but creating it explicitly here lets us set
+# ownership + verify the path exists on the data disk before the
+# daemon ever touches it.
+- name: Ensure data-root directory exists (use_data_disk)
+  ansible.builtin.file:
+    path: "{{ docker_swarm_data_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0710"
+  when: docker_swarm_use_data_disk | bool
+
+- name: Render /etc/docker/daemon.json
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docker
+
+- name: Enable and start docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# Flush so the daemon.json change takes effect BEFORE swarm init — dockerd
+# rejects `swarm init` if a conflicting setting (e.g. live-restore=true
+# left from a previous config) is still live in memory.
+- name: Apply pending docker handlers before downstream phases
+  ansible.builtin.meta: flush_handlers

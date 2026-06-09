@@ -1,0 +1,138 @@
+---
+# Initialise the Swarm on the bootstrap manager; join additional managers
+# and workers via tokens fetched from the bootstrap node.
+#
+# Bootstrap pick logic (no swarm_bootstrap group):
+#   1. If docker_swarm_bootstrap_host is set, use it.
+#   2. Else probe every manager — if one is already an active swarm
+#      manager, reuse it (idempotent re-runs against existing clusters).
+#   3. Else fall back to the first host in swarm_managers.
+
+- name: Read current swarm membership state
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _docker_swarm_state
+  changed_when: false
+
+# Compute the bootstrap host on every host (the computation is
+# deterministic and reads only from hostvars + groups, so running it
+# everywhere is cheap and guarantees every host has the same fact.
+# Using run_once with set_fact would only set the fact on the first
+# host, leaving the rest unable to reference _docker_swarm_bootstrap).
+- name: Compute set of managers currently running an active swarm
+  ansible.builtin.set_fact:
+    _docker_swarm_active_managers: >-
+      {{ groups[docker_swarm_managers_group]
+         | map('extract', hostvars)
+         | selectattr('_docker_swarm_state', 'defined')
+         | selectattr('_docker_swarm_state.stdout', 'equalto', 'active')
+         | map(attribute='inventory_hostname')
+         | list }}
+
+# Bootstrap pick: explicit override > existing-swarm reuse > first manager.
+- name: Compute bootstrap host
+  ansible.builtin.set_fact:
+    _docker_swarm_bootstrap: >-
+      {{ docker_swarm_bootstrap_host
+         if (docker_swarm_bootstrap_host | length > 0)
+         else (_docker_swarm_active_managers | first
+               | default(groups[docker_swarm_managers_group][0])) }}
+
+- name: Initialise swarm on the bootstrap manager
+  ansible.builtin.command:
+    cmd: >-
+      docker swarm init
+      --advertise-addr {{ docker_swarm_advertise_addr }}
+      {% if docker_swarm_data_path_addr | length > 0 %}--data-path-addr {{ docker_swarm_data_path_addr }}{% endif %}
+      {% if docker_swarm_listen_addr | length > 0 %}--listen-addr {{ docker_swarm_listen_addr }}{% endif %}
+      --default-addr-pool {{ docker_swarm_default_addr_pool }}
+      --default-addr-pool-mask-length {{ docker_swarm_default_addr_pool_subnet_size }}
+      --task-history-limit {{ docker_swarm_task_history_retention_limit }}
+      {% if docker_swarm_autolock | bool %}--autolock{% endif %}
+  when:
+    - inventory_hostname == _docker_swarm_bootstrap
+    - _docker_swarm_state.stdout == "inactive"
+  changed_when: true
+
+# Re-read state on the bootstrap (so the downstream ingress phase sees
+# 'active' immediately rather than the pre-init 'inactive' reading).
+- name: Re-read swarm state on bootstrap after init
+  ansible.builtin.command: "docker info --format '{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}'"
+  register: _docker_swarm_state_post_init
+  changed_when: false
+  when: inventory_hostname == _docker_swarm_bootstrap
+
+# ── Encrypted ingress overlay ──────────────────────────────────────────────
+# Recreate ingress with --opt encrypted on the bootstrap manager ONLY,
+# AFTER init and BEFORE other nodes join. Any running tasks attached to
+# ingress would be disrupted — that's why it happens here, at the freshest
+# possible moment in the swarm's life.
+
+- name: Configure encrypted ingress overlay
+  ansible.builtin.include_tasks: ingress.yml
+  when:
+    - docker_swarm_manage_ingress | bool
+    - inventory_hostname == _docker_swarm_bootstrap
+
+# ── Token fetch + join ─────────────────────────────────────────────────────
+
+# delegate_to + run_once on a register IS safe — `register` writes to the
+# DELEGATED host's hostvars, which all other hosts then read via
+# hostvars[bootstrap]. (set_fact + run_once would NOT be safe — different
+# scoping rules.)
+- name: Fetch manager join token from the bootstrap node
+  ansible.builtin.command: docker swarm join-token -q manager
+  register: _docker_swarm_manager_token
+  changed_when: false
+  delegate_to: "{{ _docker_swarm_bootstrap }}"
+  run_once: true
+  no_log: true
+
+- name: Fetch worker join token from the bootstrap node
+  ansible.builtin.command: docker swarm join-token -q worker
+  register: _docker_swarm_worker_token
+  changed_when: false
+  delegate_to: "{{ _docker_swarm_bootstrap }}"
+  run_once: true
+  no_log: true
+
+# Use the bootstrap's CONTROL-plane (advertise) address — that is where the
+# manager API listens for joins. In single-NIC this equals its ansible_host.
+- name: Compute swarm join address (bootstrap control-plane addr:port)
+  ansible.builtin.set_fact:
+    _docker_swarm_join_addr: >-
+      {{ hostvars[_docker_swarm_bootstrap].docker_swarm_advertise_addr
+         | default(hostvars[_docker_swarm_bootstrap].ansible_host) }}:2377
+
+# Each joining node advertises its OWN control-plane addr and binds the
+# overlay data-path to its OWN data NIC (per-host vars). Single-NIC: advertise
+# = ansible_host, data_path/listen empty → Docker auto-detects as before.
+- name: Join additional manager nodes
+  ansible.builtin.command:
+    cmd: >-
+      docker swarm join
+      --token {{ _docker_swarm_manager_token.stdout }}
+      --advertise-addr {{ docker_swarm_advertise_addr }}
+      {% if docker_swarm_data_path_addr | length > 0 %}--data-path-addr {{ docker_swarm_data_path_addr }}{% endif %}
+      {% if docker_swarm_listen_addr | length > 0 %}--listen-addr {{ docker_swarm_listen_addr }}{% endif %}
+      {{ _docker_swarm_join_addr }}
+  when:
+    - inventory_hostname in groups[docker_swarm_managers_group]
+    - inventory_hostname != _docker_swarm_bootstrap
+    - _docker_swarm_state.stdout == "inactive"
+  changed_when: true
+  no_log: true
+
+- name: Join worker nodes
+  ansible.builtin.command:
+    cmd: >-
+      docker swarm join
+      --token {{ _docker_swarm_worker_token.stdout }}
+      --advertise-addr {{ docker_swarm_advertise_addr }}
+      {% if docker_swarm_data_path_addr | length > 0 %}--data-path-addr {{ docker_swarm_data_path_addr }}{% endif %}
+      {% if docker_swarm_listen_addr | length > 0 %}--listen-addr {{ docker_swarm_listen_addr }}{% endif %}
+      {{ _docker_swarm_join_addr }}
+  when:
+    - inventory_hostname in groups[docker_swarm_workers_group]
+    - _docker_swarm_state.stdout == "inactive"
+  changed_when: true
+  no_log: true

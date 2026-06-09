@@ -124,7 +124,7 @@ Call as a `pre_tasks` step so secrets exist before any role runs:
         name: common
         tasks_from: ensure_secrets
   roles:
-    - role: mattermost_swarm_services
+    - role: mattermost_swarm
 ```
 
 After the import_role, every entry's `var` is guaranteed defined and

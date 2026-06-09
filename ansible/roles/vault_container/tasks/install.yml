@@ -41,8 +41,8 @@
     immediate: true
     zone: public
   loop:
-    - "{{ vault_api_port }}"
-    - "{{ vault_cluster_port }}"
+    - "{{ vault_container_api_port }}"
+    - "{{ vault_container_cluster_port }}"
 
 - name: Ensure vault group exists
   ansible.builtin.group:
@@ -55,12 +55,12 @@
     group: vault
     system: true
     shell: /sbin/nologin
-    home: "{{ vault_host_data_dir }}"
+    home: "{{ vault_container_host_data_dir }}"
     create_home: false
 
 - name: Create CLI version directory
   ansible.builtin.file:
-    path: "{{ vault_cli_install_dir }}/{{ vault_version }}"
+    path: "{{ vault_container_cli_install_dir }}/{{ vault_container_version }}"
     state: directory
     owner: root
     group: root
@@ -68,17 +68,17 @@
 
 - name: Download + extract Vault CLI binary
   ansible.builtin.unarchive:
-    src: "{{ vault_cli_zip_url }}"
-    dest: "{{ vault_cli_install_dir }}/{{ vault_version }}"
+    src: "{{ vault_container_cli_zip_url }}"
+    dest: "{{ vault_container_cli_install_dir }}/{{ vault_container_version }}"
     remote_src: true
-    creates: "{{ vault_cli_install_dir }}/{{ vault_version }}/vault"
+    creates: "{{ vault_container_cli_install_dir }}/{{ vault_container_version }}/vault"
     owner: root
     group: root
     mode: "0755"
 
 - name: Install Vault CLI binary
   ansible.builtin.copy:
-    src: "{{ vault_cli_install_dir }}/{{ vault_version }}/vault"
+    src: "{{ vault_container_cli_install_dir }}/{{ vault_container_version }}/vault"
     dest: /usr/local/bin/vault
     remote_src: true
     owner: root
@@ -95,7 +95,7 @@
 
 - name: Pull Vault container image
   community.docker.docker_image:
-    name: "{{ vault_docker_image }}"
+    name: "{{ vault_container_docker_image }}"
     source: pull
 
 - name: Get vault user uid
@@ -120,7 +120,7 @@
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop:
-    - { path: "{{ vault_config_dir }}",  owner: root,  group: vault, mode: "0750" }
-    - { path: "{{ vault_certs_dir }}",   owner: root,  group: vault, mode: "0750" }
-    - { path: "{{ vault_host_data_dir }}", owner: vault, group: vault, mode: "0750" }
-    - { path: "{{ vault_keys_dir }}",    owner: vault, group: vault, mode: "0700" }
+    - {path: "{{ vault_container_config_dir }}", owner: root, group: vault, mode: "0750"}
+    - {path: "{{ vault_container_certs_dir }}", owner: root, group: vault, mode: "0750"}
+    - {path: "{{ vault_container_host_data_dir }}", owner: vault, group: vault, mode: "0750"}
+    - {path: "{{ vault_container_keys_dir }}", owner: vault, group: vault, mode: "0700"}

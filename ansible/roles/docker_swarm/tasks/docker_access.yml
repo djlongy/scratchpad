@@ -1,0 +1,23 @@
+---
+# Docker socket access for centrally-managed (FreeIPA) users. Aligning the
+# LOCAL `docker` group's GID to the directory group's GID lets SSSD-resolved
+# members of that directory group drive the Docker socket without any local
+# account. Optionally append explicit LOCAL users too.
+#
+# Opt-in: only reached when docker_swarm_manage_docker_group=true.
+
+- name: Ensure the docker group exists with the desired GID
+  ansible.builtin.group:
+    name: docker
+    gid: "{{ docker_swarm_docker_group_gid | default(omit, true) }}"
+    state: present
+
+# Local users only — directory (FreeIPA) users get access via the GID
+# alignment above, not by editing /etc/group.
+- name: Append local users to the docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_swarm_docker_group_members }}"
+  when: docker_swarm_docker_group_members | length > 0

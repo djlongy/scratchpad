@@ -1,0 +1,340 @@
+---
+# roles/docker_swarm/defaults/main.yml
+#
+# Bootstrap a Docker Swarm cluster end-to-end: install Docker CE, configure
+# firewalld for overlay traffic, pre-create docker_gwbridge, initialise the
+# cluster on a bootstrap manager (auto-picked), recreate the ingress overlay
+# encrypted, and join additional managers + workers via tokens.
+#
+# Scope is intentionally narrow — services, NFS mounts, and stack staging
+# directories live in per-app roles. This role gets you a working swarm and
+# nothing more.
+#
+# Fully portable across environments: every value below is overridable from
+# inventory (group_vars / host_vars). No environment label, IP, or domain
+# is hardcoded in tasks or templates.
+
+# ── Master switch ──────────────────────────────────────────────────────────
+#
+# Flip false to skip the role entirely (e.g. when a host is in the swarm
+# inventory but you want to apply unrelated plays to it).
+docker_swarm_enabled: true
+
+# ── Lifecycle state ────────────────────────────────────────────────────────
+#
+# `present` runs install/init/join. The destroy path is gated by the
+# `never` tag — invoke it with `--tags destroy`. There is no `absent`
+# state because accidentally absenting a swarm by typo'd group_vars is a
+# bad time. See README "Destroying a swarm".
+
+# ── Inventory groups ───────────────────────────────────────────────────────
+#
+# The role recognises exactly two groups: managers and workers. The
+# bootstrap host is auto-discovered (probe each manager for an existing
+# active swarm; fall back to the first manager). Override the bootstrap
+# pick by setting `docker_swarm_bootstrap_host` to an inventory_hostname.
+docker_swarm_managers_group: "swarm_managers"
+docker_swarm_workers_group: "swarm_workers"
+docker_swarm_bootstrap_host: ""   # empty = auto-pick (see init_join.yml)
+
+# ── Phase toggles ──────────────────────────────────────────────────────────
+#
+# Flip these false to skip whole phases when another role owns them.
+docker_swarm_prepare_host_enabled: true
+docker_swarm_install_docker_enabled: true
+docker_swarm_manage_firewall: true
+docker_swarm_manage_gwbridge: true
+docker_swarm_manage_ingress: true
+docker_swarm_manage_overlays: true
+
+# ── Docker CE install ──────────────────────────────────────────────────────
+#
+# Empty version = latest from the configured repo. Pin for reproducibility.
+docker_swarm_docker_ce_version: ""
+docker_swarm_docker_ce_cli_version: ""
+docker_swarm_containerd_version: ""
+
+# RHEL-family repo. For Debian/Ubuntu, set
+# `docker_swarm_install_docker_enabled=false` and install Docker via a
+# distro-appropriate role before invoking this one.
+docker_swarm_docker_repo_baseurl: "https://download.docker.com/linux/centos/{{ ansible_distribution_major_version }}/$basearch/stable"
+docker_swarm_docker_repo_gpgkey: "https://download.docker.com/linux/centos/gpg"
+
+# Docker Python SDK packages — required by community.docker.* modules and
+# by docker_stack on managers. Override to add/remove packages.
+docker_swarm_python_packages:
+  - python3-docker
+  - python3-requests
+  - python3-jsondiff
+
+# Docker Python SDK install method:
+#   dnf — distro packages above (default).
+#   pip — install from PyPI / an internal index with a version floor. Use
+#         when the distro SDK lags what community.docker needs (4.x wants
+#         docker>=5). Pairs with the pip.conf knobs for air-gapped fleets.
+docker_swarm_sdk_install_method: dnf      # dnf | pip
+docker_swarm_sdk_pip_packages:
+  - "docker>=5.0.3"
+  - "jsondiff"
+  - "requests"
+
+# /etc/pip.conf — written only when pip method + enabled. Points pip at an
+# internal index (e.g. Artifactory) instead of PyPI.
+docker_swarm_pip_conf_enabled: false
+docker_swarm_pip_index_url: ""            # e.g. https://registry.example.com/api/pypi/pypi/simple
+docker_swarm_pip_extra_index_url: ""
+docker_swarm_pip_trusted_hosts: []        # e.g. ["registry.example.com"]
+
+# ── Host preparation (kernel modules + sysctl + SELinux) ────────────────────
+#
+# Overlay networking needs the overlay + br_netfilter modules and the
+# matching bridge-netfilter sysctls. All three are loop inputs — an extra
+# module / sysctl / boolean is a var change, not a role edit. Each no-ops
+# on an empty list.
+#
+# NOTE: the bridge-nf-call-* sysctls only exist once br_netfilter is loaded
+# — keep the module if you keep those sysctls.
+docker_swarm_kernel_modules:
+  - overlay
+  - br_netfilter
+docker_swarm_sysctl:
+  net.ipv4.ip_forward: "1"
+  net.bridge.bridge-nf-call-iptables: "1"
+  net.bridge.bridge-nf-call-ip6tables: "1"
+# SELinux booleans to enable persistently. Empty by default. Example: add
+# httpd_can_network_connect when a containerised proxy on this host must
+# reach upstreams across the overlay.
+docker_swarm_selinux_booleans: []
+
+# ── Docker socket access (FreeIPA / central directory) ──────────────────────
+#
+# Align the LOCAL docker group's GID to a directory (FreeIPA) group's GID so
+# SSSD-resolved members of that group get socket access without a local
+# account. Optionally append explicit LOCAL users. Opt-in.
+docker_swarm_manage_docker_group: false
+docker_swarm_docker_group_gid: ""         # align to the FreeIPA docker group GID
+docker_swarm_docker_group_members: []     # extra LOCAL users to append to the group
+
+# ── Block storage / data-root relocation ───────────────────────────────────
+#
+# Hosts (typically workers running Splunk/Elasticsearch/Postgres in
+# containers) often get a second disk mounted at /opt by an OS-baseline role.
+# Setting use_data_disk=true relocates Docker's data-root onto that mount
+# so named volumes, image layers, and container writable layers all land
+# on the data disk. Bind mounts that already target /opt/<service>/data
+# follow the same path convention.
+#
+# Leave false on single-disk hosts (managers, lab boxes).
+docker_swarm_use_data_disk: false
+docker_swarm_data_root: "/opt/docker"
+
+# ── daemon.json ────────────────────────────────────────────────────────────
+#
+# Behavioural defaults. Override individual keys, or use
+# `docker_swarm_daemon_extra` to merge arbitrary extra keys in last
+# (highest precedence — wins over any default above).
+#
+# NOTE: `live-restore` is INCOMPATIBLE with swarm mode and dockerd refuses
+# `swarm init` if it's enabled. The template guarantees it stays off.
+# Logging. Default json-file with rotation. To ship swarm logs to a central
+# collector, set the driver to syslog / gelf / fluentd / loki / splunk and
+# put the endpoint in docker_swarm_log_opts. max-size/max-file are emitted
+# only for the json-file/local drivers.
+#
+#   docker_swarm_log_driver: syslog
+#   docker_swarm_log_opts:
+#     syslog-address: "udp://logs.corp:514"
+docker_swarm_log_driver: "json-file"
+docker_swarm_log_max_size: "10m"
+docker_swarm_log_max_file: 5
+docker_swarm_log_opts: {}            # free-form; merged over max-size/max-file
+
+# Container DNS — upstream resolvers + search domains in daemon.json
+# (omitted when empty, so Docker keeps its default).
+docker_swarm_dns: []                 # e.g. ["10.0.0.1"]
+docker_swarm_dns_search: []          # e.g. ["mgt.example.com"]
+
+# Registries.
+docker_swarm_insecure_registries: []  # e.g. ["registry.example.com:8081"]
+docker_swarm_registry_mirrors: []     # e.g. ["https://mirror.corp"]
+
+# LOCAL bridge IPAM pools (daemon.json default-address-pools) — DISTINCT
+# from the swarm overlay pool (docker_swarm_default_addr_pool, set via
+# `swarm init`). This one governs local bridge networks the daemon creates;
+# the swarm pool governs swarm-scoped overlays. A fleet that carves a /16
+# into /24s for each typically sets both.
+#   docker_swarm_default_address_pools:
+#     - {base: "172.20.0.0/16", size: 24}
+docker_swarm_default_address_pools: []
+
+docker_swarm_metrics_enabled: false
+docker_swarm_metrics_addr: "0.0.0.0:9323"
+docker_swarm_experimental: false
+docker_swarm_daemon_extra: {}
+
+# ── Firewall (firewalld) ───────────────────────────────────────────────────
+#
+# Ports are grouped by traffic plane so multi-NIC hosts can land each plane
+# in the right firewalld zone. The role only ADDS rules to named zones — it
+# does NOT bind interfaces to zones (the baseline/network role owns that,
+# along with policy routing). See the multi-NIC note above.
+#
+# SINGLE-NIC (default): both plane zones inherit docker_swarm_firewall_zone,
+# so every port lands in one zone — behaviour unchanged.
+#
+# MULTI-NIC: point each plane's zone at the matching vNIC's zone, e.g.
+#   docker_swarm_control_plane_zone: management   # mgmt vNIC
+#   docker_swarm_data_plane_zone: data            # data vNIC (overlay east-west)
+# (Published "access" ports are opened by the per-app roles in the access
+# zone — the cluster role only manages control + data plane.)
+docker_swarm_firewall_zone: "public"
+docker_swarm_control_plane_zone: "{{ docker_swarm_firewall_zone }}"
+docker_swarm_data_plane_zone: "{{ docker_swarm_firewall_zone }}"
+
+# Control plane → advertise_addr NIC.
+docker_swarm_control_plane_ports:
+  - 2377/tcp     # cluster management (manager API; harmless on workers)
+  - 7946/tcp     # node-to-node gossip
+  - 7946/udp     # node-to-node gossip
+# Data plane → data_path_addr NIC.
+docker_swarm_data_plane_ports:
+  - 4789/udp     # overlay VXLAN data plane
+  - 4500/udp     # IPSec NAT-T for encrypted overlays
+docker_swarm_data_plane_protocols:
+  - esp          # IPSec ESP (encrypted overlay data plane)
+
+# ── Node addresses (single- vs multi-NIC) ───────────────────────────────────
+#
+# Swarm splits traffic into a CONTROL plane (Raft 2377 + gossip 7946) and a
+# DATA plane (overlay VXLAN 4789 + ESP). Docker lets you bind each to a
+# different interface:
+#   advertise_addr → control plane (what peers use to reach this node)
+#   data_path_addr → overlay data-path (east-west between service replicas)
+#   listen_addr    → bind address for the control-plane listener (rarely set)
+#
+# SINGLE-NIC (default): advertise = ansible_host, data_path/listen empty →
+# everything collapses onto one interface. Behaviour unchanged.
+#
+# MULTI-NIC (e.g. work's mgmt/access/data vNICs): set these PER HOST in
+# host_vars to the right interface IPs, e.g.
+#   docker_swarm_advertise_addr: 10.10.0.21   # management vNIC
+#   docker_swarm_data_path_addr: 10.30.0.21   # data vNIC (overlay east-west)
+# Published "access" ports are NOT bound here — the routing mesh answers on
+# all interfaces; restrict them with firewalld in the access zone (per-app).
+#
+# NOTE: data_path_addr is fixed at join time — changing it later needs a
+# leave+rejoin. And multi-NIC VMs need source-based policy routing on the
+# host (a baseline/network-role job) or asymmetric-routing drops will bite.
+docker_swarm_advertise_addr: "{{ ansible_host }}"
+docker_swarm_data_path_addr: ""     # "" = same as advertise (single-NIC)
+docker_swarm_listen_addr: ""        # "" = same as advertise
+
+# ── Swarm init parameters ──────────────────────────────────────────────────
+#
+# Default address pool used for user-created overlay networks. Pick a CIDR
+# that does not overlap your existing infrastructure.
+docker_swarm_default_addr_pool: "10.40.0.0/16"
+docker_swarm_default_addr_pool_subnet_size: 24
+
+# Optional autolock — encrypts the swarm Raft logs at rest. The unlock
+# key is printed once at init time; capture and store before enabling in
+# production. Off by default — the lab/init flow needs nodes to come up
+# unattended.
+docker_swarm_autolock: false
+
+# Optional task history retention (how many task records the swarm keeps
+# per service). Default 5 matches Docker's own default.
+docker_swarm_task_history_retention_limit: 5
+
+# ── Encrypted ingress overlay ──────────────────────────────────────────────
+#
+# Docker's default ingress overlay is NOT encrypted. Setting
+# manage_ingress=true (the default) recreates it with --opt encrypted so
+# published-port traffic between nodes is wrapped in IPSec ESP. The
+# subnet defaults to a /24 distinct from the default address pool so
+# overlaps are obvious.
+#
+# Recreation MUST happen on the bootstrap manager right after `swarm
+# init` and BEFORE any other node joins (tasks running on the ingress
+# network would be disrupted). The role handles this ordering.
+docker_swarm_ingress_subnet: "10.41.0.0/24"
+docker_swarm_ingress_gateway: "10.41.0.1"
+docker_swarm_ingress_encrypted: true
+docker_swarm_ingress_mtu: 0      # 0 = Docker default; else sets the overlay MTU
+
+# ── docker_gwbridge (L2 bridge to host network) ────────────────────────────
+#
+# docker_gwbridge is a per-node L2 bridge that gives swarm tasks egress to
+# the host network (and external networks) — every overlay-connected
+# container has one foot in an overlay and the other in docker_gwbridge.
+#
+# Docker auto-creates it with defaults the first time a swarm overlay is
+# needed. Pre-creating it (BEFORE swarm join) lets you fix two common
+# issues:
+#   1. MTU mismatch when the underlay is < 1500 (VPN, nested VXLAN)
+#   2. Subnet collision with corporate / existing VLAN ranges
+#
+# Pre-creation only fires on hosts not yet in a swarm. Existing-swarm
+# nodes keep whatever bridge they already have (changing it requires
+# leaving the swarm).
+docker_swarm_gwbridge_subnet: "10.42.0.0/24"
+docker_swarm_gwbridge_gateway: "10.42.0.1"
+docker_swarm_gwbridge_mtu: 1500
+docker_swarm_gwbridge_enable_icc: false           # inter-container comms on bridge
+docker_swarm_gwbridge_enable_ip_masquerade: true  # SNAT outbound
+# NOTE on `attachable`: it is a property of swarm-scoped OVERLAY networks
+# (it lets standalone `docker run` containers join an overlay, not just
+# swarm services). docker_gwbridge is a per-node LOCAL bridge, not an
+# overlay — `attachable` does not apply to it and always shows false in
+# `docker network inspect`. There is nothing to configure here; the
+# attachable knob lives on the overlay networks below.
+
+# ── Application overlay networks (shared / estate-wide) ─────────────────────
+#
+# Named overlays created on the bootstrap manager after init. EMPTY by
+# default — per-app roles (swarm_splunk, swarm_elk, …) create their own.
+# Define shared overlays here for a "swarm init then create the encrypted
+# app overlay" bootstrap. Each entry:
+#   name        (required)
+#   subnet      (optional)  e.g. "10.43.0.0/24"
+#   gateway     (optional)
+#   mtu         (optional)  default docker_swarm_overlay_default_mtu
+#   encrypted   (optional)  default docker_swarm_overlay_default_encrypted
+#   attachable  (optional)  default docker_swarm_overlay_default_attachable
+#
+#   docker_swarm_overlay_networks:
+#     - name: app_net
+#       subnet: "10.43.0.0/24"
+#       encrypted: true
+#       attachable: true
+docker_swarm_overlay_networks: []
+docker_swarm_overlay_default_mtu: 1450
+docker_swarm_overlay_default_encrypted: true
+docker_swarm_overlay_default_attachable: true
+
+# ── Destroy (gated by `--tags destroy`) ────────────────────────────────────
+#
+# Forces every node out of the swarm. Workers + non-bootstrap managers
+# leave first; bootstrap last (tearing down the cluster). Does NOT
+# uninstall Docker, remove the firewall rules, or wipe /opt/docker —
+# that's deliberate. The role is reversible; data is not its concern.
+docker_swarm_destroy_force: true
+
+# ── Redeploy (rolling restart — gated by `--tags redeploy`) ─────────────────
+#
+# Rolling, node-by-node restart of a LIVE swarm to pick up daemon.json /
+# kernel / SELinux changes without dropping the whole cluster: drain → restart
+# Docker (or reboot) → return to active, then the next node. OPT-IN via the
+# `redeploy` tag; it never runs on a normal converge and never requires
+# another tag. For strict one-at-a-time, drive the play with `serial: 1`
+# (and consider `--limit swarm_workers` to avoid bouncing managers).
+docker_swarm_redeploy_reboot: false       # reboot instead of just restarting Docker
+docker_swarm_redeploy_drain_settle: 20    # seconds to let tasks reschedule after drain
+
+# ── Node reconcile (remove Down nodes — gated by `--tags reconcile_nodes`) ──
+#
+# Removes nodes in the `Down` state (the work role's "remove old nodes"
+# step, made explicit + opt-in). Never touches Ready/active nodes. Runs on
+# the bootstrap manager. The tag is the real gate; this var lets you disable
+# it even when the tag is passed.
+docker_swarm_reconcile_down_nodes: true

@@ -1,5 +1,5 @@
 {# Renders the FreeIPA CA cert into a docker-config file mounted at
-   mattermost_ldap_ca_cert_path inside mm-app.
+   mattermost_swarm_ldap_ca_cert_path inside mm-app.
 
    Heads-up — Mattermost's MM_LDAPSETTINGS_PUBLICCERTIFICATEFILE is
    the mTLS *client* certificate path, not a CA-trust override. Go's
@@ -8,11 +8,11 @@
    it for trust-store purposes today. Wire this template up so that
    a future image rebuild (which drops the cert into /etc/ssl/certs
    and runs update-ca-certificates) can find it without changing the
-   role. Until then, use mattermost_ldap_skip_certificate_verification
+   role. Until then, use mattermost_swarm_ldap_skip_certificate_verification
    when running against a self-signed CA.
 
    The cert content is slurped at deploy time from a FreeIPA server
-   (mattermost_freeipa_ca_cert_src on groups['freeipa'][0]) — it's
+   (mattermost_swarm_freeipa_ca_cert_src on groups['freeipa'][0]) — it's
    public, so it doesn't belong in ansible-vault. See
    roles/mattermost_swarm/tasks/main.yml for the slurp + b64decode. #}
-{{ _mm_freeipa_ca_cert_pem }}
+{{ _mattermost_swarm_freeipa_ca_cert_pem }}

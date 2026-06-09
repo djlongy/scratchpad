@@ -52,9 +52,9 @@
       community.crypto.openssl_csr:
         path: "/tmp/vault-3node-ca/server.csr"
         privatekey_path: "/tmp/vault-3node-ca/server.key"
-        common_name: "{{ vault_domain }}"
+        common_name: "{{ vault_container_domain }}"
         subject_alt_name: >-
-          {{ ['DNS:' ~ vault_domain] +
+          {{ ['DNS:' ~ vault_container_domain] +
              (groups['vault'] | map('regex_replace', '^', 'DNS:') | list) +
              (groups['vault'] | map('extract', hostvars, 'ansible_host') | map('regex_replace', '^', 'IP:') | list) +
              ['IP:127.0.0.1'] }}
@@ -74,7 +74,7 @@
 - name: Ship CA cert to node
   ansible.builtin.copy:
     src: "/tmp/vault-3node-ca/ca.crt"
-    dest: "{{ vault_certs_dir }}/ca.crt"
+    dest: "{{ vault_container_certs_dir }}/ca.crt"
     owner: root
     group: vault
     mode: "0644"
@@ -82,7 +82,7 @@
 - name: Ship shared server cert to node
   ansible.builtin.copy:
     src: "/tmp/vault-3node-ca/server.crt"
-    dest: "{{ vault_certs_dir }}/vault.crt"
+    dest: "{{ vault_container_certs_dir }}/vault.crt"
     owner: root
     group: vault
     mode: "0644"
@@ -90,7 +90,7 @@
 - name: Ship shared server key to node
   ansible.builtin.copy:
     src: "/tmp/vault-3node-ca/server.key"
-    dest: "{{ vault_certs_dir }}/vault.key"
+    dest: "{{ vault_container_certs_dir }}/vault.key"
     owner: root
     group: vault
     mode: "0640"
@@ -104,6 +104,10 @@
     mode: "0644"
   register: _ca_install
 
-- name: Update CA trust store
+# noqa no-handler: must run inline (later tasks make TLS calls against this
+# CA in the same play) — a play-end handler would update the trust store too
+# late.
+- name: Update CA trust store  # noqa: no-handler
   ansible.builtin.command: update-ca-trust extract
   when: _ca_install.changed
+  changed_when: true

@@ -14,12 +14,10 @@ ansible/
 │   ├── firewalld/               # XML-template firewalld service + zone management
 │   ├── vault_container/         # 3-node HashiCorp Vault Raft HA on Docker
 │   ├── swarm_stack/             # generic Docker Swarm deploy engine
-│   ├── mattermost_swarm/        # wrapper: Mattermost via swarm_stack
-│   └── mattermost_swarm_services/
+│   └── mattermost_swarm/        # wrapper: Mattermost via swarm_stack
 ├── playbooks/               # entry-point playbooks
 │   ├── vault_cluster.yml
 │   ├── mattermost_swarm.yml
-│   ├── mattermost_swarm_services.yml
 │   ├── mattermost_freeipa_prep.yml
 │   ├── audit_single_logger.yml
 │   ├── audit_multi_logger.yml
@@ -52,8 +50,7 @@ not Ansible-specific.
 | [`common`](roles/common/) | Function-like task helpers callable as `tasks_from:` — passphrase generation, vault-backed secret bootstrapping, audit-log shipping (rsyslog/splunk/fluentd/elasticsearch/file/cloudwatch/syslog), fapolicyd rule deploy. |
 | [`vault_container`](roles/vault_container/) | 3-node HashiCorp Vault Raft HA cluster as a Docker container. Self-signed TLS, Shamir unseal, KV v2 mounts, ACL policies, optional FreeIPA LDAP auth. |
 | [`swarm_stack`](roles/swarm_stack/) | Generic engine for deploying any application stack onto an existing Docker Swarm. Encrypted overlays, NFS volumes, content-versioned secrets/configs, redeploy + teardown via tags. |
-| [`mattermost_swarm`](roles/mattermost_swarm/) | Wrapper over `swarm_stack` for Mattermost (postgres + app), with optional FreeIPA-backed LDAP/SSO. Worked example of the wrapper pattern. |
-| [`mattermost_swarm_services`](roles/mattermost_swarm_services/) | Sibling wrapper without LDAP — minimal Mattermost deploy. |
+| [`mattermost_swarm`](roles/mattermost_swarm/) | Wrapper over `swarm_stack` for Mattermost (postgres + app), with optional FreeIPA-backed LDAP/SSO. Worked example of the wrapper pattern. LDAP off = a minimal Mattermost deploy. |
 
 ## Conventions
 

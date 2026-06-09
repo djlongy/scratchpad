@@ -1,0 +1,18 @@
+---
+# Galaxy collection dependencies for the Ansible roles in this repo.
+# Install with:
+#   ansible-galaxy collection install -r collections/requirements.yml
+#
+# Lower bounds only (no upper caps) so consumers can track the latest —
+# pin in your own environment if you need reproducibility.
+collections:
+  - name: ansible.posix          # firewalld, sysctl, seboolean
+    version: ">=1.5.0"
+  - name: community.general      # modprobe + misc helpers
+    version: ">=8.0.0"
+  - name: community.docker       # docker_swarm_service / network / config / secret
+    version: ">=3.8.0"
+  - name: community.crypto       # openssl_* — self-signed TLS (vault_container)
+    version: ">=2.18.0"
+  - name: community.hashi_vault  # vault_write — vault_container post-setup
+    version: ">=6.1.0"

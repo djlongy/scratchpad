@@ -1,0 +1,142 @@
+---
+argument_specs:
+  main:
+    short_description: "Run HashiCorp Vault (Raft HA) as a Docker container"
+    description:
+      - >-
+        Deploys HashiCorp Vault as a Docker container with self-signed TLS,
+        Shamir unseal + auto-unseal on boot, KV v2 mounts, ACL policies, and
+        optional userpass / AppRole / LDAP auth.
+      - >-
+        Phase task files are tagged so callers can target install, config,
+        TLS, init, mounts, policies, and auth independently.
+
+    options:
+      vault_container_docker_image:
+        type: str
+        description: "Vault container image. Default hashicorp/vault:1.19."
+      vault_container_version:
+        type: str
+        description: "Vault CLI version installed on the host. Default 1.19.5."
+      vault_container_cli_arch:
+        type: str
+        description: "CLI arch for the release zip. Default amd64."
+      vault_container_cli_install_dir:
+        type: str
+        description: "Where the vault CLI binary is installed. Default /opt/vault-cli."
+      vault_container_cli_zip_url:
+        type: str
+        description: "HashiCorp release zip URL (derived from version + arch)."
+      vault_container_name:
+        type: str
+        description: "Docker container name. Default vault."
+      vault_container_restart_policy:
+        type: str
+        description: "Container restart policy. Default unless-stopped."
+      vault_container_extra_args:
+        type: list
+        elements: str
+        description: "Extra docker run args (IPC_LOCK, SKIP_SETCAP/SKIP_CHOWN)."
+      vault_container_domain:
+        type: str
+        description: "Service domain for TLS SANs / external addr. Set in inventory."
+      vault_container_api_port:
+        type: int
+        description: "Vault API port. Default 8200."
+      vault_container_cluster_port:
+        type: int
+        description: "Vault cluster (Raft) port. Default 8201."
+      vault_container_host_data_dir:
+        type: str
+        description: "Host dir bind-mounted as Vault storage. Default /opt/vault."
+      vault_container_keys_dir:
+        type: str
+        description: "Host dir holding unseal keys/root token. Default <data_dir>/keys."
+      vault_container_config_dir:
+        type: str
+        description: "Host config dir. Default /etc/vault.d."
+      vault_container_certs_dir:
+        type: str
+        description: "Host TLS certs dir. Default <config_dir>/certs."
+      vault_container_init_key_shares:
+        type: int
+        description: "Shamir key shares at init. Default 1 (bump for prod)."
+      vault_container_init_key_threshold:
+        type: int
+        description: "Shamir unseal threshold at init. Default 1 (bump for prod)."
+      vault_container_unseal_max_retries:
+        type: int
+        description: "auto-unseal: max retries on boot. Default 30."
+      vault_container_unseal_sleep_interval:
+        type: int
+        description: "auto-unseal: seconds between retries. Default 2."
+      vault_container_kv_mounts:
+        type: list
+        elements: dict
+        description: "KV v2 mounts to create. Each: {mount, description}."
+      vault_container_policies:
+        type: list
+        elements: dict
+        description: >-
+          ACL policies to apply. Each: {name, description}; name maps to
+          templates/policies/<name>.hcl.j2.
+      vault_container_userpass_enabled:
+        type: bool
+        default: true
+        description: "Enable userpass auth (break-glass admin)."
+      vault_container_userpass_admin_user:
+        type: str
+        description: "Break-glass userpass username. Default svc-superadmin."
+      vault_container_userpass_admin_password:
+        type: str
+        description: "Break-glass password — supply encrypted via vault.yml."
+      vault_container_userpass_admin_policies:
+        type: list
+        elements: str
+        description: "Policies bound to the break-glass user."
+      vault_container_userpass_admin_ttl:
+        type: str
+        description: "Break-glass token TTL. Default 1h."
+      vault_container_userpass_admin_max_ttl:
+        type: str
+        description: "Break-glass token max TTL. Default 4h."
+      vault_container_approles:
+        type: list
+        elements: dict
+        description: >-
+          AppRole accounts for automation. Each: {name, policies, token_ttl,
+          token_max_ttl}.
+      vault_container_ldap_enabled:
+        type: bool
+        default: false
+        description: "Enable LDAP auth method."
+      vault_container_ldap_url:
+        type: str
+        description: "LDAP/LDAPS URL."
+      vault_container_ldap_userdn:
+        type: str
+        description: "Base DN for user search."
+      vault_container_ldap_groupdn:
+        type: str
+        description: "Base DN for group search."
+      vault_container_ldap_userattr:
+        type: str
+        description: "User attribute. Default uid."
+      vault_container_ldap_groupattr:
+        type: str
+        description: "Group attribute. Default cn."
+      vault_container_ldap_groupfilter:
+        type: str
+        description: "LDAP group search filter."
+      vault_container_ldap_binddn:
+        type: str
+        description: "Bind DN for LDAP search."
+      vault_container_ldap_bindpass:
+        type: str
+        description: "Bind password — supply encrypted via vault.yml."
+      vault_container_ldap_insecure_tls:
+        type: bool
+        description: "Skip LDAPS cert verification (closed-network self-signed CA)."
+      vault_container_ldap_group_policies:
+        type: dict
+        description: "Map of LDAP group name → list of Vault policies."

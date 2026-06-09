@@ -22,7 +22,7 @@ path "sys/mounts/*"        { capabilities = ["create", "read", "update", "delete
 path "identity/*"          { capabilities = ["create", "read", "update", "delete", "list"] }
 
 # Full KV CRUD on every mount
-{% for kv in vault_kv_mounts %}
+{% for kv in vault_container_kv_mounts %}
 path "{{ kv.mount }}/*"    { capabilities = ["create", "read", "update", "delete", "list"] }
 {% endfor %}
 
