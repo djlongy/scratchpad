@@ -159,3 +159,6 @@ yarn-error.log*
 
 # ── Local agent instructions ──────────────────────────────────────────────────────
 AGENTS.md
+
+# ── Browser-automation / agent tool artifacts ─────────────────────────────────────
+.playwright-cli/
