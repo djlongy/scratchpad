@@ -7,7 +7,7 @@
   ansible.builtin.assert:
     that:
       - artifactory_url | length > 0
-    fail_msg: "artifactory_url must be set (e.g. https://trialapi.jfrog.io)."
+    fail_msg: "artifactory_url must be set (e.g. https://artifactory.example.com)."
     quiet: true
 
 - name: Assert credentials are present
