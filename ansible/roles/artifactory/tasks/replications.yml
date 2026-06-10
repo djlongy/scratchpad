@@ -1,0 +1,71 @@
+---
+# roles/artifactory/tasks/replications.yml
+# Per-repo replication config. PUT creates, POST updates, DELETE removes.
+# Keyed by repoKey. Credentials supplied at apply time (not round-tripped).
+
+- name: "Replications | Check existence"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.replications }}/{{ item.repoKey }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _rep_get
+  changed_when: false
+  loop: "{{ artifactory_replications }}"
+  loop_control:
+    label: "{{ item.repoKey }}"
+
+- name: "Replications | Create"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.replications }}/{{ item.item.repoKey }}"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item.item | dict2items | rejectattr('key', 'in', ['state', 'repoKey']) | items2dict }}"
+    status_code: [200, 201]
+  register: _rep_create
+  changed_when: _rep_create.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _rep_create.status not in [200, 201]
+  loop: "{{ _rep_get.results }}"
+  loop_control:
+    label: "{{ item.item.repoKey }}"
+  when:
+    - item.item.state | default('present') != 'absent'
+    - item.status == 404
+  no_log: true
+
+- name: "Replications | Update"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.replications }}/{{ item.item.repoKey }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item.item | dict2items | rejectattr('key', 'in', ['state', 'repoKey']) | items2dict }}"
+    status_code: [200, 201]
+  register: _rep_update
+  changed_when: _rep_update.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _rep_update.status not in [200, 201]
+  loop: "{{ _rep_get.results }}"
+  loop_control:
+    label: "{{ item.item.repoKey }}"
+  when:
+    - item.item.state | default('present') != 'absent'
+    - item.status == 200
+    - artifactory_reconcile_existing | bool
+  no_log: true
+
+- name: "Replications | Remove (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.replications }}/{{ item.repoKey }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _rep_del
+  changed_when: _rep_del.status == 200
+  loop: "{{ artifactory_replications | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.repoKey }}"

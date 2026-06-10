@@ -1,0 +1,75 @@
+---
+# roles/artifactory/tasks/apply.yml
+# Reconcile desired state (inline vars, inventory, or a loaded import file).
+# Order: foundational config → repos → security → projects (reference repos) →
+# integrations → xray → eventing. Each section self-skips when its data is empty.
+
+- name: "Apply | System / global configuration"
+  ansible.builtin.import_tasks: system_config.yml
+  when: artifactory_manage_system_config | bool
+  tags: [system_config]
+
+- name: "Apply | Repositories"
+  ansible.builtin.import_tasks: repositories.yml
+  when: artifactory_manage_repositories | bool
+  tags: [repositories]
+
+- name: "Apply | Groups"
+  ansible.builtin.import_tasks: groups.yml
+  when: artifactory_manage_groups | bool
+  tags: [groups, security]
+
+- name: "Apply | Users"
+  ansible.builtin.import_tasks: users.yml
+  when: artifactory_manage_users | bool
+  tags: [users, security]
+
+- name: "Apply | Permission targets"
+  ansible.builtin.import_tasks: permissions.yml
+  when: artifactory_manage_permissions | bool
+  tags: [permissions, security]
+
+- name: "Apply | Lifecycle environments (stages)"
+  ansible.builtin.import_tasks: environments.yml
+  when: artifactory_manage_environments | bool
+  tags: [environments, projects]
+
+- name: "Apply | Projects"
+  ansible.builtin.import_tasks: projects.yml
+  when: artifactory_manage_projects | bool
+  tags: [projects]
+
+- name: "Apply | LDAP integration"
+  ansible.builtin.import_tasks: ldap.yml
+  when: artifactory_manage_ldap | bool
+  tags: [ldap, sso, security]
+
+- name: "Apply | SSO (SAML / OAuth / Crowd)"
+  ansible.builtin.import_tasks: sso.yml
+  when: artifactory_manage_sso | bool
+  tags: [sso, security]
+
+- name: "Apply | HashiCorp Vault connections"
+  ansible.builtin.import_tasks: vault_configs.yml
+  when: artifactory_manage_vault | bool
+  tags: [vault, security]
+
+- name: "Apply | Xray (policies, watches, ignore rules, indexing)"
+  ansible.builtin.import_tasks: xray.yml
+  when: artifactory_manage_xray | bool
+  tags: [xray]
+
+- name: "Apply | Replications"
+  ansible.builtin.import_tasks: replications.yml
+  when: artifactory_manage_replications | bool
+  tags: [replications]
+
+- name: "Apply | Webhooks"
+  ansible.builtin.import_tasks: webhooks.yml
+  when: artifactory_manage_webhooks | bool
+  tags: [webhooks]
+
+- name: "Apply | Access tokens"
+  ansible.builtin.import_tasks: tokens.yml
+  when: artifactory_manage_tokens | bool
+  tags: [tokens]

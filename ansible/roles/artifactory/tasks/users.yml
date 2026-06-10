@@ -1,0 +1,35 @@
+---
+# roles/artifactory/tasks/users.yml
+# Users need a password on creation, but GET never returns one (so a backup
+# can't carry it). Per user: create with the supplied password, or a generated
+# passphrase recorded to artifactory_generated_users_file for you to distribute
+# / store in a secret manager. Existing users are updated without touching their
+# password unless one is supplied.
+
+- name: "Users | Reconcile each user"
+  ansible.builtin.include_tasks: user_item.yml
+  loop: "{{ artifactory_users }}"
+  loop_control:
+    loop_var: _user
+    label: "{{ _user.name }}"
+
+- name: "Users | Persist generated passwords (if any)"
+  ansible.builtin.copy:
+    content: "{{ _af_generated_users | to_nice_yaml(indent=2) }}"
+    dest: "{{ artifactory_generated_users_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  when: _af_generated_users | default([]) | length > 0
+  no_log: true
+
+- name: "Users | Prune unmanaged"
+  ansible.builtin.include_tasks: prune.yml
+  vars:
+    _prune_section: users
+    _prune_endpoint: "{{ artifactory_ep.users }}"
+    _prune_id: name
+    _prune_desired: "{{ artifactory_users | map(attribute='name') | list }}"
+    _prune_list_url: "{{ artifactory_ep.users }}"
+  when:
+    - artifactory_prune | bool
+    - "'users' in artifactory_prune_sections"

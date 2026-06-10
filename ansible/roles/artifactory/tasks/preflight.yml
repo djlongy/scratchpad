@@ -1,0 +1,73 @@
+---
+# roles/artifactory/tasks/preflight.yml
+# Resolve auth, confirm the instance is reachable, and (apply mode) load any
+# import file as desired state.
+
+- name: Assert a base URL was provided
+  ansible.builtin.assert:
+    that:
+      - artifactory_url | length > 0
+    fail_msg: "artifactory_url must be set (e.g. https://trialapi.jfrog.io)."
+    quiet: true
+
+- name: Assert credentials are present
+  ansible.builtin.assert:
+    that:
+      - (artifactory_access_token | length > 0) or (artifactory_admin_password | length > 0)
+    fail_msg: >-
+      Provide either artifactory_access_token (preferred) or
+      artifactory_admin_password. Set ARTIFACTORY_TOKEN / ARTIFACTORY_PASSWORD
+      in the environment, or pass --extra-vars.
+    quiet: true
+
+- name: Decide auth scheme (token Bearer vs basic)
+  ansible.builtin.set_fact:
+    _af_use_basic: "{{ artifactory_access_token | length == 0 }}"
+    _af_headers: >-
+      {{
+        {'Authorization': 'Bearer ' + artifactory_access_token}
+        if (artifactory_access_token | length > 0) else {}
+      }}
+  no_log: true
+
+# JSON header bundle reused by write tasks (auth + content-type).
+- name: Build reusable JSON request headers
+  ansible.builtin.set_fact:
+    _af_json_headers: "{{ _af_headers | combine({'Content-Type': 'application/json'}) }}"
+  no_log: true
+
+- name: Ping Artifactory until it responds
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.ping }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _af_ping
+  retries: "{{ artifactory_health_retries }}"
+  delay: "{{ artifactory_health_delay }}"
+  until: _af_ping.status == 200
+  changed_when: false
+
+- name: Read Artifactory version
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.version }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _af_version
+  changed_when: false
+  failed_when: false
+
+- name: Report target instance
+  ansible.builtin.debug:
+    msg: >-
+      Artifactory {{ (_af_version.json.version | default('unknown')) }}
+      ({{ (_af_version.json.license | default('license n/a')) }})
+      at {{ artifactory_url }} — mode={{ artifactory_mode }}
+
+- name: Load desired state from import file
+  ansible.builtin.include_vars:
+    file: "{{ artifactory_import_file }}"
+  when:
+    - artifactory_mode == 'apply'
+    - artifactory_import_file | length > 0

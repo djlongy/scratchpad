@@ -1,0 +1,48 @@
+---
+# roles/artifactory/tasks/groups.yml
+# PUT /api/security/groups/{name} is an idempotent upsert. DELETE removes.
+# Objects with state: absent are deleted; everything else is upserted.
+
+- name: "Groups | Create or update"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.groups }}/{{ item.name | urlencode }}"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200, 201]
+  register: _grp_put
+  changed_when: _grp_put.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _grp_put.status not in [200, 201]
+  loop: >-
+    {{ artifactory_groups | rejectattr('state', 'defined') | list
+       + (artifactory_groups | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Groups | Remove (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.groups }}/{{ item.name | urlencode }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _grp_del
+  changed_when: _grp_del.status == 200
+  loop: "{{ artifactory_groups | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Groups | Prune unmanaged"
+  ansible.builtin.include_tasks: prune.yml
+  vars:
+    _prune_section: groups
+    _prune_endpoint: "{{ artifactory_ep.groups }}"
+    _prune_id: name
+    _prune_desired: "{{ artifactory_groups | map(attribute='name') | list }}"
+    _prune_list_url: "{{ artifactory_ep.groups }}"
+  when:
+    - artifactory_prune | bool
+    - "'groups' in artifactory_prune_sections"

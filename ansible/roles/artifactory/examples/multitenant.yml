@@ -1,0 +1,136 @@
+---
+# examples/multitenant.yml
+# A complete, generic "project-per-tenant" Artifactory design expressed as role
+# input. No PII — tenants are placeholders (alpha, beta). Apply with:
+#
+#   ARTIFACTORY_TOKEN=… ansible-playbook playbooks/artifactory.yml \
+#     -e artifactory_url=https://<host> -e artifactory_mode=apply \
+#     -e @roles/artifactory/examples/multitenant.yml
+#
+# Model: each tenant gets a JFrog Project, dedicated local repos per package
+# type per stage (dev/prod), and a virtual per type aggregating the tenant's
+# locals + the shared upstream remotes. Shared remotes are infra-owned and
+# unscoped. RBAC is per-tenant groups bound to project roles.
+
+# ── Lifecycle stages ──────────────────────────────────────────────────────
+artifactory_environments:
+  - name: DEV
+  - name: PROD
+
+# ── Shared upstream remotes (infra-owned, all tenants consume) ────────────
+artifactory_remote_repositories:
+  - key: dockerhub-remote
+    rclass: remote
+    packageType: docker
+    url: https://registry-1.docker.io/
+    enableTokenAuthentication: true
+  - key: ghcr-remote
+    rclass: remote
+    packageType: docker
+    url: https://ghcr.io/
+    enableTokenAuthentication: true
+  - key: github-releases-remote
+    rclass: remote
+    packageType: generic
+    url: https://github.com/
+
+# ── Per-tenant locals (docker + generic, dev + prod) ──────────────────────
+artifactory_local_repositories:
+  - {key: alpha-docker-dev-local, rclass: local, packageType: docker}
+  - {key: alpha-docker-prod-local, rclass: local, packageType: docker}
+  - {key: alpha-generic-dev-local, rclass: local, packageType: generic}
+  - {key: alpha-generic-prod-local, rclass: local, packageType: generic}
+  - {key: beta-docker-dev-local, rclass: local, packageType: docker}
+  - {key: beta-docker-prod-local, rclass: local, packageType: docker}
+  - {key: beta-generic-dev-local, rclass: local, packageType: generic}
+  - {key: beta-generic-prod-local, rclass: local, packageType: generic}
+
+# ── Per-tenant virtuals (dev aggregates locals + remotes; prod is isolated) ─
+artifactory_virtual_repositories:
+  - key: alpha-docker-dev
+    rclass: virtual
+    packageType: docker
+    defaultDeploymentRepo: alpha-docker-dev-local
+    repositories: [alpha-docker-dev-local, alpha-docker-prod-local, dockerhub-remote, ghcr-remote]
+  - key: alpha-docker-prod
+    rclass: virtual
+    packageType: docker
+    defaultDeploymentRepo: alpha-docker-prod-local
+    repositories: [alpha-docker-prod-local]
+  - key: alpha-generic-dev
+    rclass: virtual
+    packageType: generic
+    defaultDeploymentRepo: alpha-generic-dev-local
+    repositories: [alpha-generic-dev-local, alpha-generic-prod-local, github-releases-remote]
+  - key: beta-docker-dev
+    rclass: virtual
+    packageType: docker
+    defaultDeploymentRepo: beta-docker-dev-local
+    repositories: [beta-docker-dev-local, beta-docker-prod-local, dockerhub-remote, ghcr-remote]
+  - key: beta-docker-prod
+    rclass: virtual
+    packageType: docker
+    defaultDeploymentRepo: beta-docker-prod-local
+    repositories: [beta-docker-prod-local]
+
+# ── Per-tenant RBAC groups ────────────────────────────────────────────────
+artifactory_groups:
+  - {name: alpha-admins, description: "alpha tenant admins", autoJoin: false, adminPrivileges: false}
+  - {name: alpha-developers, description: "alpha developers", autoJoin: false, adminPrivileges: false}
+  - {name: beta-admins, description: "beta tenant admins", autoJoin: false, adminPrivileges: false}
+  - {name: beta-developers, description: "beta developers", autoJoin: false, adminPrivileges: false}
+
+# ── Permission targets (dev: RW for devs; prod: read for devs, RW for admins) ─
+artifactory_permissions:
+  - name: alpha-dev-rw
+    repo:
+      repositories: [alpha-docker-dev-local, alpha-generic-dev-local]
+      actions:
+        groups:
+          alpha-developers: [read, write, annotate, delete]
+          alpha-admins: [read, write, annotate, delete, manage]
+  - name: alpha-prod-ro
+    repo:
+      repositories: [alpha-docker-prod-local, alpha-generic-prod-local]
+      actions:
+        groups:
+          alpha-developers: [read]
+          alpha-admins: [read, write, annotate, delete, manage]
+
+# ── Projects (one per tenant), with member groups bound to project roles ──
+artifactory_projects:
+  - project_key: alpha
+    display_name: Alpha
+    description: "Alpha tenant"
+    admin_privileges: {manage_members: true, manage_resources: true, index_resources: true}
+    storage_quota_bytes: -1
+    members:
+      groups:
+        - {name: alpha-admins, roles: [Project Admin]}
+        - {name: alpha-developers, roles: [Developer]}
+  - project_key: beta
+    display_name: Beta
+    description: "Beta tenant"
+    admin_privileges: {manage_members: true, manage_resources: true, index_resources: true}
+    storage_quota_bytes: -1
+    members:
+      groups:
+        - {name: beta-admins, roles: [Project Admin]}
+        - {name: beta-developers, roles: [Developer]}
+
+# ── Xray: a baseline security policy + an all-repos watch ─────────────────
+artifactory_xray_policies:
+  - name: block-critical-cves
+    type: security
+    description: "Fail builds / flag on Critical CVEs"
+    rules:
+      - name: critical
+        priority: 1
+        criteria: {min_severity: Critical}
+        actions:
+          block_download: {active: false, unscanned: false}
+          fail_build: true
+artifactory_xray_watches:
+  - general_data: {name: all-repos-security, description: "Scan all repos", active: true}
+    project_resources: {resources: [{type: all-repos, name: All Repositories}]}
+    assigned_policies: [{name: block-critical-cves, type: security}]

@@ -1,0 +1,34 @@
+---
+# roles/artifactory/tasks/system_config.yml
+# Apply global configuration.
+#
+# Primary path: structured YAML descriptor → PATCH (additive, supported,
+# maintainable). Use this for the settings you actually manage.
+#
+# DR path (opt-in): re-POST the raw XML descriptor captured at backup time.
+# This is a full replace — heavy-handed, version-sensitive — so it is gated
+# behind artifactory_apply_system_config_xml.
+
+- name: "System_config | Apply YAML configuration descriptor"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.system_config }}"
+    method: PATCH
+    headers: "{{ _af_headers | combine({'Content-Type': 'application/yaml'}) }}"
+    body: "{{ artifactory_system_config_yaml | to_nice_yaml(indent=2) }}"
+    status_code: [200]
+  register: _ap_sysyaml
+  changed_when: _ap_sysyaml.status == 200
+  when: artifactory_system_config_yaml | length > 0
+
+- name: "System_config | Re-apply raw XML descriptor (full replace, opt-in)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.system_config }}"
+    method: POST
+    headers: "{{ _af_headers | combine({'Content-Type': 'application/xml'}) }}"
+    body: "{{ artifactory_system_config_xml }}"
+    status_code: [200]
+  register: _ap_sysxml
+  changed_when: _ap_sysxml.status == 200
+  when:
+    - artifactory_apply_system_config_xml | bool
+    - artifactory_system_config_xml | length > 0

@@ -1,0 +1,29 @@
+---
+# roles/artifactory/tasks/main.yml
+# Dispatch by mode. All API tasks run under one block so they share
+# module_defaults (auth + TLS + timeout) computed in preflight.
+
+- name: Artifactory configuration
+  delegate_to: "{{ artifactory_delegate_to | default(omit) }}"
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ artifactory_validate_certs }}"
+      timeout: "{{ artifactory_request_timeout }}"
+      force_basic_auth: "{{ _af_use_basic | default(false) }}"
+      url_username: "{{ (artifactory_admin_username if (_af_use_basic | default(false)) else omit) }}"
+      url_password: "{{ (artifactory_admin_password if (_af_use_basic | default(false)) else omit) }}"
+      return_content: true
+  block:
+    - name: Run preflight (auth, health, load import file)
+      ansible.builtin.import_tasks: preflight.yml
+      tags: [always]
+
+    - name: Backup live Artifactory configuration
+      ansible.builtin.import_tasks: backup.yml
+      when: artifactory_mode == 'backup'
+      tags: [backup]
+
+    - name: Apply desired Artifactory configuration
+      ansible.builtin.import_tasks: apply.yml
+      when: artifactory_mode == 'apply'
+      tags: [apply]

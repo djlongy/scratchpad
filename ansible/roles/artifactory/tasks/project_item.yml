@@ -1,0 +1,138 @@
+---
+# roles/artifactory/tasks/project_item.yml
+# Reconcile one project (loop_var: _proj): core → roles → members → repos.
+# state: absent → delete the project. Best-effort against the Access Projects
+# REST API (see docs/api-reference.md §6).
+
+- name: "Project | delete (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 204, 404]
+  register: _proj_del
+  changed_when: _proj_del.status in [200, 204]
+  when: _proj.state | default('present') == 'absent'
+
+- name: "Project | reconcile"
+  when: _proj.state | default('present') != 'absent'
+  block:
+    - name: "Project | build core body"
+      ansible.builtin.set_fact:
+        _proj_body:
+          project_key: "{{ _proj.project_key }}"
+          display_name: "{{ _proj.display_name | default(_proj.project_key) }}"
+          description: "{{ _proj.description | default('') }}"
+          admin_privileges: "{{ _proj.admin_privileges | default({'manage_members': true, 'manage_resources': true, 'index_resources': true}) }}"
+          storage_quota_bytes: "{{ _proj.storage_quota_bytes | default(-1) }}"
+
+    - name: "Project | check existence"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}"
+        method: GET
+        headers: "{{ _af_headers }}"
+        status_code: [200, 404]
+      register: _proj_get
+      changed_when: false
+
+    - name: "Project | create"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}"
+        method: POST
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ _proj_body }}"
+        status_code: [200, 201]
+      register: _proj_create
+      changed_when: _proj_create.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _proj_create.status not in [200, 201]
+      when: _proj_get.status == 404
+
+    - name: "Project | update"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}"
+        method: PUT
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ _proj_body }}"
+        status_code: [200, 201]
+      register: _proj_update
+      changed_when: _proj_update.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _proj_update.status not in [200, 201]
+      when:
+        - _proj_get.status == 200
+        - artifactory_reconcile_existing | bool
+
+    - name: "Project | upsert custom roles"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}/roles"
+        method: POST
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ role }}"
+        status_code: [200, 201, 409]
+      register: _proj_role
+      changed_when: _proj_role.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _proj_role.status not in [200, 201, 409]
+      loop: "{{ _proj.roles | default([]) }}"
+      loop_control:
+        loop_var: role
+        label: "{{ role.name }}"
+
+    - name: "Project | assign user members"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}/users/{{ member.name }}"
+        method: PUT
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ {'roles': member.roles} }}"
+        status_code: [200, 201]
+      register: _proj_user
+      changed_when: _proj_user.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _proj_user.status not in [200, 201]
+      loop: "{{ _proj.members.users | default([]) }}"
+      loop_control:
+        loop_var: member
+        label: "{{ member.name }}"
+
+    - name: "Project | assign group members"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}/groups/{{ member.name }}"
+        method: PUT
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ {'roles': member.roles} }}"
+        status_code: [200, 201]
+      register: _proj_group
+      changed_when: _proj_group.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _proj_group.status not in [200, 201]
+      loop: "{{ _proj.members.groups | default([]) }}"
+      loop_control:
+        loop_var: member
+        label: "{{ member.name }}"
+
+    - name: "Project | attach repositories"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/_/attach/repositories/{{ repo_key }}/{{ _proj.project_key }}?force=true"
+        method: PUT
+        headers: "{{ _af_headers }}"
+        status_code: [200, 201, 409]
+      register: _proj_repo
+      changed_when: _proj_repo.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _proj_repo.status not in [200, 201, 409]
+      loop: "{{ _proj.repositories | default([]) }}"
+      loop_control:
+        loop_var: repo_key
+        label: "{{ repo_key }}"

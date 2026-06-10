@@ -1,0 +1,55 @@
+---
+# roles/artifactory/tasks/vault_configs.yml
+# HashiCorp Vault connections (Access). POST creates, PUT updates, DELETE removes.
+# Needs a platform-admin token (an Artifactory-only admin token gets 403 — the
+# section then self-skips with a warning rather than failing the run).
+
+- name: "Vault | Probe access (token scope)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.vault_configs }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _vault_probe
+  changed_when: false
+
+- name: "Vault | Warn if token lacks Access admin scope"
+  ansible.builtin.debug:
+    msg: "Vault config API returned {{ _vault_probe.status }} — skipping (needs a platform-admin token)."
+  when: _vault_probe.status != 200
+
+- name: "Vault | Reconcile connections"
+  when: _vault_probe.status == 200
+  block:
+    - name: "Vault | Create or update"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.vault_configs }}/{{ item.key }}"
+        method: PUT
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+        status_code: [200, 201]
+      register: _vault_put
+      changed_when: _vault_put.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _vault_put.status not in [200, 201]
+      loop: >-
+        {{ artifactory_vault_configs | rejectattr('state', 'defined') | list
+           + (artifactory_vault_configs | selectattr('state', 'defined')
+              | selectattr('state', 'eq', 'present') | list) }}
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+
+    - name: "Vault | Remove (state: absent)"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.vault_configs }}/{{ item.key }}"
+        method: DELETE
+        headers: "{{ _af_headers }}"
+        status_code: [200, 204, 404]
+      register: _vault_del
+      changed_when: _vault_del.status in [200, 204]
+      loop: "{{ artifactory_vault_configs | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+      loop_control:
+        label: "{{ item.key }}"

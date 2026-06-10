@@ -1,0 +1,61 @@
+---
+# roles/artifactory/vars/main.yml
+# Non-overridable constants: REST API paths and fixed enums. High precedence —
+# no environment values here. Endpoints validated live against Artifactory
+# 7.156.2 / Xray 3.147.2 (see docs/api-reference.md).
+
+# Service API bases (joined to artifactory_url).
+artifactory_api: "{{ artifactory_url }}/artifactory/api"
+artifactory_access_api: "{{ artifactory_url }}/access/api/v1"
+artifactory_event_api: "{{ artifactory_url }}/event/api/v1"
+artifactory_xray_api: "{{ artifactory_url }}/xray/api"
+
+artifactory_ep:
+  # system / identity (read-only)
+  ping: "{{ artifactory_api }}/system/ping"
+  version: "{{ artifactory_api }}/system/version"
+  license: "{{ artifactory_api }}/system/license"
+  service_id: "{{ artifactory_api }}/system/service_id"
+  storageinfo: "{{ artifactory_api }}/storageinfo"
+  # global config descriptor (self-hosted only)
+  system_config: "{{ artifactory_api }}/system/configuration"
+  # repositories
+  repositories: "{{ artifactory_api }}/repositories"
+  repositories_configurations: "{{ artifactory_api }}/repositories/configurations"
+  # security
+  groups: "{{ artifactory_api }}/security/groups"
+  users: "{{ artifactory_api }}/security/users"
+  permissions: "{{ artifactory_api }}/v2/security/permissions"
+  # auth / SSO (dedicated endpoints — work on SaaS)
+  saml: "{{ artifactory_api }}/saml/config"
+  oauth: "{{ artifactory_api }}/oauth"
+  crowd: "{{ artifactory_api }}/crowd"
+  ldap: "{{ artifactory_access_api }}/ldap/settings"
+  # access: projects, environments, vault, tokens
+  projects: "{{ artifactory_access_api }}/projects"
+  environments: "{{ artifactory_access_api }}/environments"
+  vault_configs: "{{ artifactory_access_api }}/vault/configs"
+  tokens: "{{ artifactory_access_api }}/tokens"
+  # replication + webhooks
+  replications: "{{ artifactory_api }}/replications"
+  webhooks: "{{ artifactory_event_api }}/subscriptions"
+  # xray
+  xray_version: "{{ artifactory_xray_api }}/v1/system/version"
+  xray_policies: "{{ artifactory_xray_api }}/v2/policies"
+  xray_watches: "{{ artifactory_xray_api }}/v2/watches"
+  xray_ignore_rules: "{{ artifactory_xray_api }}/v1/ignore_rules"
+  xray_binmgr: "{{ artifactory_xray_api }}/v1/binMgr"
+
+# Apply order for repositories (virtuals/federated reference the others).
+artifactory_rclass_order: [local, remote, virtual, federated]
+
+# Computed/read-only keys to strip from a repo object before writing.
+artifactory_repo_strip_keys:
+  - revision
+
+# Built-in objects that prune must never delete (safety floor).
+artifactory_prune_protect:
+  users: [admin, anonymous, "{{ artifactory_admin_username }}"]
+  groups: [readers]
+  environments: [DEV, PROD]
+  projects: [default]
