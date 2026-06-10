@@ -1,0 +1,48 @@
+---
+# roles/artifactory/tasks/permissions.yml
+# PUT /api/v2/security/permissions/{name} is an idempotent upsert accepting the
+# same JSON shape GET returns. DELETE removes. state: absent → delete.
+
+- name: "Permissions | Create or update"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.permissions }}/{{ item.name | urlencode }}"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200, 201]
+  register: _perm_put
+  changed_when: _perm_put.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _perm_put.status not in [200, 201]
+  loop: >-
+    {{ artifactory_permissions | rejectattr('state', 'defined') | list
+       + (artifactory_permissions | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Permissions | Remove (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.permissions }}/{{ item.name | urlencode }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _perm_del
+  changed_when: _perm_del.status == 200
+  loop: "{{ artifactory_permissions | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Permissions | Prune unmanaged"
+  ansible.builtin.include_tasks: prune.yml
+  vars:
+    _prune_section: permissions
+    _prune_endpoint: "{{ artifactory_ep.permissions }}"
+    _prune_id: name
+    _prune_desired: "{{ artifactory_permissions | map(attribute='name') | list }}"
+    _prune_list_url: "{{ artifactory_ep.permissions }}"
+  when:
+    - artifactory_prune | bool
+    - "'permissions' in artifactory_prune_sections"

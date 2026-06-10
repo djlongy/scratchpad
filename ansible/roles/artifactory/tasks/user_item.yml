@@ -1,0 +1,81 @@
+---
+# roles/artifactory/tasks/user_item.yml
+# Reconcile a single user (loop_var: _user). state: absent → DELETE.
+
+- name: "User | check existence"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.users }}/{{ _user.name }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _user_get
+  changed_when: false
+
+- name: "User | delete (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.users }}/{{ _user.name }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _user_del
+  changed_when: _user_del.status == 200
+  when: _user.state | default('present') == 'absent'
+
+- name: "User | generate password if creating without one"
+  ansible.builtin.set_fact:
+    _user_pw: >-
+      {{ _user.password
+         | default(lookup('ansible.builtin.password',
+                          '/dev/null chars=ascii_letters,digits length=24')) }}
+  no_log: true
+  when:
+    - _user.state | default('present') != 'absent'
+    - _user_get.status == 404
+
+- name: "User | record generated password"
+  ansible.builtin.set_fact:
+    _af_generated_users: >-
+      {{ (_af_generated_users | default([])) +
+         [{'name': _user.name, 'password': _user_pw}] }}
+  no_log: true
+  when:
+    - _user.state | default('present') != 'absent'
+    - _user_get.status == 404
+    - _user.password is not defined
+
+- name: "User | create"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.users }}/{{ _user.name }}"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ (_user | dict2items | rejectattr('key', 'eq', 'state') | items2dict) | combine({'password': _user_pw}) }}"
+    status_code: [200, 201]
+  register: _user_create
+  changed_when: _user_create.status in [200, 201]
+  no_log: true
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _user_create.status not in [200, 201]
+  when:
+    - _user.state | default('present') != 'absent'
+    - _user_get.status == 404
+
+- name: "User | update (password untouched unless supplied)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.users }}/{{ _user.name }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ _user | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200]
+  register: _user_update
+  changed_when: _user_update.status == 200
+  no_log: true
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _user_update.status != 200
+  when:
+    - _user.state | default('present') != 'absent'
+    - _user_get.status == 200
+    - artifactory_reconcile_existing | bool

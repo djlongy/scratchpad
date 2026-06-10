@@ -1,0 +1,65 @@
+---
+# roles/artifactory/tasks/repo_item.yml
+# Reconcile a single repository (loop_var: _repo). PUT creates, POST updates,
+# DELETE removes (state: absent). Read-only/computed fields stripped before write.
+
+- name: "Repo | strip read-only keys"
+  ansible.builtin.set_fact:
+    _repo_body: >-
+      {{ _repo | dict2items
+                | rejectattr('key', 'in', artifactory_repo_strip_keys + ['state'])
+                | items2dict }}
+
+- name: "Repo | check existence"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 400, 404]
+  register: _repo_get
+  changed_when: false
+
+- name: "Repo | delete (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _repo_del
+  changed_when: _repo_del.status == 200
+  when: _repo.state | default('present') == 'absent'
+
+- name: "Repo | create"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ _repo_body }}"
+    status_code: [200, 201]
+  register: _repo_create
+  changed_when: _repo_create.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _repo_create.status not in [200, 201]
+  when:
+    - _repo.state | default('present') != 'absent'
+    - _repo_get.status in [400, 404]
+
+- name: "Repo | update"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ _repo_body }}"
+    status_code: [200]
+  register: _repo_update
+  changed_when: _repo_update.status == 200
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _repo_update.status != 200
+  when:
+    - _repo.state | default('present') != 'absent'
+    - _repo_get.status == 200
+    - artifactory_reconcile_existing | bool

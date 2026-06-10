@@ -1,0 +1,59 @@
+---
+# roles/artifactory/tasks/environments.yml
+# Global lifecycle stages (DEV/PROD built in). POST creates, DELETE removes.
+
+- name: "Environments | List current"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.environments }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403]
+  register: _env_get
+  changed_when: false
+
+- name: "Environments | Create missing"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.environments }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ {'name': item.name} }}"
+    status_code: [200, 201, 409]
+  register: _env_create
+  changed_when: _env_create.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _env_create.status not in [200, 201, 409]
+  loop: >-
+    {{ artifactory_environments | rejectattr('state', 'defined') | list
+       + (artifactory_environments | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - _env_get.status | default(0) == 200
+    - item.name not in (_env_get.json | default([]) | map(attribute='name') | list)
+
+- name: "Environments | Remove (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.environments }}/{{ item.name | urlencode }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 204, 404]
+  register: _env_del
+  changed_when: _env_del.status in [200, 204]
+  loop: "{{ artifactory_environments | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Environments | Prune unmanaged"
+  ansible.builtin.include_tasks: prune.yml
+  vars:
+    _prune_section: environments
+    _prune_endpoint: "{{ artifactory_ep.environments }}"
+    _prune_id: name
+    _prune_desired: "{{ artifactory_environments | map(attribute='name') | list }}"
+    _prune_list_url: "{{ artifactory_ep.environments }}"
+  when:
+    - artifactory_prune | bool
+    - "'environments' in artifactory_prune_sections"

@@ -1,0 +1,133 @@
+---
+argument_specs:
+  main:
+    short_description: Configure JFrog Artifactory Enterprise over the REST API (backup + apply).
+    description:
+      - Two modes share one schema. C(backup) reads the live configuration via
+        GET requests and writes it to a file; C(apply) reconciles that same
+        schema into a (possibly empty) instance via create/update requests.
+    options:
+      artifactory_mode:
+        type: str
+        choices: [backup, apply]
+        default: apply
+        description: Operation mode.
+      artifactory_url:
+        type: str
+        required: true
+        description: Base platform URL with no trailing slash (e.g. https://acme.jfrog.io).
+      artifactory_access_token:
+        type: str
+        required: false
+        description: Admin access token (Bearer). Preferred over basic auth when set.
+      artifactory_admin_username:
+        type: str
+        default: admin
+        description: Admin username for basic auth (used when no access token).
+      artifactory_admin_password:
+        type: str
+        required: false
+        description: Admin password for basic auth.
+      artifactory_validate_certs:
+        type: bool
+        default: true
+        description: Verify TLS certificates on API calls.
+      artifactory_export_file:
+        type: str
+        required: false
+        description: "[backup] Path to write captured state to."
+      artifactory_export_format:
+        type: str
+        choices: [yaml, json]
+        default: yaml
+        description: "[backup] Serialisation format of the export file."
+      artifactory_import_file:
+        type: str
+        required: false
+        description: "[apply] Optional path to a prior backup file to load as desired state."
+      artifactory_reconcile_existing:
+        type: bool
+        default: true
+        description: "[apply] Update objects that already exist (vs create-if-absent)."
+      artifactory_manage_system_config:
+        type: bool
+        default: true
+        description: Toggle the system/global configuration section.
+      artifactory_manage_repositories:
+        type: bool
+        default: true
+        description: Toggle the repositories section.
+      artifactory_manage_groups:
+        type: bool
+        default: true
+        description: Toggle the groups section.
+      artifactory_manage_users:
+        type: bool
+        default: true
+        description: Toggle the users section.
+      artifactory_manage_permissions:
+        type: bool
+        default: true
+        description: Toggle the permission-targets section.
+      artifactory_manage_projects:
+        type: bool
+        default: true
+        description: Toggle the projects section (Access API).
+      artifactory_manage_webhooks:
+        type: bool
+        default: true
+        description: Toggle the webhooks section (event service).
+      artifactory_manage_tokens:
+        type: bool
+        default: false
+        description: Toggle access-token creation (mints new secrets; never exported).
+      artifactory_local_repositories:
+        type: list
+        elements: dict
+        default: []
+        description: Local repository config objects (full /api/repositories shape; key required).
+      artifactory_remote_repositories:
+        type: list
+        elements: dict
+        default: []
+        description: Remote repository config objects.
+      artifactory_virtual_repositories:
+        type: list
+        elements: dict
+        default: []
+        description: Virtual repository config objects.
+      artifactory_federated_repositories:
+        type: list
+        elements: dict
+        default: []
+        description: Federated repository config objects.
+      artifactory_groups:
+        type: list
+        elements: dict
+        default: []
+        description: Group definitions.
+      artifactory_users:
+        type: list
+        elements: dict
+        default: []
+        description: User definitions (password optional; never captured by backup).
+      artifactory_permissions:
+        type: list
+        elements: dict
+        default: []
+        description: Permission targets (v2 JSON shape).
+      artifactory_projects:
+        type: list
+        elements: dict
+        default: []
+        description: Projects with optional roles, members and repository assignments.
+      artifactory_webhooks:
+        type: list
+        elements: dict
+        default: []
+        description: Webhook subscriptions.
+      artifactory_tokens:
+        type: list
+        elements: dict
+        default: []
+        description: Access tokens to mint on apply (opt-in).

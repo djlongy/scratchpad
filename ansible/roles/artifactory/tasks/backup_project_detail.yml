@@ -1,0 +1,57 @@
+---
+# roles/artifactory/tasks/backup_project_detail.yml
+# Per-project: capture core fields + custom roles + members, append to
+# _bk_projects in the role's input shape. Invoked per project via include_tasks
+# (loop_var: _proj).
+
+- name: "Backup | Resolve project key"
+  ansible.builtin.set_fact:
+    _proj_key: "{{ _proj.project_key | default(_proj.projectKey) }}"
+
+- name: "Backup | GET project roles"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.projects }}/{{ _proj_key }}/roles"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _proj_roles
+  changed_when: false
+  failed_when: false
+
+- name: "Backup | GET project member users"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.projects }}/{{ _proj_key }}/users"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _proj_users
+  changed_when: false
+  failed_when: false
+
+- name: "Backup | GET project member groups"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.projects }}/{{ _proj_key }}/groups"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _proj_groups
+  changed_when: false
+  failed_when: false
+
+- name: "Backup | Append project to state"
+  ansible.builtin.set_fact:
+    _bk_projects: >-
+      {{ (_bk_projects | default([])) + [
+        {
+          'project_key': _proj_key,
+          'display_name': (_proj.display_name | default(_proj.displayName | default(_proj_key))),
+          'description': (_proj.description | default('')),
+          'admin_privileges': (_proj.admin_privileges | default(_proj.adminPrivileges | default({}))),
+          'storage_quota_bytes': (_proj.storage_quota_bytes | default(_proj.storageQuotaBytes | default(-1))),
+          'roles': (_proj_roles.json | default([])),
+          'members': {
+            'users': (_proj_users.json.members | default(_proj_users.json | default([]))),
+            'groups': (_proj_groups.json.members | default(_proj_groups.json | default([])))
+          }
+        }
+      ] }}

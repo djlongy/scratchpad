@@ -1,0 +1,57 @@
+---
+# roles/artifactory/tasks/sso.yml
+# Single-object SSO integrations. Each runs only when its config dict is set, so
+# the default (empty) skips them — and you can't accidentally lock yourself out
+# of the trial. Secrets (client secret, SAML cert private parts) are not fully
+# returned by GET; supply them at apply time via vars/Vault.
+#
+# Methods are best-effort per the public API and may be PUT vs POST by version;
+# override with artifactory_sso_method if your instance differs.
+
+- name: "SSO | Configure SAML"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.saml }}"
+    method: "{{ artifactory_sso_method | default('POST') }}"
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ artifactory_saml_config }}"
+    status_code: [200, 201, 204]
+  register: _saml
+  changed_when: _saml.status in [200, 201, 204]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _saml.status not in [200, 201, 204]
+  when: artifactory_saml_config | length > 0
+  no_log: true
+
+- name: "SSO | Configure OAuth"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.oauth }}"
+    method: "{{ artifactory_sso_method | default('PUT') }}"
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ artifactory_oauth_config }}"
+    status_code: [200, 201, 204]
+  register: _oauth
+  changed_when: _oauth.status in [200, 201, 204]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _oauth.status not in [200, 201, 204]
+  when: artifactory_oauth_config | length > 0
+  no_log: true
+
+- name: "SSO | Configure Crowd / Azure AD"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.crowd }}"
+    method: "{{ artifactory_sso_method | default('POST') }}"
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ artifactory_crowd_config }}"
+    status_code: [200, 201, 204]
+  register: _crowd
+  changed_when: _crowd.status in [200, 201, 204]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _crowd.status not in [200, 201, 204]
+  when: artifactory_crowd_config | length > 0
+  no_log: true

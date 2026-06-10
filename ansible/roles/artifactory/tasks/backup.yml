@@ -1,0 +1,299 @@
+---
+# roles/artifactory/tasks/backup.yml
+# GET the full live configuration and write it to a single file shaped exactly
+# like the role's input variables, so the output is directly re-appliable
+# (mode: apply with artifactory_import_file=<this file>).
+#
+# Not captured (cannot be read back): user passwords (hashed), access-token and
+# SSO/Vault secrets. Self-hosted-only: global config descriptor.
+# Access admin sections (vault/ldap) may 403 with an Artifactory-only token —
+# tolerated; they're simply omitted.
+
+# ── System / global configuration (raw XML descriptor; self-hosted only) ──
+- name: "Backup | GET system configuration (XML)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.system_config }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 400, 403]
+  register: _bk_sysconf
+  changed_when: false
+  when: artifactory_manage_system_config | bool
+
+# ── Repositories (one bulk call → all rclasses, full config) ──────────────
+- name: "Backup | GET all repository configurations"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.repositories_configurations }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_repos
+  changed_when: false
+  when: artifactory_manage_repositories | bool
+
+# ── Groups (list → detail) ────────────────────────────────────────────────
+- name: "Backup | GET group list"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.groups }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_grouplist
+  changed_when: false
+  when: artifactory_manage_groups | bool
+
+- name: "Backup | GET each group's detail"
+  ansible.builtin.uri:
+    url: "{{ item.uri }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_groupdetails
+  changed_when: false
+  loop: "{{ _bk_grouplist.json | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: artifactory_manage_groups | bool
+
+# ── Users (passwords are NOT returned) ────────────────────────────────────
+- name: "Backup | GET user list"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.users }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_userlist
+  changed_when: false
+  when: artifactory_manage_users | bool
+
+- name: "Backup | GET each user's detail"
+  ansible.builtin.uri:
+    url: "{{ item.uri }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_userdetails
+  changed_when: false
+  loop: "{{ _bk_userlist.json | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: artifactory_manage_users | bool
+
+# ── Permission targets (v2) ───────────────────────────────────────────────
+- name: "Backup | GET permission target list"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.permissions }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_permlist
+  changed_when: false
+  when: artifactory_manage_permissions | bool
+
+- name: "Backup | GET each permission target's detail"
+  ansible.builtin.uri:
+    url: "{{ item.uri }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_permdetails
+  changed_when: false
+  loop: "{{ _bk_permlist.json | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: artifactory_manage_permissions | bool
+
+# ── Environments (stages) ─────────────────────────────────────────────────
+- name: "Backup | GET environments"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.environments }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_envs
+  changed_when: false
+  when: artifactory_manage_environments | bool
+
+# ── Projects + roles + members ────────────────────────────────────────────
+- name: "Backup | GET project list"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.projects }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_projlist
+  changed_when: false
+  when: artifactory_manage_projects | bool
+
+- name: "Backup | GET project roles + members"
+  ansible.builtin.include_tasks: backup_project_detail.yml
+  loop: "{{ _bk_projlist.json | default([]) }}"
+  loop_control:
+    loop_var: _proj
+    label: "{{ _proj.project_key | default(_proj.projectKey | default('?')) }}"
+  when:
+    - artifactory_manage_projects | bool
+    - _bk_projlist.status | default(0) == 200
+
+# ── Integrations (LDAP, SSO, Vault) ───────────────────────────────────────
+- name: "Backup | GET LDAP settings"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.ldap }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_ldap
+  changed_when: false
+  when: artifactory_manage_ldap | bool
+
+- name: "Backup | GET SSO configs (SAML / OAuth / Crowd)"
+  ansible.builtin.uri:
+    url: "{{ item.url }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_sso
+  changed_when: false
+  loop:
+    - {name: saml, url: "{{ artifactory_ep.saml }}"}
+    - {name: oauth, url: "{{ artifactory_ep.oauth }}"}
+    - {name: crowd, url: "{{ artifactory_ep.crowd }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  when: artifactory_manage_sso | bool
+
+- name: "Backup | GET HashiCorp Vault configs"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.vault_configs }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_vault
+  changed_when: false
+  when: artifactory_manage_vault | bool
+
+# ── Xray (policies detail, watches, ignore rules) ─────────────────────────
+- name: "Backup | GET Xray policy list"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_policies }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_xpolist
+  changed_when: false
+  when: artifactory_manage_xray | bool
+
+- name: "Backup | GET each Xray policy detail"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_policies }}/{{ item.name | urlencode }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200]
+  register: _bk_xpodetails
+  changed_when: false
+  loop: "{{ _bk_xpolist.json.result | default([]) if (_bk_xpolist.status | default(0) == 200) else [] }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: artifactory_manage_xray | bool
+
+- name: "Backup | GET Xray watches"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_watches }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_xwatches
+  changed_when: false
+  when: artifactory_manage_xray | bool
+
+- name: "Backup | GET Xray ignore rules"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_ignore_rules }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_xignore
+  changed_when: false
+  when: artifactory_manage_xray | bool
+
+# ── Replications + webhooks ───────────────────────────────────────────────
+- name: "Backup | GET replications"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.replications }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _bk_repl
+  changed_when: false
+  when: artifactory_manage_replications | bool
+
+- name: "Backup | GET webhook subscriptions"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.webhooks }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_webhooks
+  changed_when: false
+  when: artifactory_manage_webhooks | bool
+
+# ── Assemble the round-trip document ──────────────────────────────────────
+- name: "Backup | Assemble state document"
+  ansible.builtin.set_fact:
+    _af_state:
+      _meta:
+        source_url: "{{ artifactory_url }}"
+        artifactory_version: "{{ _af_version.json.version | default('unknown') }}"
+      artifactory_system_config_xml: "{{ _bk_sysconf.content | default('') if (_bk_sysconf.status | default(0) == 200) else '' }}"
+      artifactory_local_repositories: "{{ _bk_repos.json.LOCAL | default([]) }}"
+      artifactory_remote_repositories: "{{ _bk_repos.json.REMOTE | default([]) }}"
+      artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"
+      artifactory_federated_repositories: "{{ _bk_repos.json.FEDERATED | default([]) }}"
+      artifactory_groups: "{{ _bk_groupdetails.results | default([]) | map(attribute='json') | list }}"
+      artifactory_users: "{{ _bk_userdetails.results | default([]) | map(attribute='json') | list }}"
+      artifactory_permissions: "{{ _bk_permdetails.results | default([]) | map(attribute='json') | list }}"
+      artifactory_environments: "{{ _bk_envs.json | default([]) if (_bk_envs.status | default(0) == 200) else [] }}"
+      artifactory_projects: "{{ _bk_projects | default([]) }}"
+      artifactory_ldap_settings: "{{ _bk_ldap.json | default([]) if (_bk_ldap.status | default(0) == 200) else [] }}"
+      artifactory_saml_config: >-
+        {{ (_bk_sso.results | default([]) | selectattr('item.name', 'eq', 'saml')
+            | map(attribute='json') | first | default({})) }}
+      artifactory_oauth_config: >-
+        {{ (_bk_sso.results | default([]) | selectattr('item.name', 'eq', 'oauth')
+            | map(attribute='json') | first | default({})) }}
+      artifactory_crowd_config: >-
+        {{ (_bk_sso.results | default([]) | selectattr('item.name', 'eq', 'crowd')
+            | map(attribute='json') | first | default({})) }}
+      artifactory_vault_configs: "{{ _bk_vault.json | default([]) if (_bk_vault.status | default(0) == 200) else [] }}"
+      artifactory_xray_policies: "{{ _bk_xpodetails.results | default([]) | map(attribute='json') | list }}"
+      artifactory_xray_watches: "{{ _bk_xwatches.json | default([]) if (_bk_xwatches.status | default(0) == 200) else [] }}"
+      artifactory_xray_ignore_rules: "{{ _bk_xignore.json.data | default([]) if (_bk_xignore.status | default(0) == 200) else [] }}"
+      artifactory_replications: "{{ _bk_repl.json | default([]) if (_bk_repl.status | default(0) == 200) else [] }}"
+      artifactory_webhooks: "{{ _bk_webhooks.json | default([]) if (_bk_webhooks.status | default(0) == 200) else [] }}"
+
+- name: "Backup | Write state file"
+  ansible.builtin.copy:
+    content: >-
+      {{ _af_state | to_nice_yaml(indent=2, width=200)
+         if artifactory_export_format == 'yaml'
+         else (_af_state | to_nice_json(indent=2)) }}
+    dest: "{{ artifactory_export_file }}"
+    mode: "0640"
+  delegate_to: localhost
+
+- name: "Backup | Summary"
+  ansible.builtin.debug:
+    msg: >-
+      Captured
+      {{ _af_state.artifactory_local_repositories | length }} local,
+      {{ _af_state.artifactory_remote_repositories | length }} remote,
+      {{ _af_state.artifactory_virtual_repositories | length }} virtual,
+      {{ _af_state.artifactory_federated_repositories | length }} federated repos;
+      {{ _af_state.artifactory_groups | length }} groups,
+      {{ _af_state.artifactory_users | length }} users,
+      {{ _af_state.artifactory_permissions | length }} permissions,
+      {{ _af_state.artifactory_projects | length }} projects,
+      {{ _af_state.artifactory_environments | length }} envs,
+      {{ _af_state.artifactory_xray_policies | length }} xray-policies,
+      {{ _af_state.artifactory_xray_watches | length }} xray-watches →
+      {{ artifactory_export_file }}

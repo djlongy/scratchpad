@@ -1,0 +1,285 @@
+---
+# roles/artifactory/defaults/main.yml
+#
+# Portable, API-driven configuration of a JFrog Artifactory **Enterprise**
+# instance. Two modes share ONE schema so the role round-trips:
+#
+#   mode: backup   →  GET every setting over the REST API and write the whole
+#                     state to a single YAML (or JSON) file, shaped exactly
+#                     like the variables below.
+#   mode: apply    →  reconcile that same state into a fresh/empty instance
+#                     (create-or-update every object). This is also the
+#                     "provision from scratch" path.
+#
+# Restore == apply with `artifactory_import_file` pointing at a file a previous
+# `backup` run produced. The backup output IS valid role input — no translation.
+#
+# API shapes are best-effort against the public JFrog REST API docs
+# (https://jfrog.com/help/r/jfrog-rest-apis) and the Access API. No live
+# instance was available at authoring time; verify against your version.
+
+# ── Mode ──────────────────────────────────────────────────────────────────
+# backup | apply
+artifactory_mode: apply
+
+# On backup: where to write the captured state. On apply: optionally load
+# desired state from a prior backup (leave empty to apply the inline vars
+# below / whatever inventory sets).
+artifactory_export_file: "{{ playbook_dir }}/artifactory-state.yml"
+artifactory_export_format: yaml          # yaml | json
+artifactory_import_file: ""              # e.g. ./artifactory-state.yml
+
+# ── Connection ────────────────────────────────────────────────────────────
+# Base platform URL, no trailing slash. Works for on-prem or SaaS.
+#   e.g. https://artifactory.dev.example.com   or   https://acme.jfrog.io
+artifactory_url: ""
+
+# Auth — an admin **access token** is preferred (scoped, revocable). If set it
+# is used as a Bearer token; otherwise basic admin user/password is used.
+# Supply via --extra-vars, environment, or a vault lookup in inventory. Never
+# commit real values.
+artifactory_access_token: "{{ lookup('ansible.builtin.env', 'ARTIFACTORY_TOKEN') | default('', true) }}"
+artifactory_admin_username: "{{ lookup('ansible.builtin.env', 'ARTIFACTORY_USER') | default('admin', true) }}"
+artifactory_admin_password: "{{ lookup('ansible.builtin.env', 'ARTIFACTORY_PASSWORD') | default('', true) }}"
+
+artifactory_validate_certs: true
+artifactory_request_timeout: 30
+artifactory_health_retries: 30
+artifactory_health_delay: 10
+
+# Run the API calls from the controller by default (the role talks HTTP, it
+# doesn't need to live on the Artifactory host). Override to "" to run on the
+# target host instead.
+artifactory_delegate_to: localhost
+
+# ── Apply behaviour ───────────────────────────────────────────────────────
+# When true, objects that already exist are PATCHed/POSTed to match desired
+# state. When false, existing objects are left as-is (create-if-absent) — the
+# safe choice against an instance with hand-tuned settings you don't manage.
+artifactory_reconcile_existing: true
+
+# Per-section master switches. Combine with --tags for finer control. Every
+# section is also a no-op when its data structure is empty, so a partial
+# backup file applies cleanly.
+artifactory_manage_system_config: true   # self-hosted only (blocked on SaaS)
+artifactory_manage_repositories: true
+artifactory_manage_groups: true
+artifactory_manage_users: true
+artifactory_manage_permissions: true
+artifactory_manage_projects: true
+artifactory_manage_environments: true    # global lifecycle stages
+artifactory_manage_vault: true           # HashiCorp Vault connections (Access)
+artifactory_manage_ldap: true            # LDAP integration (Access)
+artifactory_manage_sso: true             # SAML / OAuth / Crowd
+artifactory_manage_xray: true            # policies / watches / ignore rules
+artifactory_manage_replications: true
+artifactory_manage_webhooks: true
+artifactory_manage_tokens: false         # opt-in: mints NEW secrets, can't round-trip
+
+# Stop the whole run if any single object fails to apply. False = best-effort
+# (log the failure, continue) which is usually what you want for a bulk import.
+artifactory_fail_fast: false
+
+# ── Removal / prune ───────────────────────────────────────────────────────
+# Two ways to remove things:
+#   1. Surgical: add `state: absent` to any object in the lists below → DELETE.
+#      (Run against just that object for a precise removal.)
+#   2. Prune: artifactory_prune=true deletes server objects of a managed type
+#      that are NOT present in the desired list — a full reconcile. DANGEROUS,
+#      so it is OFF by default, honours --check (dry-run), and never touches the
+#      protected built-ins in artifactory_prune_protect (vars/main.yml). Limit
+#      which sections prune acts on with artifactory_prune_sections.
+artifactory_prune: false
+artifactory_prune_sections: [repositories, groups, users, permissions, projects, environments, vault, webhooks, xray]
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ DESIRED STATE  —  the round-trip schema                                   ║
+# ║ Populated by `mode: backup`; consumed by `mode: apply`. Empty here so a   ║
+# ║ bare run is a safe no-op. Put real values in inventory or a backup file.  ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ── System / global configuration ─────────────────────────────────────────
+# Two representations, by design (GET returns XML, apply wants YAML):
+#
+#  * artifactory_system_config_yaml — structured YAML config descriptor, the
+#    maintainable declarative path. Applied via PATCH /api/system/configuration
+#    (Content-Type: application/yaml). This is what you hand-edit.
+#
+#  * artifactory_system_config_xml — the raw config descriptor exactly as the
+#    server returned it on backup (full fidelity, for diff / DR / reference).
+#    Only re-applied when artifactory_apply_system_config_xml is true, via the
+#    heavy-handed POST /api/system/configuration full-replace. Off by default.
+artifactory_system_config_yaml: {}
+#   general:
+#     baseUrl: "https://artifactory.dev.example.com"
+#     fileUploadMaxSizeMb: 100
+#   proxies:
+#     corp:
+#       host: proxy.example.com
+#       port: 8080
+#       defaultProxy: true
+#   backups:
+#     backup-daily:
+#       enabled: true
+#       cronExp: "0 0 2 ? * MON-FRI"
+#       excludeNewRepositories: false
+#   mailServer:
+#     enabled: false
+
+artifactory_system_config_xml: ""
+artifactory_apply_system_config_xml: false
+
+# ── Repositories ──────────────────────────────────────────────────────────
+# Each entry is the FULL repo config object the /api/repositories API accepts
+# for that rclass/packageType. Only `key` is required by the role; everything
+# else is passed through verbatim, so any repo option Artifactory supports is
+# expressible without changing the role. Apply order: local → remote → virtual
+# → federated (virtuals/federated reference the others).
+artifactory_local_repositories: []
+artifactory_remote_repositories: []
+artifactory_virtual_repositories: []
+artifactory_federated_repositories: []
+
+# ── Security: groups, users, permission targets ───────────────────────────
+artifactory_groups: []
+#   - name: dev-team
+#     description: "Developers"
+#     autoJoin: false
+#     adminPrivileges: false
+
+# NOTE: GET /api/security/users never returns passwords (hashed in the DB), so
+# backup captures users WITHOUT a password. On apply, a user missing a password
+# is created with a generated one (written to artifactory_generated_users_file)
+# unless `password` is supplied. Existing users keep their password if omitted.
+artifactory_users: []
+#   - name: alice
+#     email: alice@example.com
+#     admin: false
+#     profileUpdatable: true
+#     groups: [dev-team]
+#     # password: "{{ vault_alice_password }}"   # optional
+
+# Permission targets — v2 JSON shape (repo / build / releaseBundle sections,
+# each: repositories + actions.{users,groups} with read/write/annotate/delete/manage).
+artifactory_permissions: []
+#   - name: dev-rw
+#     repo:
+#       repositories: [dev-docker-local]
+#       actions:
+#         groups:
+#           dev-team: [read, write, annotate, delete]
+
+# ── Projects (Access API) + roles + members ───────────────────────────────
+artifactory_projects: []
+#   - project_key: acme
+#     display_name: ACME
+#     description: "ACME tenant"
+#     admin_privileges:
+#       manage_members: true
+#       manage_resources: true
+#       index_resources: true
+#     storage_quota_bytes: -1
+#     # custom roles beyond the built-ins:
+#     roles:
+#       - name: release-manager
+#         type: CUSTOM
+#         environments: [DEV, PROD]
+#         actions: [READ_REPOSITORY, DEPLOY_CACHE_REPOSITORY, MANAGE_XRAY_MD_REPOSITORY]
+#     members:
+#       users:
+#         - name: alice
+#           roles: [Developer]
+#       groups:
+#         - name: dev-team
+#           roles: [Contributor]
+#     # repositories to assign into the project (by key):
+#     repositories: [acme-docker-dev-local]
+
+# ── Lifecycle stages / global environments ────────────────────────────────
+# Promotion stages projects assign repos to. DEV and PROD are built in.
+artifactory_environments: []
+#   - name: STAGING
+#   - name: QA
+
+# ── HashiCorp Vault connections (Access) ──────────────────────────────────
+# Let JFrog source secrets (signing keys, remote creds) from HashiCorp Vault.
+artifactory_vault_configs: []
+#   - key: corp-vault
+#     vault:
+#       url: "https://vault.example.com:8200"
+#       auth:
+#         type: token            # token | appRole | ...
+#         # token: "{{ vault_jfrog_token }}"   # supply at apply time
+#       mounts:
+#         - path: secret
+#           type: kv2
+
+# ── LDAP integration (Access) ─────────────────────────────────────────────
+artifactory_ldap_settings: []
+#   - key: corp-ldap
+#     enabled: true
+#     ldap_url: "ldap://ldap.example.com:389/dc=example,dc=com"
+#     search:
+#       search_filter: "(uid={0})"
+#       search_base: "ou=people"
+#       search_sub_tree: true
+artifactory_ldap_groups: []
+
+# ── SSO singletons (SAML / OAuth / Crowd) ─────────────────────────────────
+# Each is a single config object. Leave empty to skip. Backup captures the
+# live config; apply POSTs it back. Secrets (client secrets, certs) are NOT
+# fully returned by GET — supply them at apply time via vars/Vault.
+artifactory_saml_config: {}
+artifactory_oauth_config: {}
+artifactory_crowd_config: {}
+
+# ── Xray: policies, watches, ignore rules, indexed repos ──────────────────
+artifactory_xray_policies: []
+#   - name: block-critical
+#     type: security
+#     rules:
+#       - name: crit
+#         priority: 1
+#         criteria: {min_severity: Critical}
+#         actions: {block_download: {active: true, unscanned: false}, fail_build: true}
+artifactory_xray_watches: []
+#   - general_data: {name: all-repos-watch, active: true}
+#     project_resources: {resources: [{type: all-repos, name: All Repositories}]}
+#     assigned_policies: [{name: block-critical, type: security}]
+artifactory_xray_ignore_rules: []
+# Repos Xray should index (binary manager id usually "default").
+artifactory_xray_indexed_repos: []
+artifactory_xray_binmgr_id: default
+
+# ── Replications (Enterprise) ─────────────────────────────────────────────
+# Keyed by source repo. Each entry is the replication config for that repo.
+artifactory_replications: []
+#   - repoKey: my-local
+#     url: "https://dr.example.com/artifactory/my-local"
+#     cronExp: "0 0 12 * * ?"
+#     enabled: true
+#     # username/password supplied at apply time
+
+# ── Webhooks (event service) ──────────────────────────────────────────────
+artifactory_webhooks: []
+#   - key: ci-notify
+#     event_filter:
+#       domain: artifact
+#       event_types: [deployed]
+#     handlers:
+#       - handler_type: webhook
+#         url: https://ci.example.com/hooks/artifactory
+
+# ── Access tokens (opt-in; mints NEW secrets — never exported) ─────────────
+# Only created when artifactory_manage_tokens is true. Generated tokens are
+# written to artifactory_generated_tokens_file (mode 0600) for you to store in
+# a secret manager — they are no_log everywhere else.
+artifactory_tokens: []
+#   - subject: ci-acme
+#     scope: "applied-permissions/groups:dev-team"
+#     expires_in: 0           # seconds; 0 = non-expiring
+#     description: "GitLab CI token"
+
+# Sidecar output files for secrets that can't round-trip.
+artifactory_generated_users_file: "{{ playbook_dir }}/artifactory-generated-users.yml"
+artifactory_generated_tokens_file: "{{ playbook_dir }}/artifactory-generated-tokens.yml"

@@ -1,0 +1,53 @@
+---
+# roles/artifactory/tasks/ldap.yml
+# LDAP settings via the Access API. POST creates, PUT updates, DELETE removes.
+# ldap_groups are managed similarly under …/ldap/groups.
+
+- name: "LDAP | List current settings"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.ldap }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _ldap_get
+  changed_when: false
+
+- name: "LDAP | Reconcile settings"
+  when: _ldap_get.status == 200
+  block:
+    - name: "LDAP | Create or update settings"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.ldap }}{{ ('/' + item.key) if (item.key in (_ldap_get.json | default([]) | map(attribute='key') | list)) else '' }}"
+        method: "{{ 'PUT' if (item.key in (_ldap_get.json | default([]) | map(attribute='key') | list)) else 'POST' }}"
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+        status_code: [200, 201]
+      register: _ldap_put
+      changed_when: _ldap_put.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _ldap_put.status not in [200, 201]
+      loop: >-
+        {{ artifactory_ldap_settings | rejectattr('state', 'defined') | list
+           + (artifactory_ldap_settings | selectattr('state', 'defined')
+              | selectattr('state', 'eq', 'present') | list) }}
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: "LDAP | Remove settings (state: absent)"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.ldap }}/{{ item.key }}"
+        method: DELETE
+        headers: "{{ _af_headers }}"
+        status_code: [200, 204, 404]
+      register: _ldap_del
+      changed_when: _ldap_del.status in [200, 204]
+      loop: "{{ artifactory_ldap_settings | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+- name: "LDAP | Warn if token lacks Access scope"
+  ansible.builtin.debug:
+    msg: "LDAP API returned {{ _ldap_get.status }} — skipping (needs a platform-admin token)."
+  when: _ldap_get.status != 200

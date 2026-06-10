@@ -1,0 +1,40 @@
+---
+# roles/artifactory/tasks/repositories.yml
+# Create/update repositories in dependency order: local → remote → virtual →
+# federated. Each list element is the full repo config object; rclass is forced
+# from the list it came from so backup output and hand-authored input both work.
+
+- name: "Repositories | Build dependency-ordered work list"
+  vars:
+    _all_local: "{{ artifactory_local_repositories | map('combine', {'rclass': 'local'}) | list }}"
+    _all_remote: "{{ artifactory_remote_repositories | map('combine', {'rclass': 'remote'}) | list }}"
+    _all_virtual: "{{ artifactory_virtual_repositories | map('combine', {'rclass': 'virtual'}) | list }}"
+    _all_fed: "{{ artifactory_federated_repositories | map('combine', {'rclass': 'federated'}) | list }}"
+    # Forward order for create/update (local first); reverse for deletes so a
+    # virtual is removed before the locals/remotes it references.
+    _forward: "{{ _all_local + _all_remote + _all_virtual + _all_fed }}"
+    _reverse: "{{ _all_fed + _all_virtual + _all_remote + _all_local }}"
+  ansible.builtin.set_fact:
+    _ap_repos: >-
+      {{ (_forward | rejectattr('state', 'defined') | list)
+         + (_forward | selectattr('state', 'defined') | selectattr('state', 'eq', 'present') | list)
+         + (_reverse | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list) }}
+
+- name: "Repositories | Reconcile each repository"
+  ansible.builtin.include_tasks: repo_item.yml
+  loop: "{{ _ap_repos }}"
+  loop_control:
+    loop_var: _repo
+    label: "{{ _repo.key }} ({{ _repo.rclass }})"
+
+- name: "Repositories | Prune unmanaged"
+  ansible.builtin.include_tasks: prune.yml
+  vars:
+    _prune_section: repositories
+    _prune_endpoint: "{{ artifactory_ep.repositories }}"
+    _prune_id: key
+    _prune_desired: "{{ _ap_repos | map(attribute='key') | list }}"
+    _prune_list_url: "{{ artifactory_ep.repositories }}"
+  when:
+    - artifactory_prune | bool
+    - "'repositories' in artifactory_prune_sections"

@@ -1,0 +1,80 @@
+---
+# roles/artifactory/tasks/webhooks.yml
+# Event-service webhook subscriptions. POST creates, PUT /{key} updates.
+
+- name: "Webhooks | Check existence"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.webhooks }}/{{ item.key }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _wh_get
+  changed_when: false
+  loop: "{{ artifactory_webhooks }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: "Webhooks | Create"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.webhooks }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item.item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200, 201]
+  register: _wh_create
+  changed_when: _wh_create.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _wh_create.status not in [200, 201]
+  loop: "{{ _wh_get.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when:
+    - item.item.state | default('present') != 'absent'
+    - item.status == 404
+
+- name: "Webhooks | Update"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.webhooks }}/{{ item.item.key }}"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item.item }}"
+    status_code: [200, 201]
+  register: _wh_update
+  changed_when: _wh_update.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _wh_update.status not in [200, 201]
+  loop: "{{ _wh_get.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when:
+    - item.item.state | default('present') != 'absent'
+    - item.status == 200
+    - artifactory_reconcile_existing | bool
+
+- name: "Webhooks | Remove (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.webhooks }}/{{ item.key }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _wh_del
+  changed_when: _wh_del.status == 200
+  loop: "{{ artifactory_webhooks | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: "Webhooks | Prune unmanaged"
+  ansible.builtin.include_tasks: prune.yml
+  vars:
+    _prune_section: webhooks
+    _prune_endpoint: "{{ artifactory_ep.webhooks }}"
+    _prune_id: key
+    _prune_desired: "{{ artifactory_webhooks | map(attribute='key') | list }}"
+    _prune_list_url: "{{ artifactory_ep.webhooks }}"
+  when:
+    - artifactory_prune | bool
+    - "'webhooks' in artifactory_prune_sections"

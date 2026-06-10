@@ -162,3 +162,4 @@ AGENTS.md
 
 # ── Browser-automation / agent tool artifacts ─────────────────────────────────────
 .playwright-cli/
+ansible/_trial-backup/

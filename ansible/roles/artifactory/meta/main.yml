@@ -1,0 +1,17 @@
+---
+galaxy_info:
+  role_name: artifactory
+  author: Platform Engineering
+  description: >-
+    API-driven configuration of JFrog Artifactory Enterprise. Backup the full
+    live configuration into a single round-trippable YAML/JSON file, and apply
+    (provision/restore) that same state into an empty instance via the REST API.
+  license: MIT
+  min_ansible_version: "2.15"
+  galaxy_tags:
+    - artifactory
+    - jfrog
+    - devops
+    - registry
+    - configuration
+dependencies: []

@@ -1,0 +1,142 @@
+---
+# roles/artifactory/tasks/xray.yml
+# Order: policies → watches (reference policies) → ignore rules → indexing.
+
+# ── Policies ──────────────────────────────────────────────────────────────
+- name: "Xray | List policies"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_policies }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _xp_get
+  changed_when: false
+
+- name: "Xray | Create or update policies"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_policies }}{{ ('/' + (item.name | urlencode)) if (item.name in _xp_names) else '' }}"
+    method: "{{ 'PUT' if (item.name in _xp_names) else 'POST' }}"
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200, 201]
+  register: _xp_put
+  changed_when: _xp_put.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _xp_put.status not in [200, 201]
+  vars:
+    _xp_names: "{{ (_xp_get.json.result | default([])) | map(attribute='name') | list }}"
+  loop: >-
+    {{ artifactory_xray_policies | rejectattr('state', 'defined') | list
+       + (artifactory_xray_policies | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.name }}"
+  when: _xp_get.status | default(0) == 200
+
+# ── Watches (delete before policies, which they reference) ────────────────
+- name: "Xray | List watches"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_watches }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _xw_get
+  changed_when: false
+
+- name: "Xray | Create or update watches"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_watches }}{{ ('/' + (item.general_data.name | urlencode)) if (item.general_data.name in _xw_names) else '' }}"
+    method: "{{ 'PUT' if (item.general_data.name in _xw_names) else 'POST' }}"
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200, 201]
+  register: _xw_put
+  changed_when: _xw_put.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _xw_put.status not in [200, 201]
+  vars:
+    _xw_names: "{{ (_xw_get.json | default([])) | map(attribute='general_data.name') | list }}"
+  loop: >-
+    {{ artifactory_xray_watches | rejectattr('state', 'defined') | list
+       + (artifactory_xray_watches | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.general_data.name }}"
+  when: _xw_get.status | default(0) == 200
+
+- name: "Xray | Remove watches (state: absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_watches }}/{{ item.general_data.name | urlencode }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _xw_del
+  changed_when: _xw_del.status == 200
+  loop: "{{ artifactory_xray_watches | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.general_data.name }}"
+
+- name: "Xray | Remove policies (state: absent, after watches)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_policies }}/{{ item.name | urlencode }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _xp_del
+  changed_when: _xp_del.status == 200
+  loop: "{{ artifactory_xray_policies | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# ── Ignore rules (immutable — create only; remove by id) ──────────────────
+- name: "Xray | Create ignore rules"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_ignore_rules }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+    status_code: [200, 201]
+  register: _xi_create
+  changed_when: _xi_create.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _xi_create.status not in [200, 201]
+  loop: >-
+    {{ artifactory_xray_ignore_rules | rejectattr('state', 'defined') | list
+       + (artifactory_xray_ignore_rules | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.id | default('ignore-rule') }}"
+
+- name: "Xray | Remove ignore rules (state: absent, by id)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_ignore_rules }}/{{ item.id }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _xi_del
+  changed_when: _xi_del.status == 200
+  loop: "{{ artifactory_xray_ignore_rules | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.id | default('?') }}"
+
+# ── Indexed repositories ──────────────────────────────────────────────────
+- name: "Xray | Set indexed repositories"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_binmgr }}/{{ artifactory_xray_binmgr_id }}/repos"
+    method: PUT
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ {'indexed_repos': artifactory_xray_indexed_repos} }}"
+    status_code: [200, 201]
+  register: _xidx
+  changed_when: _xidx.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _xidx.status not in [200, 201]
+  when: artifactory_xray_indexed_repos | length > 0
