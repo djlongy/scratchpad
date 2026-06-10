@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: artifactory
-  author: djlongy
+  author: Platform Engineering
   description: >-
     API-driven configuration of JFrog Artifactory Enterprise. Backup the full
     live configuration into a single round-trippable YAML/JSON file, and apply
