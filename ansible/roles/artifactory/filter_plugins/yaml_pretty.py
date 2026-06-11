@@ -21,6 +21,16 @@
 #      blank lines (never by regexing emitted lines), so multi-line string
 #      scalars that happen to contain "key:"-shaped text can't be mangled.
 #      Blank lines are insignificant in YAML — the file re-imports identically.
+#
+#   3. gap_blocks_only (default True) refines (2): a blank line goes between two
+#      siblings only when at least one of them is a multi-line BLOCK. Adjacent
+#      single-line siblings stay packed. This stops scalar-only maps and
+#      single-line list items from looking shredded at gap_depth >= 2:
+#        artifactory_crowd_config:        artifactory_environments:
+#          enableIntegration: false         - name: DEV
+#          useDefaultProxy: false           - name: PROD
+#      while multi-line objects (a repo, a group) still each get their own
+#      paragraph. Set False to gap every sibling regardless (the old behaviour).
 
 from __future__ import annotations
 
@@ -53,9 +63,11 @@ if AnsibleDumper is not None:
         IndentedDumper.add_representer(_type, _repr)
 
 
-def to_pretty_yaml(data, indent=2, width=200, gap_depth=1, sort_keys=True):
+def to_pretty_yaml(data, indent=2, width=200, gap_depth=1,
+                   gap_blocks_only=True, sort_keys=True):
     try:
         gap_depth = int(gap_depth)
+        gap_blocks_only = bool(gap_blocks_only)
 
         def plain(node):
             return to_text(yaml.dump(
@@ -88,6 +100,19 @@ def to_pretty_yaml(data, indent=2, width=200, gap_depth=1, sort_keys=True):
             line = plain({k: {}}).rstrip('\n')
             return line[:line.rindex(': {}')] + ':'
 
+        def join(parts):
+            # Concatenate sibling blocks, deciding the separator per-boundary.
+            # gap_blocks_only: blank line only when a multi-line block is on
+            # either side; two single-line siblings stay packed. Otherwise:
+            # always a blank line (every sibling its own paragraph).
+            out = ''
+            for i, part in enumerate(parts):
+                if i:
+                    block = ('\n' in parts[i - 1]) or ('\n' in part)
+                    out += '\n\n' if (block or not gap_blocks_only) else '\n'
+                out += part
+            return out + '\n'
+
         def render(node, depth):
             # Emit `node` at column 0 with blank lines between its children
             # when their depth (= `depth`) is within gap_depth.
@@ -108,7 +133,7 @@ def to_pretty_yaml(data, indent=2, width=200, gap_depth=1, sort_keys=True):
                         parts.append(bullet(render(e, depth + 1)).rstrip('\n'))
                     else:
                         parts.append(plain([e]).rstrip('\n'))
-            return '\n\n'.join(parts) + '\n'
+            return join(parts)
 
         return render(data, 1)
     except Exception as exc:

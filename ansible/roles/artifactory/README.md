@@ -148,10 +148,10 @@ The intended operating loop for using this role as IaC with audit + approval:
    the repo (or attach it as a CI artifact). Exports are deterministic — keys
    sorted, stable layout — so two exports diff cleanly.
 2. **Compare & cherry-pick** — diff the as-built export against the desired
-   state in `group_vars`/state files (`git diff` / `diff -u`, helped by
-   `artifactory_export_gap_depth: 2` which makes every object its own
-   paragraph). Whatever drift you want to KEEP, copy into the desired state in
-   a merge request; whatever you don't, leave out.
+   state in `group_vars`/state files (`git diff` / `diff -u`; the export's
+   blank-line-per-object layout keeps the diff readable). Whatever drift you
+   want to KEEP, copy into the desired state in a merge request; whatever you
+   don't, leave out.
 3. **Approve** — the MR review is the approval gate; history is the audit log.
 4. **Push (Apply)** — on merge, CI runs `mode: apply` with the desired state.
    With `artifactory_prune: true` the instance is fully reconciled (server
@@ -193,8 +193,10 @@ YAML exports are written by the role's bundled `to_pretty_yaml` filter
 (`filter_plugins/yaml_pretty.py`): list items are indented two spaces under
 their parent key, and blank lines separate sibling nodes down to a chosen
 depth, so each logical block is visually distinct in a multi-thousand-line
-file. Parameters (defaults shown): `indent=2`, `width=200`, `sort_keys=true`,
-and `gap_depth=1`:
+file. `tasks/backup.yml` calls it with fixed literals
+(`gap_depth=1, gap_blocks_only=true`); edit those to retune. Parameters
+(defaults shown): `indent=2`, `width=200`, `sort_keys=true`, `gap_depth=1`,
+`gap_blocks_only=true`.
 
 | `gap_depth` | Blank lines between |
 |---|---|
@@ -202,6 +204,12 @@ and `gap_depth=1`:
 | `1` | root keys only — the default |
 | `2` | …plus each root key's children (2nd-level keys / top-level list entries) |
 | `3`+ | …one level deeper per increment |
+
+`gap_blocks_only` (default `true`) refines the above: a blank line goes
+between two siblings only when at least one is a multi-line block, so adjacent
+single-line siblings (scalar-only config maps, single-line list items like
+`environments`) stay packed instead of being shredded by gaps. Set `false` to
+gap every sibling.
 
 Gaps are produced by dumping each sibling subtree separately (never by
 regexing emitted lines), so multi-line string values containing `key:`-shaped
