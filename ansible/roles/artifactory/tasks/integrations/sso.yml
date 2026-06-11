@@ -5,13 +5,15 @@
 # of the trial. Secrets (client secret, SAML cert private parts) are not fully
 # returned by GET; supply them at apply time via vars/Vault.
 #
-# Methods are best-effort per the public API and may be PUT vs POST by version;
-# override with artifactory_sso_method if your instance differs.
+# Per-endpoint write methods, verified live (OPTIONS) on BOTH JFrog Cloud and
+# self-hosted 7.146 — identical on both: SAML=PUT, OAuth=POST, Crowd=PUT.
+# (A blunt artifactory_sso_method override still forces all three if you must.)
 
 - name: "SSO | Configure SAML"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.saml }}"
-    method: "{{ artifactory_sso_method | default('POST') }}"
+    # PUT — /api/saml/config is PUT-only on cloud + self-hosted (POST 405s).
+    method: "{{ artifactory_sso_method | default('PUT') }}"
     headers: "{{ _af_json_headers }}"
     body_format: json
     body: "{{ artifactory_saml_config }}"
@@ -44,7 +46,8 @@
 - name: "SSO | Configure Crowd / Azure AD"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.crowd }}"
-    method: "{{ artifactory_sso_method | default('POST') }}"
+    # PUT — /api/crowd is PUT-only on cloud + self-hosted (POST 405s).
+    method: "{{ artifactory_sso_method | default('PUT') }}"
     headers: "{{ _af_json_headers }}"
     body_format: json
     body: "{{ artifactory_crowd_config }}"
