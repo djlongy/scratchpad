@@ -119,9 +119,12 @@
     url: "{{ artifactory_ep.xray_ignore_rules }}/{{ item.id }}"
     method: DELETE
     headers: "{{ _af_headers }}"
-    status_code: [200, 404]
+    # Xray returns 204 No Content on a successful ignore-rule delete (verified
+    # live, 7.146); 404 = already gone. Accepting only [200,404] made a real
+    # deletion report as failed. (CHAOS-004)
+    status_code: [200, 204, 404]
   register: _xi_del
-  changed_when: _xi_del.status == 200
+  changed_when: _xi_del.status in [200, 204]
   loop: "{{ artifactory_xray_ignore_rules | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
   loop_control:
     label: "{{ item.id | default('?') }}"
