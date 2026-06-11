@@ -58,6 +58,8 @@ secring.*
 !**/tasks/create_configs.yml
 !**/generate-passphrase/ensure_secrets.yml
 !**/generate-passphrase/_ensure_one_secret.yml
+# The artifactory role's token-management TASK file is not a secret either.
+!**/roles/artifactory/tasks/tokens.yml
 
 # Vault / encrypted files
 *.vault

@@ -156,6 +156,13 @@ artifactory_groups: []
 # is created with a generated one (written to artifactory_generated_users_file)
 # unless `password` is supplied. Existing users keep their password if omitted.
 artifactory_users: []
+
+# Users whose `realm` is not "internal" (ldap / saml / crowd / oauth) are
+# provisioned by their identity provider on first login — recreating them from
+# a backup would turn them into INTERNAL accounts with a generated password,
+# breaking the integration. They are therefore skipped on apply (still listed
+# in backups, and never pruned). Set false only if you know what you're doing.
+artifactory_users_skip_external_realms: true
 #   - name: alice
 #     email: alice@example.com
 #     admin: false
@@ -244,6 +251,14 @@ artifactory_ldap_settings: []
 artifactory_ldap_manager_passwords: {}
 
 artifactory_ldap_groups: []
+#   - name: corp-ldap-groups
+#     enabled_ldap: corp-ldap           # key of the ldap setting above
+#     group_base_dn: "ou=groups"
+#     group_name_attribute: cn
+#     group_member_attribute: uniqueMember
+#     filter: "(objectClass=groupOfUniqueNames)"
+#     strategy: STATIC
+#     sub_tree: true
 
 # ── SSO singletons (SAML / OAuth / Crowd) ─────────────────────────────────
 # Each is a single config object. Leave empty to skip. Backup captures the

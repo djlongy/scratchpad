@@ -1,0 +1,40 @@
+---
+# roles/artifactory/tasks/tokens.yml
+# Mint access tokens (Access API). Tokens are SECRETS that cannot be read back,
+# so they are never part of a backup — this is a create-on-demand convenience.
+# Generated secrets are written to artifactory_generated_tokens_file (0600).
+
+- name: "Tokens | Create access tokens"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.tokens }}"
+    method: POST
+    headers: "{{ _af_headers | combine({'Content-Type': 'application/x-www-form-urlencoded'}) }}"
+    body_format: form-urlencoded
+    body:
+      subject: "{{ item.subject | default(omit) }}"
+      scope: "{{ item.scope | default(omit) }}"
+      expires_in: "{{ item.expires_in | default(0) }}"
+      description: "{{ item.description | default(omit) }}"
+    status_code: [200]
+  register: _tok
+  no_log: true
+  changed_when: _tok.status == 200
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _tok.status != 200
+  loop: "{{ artifactory_tokens }}"
+  loop_control:
+    label: "{{ item.subject | default('token') }}"
+
+- name: "Tokens | Persist generated token secrets"
+  ansible.builtin.copy:
+    content: >-
+      {{ _tok.results
+         | selectattr('json', 'defined')
+         | map(attribute='json')
+         | list | to_nice_yaml(indent=2) }}
+    dest: "{{ artifactory_generated_tokens_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  no_log: true
+  when: _tok.results | default([]) | selectattr('json', 'defined') | list | length > 0

@@ -148,6 +148,16 @@
   changed_when: false
   when: artifactory_manage_ldap | bool
 
+- name: "Backup | GET LDAP group settings"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.ldap_groups }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_ldapg
+  changed_when: false
+  when: artifactory_manage_ldap | bool
+
 - name: "Backup | GET SSO configs (SAML / OAuth / Crowd)"
   ansible.builtin.uri:
     url: "{{ item.url }}"
@@ -193,7 +203,9 @@
     status_code: [200]
   register: _bk_xpodetails
   changed_when: false
-  loop: "{{ _bk_xpolist.json.result | default([]) if (_bk_xpolist.status | default(0) == 200) else [] }}"
+  # Tolerate both list shapes: newer Xray wraps in {"result": [...]}, older
+  # returns a bare array (the JFrog docs still show the bare form).
+  loop: "{{ (_bk_xpolist.json.result | default(_bk_xpolist.json | default([]))) if (_bk_xpolist.status | default(0) == 200) else [] }}"
   loop_control:
     label: "{{ item.name }}"
   when: artifactory_manage_xray | bool
@@ -257,6 +269,7 @@
       artifactory_environments: "{{ _bk_envs.json | default([]) if (_bk_envs.status | default(0) == 200) else [] }}"
       artifactory_projects: "{{ _bk_projects | default([]) }}"
       artifactory_ldap_settings: "{{ _bk_ldap.json | default([]) if (_bk_ldap.status | default(0) == 200) else [] }}"
+      artifactory_ldap_groups: "{{ _bk_ldapg.json | default([]) if (_bk_ldapg.status | default(0) == 200) else [] }}"
       artifactory_saml_config: >-
         {{ (_bk_sso.results | default([]) | selectattr('item.name', 'eq', 'saml')
             | map(attribute='json') | first | default({})) }}

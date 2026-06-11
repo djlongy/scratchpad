@@ -26,7 +26,8 @@
     - artifactory_fail_fast | bool
     - _xp_put.status not in [200, 201]
   vars:
-    _xp_names: "{{ (_xp_get.json.result | default([])) | map(attribute='name') | list }}"
+    # Both list shapes: newer Xray wraps in {"result": [...]}, older is bare.
+    _xp_names: "{{ (_xp_get.json.result | default(_xp_get.json | default([]))) | map(attribute='name') | list }}"
   loop: >-
     {{ artifactory_xray_policies | rejectattr('state', 'defined') | list
        + (artifactory_xray_policies | selectattr('state', 'defined')

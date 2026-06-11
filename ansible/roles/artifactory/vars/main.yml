@@ -31,6 +31,7 @@ artifactory_ep:
   oauth: "{{ artifactory_api }}/oauth"
   crowd: "{{ artifactory_api }}/crowd"
   ldap: "{{ artifactory_access_api }}/ldap/settings"
+  ldap_groups: "{{ artifactory_access_api }}/ldap/groups"
   # access: projects, environments, vault, tokens
   projects: "{{ artifactory_access_api }}/projects"
   environments: "{{ artifactory_access_api }}/environments"

@@ -5,13 +5,39 @@
 # passphrase recorded to artifactory_generated_users_file for you to distribute
 # / store in a secret manager. Existing users are updated without touching their
 # password unless one is supplied.
+#
+# External-realm users (realm: ldap/saml/crowd/oauth) are provisioned by their
+# identity provider on first login — applying them from a backup would create
+# INTERNAL accounts with generated passwords and break the integration, so by
+# default they are skipped (artifactory_users_skip_external_realms).
+
+- name: "Users | Note external-realm users left to their identity provider"
+  ansible.builtin.debug:
+    msg: >-
+      Skipping {{ _af_external_users | length }} external-realm user(s)
+      ({{ _af_external_users | map(attribute='name') | join(', ') }}) — they are
+      provisioned by LDAP/SSO on first login. Set
+      artifactory_users_skip_external_realms=false to force-manage them.
+  vars:
+    _af_external_users: >-
+      {{ artifactory_users | selectattr('realm', 'defined')
+         | rejectattr('realm', 'eq', 'internal') | list }}
+  when:
+    - artifactory_users_skip_external_realms | bool
+    - _af_external_users | length > 0
 
 - name: "Users | Reconcile each user"
   ansible.builtin.include_tasks: user_item.yml
-  loop: "{{ artifactory_users }}"
+  loop: "{{ _af_managed_users }}"
   loop_control:
     loop_var: _user
     label: "{{ _user.name }}"
+  vars:
+    _af_managed_users: >-
+      {{ artifactory_users if not (artifactory_users_skip_external_realms | bool)
+         else (artifactory_users | rejectattr('realm', 'defined') | list
+               + (artifactory_users | selectattr('realm', 'defined')
+                  | selectattr('realm', 'eq', 'internal') | list)) }}
 
 - name: "Users | Persist generated passwords (if any)"
   ansible.builtin.copy:
@@ -28,6 +54,8 @@
     _prune_section: users
     _prune_endpoint: "{{ artifactory_ep.users }}"
     _prune_id: name
+    # Deliberately the FULL desired list (external-realm users included), so
+    # prune never deletes identity-provider accounts that apply skipped.
     _prune_desired: "{{ artifactory_users | map(attribute='name') | list }}"
     _prune_list_url: "{{ artifactory_ep.users }}"
   when:

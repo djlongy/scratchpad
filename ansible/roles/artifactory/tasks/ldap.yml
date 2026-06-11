@@ -92,7 +92,54 @@
       loop_control:
         label: "{{ item.key }}"
 
+# ── LDAP group settings (…/ldap/groups — same collection POST/PUT semantics) ──
+- name: "LDAP | List current group settings"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.ldap_groups }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _ldapg_get
+  changed_when: false
+
+- name: "LDAP | Reconcile group settings"
+  when: _ldapg_get.status == 200
+  vars:
+    _ldapg_existing: "{{ _ldapg_get.json | default([]) | map(attribute='name') | list }}"
+  block:
+    - name: "LDAP | Create or update group settings"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.ldap_groups }}"
+        method: "{{ 'PUT' if (item.name in _ldapg_existing) else 'POST' }}"
+        headers: "{{ _af_json_headers }}"
+        body_format: json
+        body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+        status_code: [200, 201]
+      register: _ldapg_put
+      changed_when: _ldapg_put.status in [200, 201]
+      failed_when:
+        - artifactory_fail_fast | bool
+        - _ldapg_put.status not in [200, 201]
+      loop: >-
+        {{ artifactory_ldap_groups | rejectattr('state', 'defined') | list
+           + (artifactory_ldap_groups | selectattr('state', 'defined')
+              | selectattr('state', 'eq', 'present') | list) }}
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "LDAP | Remove group settings (state: absent)"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.ldap_groups }}/{{ item.name }}"
+        method: DELETE
+        headers: "{{ _af_headers }}"
+        status_code: [200, 204, 404]
+      register: _ldapg_del
+      changed_when: _ldapg_del.status in [200, 204]
+      loop: "{{ artifactory_ldap_groups | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
 - name: "LDAP | Warn if token lacks Access scope"
   ansible.builtin.debug:
-    msg: "LDAP API returned {{ _ldap_get.status }} — skipping (needs a platform-admin token)."
-  when: _ldap_get.status != 200
+    msg: "LDAP API returned {{ [_ldap_get.status, _ldapg_get.status] | join('/') }} — skipping (needs a platform-admin token)."
+  when: _ldap_get.status != 200 or _ldapg_get.status != 200
