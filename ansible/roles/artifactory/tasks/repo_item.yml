@@ -3,14 +3,14 @@
 # Reconcile a single repository (loop_var: _repo). PUT creates, POST updates,
 # DELETE removes (state: absent). Read-only/computed fields stripped before write.
 
-- name: "Repo | strip read-only keys"
+- name: "Repo | strip read-only keys — {{ _repo.key ~ ' (' ~ _repo.rclass ~ '/' ~ (_repo.packageType | default('?')) ~ ')' }}"
   ansible.builtin.set_fact:
     _repo_body: >-
       {{ _repo | dict2items
                 | rejectattr('key', 'in', artifactory_repo_strip_keys + ['state'])
                 | items2dict }}
 
-- name: "Repo | check existence"
+- name: "Repo | check existence — {{ _repo.key ~ ' (' ~ _repo.rclass ~ '/' ~ (_repo.packageType | default('?')) ~ ')' }}"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
     method: GET
@@ -19,7 +19,7 @@
   register: _repo_get
   changed_when: false
 
-- name: "Repo | delete (state: absent)"
+- name: "Repo | delete (state: absent) — {{ _repo.key ~ ' (' ~ _repo.rclass ~ '/' ~ (_repo.packageType | default('?')) ~ ')' }}"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
     method: DELETE
@@ -29,7 +29,7 @@
   changed_when: _repo_del.status == 200
   when: _repo.state | default('present') == 'absent'
 
-- name: "Repo | create"
+- name: "Repo | create — {{ _repo.key ~ ' (' ~ _repo.rclass ~ '/' ~ (_repo.packageType | default('?')) ~ ')' }}"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
     method: PUT
@@ -46,7 +46,7 @@
     - _repo.state | default('present') != 'absent'
     - _repo_get.status in [400, 404]
 
-- name: "Repo | update"
+- name: "Repo | update — {{ _repo.key ~ ' (' ~ _repo.rclass ~ '/' ~ (_repo.packageType | default('?')) ~ ')' }}"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.repositories }}/{{ _repo.key }}"
     method: POST

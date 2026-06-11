@@ -20,15 +20,20 @@
   changed_when: _ap_sysyaml.status == 200
   when: artifactory_system_config_yaml | length > 0
 
+# The XML body comes inline (artifactory_system_config_xml) or from the
+# sidecar file a backup wrote (artifactory_system_config_xml_file).
 - name: "System_config | Re-apply raw XML descriptor (full replace, opt-in)"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.system_config }}"
     method: POST
     headers: "{{ _af_headers | combine({'Content-Type': 'application/xml'}) }}"
-    body: "{{ artifactory_system_config_xml }}"
+    body: >-
+      {{ artifactory_system_config_xml
+         if artifactory_system_config_xml | length > 0
+         else lookup('ansible.builtin.file', artifactory_system_config_xml_file) }}
     status_code: [200]
   register: _ap_sysxml
   changed_when: _ap_sysxml.status == 200
   when:
     - artifactory_apply_system_config_xml | bool
-    - artifactory_system_config_xml | length > 0
+    - (artifactory_system_config_xml | length > 0) or (artifactory_system_config_xml_file | length > 0)

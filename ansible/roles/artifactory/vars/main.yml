@@ -22,6 +22,7 @@ artifactory_ep:
   # repositories
   repositories: "{{ artifactory_api }}/repositories"
   repositories_configurations: "{{ artifactory_api }}/repositories/configurations"
+  trash: "{{ artifactory_api }}/storage/auto-trashcan"
   # security
   groups: "{{ artifactory_api }}/security/groups"
   users: "{{ artifactory_api }}/security/users"

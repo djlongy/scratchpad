@@ -31,6 +31,17 @@ artifactory_export_format: yaml          # yaml | json
 # 0 = none, 1 = between root keys (default), 2 = also between each root key's
 # children (2nd-level keys / list entries), 3+ = one level deeper per increment.
 artifactory_export_gap_depth: 1
+
+# When the global config descriptor XML is captured (self-hosted only), write
+# it OUT of the state file into sidecars next to the export instead of inlining
+# a multi-thousand-character string:
+#   <export>.system-config.xml         the raw descriptor (authoritative, DR)
+#   <export>.system-config.parsed.yml  XML→YAML reference for drafting IaC
+#                                      blocks (needs `xmltodict` on the
+#                                      controller; skipped with a note if absent)
+# The state file then carries artifactory_system_config_xml_file pointing at
+# the sidecar, which the opt-in XML re-apply path reads back.
+artifactory_export_system_config_files: true
 artifactory_import_file: ""              # e.g. ./artifactory-state.yml
 
 # ── Connection ────────────────────────────────────────────────────────────
@@ -131,6 +142,10 @@ artifactory_system_config_yaml: {}
 #     enabled: false
 
 artifactory_system_config_xml: ""
+# Path to a descriptor XML sidecar (written by backup when
+# artifactory_export_system_config_files is true). Used by the opt-in XML
+# re-apply path when artifactory_system_config_xml itself is empty.
+artifactory_system_config_xml_file: ""
 artifactory_apply_system_config_xml: false
 
 # ── Repositories ──────────────────────────────────────────────────────────

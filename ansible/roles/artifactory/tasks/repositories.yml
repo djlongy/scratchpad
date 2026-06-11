@@ -25,7 +25,7 @@
   loop: "{{ _ap_repos }}"
   loop_control:
     loop_var: _repo
-    label: "{{ _repo.key }} ({{ _repo.rclass }})"
+    label: "{{ _repo.key }} ({{ _repo.rclass }}/{{ _repo.packageType | default('?') }})"
 
 - name: "Repositories | Prune unmanaged"
   ansible.builtin.include_tasks: prune.yml

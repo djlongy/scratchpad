@@ -139,6 +139,54 @@ works on both. The role tolerates the SaaS 400/403s and simply omits those secti
 On **self-hosted** Enterprise (typical work dev box) the descriptor works and is
 captured/applied.
 
+## GitOps workflow — As-Built vs Desired
+
+The intended operating loop for using this role as IaC with audit + approval:
+
+1. **Pull (As-Built)** — a scheduled/on-demand `mode: backup` writes the full
+   live config to an export ("as-built"). Commit it to an `as-built/` area of
+   the repo (or attach it as a CI artifact). Exports are deterministic — keys
+   sorted, stable layout — so two exports diff cleanly.
+2. **Compare & cherry-pick** — diff the as-built export against the desired
+   state in `group_vars`/state files (`git diff` / `diff -u`, helped by
+   `artifactory_export_gap_depth: 2` which makes every object its own
+   paragraph). Whatever drift you want to KEEP, copy into the desired state in
+   a merge request; whatever you don't, leave out.
+3. **Approve** — the MR review is the approval gate; history is the audit log.
+4. **Push (Apply)** — on merge, CI runs `mode: apply` with the desired state.
+   With `artifactory_prune: true` the instance is fully reconciled (server
+   objects not in the desired state are deleted — protected built-ins
+   excepted); without it, apply is additive/corrective only.
+
+Secrets never live in either file: bind passwords come from Vault via
+`artifactory_ldap_manager_passwords`, user passwords are generated or supplied
+at apply time, token secrets are minted and exported to 0600 sidecars.
+
+`_meta` in the export records provenance (source URL, version) plus
+`trash_can`: repo-named folders whose deleted content still sits in the trash
+can (`auto-trashcan`). A name appearing there explains "the UI shows it under
+Trash" — its repo CONFIG may already be gone, so it won't be in the repo
+lists; only its content lingers until the retention period expires. There is
+no public REST API for the repository-trash view itself (the UI uses internal
+`/ui/api` endpoints that reject access tokens).
+
+### System config descriptor (self-hosted only)
+
+When the global config descriptor XML is captured, it is externalized to
+sidecars next to the export instead of bloating the state file
+(`artifactory_export_system_config_files: true`):
+
+| File | Purpose |
+|---|---|
+| `<export>.system-config.xml` | raw descriptor — authoritative, used by the opt-in DR re-apply path (`artifactory_apply_system_config_xml`) |
+| `<export>.system-config.parsed.yml` | XML→YAML **reference** for humans drafting `artifactory_system_config_yaml` IaC blocks (needs `xmltodict` on the controller; skipped with a note if absent) |
+
+The state file carries `artifactory_system_config_xml_file` pointing at the
+XML sidecar. The parsed YAML is a reference only — xmltodict conventions
+(`'@'`-prefixed attributes, strings everywhere) mean it is NOT directly valid
+`artifactory_system_config_yaml` input; cherry-pick and clean the blocks you
+want to manage.
+
 ## Export formatting
 
 YAML exports are written by the role's bundled `to_pretty_yaml` filter

@@ -33,6 +33,20 @@
   changed_when: false
   when: artifactory_manage_repositories | bool
 
+# ── Trash can (informational) ─────────────────────────────────────────────
+# Top-level folders in auto-trashcan are the remains of deleted repos/paths.
+# A repo name showing here explains "I see it in the UI trash" — its CONFIG
+# may be gone even though content lingers until the retention period expires.
+- name: "Backup | GET trash can contents"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.trash }}"
+    method: GET
+    headers: "{{ _af_headers }}"
+    status_code: [200, 403, 404]
+  register: _bk_trash
+  changed_when: false
+  when: artifactory_manage_repositories | bool
+
 # ── Groups (list → detail) ────────────────────────────────────────────────
 - name: "Backup | GET group list"
   ansible.builtin.uri:
@@ -253,12 +267,31 @@
 
 # ── Assemble the round-trip document ──────────────────────────────────────
 - name: "Backup | Assemble state document"
+  vars:
+    _sysxml: "{{ _bk_sysconf.content | default('') if (_bk_sysconf.status | default(0) == 200) else '' }}"
+    _sysxml_external: "{{ (artifactory_export_system_config_files | bool) and (_sysxml | length > 0) }}"
   ansible.builtin.set_fact:
+    # Sidecar paths derived from the export file name (only used when set).
+    _af_sysxml: "{{ _sysxml }}"
+    _af_sysxml_file: "{{ (artifactory_export_file | regex_replace('\\.(ya?ml|json)$', '') + '.system-config.xml') if _sysxml_external else '' }}"
     _af_state:
       _meta:
         source_url: "{{ artifactory_url }}"
         artifactory_version: "{{ _af_version.json.version | default('unknown') }}"
-      artifactory_system_config_xml: "{{ _bk_sysconf.content | default('') if (_bk_sysconf.status | default(0) == 200) else '' }}"
+        # Repo-named folders whose deleted content still sits in the trash can.
+        # Informational: their CONFIG may be gone even though the UI shows them
+        # under Trash until the retention period expires.
+        trash_can: >-
+          {{ _bk_trash.json.children | default([]) | map(attribute='uri')
+             | map('regex_replace', '^/', '') | list
+             if (_bk_trash.status | default(0) == 200) else [] }}
+      # Raw XML config descriptor: externalized to the sidecar named in
+      # artifactory_system_config_xml_file when captured (readability), kept
+      # inline only if artifactory_export_system_config_files is false.
+      artifactory_system_config_xml: "{{ '' if _sysxml_external else _sysxml }}"
+      artifactory_system_config_xml_file: >-
+        {{ (artifactory_export_file | regex_replace('\.(ya?ml|json)$', '')
+            + '.system-config.xml') if _sysxml_external else '' }}
       artifactory_local_repositories: "{{ _bk_repos.json.LOCAL | default([]) }}"
       artifactory_remote_repositories: "{{ _bk_repos.json.REMOTE | default([]) }}"
       artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"
@@ -285,6 +318,32 @@
       artifactory_xray_ignore_rules: "{{ _bk_xignore.json.data | default([]) if (_bk_xignore.status | default(0) == 200) else [] }}"
       artifactory_replications: "{{ _bk_repl.json | default([]) if (_bk_repl.status | default(0) == 200) else [] }}"
       artifactory_webhooks: "{{ _bk_webhooks.json | default([]) if (_bk_webhooks.status | default(0) == 200) else [] }}"
+
+# ── System config sidecars (self-hosted only — SaaS never returns the XML) ──
+- name: "Backup | Write system config descriptor XML sidecar"
+  ansible.builtin.copy:
+    content: "{{ _af_sysxml }}"
+    dest: "{{ _af_sysxml_file }}"
+    mode: "0640"
+  delegate_to: localhost
+  when: _af_sysxml_file | length > 0
+
+- name: "Backup | Write parsed system config reference (XML → YAML)"
+  when: _af_sysxml_file | length > 0
+  block:
+    - name: "Backup | Parse descriptor XML and write YAML reference"
+      ansible.builtin.copy:
+        content: "{{ _af_sysxml | ansible.utils.from_xml | to_pretty_yaml(gap_depth=2) }}"
+        dest: "{{ _af_sysxml_file | regex_replace('\\.xml$', '') }}.parsed.yml"
+        mode: "0640"
+      delegate_to: localhost
+  rescue:
+    - name: "Backup | Note that the parsed reference was skipped"
+      ansible.builtin.debug:
+        msg: >-
+          Could not convert the config descriptor XML to YAML (is the
+          'xmltodict' python library installed on the controller?). The raw
+          XML sidecar was still written. Error: {{ ansible_failed_result.msg | default('unknown') }}
 
 - name: "Backup | Write state file"
   ansible.builtin.copy:
