@@ -143,12 +143,14 @@ captured/applied.
 
 YAML exports are written by the role's bundled `to_pretty_yaml` filter
 (`filter_plugins/yaml_pretty.py`): list items are indented two spaces under
-their parent key, and a blank line separates top-level keys and each entry of
-the top-level lists — so every repo/user/permission dict reads as its own
-paragraph in a multi-thousand-line file. Blank lines are insignificant in YAML;
-the file re-imports identically. (PyYAML can't indent block sequences via
-`to_nice_yaml` arguments — it requires the filter's `Dumper.increase_indent`
-override, which is why this lives in a plugin.)
+their parent key, and a blank line separates the top-level keys — so each
+section (repos, users, permissions, …) is visually distinct in a
+multi-thousand-line file. Optional toggles: `key_gap=false` drops the section
+gaps, `item_gap=true` additionally puts a blank line between each entry of the
+top-level lists. Blank lines are insignificant in YAML; the file re-imports
+identically. (PyYAML can't indent block sequences via `to_nice_yaml`
+arguments — it requires the filter's `Dumper.increase_indent` override, which
+is why this lives in a plugin.)
 
 ## JSON output
 

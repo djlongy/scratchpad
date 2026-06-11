@@ -9,10 +9,11 @@
 #      the parent key's column. This cannot be done with to_nice_yaml args or
 #      Jinja — PyYAML only honours it via a Dumper.increase_indent override.
 #
-#   2. item_gap=True (default) inserts a blank line between top-level keys and
-#      between the entries of top-level lists, so each repo/user/permission
-#      dict reads as its own paragraph. Blank lines are insignificant in YAML,
-#      so the file re-imports identically.
+#   2. key_gap=True (default) inserts a blank line between TOP-LEVEL keys, so
+#      each section (repos, users, permissions, …) is visually separated.
+#      item_gap=True (default off) additionally puts a blank line between the
+#      entries of top-level lists. Blank lines are insignificant in YAML, so
+#      the file re-imports identically either way.
 
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ class IndentedDumper(AnsibleDumper):
         return super(IndentedDumper, self).increase_indent(flow, False)
 
 
-def to_pretty_yaml(data, indent=2, width=200, item_gap=True, sort_keys=True):
+def to_pretty_yaml(data, indent=2, width=200, key_gap=True, item_gap=False, sort_keys=True):
     try:
         text = yaml.dump(
             data,
@@ -44,7 +45,7 @@ def to_pretty_yaml(data, indent=2, width=200, item_gap=True, sort_keys=True):
         raise AnsibleFilterError('to_pretty_yaml: %s' % exc)
 
     text = to_text(text)
-    if not item_gap:
+    if not (key_gap or item_gap):
         return text
 
     bullet = ' ' * indent + '- '
@@ -52,9 +53,9 @@ def to_pretty_yaml(data, indent=2, width=200, item_gap=True, sort_keys=True):
     prev = ''
     for line in text.splitlines():
         if out:
-            if line and not line[0].isspace():
+            if key_gap and line and not line[0].isspace():
                 out.append('')  # blank line before each top-level key
-            elif line.startswith(bullet) and prev[:1].isspace():
+            elif item_gap and line.startswith(bullet) and prev[:1].isspace():
                 # blank line between top-level list items (but not between a
                 # parent key and its first item; nested lists are untouched)
                 out.append('')
