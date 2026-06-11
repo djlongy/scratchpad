@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/xray.yml
+# roles/artifactory/tasks/xray/xray.yml
 # Order: policies → watches (reference policies) → ignore rules → indexing.
 
 # ── Policies ──────────────────────────────────────────────────────────────

@@ -28,7 +28,7 @@ artifactory_mode: apply
 artifactory_export_file: "{{ playbook_dir }}/artifactory-state.yml"
 artifactory_export_format: yaml          # yaml | json
 # YAML export layout is fixed in tasks/backup.yml via the to_pretty_yaml filter
-# (gap_depth=1, gap_blocks_only=true). To change it, edit those literals — see
+# (gap_depth=2, gap_blocks_only=true). To change it, edit those literals — see
 # filter_plugins/yaml_pretty.py for what each parameter does.
 
 # Omit keys with an "empty" value (null, '', [], {}) from the export, so the

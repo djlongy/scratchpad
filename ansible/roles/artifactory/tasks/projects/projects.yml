@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/projects.yml
+# roles/artifactory/tasks/projects/projects.yml
 # Projects live in the Access service. Each project may carry custom roles,
 # members (users/groups → roles) and repository assignments.
 
@@ -11,7 +11,7 @@
     label: "{{ _proj.project_key }}"
 
 - name: "Projects | Prune unmanaged"
-  ansible.builtin.include_tasks: prune.yml
+  ansible.builtin.include_tasks: ../shared/prune.yml
   vars:
     _prune_section: projects
     _prune_endpoint: "{{ artifactory_ep.projects }}"

@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/repositories.yml
+# roles/artifactory/tasks/repositories/repositories.yml
 # Create/update repositories in dependency order: local → remote → virtual →
 # federated. Each list element is the full repo config object; rclass is forced
 # from the list it came from so backup output and hand-authored input both work.
@@ -28,7 +28,7 @@
     label: "{{ _repo.key }} ({{ _repo.rclass }}/{{ _repo.packageType | default('?') }})"
 
 - name: "Repositories | Prune unmanaged"
-  ansible.builtin.include_tasks: prune.yml
+  ansible.builtin.include_tasks: ../shared/prune.yml
   vars:
     _prune_section: repositories
     _prune_endpoint: "{{ artifactory_ep.repositories }}"

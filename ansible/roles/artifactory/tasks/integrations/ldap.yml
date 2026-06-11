@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/ldap.yml
+# roles/artifactory/tasks/integrations/ldap.yml
 # LDAP settings via the Access API. POST (collection URL) creates, PUT (also
 # the collection URL) updates — the per-key URL only allows GET/DELETE (a PUT
 # there returns 405). ldap_groups are managed similarly under …/ldap/groups.

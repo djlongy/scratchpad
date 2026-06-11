@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/user_item.yml
+# roles/artifactory/tasks/security/user_item.yml
 # Reconcile a single user (loop_var: _user). state: absent → DELETE.
 
 - name: "User | check existence"

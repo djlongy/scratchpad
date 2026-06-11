@@ -208,9 +208,11 @@ YAML exports are written by the role's bundled `to_pretty_yaml` filter
 their parent key, and blank lines separate sibling nodes down to a chosen
 depth, so each logical block is visually distinct in a multi-thousand-line
 file. `tasks/backup.yml` calls it with fixed literals
-(`gap_depth=1, gap_blocks_only=true`); edit those to retune. Parameters
-(defaults shown): `indent=2`, `width=200`, `sort_keys=true`, `gap_depth=1`,
-`gap_blocks_only=true`.
+(`gap_depth=2, gap_blocks_only=true`); edit those to retune. Parameters
+(filter defaults shown): `indent=2`, `width=200`, `sort_keys=false`, `gap_depth=1`,
+`gap_blocks_only=true`. `sort_keys=false` means keys keep the order the API
+returned them in (omit it to preserve order; pass `sort_keys=true` only if you
+want alphabetical) — preserving order makes merge-request diffs cleaner.
 
 | `gap_depth` | Blank lines between |
 |---|---|

@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/vault_configs.yml
+# roles/artifactory/tasks/integrations/vault_configs.yml
 # HashiCorp Vault connections (Access). POST creates, PUT updates, DELETE removes.
 # Needs a platform-admin token (an Artifactory-only admin token gets 403 — the
 # section then self-skips with a warning rather than failing the run).

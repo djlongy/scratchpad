@@ -64,7 +64,7 @@ if AnsibleDumper is not None:
 
 
 def to_pretty_yaml(data, indent=2, width=200, gap_depth=1,
-                   gap_blocks_only=True, sort_keys=True):
+                   gap_blocks_only=True, sort_keys=False):
     try:
         gap_depth = int(gap_depth)
         gap_blocks_only = bool(gap_blocks_only)

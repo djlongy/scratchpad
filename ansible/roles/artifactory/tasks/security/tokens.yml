@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/tokens.yml
+# roles/artifactory/tasks/security/tokens.yml
 # Mint access tokens (Access API). Tokens are SECRETS that cannot be read back,
 # so they are never part of a backup — this is a create-on-demand convenience.
 # Generated secrets are written to artifactory_generated_tokens_file (0600).

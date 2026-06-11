@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/backup_project_detail.yml
+# roles/artifactory/tasks/shared/backup_project_detail.yml
 # Per-project: capture core fields + custom roles + members, append to
 # _bk_projects in the role's input shape. Invoked per project via include_tasks
 # (loop_var: _proj).

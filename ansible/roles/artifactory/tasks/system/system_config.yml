@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/system_config.yml
+# roles/artifactory/tasks/system/system_config.yml
 # Apply global configuration.
 #
 # Primary path: structured YAML descriptor → PATCH (additive, supported,

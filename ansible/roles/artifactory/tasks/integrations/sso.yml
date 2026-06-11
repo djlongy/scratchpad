@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/sso.yml
+# roles/artifactory/tasks/integrations/sso.yml
 # Single-object SSO integrations. Each runs only when its config dict is set, so
 # the default (empty) skips them — and you can't accidentally lock yourself out
 # of the trial. Secrets (client secret, SAML cert private parts) are not fully
@@ -27,7 +27,8 @@
 - name: "SSO | Configure OAuth"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.oauth }}"
-    method: "{{ artifactory_sso_method | default('PUT') }}"
+    # POST, not PUT — /api/oauth only allows POST (PUT 405s; verified live).
+    method: "{{ artifactory_sso_method | default('POST') }}"
     headers: "{{ _af_json_headers }}"
     body_format: json
     body: "{{ artifactory_oauth_config }}"

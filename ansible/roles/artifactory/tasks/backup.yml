@@ -142,7 +142,7 @@
   when: artifactory_manage_projects | bool
 
 - name: "Backup | GET project roles + members"
-  ansible.builtin.include_tasks: backup_project_detail.yml
+  ansible.builtin.include_tasks: shared/backup_project_detail.yml
   loop: "{{ _bk_projlist.json | default([]) }}"
   loop_control:
     loop_var: _proj
@@ -396,7 +396,7 @@
 - name: "Backup | Write state file"
   ansible.builtin.copy:
     content: >-
-      {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=1, gap_blocks_only=true)
+      {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=2, gap_blocks_only=true)
          if artifactory_export_format == 'yaml'
          else (_af_state | to_nice_json(indent=2)) }}
     dest: "{{ artifactory_export_file }}"

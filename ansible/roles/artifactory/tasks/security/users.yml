@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/users.yml
+# roles/artifactory/tasks/security/users.yml
 # Users need a password on creation, but GET never returns one (so a backup
 # can't carry it). Per user: create with the supplied password, or a generated
 # passphrase recorded to artifactory_generated_users_file for you to distribute
@@ -49,7 +49,7 @@
   no_log: true
 
 - name: "Users | Prune unmanaged"
-  ansible.builtin.include_tasks: prune.yml
+  ansible.builtin.include_tasks: ../shared/prune.yml
   vars:
     _prune_section: users
     _prune_endpoint: "{{ artifactory_ep.users }}"

@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/project_item.yml
+# roles/artifactory/tasks/projects/project_item.yml
 # Reconcile one project (loop_var: _proj): core → roles → members → repos.
 # state: absent → delete the project. Best-effort against the Access Projects
 # REST API (see docs/api-reference.md §6).

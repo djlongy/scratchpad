@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/repo_item.yml
+# roles/artifactory/tasks/repositories/repo_item.yml
 # Reconcile a single repository (loop_var: _repo). PUT creates, POST updates,
 # DELETE removes (state: absent). Read-only/computed fields stripped before write.
 

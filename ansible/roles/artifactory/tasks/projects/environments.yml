@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/environments.yml
+# roles/artifactory/tasks/projects/environments.yml
 # Global lifecycle stages (DEV/PROD built in). POST creates, DELETE removes.
 
 - name: "Environments | List current"
@@ -47,7 +47,7 @@
     label: "{{ item.name }}"
 
 - name: "Environments | Prune unmanaged"
-  ansible.builtin.include_tasks: prune.yml
+  ansible.builtin.include_tasks: ../shared/prune.yml
   vars:
     _prune_section: environments
     _prune_endpoint: "{{ artifactory_ep.environments }}"

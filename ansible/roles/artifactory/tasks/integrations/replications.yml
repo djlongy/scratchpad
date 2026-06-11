@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/replications.yml
+# roles/artifactory/tasks/integrations/replications.yml
 # Per-repo replication config. PUT creates, POST updates, DELETE removes.
 # Keyed by repoKey. Credentials supplied at apply time (not round-tripped).
 

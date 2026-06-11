@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/webhooks.yml
+# roles/artifactory/tasks/integrations/webhooks.yml
 # Event-service webhook subscriptions. POST creates, PUT /{key} updates.
 
 - name: "Webhooks | Check existence"
@@ -68,7 +68,7 @@
     label: "{{ item.key }}"
 
 - name: "Webhooks | Prune unmanaged"
-  ansible.builtin.include_tasks: prune.yml
+  ansible.builtin.include_tasks: ../shared/prune.yml
   vars:
     _prune_section: webhooks
     _prune_endpoint: "{{ artifactory_ep.webhooks }}"

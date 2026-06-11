@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/permissions.yml
+# roles/artifactory/tasks/security/permissions.yml
 # PUT /api/v2/security/permissions/{name} is an idempotent upsert accepting the
 # same JSON shape GET returns. DELETE removes. state: absent → delete.
 
@@ -36,7 +36,7 @@
     label: "{{ item.name }}"
 
 - name: "Permissions | Prune unmanaged"
-  ansible.builtin.include_tasks: prune.yml
+  ansible.builtin.include_tasks: ../shared/prune.yml
   vars:
     _prune_section: permissions
     _prune_endpoint: "{{ artifactory_ep.permissions }}"

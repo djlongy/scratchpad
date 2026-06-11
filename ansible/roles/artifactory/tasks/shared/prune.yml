@@ -1,5 +1,5 @@
 ---
-# roles/artifactory/tasks/prune.yml
+# roles/artifactory/tasks/shared/prune.yml
 # Generic: delete server objects of a section that are not in the desired list
 # and not protected. DANGEROUS — only runs under artifactory_prune. Honours
 # --check (reports without deleting). Reusable via vars:

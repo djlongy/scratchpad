@@ -5,71 +5,71 @@
 # integrations → xray → eventing. Each section self-skips when its data is empty.
 
 - name: "Apply | System / global configuration"
-  ansible.builtin.import_tasks: system_config.yml
+  ansible.builtin.import_tasks: system/system_config.yml
   when: artifactory_manage_system_config | bool
   tags: [system_config]
 
 - name: "Apply | Repositories"
-  ansible.builtin.import_tasks: repositories.yml
+  ansible.builtin.import_tasks: repositories/repositories.yml
   when: artifactory_manage_repositories | bool
   tags: [repositories]
 
 - name: "Apply | Groups"
-  ansible.builtin.import_tasks: groups.yml
+  ansible.builtin.import_tasks: security/groups.yml
   when: artifactory_manage_groups | bool
   tags: [groups, security]
 
 - name: "Apply | Users"
-  ansible.builtin.import_tasks: users.yml
+  ansible.builtin.import_tasks: security/users.yml
   when: artifactory_manage_users | bool
   tags: [users, security]
 
 - name: "Apply | Permission targets"
-  ansible.builtin.import_tasks: permissions.yml
+  ansible.builtin.import_tasks: security/permissions.yml
   when: artifactory_manage_permissions | bool
   tags: [permissions, security]
 
 - name: "Apply | Lifecycle environments (stages)"
-  ansible.builtin.import_tasks: environments.yml
+  ansible.builtin.import_tasks: projects/environments.yml
   when: artifactory_manage_environments | bool
   tags: [environments, projects]
 
 - name: "Apply | Projects"
-  ansible.builtin.import_tasks: projects.yml
+  ansible.builtin.import_tasks: projects/projects.yml
   when: artifactory_manage_projects | bool
   tags: [projects]
 
 - name: "Apply | LDAP integration"
-  ansible.builtin.import_tasks: ldap.yml
+  ansible.builtin.import_tasks: integrations/ldap.yml
   when: artifactory_manage_ldap | bool
   tags: [ldap, sso, security]
 
 - name: "Apply | SSO (SAML / OAuth / Crowd)"
-  ansible.builtin.import_tasks: sso.yml
+  ansible.builtin.import_tasks: integrations/sso.yml
   when: artifactory_manage_sso | bool
   tags: [sso, security]
 
 - name: "Apply | HashiCorp Vault connections"
-  ansible.builtin.import_tasks: vault_configs.yml
+  ansible.builtin.import_tasks: integrations/vault_configs.yml
   when: artifactory_manage_vault | bool
   tags: [vault, security]
 
 - name: "Apply | Xray (policies, watches, ignore rules, indexing)"
-  ansible.builtin.import_tasks: xray.yml
+  ansible.builtin.import_tasks: xray/xray.yml
   when: artifactory_manage_xray | bool
   tags: [xray]
 
 - name: "Apply | Replications"
-  ansible.builtin.import_tasks: replications.yml
+  ansible.builtin.import_tasks: integrations/replications.yml
   when: artifactory_manage_replications | bool
   tags: [replications]
 
 - name: "Apply | Webhooks"
-  ansible.builtin.import_tasks: webhooks.yml
+  ansible.builtin.import_tasks: integrations/webhooks.yml
   when: artifactory_manage_webhooks | bool
   tags: [webhooks]
 
 - name: "Apply | Access tokens"
-  ansible.builtin.import_tasks: tokens.yml
+  ansible.builtin.import_tasks: security/tokens.yml
   when: artifactory_manage_tokens | bool
   tags: [tokens]
