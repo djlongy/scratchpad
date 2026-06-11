@@ -276,7 +276,7 @@
 - name: "Backup | Write state file"
   ansible.builtin.copy:
     content: >-
-      {{ _af_state | to_pretty_yaml(indent=2, width=200)
+      {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=artifactory_export_gap_depth | int)
          if artifactory_export_format == 'yaml'
          else (_af_state | to_nice_json(indent=2)) }}
     dest: "{{ artifactory_export_file }}"

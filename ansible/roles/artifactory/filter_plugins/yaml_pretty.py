@@ -9,11 +9,18 @@
 #      the parent key's column. This cannot be done with to_nice_yaml args or
 #      Jinja — PyYAML only honours it via a Dumper.increase_indent override.
 #
-#   2. key_gap=True (default) inserts a blank line between TOP-LEVEL keys, so
-#      each section (repos, users, permissions, …) is visually separated.
-#      item_gap=True (default off) additionally puts a blank line between the
-#      entries of top-level lists. Blank lines are insignificant in YAML, so
-#      the file re-imports identically either way.
+#   2. gap_depth=N inserts a blank line between sibling nodes (mapping keys
+#      and list entries) at nesting depths 1..N, so the document reads as
+#      logically separated blocks:
+#        gap_depth=0  no blank lines (plain to_nice_yaml layout)
+#        gap_depth=1  blank line between root keys only (default)
+#        gap_depth=2  …plus between the children of each root key — second-
+#                     level mapping keys and top-level list entries
+#        gap_depth=3+ …and so on, one level deeper per increment
+#      Implemented by dumping each sibling subtree separately and joining with
+#      blank lines (never by regexing emitted lines), so multi-line string
+#      scalars that happen to contain "key:"-shaped text can't be mangled.
+#      Blank lines are insignificant in YAML — the file re-imports identically.
 
 from __future__ import annotations
 
@@ -30,38 +37,66 @@ class IndentedDumper(AnsibleDumper):
         return super(IndentedDumper, self).increase_indent(flow, False)
 
 
-def to_pretty_yaml(data, indent=2, width=200, key_gap=True, item_gap=False, sort_keys=True):
+def to_pretty_yaml(data, indent=2, width=200, gap_depth=1, sort_keys=True):
     try:
-        text = yaml.dump(
-            data,
-            Dumper=IndentedDumper,
-            indent=indent,
-            width=width,
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=sort_keys,
-        )
+        gap_depth = int(gap_depth)
+
+        def plain(node):
+            return to_text(yaml.dump(
+                node,
+                Dumper=IndentedDumper,
+                indent=indent,
+                width=width,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=sort_keys,
+            ))
+
+        def reindent(text, levels):
+            pad = ' ' * (indent * levels)
+            return ''.join(
+                (pad + ln if ln.strip() else ln) + '\n'
+                for ln in text.splitlines()
+            )
+
+        def bullet(text):
+            # turn a column-0 block into a "- " list entry at column 0
+            pad = ' ' * indent
+            lines = text.splitlines()
+            out = ['-' + ' ' * (indent - 1) + lines[0]]
+            out.extend(pad + ln if ln.strip() else ln for ln in lines[1:])
+            return '\n'.join(out) + '\n'
+
+        def key_header(k):
+            # serialize just the key (with correct quoting): "<key>: {}" → "<key>:"
+            line = plain({k: {}}).rstrip('\n')
+            return line[:line.rindex(': {}')] + ':'
+
+        def render(node, depth):
+            # Emit `node` at column 0 with blank lines between its children
+            # when their depth (= `depth`) is within gap_depth.
+            if depth > gap_depth or not isinstance(node, (dict, list)) or not node:
+                return plain(node)
+            parts = []
+            if isinstance(node, dict):
+                for k in (sorted(node, key=str) if sort_keys else list(node)):
+                    v = node[k]
+                    if isinstance(v, (dict, list)) and v and depth < gap_depth:
+                        body = reindent(render(v, depth + 1), 1)
+                        parts.append(key_header(k) + '\n' + body.rstrip('\n'))
+                    else:
+                        parts.append(plain({k: v}).rstrip('\n'))
+            else:
+                for e in node:
+                    if isinstance(e, (dict, list)) and e and depth < gap_depth:
+                        parts.append(bullet(render(e, depth + 1)).rstrip('\n'))
+                    else:
+                        parts.append(plain([e]).rstrip('\n'))
+            return '\n\n'.join(parts) + '\n'
+
+        return render(data, 1)
     except Exception as exc:
         raise AnsibleFilterError('to_pretty_yaml: %s' % exc)
-
-    text = to_text(text)
-    if not (key_gap or item_gap):
-        return text
-
-    bullet = ' ' * indent + '- '
-    out = []
-    prev = ''
-    for line in text.splitlines():
-        if out:
-            if key_gap and line and not line[0].isspace():
-                out.append('')  # blank line before each top-level key
-            elif item_gap and line.startswith(bullet) and prev[:1].isspace():
-                # blank line between top-level list items (but not between a
-                # parent key and its first item; nested lists are untouched)
-                out.append('')
-        out.append(line)
-        prev = line
-    return '\n'.join(out) + '\n'
 
 
 class FilterModule(object):

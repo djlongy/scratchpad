@@ -27,6 +27,10 @@ artifactory_mode: apply
 # below / whatever inventory sets).
 artifactory_export_file: "{{ playbook_dir }}/artifactory-state.yml"
 artifactory_export_format: yaml          # yaml | json
+# Blank-line separation depth in YAML exports (see filter_plugins/yaml_pretty.py):
+# 0 = none, 1 = between root keys (default), 2 = also between each root key's
+# children (2nd-level keys / list entries), 3+ = one level deeper per increment.
+artifactory_export_gap_depth: 1
 artifactory_import_file: ""              # e.g. ./artifactory-state.yml
 
 # ── Connection ────────────────────────────────────────────────────────────

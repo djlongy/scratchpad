@@ -143,11 +143,21 @@ captured/applied.
 
 YAML exports are written by the role's bundled `to_pretty_yaml` filter
 (`filter_plugins/yaml_pretty.py`): list items are indented two spaces under
-their parent key, and a blank line separates the top-level keys — so each
-section (repos, users, permissions, …) is visually distinct in a
-multi-thousand-line file. Optional toggles: `key_gap=false` drops the section
-gaps, `item_gap=true` additionally puts a blank line between each entry of the
-top-level lists. Blank lines are insignificant in YAML; the file re-imports
+their parent key, and blank lines separate sibling nodes down to a chosen
+depth, so each logical block is visually distinct in a multi-thousand-line
+file. Parameters (defaults shown): `indent=2`, `width=200`, `sort_keys=true`,
+and `gap_depth=1`:
+
+| `gap_depth` | Blank lines between |
+|---|---|
+| `0` | nothing (plain `to_nice_yaml` layout, just indented lists) |
+| `1` | root keys only — the default |
+| `2` | …plus each root key's children (2nd-level keys / top-level list entries) |
+| `3`+ | …one level deeper per increment |
+
+Gaps are produced by dumping each sibling subtree separately (never by
+regexing emitted lines), so multi-line string values containing `key:`-shaped
+text are immune. Blank lines are insignificant in YAML; the file re-imports
 identically. (PyYAML can't indent block sequences via `to_nice_yaml`
 arguments — it requires the filter's `Dumper.increase_indent` override, which
 is why this lives in a plugin.)
