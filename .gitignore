@@ -165,3 +165,10 @@ AGENTS.md
 # ── Browser-automation / agent tool artifacts ─────────────────────────────────────
 .playwright-cli/
 ansible/_trial-backup/
+
+# Daemon-agent chaos-test findings handoff (not tracked)
+CHAOS-FINDINGS.md
+
+# Live-instance config exports / backups from role testing (contain real config)
+ansible/trial-backups/
+ansible/artifactory-as-built*.yml
