@@ -67,19 +67,33 @@
         - _proj_get.status == 200
         - artifactory_reconcile_existing | bool
 
-    - name: "Project | upsert custom roles"
+    - name: "Project | List existing custom roles"
       ansible.builtin.uri:
         url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}/roles"
-        method: POST
+        method: GET
+        headers: "{{ _af_headers }}"
+        status_code: [200, 403, 404]
+      register: _proj_roles_get
+      changed_when: false
+
+    # POST (…/roles) only CREATES — it 409s on an existing role, so scope
+    # changes (e.g. trimming a role's actions) would silently no-op. Updates
+    # must PUT the item URL (…/roles/{name}); create-or-update by existence.
+    - name: "Project | upsert custom roles"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.projects }}/{{ _proj.project_key }}/roles{{ ('/' + role.name) if (role.name in _proj_role_names) else '' }}"
+        method: "{{ 'PUT' if (role.name in _proj_role_names) else 'POST' }}"
         headers: "{{ _af_json_headers }}"
         body_format: json
         body: "{{ role }}"
-        status_code: [200, 201, 409]
+        status_code: [200, 201]
       register: _proj_role
       changed_when: _proj_role.status in [200, 201]
       failed_when:
         - artifactory_fail_fast | bool
-        - _proj_role.status not in [200, 201, 409]
+        - _proj_role.status not in [200, 201]
+      vars:
+        _proj_role_names: "{{ _proj_roles_get.json | default([]) | map(attribute='name') | list }}"
       loop: "{{ _proj.roles | default([]) }}"
       loop_control:
         loop_var: role
