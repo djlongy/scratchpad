@@ -139,6 +139,17 @@ works on both. The role tolerates the SaaS 400/403s and simply omits those secti
 On **self-hosted** Enterprise (typical work dev box) the descriptor works and is
 captured/applied.
 
+## Export formatting
+
+YAML exports are written by the role's bundled `to_pretty_yaml` filter
+(`filter_plugins/yaml_pretty.py`): list items are indented two spaces under
+their parent key, and a blank line separates top-level keys and each entry of
+the top-level lists — so every repo/user/permission dict reads as its own
+paragraph in a multi-thousand-line file. Blank lines are insignificant in YAML;
+the file re-imports identically. (PyYAML can't indent block sequences via
+`to_nice_yaml` arguments — it requires the filter's `Dumper.increase_indent`
+override, which is why this lives in a plugin.)
+
 ## JSON output
 
 Set `artifactory_export_format: json` to write the state as JSON instead of YAML. It
