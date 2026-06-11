@@ -345,16 +345,11 @@
           'xmltodict' python library installed on the controller?). The raw
           XML sidecar was still written. Error: {{ ansible_failed_result.msg | default('unknown') }}
 
-- name: "Backup | Write state file"
-  ansible.builtin.copy:
-    content: >-
-      {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=1, gap_blocks_only=true)
-         if artifactory_export_format == 'yaml'
-         else (_af_state | to_nice_json(indent=2)) }}
-    dest: "{{ artifactory_export_file }}"
-    mode: "0640"
-  delegate_to: localhost
-
+# ── Omit empty values (native Jinja; gated by artifactory_export_omit_empty) ──
+# Drop keys whose value is null / '' / [] / {} so the As-Built vars stay small.
+# false and 0 are KEPT — `in _empties` never matches a bool/number. One level
+# deep (each section, and the keys of each object in a list section), which
+# covers the noisy cases (description: '', propertySets: []).
 - name: "Backup | Warn about LDAP bind passwords (masked by the API)"
   ansible.builtin.debug:
     msg: >-
@@ -387,3 +382,23 @@
       {{ _af_state.artifactory_xray_policies | length }} xray-policies,
       {{ _af_state.artifactory_xray_watches | length }} xray-watches →
       {{ artifactory_export_file }}
+
+# Drop keys whose value is empty (null / '' / [] / {}) so the As-Built vars
+# stay small — recursive, so deeply-nested empties go too. false and 0 are
+# KEPT (they are real settings). Runs AFTER the summary/warnings, which expect
+# every section present, so it only shapes what gets written. See
+# filter_plugins/data_shaping.py.
+- name: "Backup | Drop empty values"
+  ansible.builtin.set_fact:
+    _af_state: "{{ _af_state | drop_empty }}"
+  when: artifactory_export_omit_empty | bool
+
+- name: "Backup | Write state file"
+  ansible.builtin.copy:
+    content: >-
+      {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=1, gap_blocks_only=true)
+         if artifactory_export_format == 'yaml'
+         else (_af_state | to_nice_json(indent=2)) }}
+    dest: "{{ artifactory_export_file }}"
+    mode: "0640"
+  delegate_to: localhost

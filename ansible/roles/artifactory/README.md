@@ -187,6 +187,20 @@ XML sidecar. The parsed YAML is a reference only — xmltodict conventions
 `artifactory_system_config_yaml` input; cherry-pick and clean the blocks you
 want to manage.
 
+## Trimming empty values
+
+By default (`artifactory_export_omit_empty: true`) the export omits keys whose
+value is "empty" — `null`, `''`, `[]`, or `{}` — so the As-Built vars stay
+small and free of noise like `description: ''` or `propertySets: []`. This is
+done by the bundled **`drop_empty`** filter (`filter_plugins/data_shaping.py`),
+a recursive prune that runs before serialization, so even deeply-nested empties
+go. Falsy-but-real settings (`false`, `0`) are always kept — they are
+meaningful, not absence. Because absent == empty == the API default on apply,
+trimming is lossless for round-trip. Set `artifactory_export_omit_empty: false`
+for a fully faithful dump that records every field. `drop_empty` is a pure
+data transform (format-agnostic — it serves the JSON export path too); it is
+kept in its own file so `to_pretty_yaml` stays purely about formatting.
+
 ## Export formatting
 
 YAML exports are written by the role's bundled `to_pretty_yaml` filter
