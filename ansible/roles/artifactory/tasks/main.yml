@@ -27,3 +27,13 @@
       ansible.builtin.import_tasks: apply.yml
       when: artifactory_mode == 'apply'
       tags: [apply]
+
+    - name: Compare As-Built against saved IaC (drift report)
+      ansible.builtin.import_tasks: compare.yml
+      when: artifactory_mode == 'compare'
+      tags: [compare]
+
+    - name: Merge As-Built sections into saved IaC (MR candidate)
+      ansible.builtin.import_tasks: merge.yml
+      when: artifactory_mode == 'merge'
+      tags: [merge]

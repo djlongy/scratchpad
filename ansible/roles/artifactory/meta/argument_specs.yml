@@ -9,9 +9,12 @@ argument_specs:
     options:
       artifactory_mode:
         type: str
-        choices: [backup, apply]
+        choices: [backup, apply, compare, merge]
         default: apply
-        description: Operation mode.
+        description: >-
+          Operation mode. backup = export live As-Built; apply = reconcile IaC
+          into the instance; compare = diff As-Built vs saved baseline (drift);
+          merge = pull As-Built sections into the baseline for MR review.
       artifactory_url:
         type: str
         required: true

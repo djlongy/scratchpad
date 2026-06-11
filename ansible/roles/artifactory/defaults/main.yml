@@ -50,6 +50,20 @@ artifactory_export_omit_empty: true
 artifactory_export_system_config_files: true
 artifactory_import_file: ""              # e.g. ./artifactory-state.yml
 
+# ── Compare / merge (drift detection + MR-driven IaC) ─────────────────────
+# compare mode: capture live As-Built, diff it against this saved baseline,
+# print a per-section summary, and (if set) write a structured diff to
+# artifactory_diff_file. merge mode: pull artifactory_merge_sections from the
+# As-Built into the baseline and write artifactory_merge_output_file for review.
+artifactory_compare_file: "{{ artifactory_import_file or artifactory_export_file }}"
+artifactory_diff_file: "{{ playbook_dir }}/artifactory-drift.yml"
+# Fail the run when drift exists (turns compare into a CI gate).
+artifactory_compare_fail_on_drift: false
+# State-var names to pull from As-Built on merge, e.g.
+# [artifactory_local_repositories, artifactory_xray_policies].
+artifactory_merge_sections: []
+artifactory_merge_output_file: "{{ playbook_dir }}/artifactory-state.merged.yml"
+
 # ── Connection ────────────────────────────────────────────────────────────
 # Base platform URL, no trailing slash. Works for on-prem or SaaS.
 #   e.g. https://artifactory.dev.example.com   or   https://acme.jfrog.io
@@ -313,6 +327,19 @@ artifactory_xray_ignore_rules: []
 # Repos Xray should index (binary manager id usually "default").
 artifactory_xray_indexed_repos: []
 artifactory_xray_binmgr_id: default
+
+# ── Xray reports ──────────────────────────────────────────────────────────
+# Scheduled/on-demand reports. Idempotent by name (create-if-absent), since a
+# report id is generated per run. Each: {name, type, resources, filters} where
+# type ∈ vulnerabilities | licenses | violations | operationalRisks.
+artifactory_xray_reports: []
+#   - name: critical-vulns-docker
+#     type: vulnerabilities
+#     resources:
+#       repositories:
+#         - name: docker-local
+#     filters:
+#       severities: [High, Critical]
 
 # ── Replications (Enterprise) ─────────────────────────────────────────────
 # Keyed by source repo. Each entry is the replication config for that repo.

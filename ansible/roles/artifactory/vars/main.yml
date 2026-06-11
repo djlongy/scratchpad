@@ -47,6 +47,16 @@ artifactory_ep:
   xray_watches: "{{ artifactory_xray_api }}/v2/watches"
   xray_ignore_rules: "{{ artifactory_xray_api }}/v1/ignore_rules"
   xray_binmgr: "{{ artifactory_xray_api }}/v1/binMgr"
+  xray_reports: "{{ artifactory_xray_api }}/v1/reports"
+
+# Xray report types → the per-type create sub-path under xray_reports
+# (POST {xray_reports}/<type>). Used by the reports section.
+artifactory_xray_report_types: [vulnerabilities, licenses, violations, operationalRisks]
+
+# State-var keys that are export metadata (sidecar pointers), not configuration —
+# excluded from compare so they never show as spurious drift.
+artifactory_compare_ignore_keys:
+  - artifactory_system_config_xml_file
 
 # Apply order for repositories (virtuals/federated reference the others).
 artifactory_rclass_order: [local, remote, virtual, federated]

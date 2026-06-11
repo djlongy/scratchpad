@@ -1,0 +1,63 @@
+---
+# roles/artifactory/tasks/xray/reports.yml
+# Xray reports (vulnerabilities / licenses / violations / operationalRisks).
+# A report is identified by a generated id; this section is idempotent by NAME
+# (create-if-absent) since re-issuing a same-named report just starts another
+# run. The list endpoint is a POST (with a pagination body), not a GET.
+# Each artifactory_xray_reports item: {name, type, resources, filters}.
+
+- name: "Xray | List existing reports"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_reports }}?direction=asc&page_num=1&num_of_rows=1000&order_by=start_time"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: {}
+    status_code: [200, 403, 404]
+  register: _xr_get
+  changed_when: false
+
+- name: "Xray | Create reports (by name, if absent)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_reports }}/{{ item.type }}"
+    method: POST
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    # type drives the URL path; state is role metadata — neither belongs in the body.
+    body: "{{ item | dict2items | rejectattr('key', 'in', ['state', 'type']) | items2dict }}"
+    status_code: [200, 201]
+  register: _xr_create
+  changed_when: _xr_create.status in [200, 201]
+  failed_when:
+    - artifactory_fail_fast | bool
+    - _xr_create.status not in [200, 201]
+  vars:
+    _xr_names: "{{ (_xr_get.json.reports | default([])) | map(attribute='name') | list }}"
+  loop: >-
+    {{ artifactory_xray_reports | rejectattr('state', 'defined') | list
+       + (artifactory_xray_reports | selectattr('state', 'defined')
+          | selectattr('state', 'eq', 'present') | list) }}
+  loop_control:
+    label: "{{ item.name }} ({{ item.type }})"
+  when:
+    - _xr_get.status | default(0) == 200
+    - item.name not in _xr_names
+
+- name: "Xray | Remove reports (state: absent, by name → id)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.xray_reports }}/{{ _xr_id }}"
+    method: DELETE
+    headers: "{{ _af_headers }}"
+    status_code: [200, 404]
+  register: _xr_del
+  changed_when: _xr_del.status == 200
+  vars:
+    _xr_id: >-
+      {{ (_xr_get.json.reports | default([]) | selectattr('name', 'eq', item.name)
+          | map(attribute='id') | list | first) | default('') }}
+  loop: "{{ artifactory_xray_reports | selectattr('state', 'defined') | selectattr('state', 'eq', 'absent') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - _xr_get.status | default(0) == 200
+    - _xr_id | length > 0

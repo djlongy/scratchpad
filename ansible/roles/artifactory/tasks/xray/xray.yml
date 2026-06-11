@@ -141,3 +141,8 @@
     - artifactory_fail_fast | bool
     - _xidx.status not in [200, 201]
   when: artifactory_xray_indexed_repos | length > 0
+
+# ── Reports (vulnerabilities / licenses / violations / operational risks) ──
+- name: "Xray | Reports"
+  ansible.builtin.import_tasks: reports.yml
+  when: artifactory_xray_reports | length > 0

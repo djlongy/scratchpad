@@ -1,0 +1,11 @@
+---
+# Run the artifactory role against the trial, executing API calls ON the VM
+# (which reaches https://artifactory-trial.example.com via NPM). artifactory_url
+# is always the FQDN.
+- name: Configure Artifactory trial (API calls run on the VM)
+  hosts: artifactory-trial-01
+  gather_facts: false
+  vars:
+    artifactory_delegate_to: "{{ inventory_hostname }}"
+  roles:
+    - role: artifactory
