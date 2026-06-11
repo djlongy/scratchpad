@@ -28,13 +28,29 @@ import yaml
 
 from ansible.errors import AnsibleFilterError
 from ansible.module_utils.common.text.converters import to_text
-from ansible.parsing.yaml.dumper import AnsibleDumper
+
+try:
+    from ansible.parsing.yaml.dumper import AnsibleDumper
+except ImportError:  # path moved in newer ansible-core
+    AnsibleDumper = None
 
 
-class IndentedDumper(AnsibleDumper):
+# IMPORTANT: base on the pure-Python SafeDumper, NOT AnsibleDumper. When PyYAML
+# is compiled with libyaml, AnsibleDumper extends CSafeDumper whose emitter
+# runs in C — increase_indent() is never called and the override is silently
+# ignored (observed on ansible-core 2.16: hyphens stay at the parent column).
+# The pure-Python emitter always honours it; speed is irrelevant at this size.
+class IndentedDumper(yaml.SafeDumper):
     def increase_indent(self, flow=False, indentless=False):
         # indentless=False is the whole trick: never emit indentless sequences.
         return super(IndentedDumper, self).increase_indent(flow, False)
+
+
+# Graft Ansible's representers (AnsibleUnsafeText, vaulted strings, …) onto the
+# pure-Python dumper so live API data (uri results) still serializes cleanly.
+if AnsibleDumper is not None:
+    for _type, _repr in AnsibleDumper.yaml_representers.items():
+        IndentedDumper.add_representer(_type, _repr)
 
 
 def to_pretty_yaml(data, indent=2, width=200, gap_depth=1, sort_keys=True):
