@@ -67,33 +67,40 @@ artifactory_ldap_manager_passwords:
   corp-ldap: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=<mount>/data/apps/<svc>/runtime:ldap_manager_password') }}"
 ```
 
-## System config — Docker Sub-Domain method, server name, base URL
-
-All live in the config descriptor (`artifactory_system_config_yaml`, applied via
-PATCH application/yaml):
+## System config — server name, base URL (safe)
 
 ```yaml
 artifactory_system_config_yaml:
   serverName: artifactory.example.com
   urlBase: https://artifactory.example.com
-  reverseProxies:
-    - key: direct
-      webServerType: direct
-      artifactoryAppContext: artifactory
-      publicAppContext: artifactory
-      serverName: artifactory.example.com
-      serverNameExpression: "*.artifactory.example.com"
-      dockerReverseProxyMethod: subDomain   # path | subDomain | portPerRepo
-      useHttps: false
-      useHttp: true
-      sslPort: 443
-      httpPort: 8080
-      artifactoryServerName: artifactory
 ```
 
-The Sub-Domain method itself is served by an nginx sidecar with a
-`*.<host>` wildcard cert (see lab `sw_jfrog_trial`); this setting only
-drives what the UI / "Set Me Up" renders.
+These round-trip cleanly via the descriptor PATCH (application/yaml).
+
+## ⚠️ Docker access method — do NOT set `dockerReverseProxyMethod: subDomain` on a `direct` proxy
+
+**Live-verified footgun (Platform 7.146):** setting
+
+```yaml
+reverseProxies:
+  - key: direct
+    webServerType: direct           # <-- the problem
+    dockerReverseProxyMethod: subDomain
+    serverNameExpression: "*.host"
+```
+
+puts the UI into an **infinite redirect loop on every page** — Artifactory tries
+to redirect the UI into the subdomain form, which loops. The `direct` web-server
+type and `subDomain` method are an invalid combination.
+
+The Sub-Domain method works **without** this setting: an nginx sidecar rewrites
+`<repo>.<host>/v2/...` → `/artifactory/api/docker/<repo>/v2/...` (see lab
+`sw_jfrog_trial`), so **keep Artifactory at the default `path`/`direct`** and let
+the proxy do the routing — docker login/push/pull via the subdomain still works.
+The trade-off is only cosmetic (the "Set Me Up" tab shows Repository Path). If you
+want the UI to *display* Sub Domain, set `webServerType: nginx` (not `direct`) and
+generate the matching reverse-proxy config — but `direct + subDomain` must be
+avoided.
 
 ## Anonymous read-only consumption (token-less pull)
 
