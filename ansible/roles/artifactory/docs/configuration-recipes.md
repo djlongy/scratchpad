@@ -129,12 +129,22 @@ Idempotent by name (create-if-absent). The list endpoint is a `POST` (with a
 pagination body), not a GET. Report *data* only populates once Xray's
 vulnerability DB has finished its initial sync.
 
-## OAuth / OIDC SSO — known gap on Platform 7.x
+## OAuth / OIDC SSO — known gap on Platform 7.x (provider add is UI-only)
 
 `artifactory_oauth_config` posts to `/artifactory/api/oauth`, which on Platform
-7.146 sets the **global** OAuth settings (enabled, persistUsers) but does **not**
-persist providers — `POST/PUT /api/oauth/<name>` returns 404, and
-`/access/api/v1/oidc/configurations` is for CI token-exchange, not interactive
-login. Add the provider in the UI (Administration → Security → SSO → OAuth) until
-the role is updated to the platform-native endpoint. The IdP side (e.g. Authentik
-OAuth2 provider + application) is configured normally.
+7.146 sets the **global** OAuth settings (enabled, persistUsers, allowUserToAccessProfile)
+but does **not** persist providers. The provider-add endpoints are all dead on
+7.146 (exhaustively probed):
+
+| endpoint | result |
+|---|---|
+| `POST/PUT /artifactory/api/oauth/<name>` | 404 Not Found |
+| `POST /access/api/v1/oidc/configurations` | 405 (this API is for CI **token-exchange**, not interactive login) |
+| `/ui/api/v1/admin/security/oauth/...` | 200 but returns the SPA `index.html` — not a real API; POST → 404 |
+
+So **add the OAuth provider in the UI** (Administration → Security → SSO → OAuth →
+New) using the IdP's client id/secret + endpoints. Everything else (global enable,
+the IdP-side OAuth2 provider + application, e.g. Authentik) is configurable
+normally. When JFrog exposes a stable provider REST endpoint, wire it into
+`tasks/integrations/sso.yml` (per-provider create/update, like the SAML/Crowd PUT
+fix). The global settings the role already applies are correct.
