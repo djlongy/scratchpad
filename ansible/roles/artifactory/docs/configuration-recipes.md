@@ -53,7 +53,7 @@ artifactory_groups:
     description: "LDAP-mapped admins"
     adminPrivileges: true
     realm: ldap
-    realmAttributes: "ldapGroupSettingName=freeipa-groups;groupsStrategy=DYNAMIC;groupDn=cn=artifactory-admins,cn=groups,cn=accounts,dc=example,dc=au"
+    realmAttributes: "ldapGroupSettingName=freeipa-groups;groupsStrategy=DYNAMIC;groupDn=cn=artifactory-admins,cn=groups,cn=accounts,dc=example,dc=com"
 ```
 
 Gotcha: Artifactory caches a user's groups at auto-create time. A user added to
@@ -64,7 +64,7 @@ LDAP bind password ("manager password", blank by default) — supply from Vault:
 
 ```yaml
 artifactory_ldap_manager_passwords:
-  freeipa: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=kv-mgt/data/apps/<svc>/runtime:ldap_manager_password') }}"
+  corp-ldap: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=<mount>/data/apps/<svc>/runtime:ldap_manager_password') }}"
 ```
 
 ## System config — Docker Sub-Domain method, server name, base URL
@@ -74,15 +74,15 @@ PATCH application/yaml):
 
 ```yaml
 artifactory_system_config_yaml:
-  serverName: artifactory-trial.example.au
-  urlBase: https://artifactory-trial.example.au
+  serverName: artifactory.example.com
+  urlBase: https://artifactory.example.com
   reverseProxies:
     - key: direct
       webServerType: direct
       artifactoryAppContext: artifactory
       publicAppContext: artifactory
-      serverName: artifactory-trial.example.au
-      serverNameExpression: "*.artifactory-trial.example.au"
+      serverName: artifactory.example.com
+      serverNameExpression: "*.artifactory.example.com"
       dockerReverseProxyMethod: subDomain   # path | subDomain | portPerRepo
       useHttps: false
       useHttp: true
