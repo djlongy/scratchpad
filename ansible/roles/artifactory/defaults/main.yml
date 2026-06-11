@@ -258,17 +258,24 @@ artifactory_ldap_settings: []
 #       manager_dn: "cn=binduser,dc=example,dc=com"
 #       # manager_password: never put it here — see the map below
 
-# Bind passwords, keyed by LDAP setting key. The API only ever returns
-# search.manager_password MASKED (asterisks), rejects the masked value if sent
-# back, and WIPES the stored password if the field is omitted on update — so a
-# backup file cannot round-trip it. Supply the real secret here at apply time,
-# ideally straight from Vault so the state file never needs hand-editing:
+# LDAP bind password(s). The API only ever returns search.manager_password
+# MASKED (asterisks), rejects the masked value if sent back, and WIPES the
+# stored password if the field is omitted on update — so a backup file cannot
+# round-trip it. Supply the real secret at apply time, ideally from Vault.
+#
+# Single LDAP setting (the common case) — just one scalar, no dict, no keys:
+#   artifactory_ldap_manager_password: "{{ enc_svc_bind_artifactory_password }}"
+#
+# Multiple LDAP settings — key each password to its setting; a map entry
+# overrides the scalar fallback for that setting:
 #   artifactory_ldap_manager_passwords:
-#     corp-ldap: >-
-#       {{ lookup('community.hashi_vault.hashi_vault',
-#                 'secret=kv-mgt/data/apps/artifactory_cloud:ldap_manager_password') }}
-# Settings with a manager_dn but no entry in this map (and no real password in
-# the body) are SKIPPED on apply, with a warning — never applied broken.
+#     corp-ldap: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=…:corp') }}"
+#     partner-ldap: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=…:partner') }}"
+#
+# Resolution per setting: map[<setting key>] first, else the scalar. Settings
+# with a manager_dn but no password from either source (and only the masked
+# value in the body) are SKIPPED on apply, with a warning — never applied broken.
+artifactory_ldap_manager_password: ""
 artifactory_ldap_manager_passwords: {}
 
 artifactory_ldap_groups: []

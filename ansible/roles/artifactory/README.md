@@ -82,19 +82,29 @@ On apply, missing user passwords are generated and written to
 The Access API returns `search.manager_password` **masked** (asterisks), rejects
 the masked value if you send it back (400), and **wipes** the stored password if
 the field is omitted on update. So the backup file keeps the asterisk
-placeholder, and on apply you supply the real secret out-of-band — keyed by LDAP
-setting key, ideally straight from Vault, so the export never needs hand-editing:
+placeholder, and on apply you supply the real secret out-of-band, ideally
+straight from Vault, so the export never needs hand-editing. Two ways:
+
+**Single LDAP setting (the common case)** — one scalar, no dict, no keys:
+
+```yaml
+artifactory_ldap_manager_password: "{{ enc_svc_bind_artifactory_password }}"
+```
+
+**Multiple LDAP settings** — key each password to its setting (the map entry
+overrides the scalar for that setting):
 
 ```yaml
 artifactory_ldap_manager_passwords:
-  corp-ldap: >-
-    {{ lookup('community.hashi_vault.hashi_vault',
-              'secret=kv-mgt/data/apps/artifactory_cloud:ldap_manager_password') }}
+  corp-ldap: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=…:corp') }}"
+  partner-ldap: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=…:partner') }}"
 ```
 
-Any LDAP setting with a `manager_dn` but no usable password (masked or absent,
-and no entry in the map) is **skipped with a warning** — the role never pushes
-asterisks and never wipes a stored bind password.
+Resolution per setting: `artifactory_ldap_manager_passwords[<key>]` first, else
+the scalar `artifactory_ldap_manager_password`. Any setting with a `manager_dn`
+but no usable password from either source (only the masked/absent value in the
+body) is **skipped with a warning** — the role never pushes asterisks and never
+wipes a stored bind password.
 
 ## Modes, state, and surgical changes
 

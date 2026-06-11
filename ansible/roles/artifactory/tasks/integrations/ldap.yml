@@ -9,9 +9,15 @@
 #   * PUT/POST with the masked value back is rejected (400)
 #   * PUT with manager_password omitted WIPES the stored password
 # So any setting with a manager_dn needs its real bind password injected at
-# apply time via artifactory_ldap_manager_passwords (key → password, ideally a
-# Vault lookup). Settings with a manager_dn but no usable password are skipped
-# with a warning — never applied broken, never wiped.
+# apply time. Two ways, resolved per setting (map wins):
+#   * artifactory_ldap_manager_passwords[<setting key>]  — per-setting, for
+#     instances with multiple LDAP settings.
+#   * artifactory_ldap_manager_password                  — a single scalar
+#     fallback used for any setting with no map entry (the common one-LDAP
+#     case: just set this, no dict needed).
+# Both are ideally Vault lookups. Settings with a manager_dn but no usable
+# password from either source are skipped with a warning — never applied
+# broken, never wiped.
 
 - name: "LDAP | List current settings"
   ansible.builtin.uri:
@@ -38,16 +44,18 @@
           password — the export only contains the masked placeholder, which the
           API rejects (and omitting the field would wipe the stored password).
           Skipping this setting. Supply the real password via
-          artifactory_ldap_manager_passwords['{{ item.key }}'] (e.g. a
-          community.hashi_vault lookup in inventory) and re-run.
+          artifactory_ldap_manager_password (single LDAP) or
+          artifactory_ldap_manager_passwords['{{ item.key }}'] (multiple) —
+          e.g. a community.hashi_vault lookup in inventory — and re-run.
       loop: "{{ _ldap_desired }}"
       loop_control:
         label: "{{ item.key }}"
       vars:
         _ldap_pw_in_body: "{{ (item.search | default({})).manager_password | default('') }}"
+        _ldap_pw_override: "{{ artifactory_ldap_manager_passwords.get(item.key, artifactory_ldap_manager_password | default('')) }}"
       when:
         - (item.search | default({})).manager_dn | default('') | length > 0
-        - item.key not in artifactory_ldap_manager_passwords
+        - _ldap_pw_override | length == 0
         - (_ldap_pw_in_body | length == 0) or (_ldap_pw_in_body is match('^\*+$'))
 
     - name: "LDAP | Create or update settings"
@@ -70,10 +78,12 @@
       vars:
         _ldap_base: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
         _ldap_pw_in_body: "{{ (item.search | default({})).manager_password | default('') }}"
-        _ldap_has_override: "{{ item.key in artifactory_ldap_manager_passwords }}"
+        # Per-setting map entry wins; else the single scalar fallback.
+        _ldap_pw_override: "{{ artifactory_ldap_manager_passwords.get(item.key, artifactory_ldap_manager_password | default('')) }}"
+        _ldap_has_override: "{{ _ldap_pw_override | length > 0 }}"
         _ldap_body: >-
           {{ _ldap_base | combine({'search': (_ldap_base.search | default({}))
-               | combine({'manager_password': artifactory_ldap_manager_passwords[item.key] | default('')})})
+               | combine({'manager_password': _ldap_pw_override})})
              if _ldap_has_override else _ldap_base }}
       when: >-
         not ((item.search | default({})).manager_dn | default('') | length > 0
