@@ -21,18 +21,37 @@
     headers: "{{ _af_json_headers }}"
     body_format: json
     body: "{{ item.item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
-    status_code: [200, 201]
+    # 400 tolerated so an SSRF-blocked handler URL (not reachable/resolvable from
+    # the Artifactory host) warns + skips instead of hard-failing — same spirit
+    # as the LDAP bind-password skip. A captured webhook can be unreachable when
+    # re-applied on a different network.
+    status_code: [200, 201, 400]
   register: _wh_create
   changed_when: _wh_create.status in [200, 201]
   failed_when:
     - artifactory_fail_fast | bool
     - _wh_create.status not in [200, 201]
+    - not (_wh_create.status == 400 and 'SSRF' in (_wh_create.content | default('')))
   loop: "{{ _wh_get.results }}"
   loop_control:
     label: "{{ item.item.key }}"
   when:
     - item.item.state | default('present') != 'absent'
     - item.status == 404
+
+- name: "Webhooks | Warn on SSRF-blocked handler URLs"
+  ansible.builtin.debug:
+    msg: >-
+      Webhook '{{ item.item.item.key | default('?') }}' was rejected by
+      Artifactory's SSRF protection (400) — its handler URL is not
+      reachable/resolvable from the Artifactory host, so it was skipped.
+      Re-apply where the target is reachable.
+  loop: "{{ _wh_create.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.item.key | default('?') }}"
+  when:
+    - item.status | default(0) == 400
+    - "'SSRF' in (item.content | default(''))"
 
 - name: "Webhooks | Update"
   ansible.builtin.uri:
@@ -41,12 +60,13 @@
     headers: "{{ _af_json_headers }}"
     body_format: json
     body: "{{ item.item }}"
-    status_code: [200, 201]
+    status_code: [200, 201, 400]   # tolerate SSRF block — see Create
   register: _wh_update
   changed_when: _wh_update.status in [200, 201]
   failed_when:
     - artifactory_fail_fast | bool
     - _wh_update.status not in [200, 201]
+    - not (_wh_update.status == 400 and 'SSRF' in (_wh_update.content | default('')))
   loop: "{{ _wh_get.results }}"
   loop_control:
     label: "{{ item.item.key }}"
