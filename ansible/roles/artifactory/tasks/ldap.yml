@@ -1,7 +1,17 @@
 ---
 # roles/artifactory/tasks/ldap.yml
-# LDAP settings via the Access API. POST creates, PUT updates, DELETE removes.
-# ldap_groups are managed similarly under …/ldap/groups.
+# LDAP settings via the Access API. POST (collection URL) creates, PUT (also
+# the collection URL) updates — the per-key URL only allows GET/DELETE (a PUT
+# there returns 405). ldap_groups are managed similarly under …/ldap/groups.
+#
+# Bind passwords never round-trip (verified live against Artifactory Cloud):
+#   * GET masks search.manager_password as a fixed run of asterisks
+#   * PUT/POST with the masked value back is rejected (400)
+#   * PUT with manager_password omitted WIPES the stored password
+# So any setting with a manager_dn needs its real bind password injected at
+# apply time via artifactory_ldap_manager_passwords (key → password, ideally a
+# Vault lookup). Settings with a manager_dn but no usable password are skipped
+# with a warning — never applied broken, never wiped.
 
 - name: "LDAP | List current settings"
   ansible.builtin.uri:
@@ -14,26 +24,61 @@
 
 - name: "LDAP | Reconcile settings"
   when: _ldap_get.status == 200
+  vars:
+    _ldap_existing_keys: "{{ _ldap_get.json | default([]) | map(attribute='key') | list }}"
+    _ldap_desired: >-
+      {{ artifactory_ldap_settings | rejectattr('state', 'defined') | list
+         + (artifactory_ldap_settings | selectattr('state', 'defined')
+            | selectattr('state', 'eq', 'present') | list) }}
   block:
+    - name: "LDAP | Warn when a bind password is unavailable (setting skipped)"
+      ansible.builtin.debug:
+        msg: >-
+          LDAP setting '{{ item.key }}' has a manager_dn but no usable bind
+          password — the export only contains the masked placeholder, which the
+          API rejects (and omitting the field would wipe the stored password).
+          Skipping this setting. Supply the real password via
+          artifactory_ldap_manager_passwords['{{ item.key }}'] (e.g. a
+          community.hashi_vault lookup in inventory) and re-run.
+      loop: "{{ _ldap_desired }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        _ldap_pw_in_body: "{{ (item.search | default({})).manager_password | default('') }}"
+      when:
+        - (item.search | default({})).manager_dn | default('') | length > 0
+        - item.key not in artifactory_ldap_manager_passwords
+        - (_ldap_pw_in_body | length == 0) or (_ldap_pw_in_body is match('^\*+$'))
+
     - name: "LDAP | Create or update settings"
       ansible.builtin.uri:
-        url: "{{ artifactory_ep.ldap }}{{ ('/' + item.key) if (item.key in (_ldap_get.json | default([]) | map(attribute='key') | list)) else '' }}"
-        method: "{{ 'PUT' if (item.key in (_ldap_get.json | default([]) | map(attribute='key') | list)) else 'POST' }}"
+        url: "{{ artifactory_ep.ldap }}"
+        method: "{{ 'PUT' if (item.key in _ldap_existing_keys) else 'POST' }}"
         headers: "{{ _af_json_headers }}"
         body_format: json
-        body: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+        body: "{{ _ldap_body }}"
         status_code: [200, 201]
       register: _ldap_put
       changed_when: _ldap_put.status in [200, 201]
       failed_when:
         - artifactory_fail_fast | bool
         - _ldap_put.status not in [200, 201]
-      loop: >-
-        {{ artifactory_ldap_settings | rejectattr('state', 'defined') | list
-           + (artifactory_ldap_settings | selectattr('state', 'defined')
-              | selectattr('state', 'eq', 'present') | list) }}
+      no_log: true
+      loop: "{{ _ldap_desired }}"
       loop_control:
         label: "{{ item.key }}"
+      vars:
+        _ldap_base: "{{ item | dict2items | rejectattr('key', 'eq', 'state') | items2dict }}"
+        _ldap_pw_in_body: "{{ (item.search | default({})).manager_password | default('') }}"
+        _ldap_has_override: "{{ item.key in artifactory_ldap_manager_passwords }}"
+        _ldap_body: >-
+          {{ _ldap_base | combine({'search': (_ldap_base.search | default({}))
+               | combine({'manager_password': artifactory_ldap_manager_passwords[item.key] | default('')})})
+             if _ldap_has_override else _ldap_base }}
+      when: >-
+        not ((item.search | default({})).manager_dn | default('') | length > 0
+             and not _ldap_has_override
+             and ((_ldap_pw_in_body | length == 0) or (_ldap_pw_in_body is match('^\*+$'))))
 
     - name: "LDAP | Remove settings (state: absent)"
       ansible.builtin.uri:

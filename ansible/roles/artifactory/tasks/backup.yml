@@ -5,7 +5,9 @@
 # (mode: apply with artifactory_import_file=<this file>).
 #
 # Not captured (cannot be read back): user passwords (hashed), access-token and
-# SSO/Vault secrets. Self-hosted-only: global config descriptor.
+# SSO/Vault secrets, and LDAP bind passwords (search.manager_password comes back
+# masked as asterisks — re-supply via artifactory_ldap_manager_passwords on
+# apply). Self-hosted-only: global config descriptor.
 # Access admin sections (vault/ldap) may 403 with an Artifactory-only token —
 # tolerated; they're simply omitted.
 
@@ -280,6 +282,22 @@
     dest: "{{ artifactory_export_file }}"
     mode: "0640"
   delegate_to: localhost
+
+- name: "Backup | Warn about LDAP bind passwords (masked by the API)"
+  ansible.builtin.debug:
+    msg: >-
+      LDAP setting(s) [{{ _ldap_masked_keys | join(', ') }}] have a bind
+      password the API only returns masked — the export keeps the asterisk
+      placeholder, which cannot be re-applied as-is. On apply, supply the real
+      password(s) via artifactory_ldap_manager_passwords (e.g. a Vault lookup);
+      no hand-editing of the export file is needed.
+  vars:
+    _ldap_masked_keys: >-
+      {{ _af_state.artifactory_ldap_settings | default([])
+         | selectattr('search.manager_password', 'defined')
+         | selectattr('search.manager_password', 'match', '^\*+$')
+         | map(attribute='key') | list }}
+  when: _ldap_masked_keys | length > 0
 
 - name: "Backup | Summary"
   ansible.builtin.debug:

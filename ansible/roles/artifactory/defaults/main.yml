@@ -223,6 +223,22 @@ artifactory_ldap_settings: []
 #       search_filter: "(uid={0})"
 #       search_base: "ou=people"
 #       search_sub_tree: true
+#       manager_dn: "cn=binduser,dc=example,dc=com"
+#       # manager_password: never put it here — see the map below
+
+# Bind passwords, keyed by LDAP setting key. The API only ever returns
+# search.manager_password MASKED (asterisks), rejects the masked value if sent
+# back, and WIPES the stored password if the field is omitted on update — so a
+# backup file cannot round-trip it. Supply the real secret here at apply time,
+# ideally straight from Vault so the state file never needs hand-editing:
+#   artifactory_ldap_manager_passwords:
+#     corp-ldap: >-
+#       {{ lookup('community.hashi_vault.hashi_vault',
+#                 'secret=kv-mgt/data/apps/artifactory_cloud:ldap_manager_password') }}
+# Settings with a manager_dn but no entry in this map (and no real password in
+# the body) are SKIPPED on apply, with a warning — never applied broken.
+artifactory_ldap_manager_passwords: {}
+
 artifactory_ldap_groups: []
 
 # ── SSO singletons (SAML / OAuth / Crowd) ─────────────────────────────────

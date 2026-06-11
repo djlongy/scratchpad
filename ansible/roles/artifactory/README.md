@@ -64,7 +64,7 @@ ansible-playbook playbooks/artifactory.yml \
 | Projects + roles + members + repo attach | `/access/api/v1/projects` | C R U D | ✅ |
 | Lifecycle environments (stages) | `/access/api/v1/environments` | C R D | ✅ |
 | HashiCorp Vault connections | `/access/api/v1/vault/configs` | C R U D | ✅ (minus secrets) |
-| LDAP | `/access/api/v1/ldap/settings` | C R U D | ✅ |
+| LDAP | `/access/api/v1/ldap/settings` | C R U D | ✅ (minus bind password) |
 | SSO — SAML / OAuth / Crowd | `/api/saml/config`, `/api/oauth`, `/api/crowd` | R U | ✅ (minus secrets) |
 | Xray policies / watches / ignore rules / indexing | `/xray/api/v2/*`, `/xray/api/v1/*` | C R U D | ✅ |
 | Replications | `/api/replications` | C R U D | ✅ (minus creds) |
@@ -73,8 +73,28 @@ ansible-playbook playbooks/artifactory.yml \
 | Global config descriptor (proxies/backups/mail/layouts/property-sets) | `/api/system/configuration` | R U | self-hosted only |
 
 **Cannot round-trip** (secrets/computed, by design): user passwords, access-token
-secrets, SSO/Vault/replication credentials, repo `revision`. On apply, missing user
-passwords are generated and written to `artifactory_generated_users_file` (mode 0600).
+secrets, SSO/Vault/replication credentials, LDAP bind passwords, repo `revision`.
+On apply, missing user passwords are generated and written to
+`artifactory_generated_users_file` (mode 0600).
+
+### LDAP bind passwords
+
+The Access API returns `search.manager_password` **masked** (asterisks), rejects
+the masked value if you send it back (400), and **wipes** the stored password if
+the field is omitted on update. So the backup file keeps the asterisk
+placeholder, and on apply you supply the real secret out-of-band — keyed by LDAP
+setting key, ideally straight from Vault, so the export never needs hand-editing:
+
+```yaml
+artifactory_ldap_manager_passwords:
+  corp-ldap: >-
+    {{ lookup('community.hashi_vault.hashi_vault',
+              'secret=kv-mgt/data/apps/artifactory_cloud:ldap_manager_password') }}
+```
+
+Any LDAP setting with a `manager_dn` but no usable password (masked or absent,
+and no entry in the map) is **skipped with a warning** — the role never pushes
+asterisks and never wipes a stored bind password.
 
 ## Modes, state, and surgical changes
 
