@@ -141,6 +141,9 @@ roles/artifactory/files/state/<env>/artifactory.yml      # the state file
                                     artifactory.drift.yml        # mode: compare
 ```
 
+The resolved path is `artifactory_state_file` (defaults to
+`{{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.<ext>`); override it
+only for a one-off non-standard location, and use an **absolute** path if you do.
 Each backup stamps `_meta.environment`, so the role knows where a capture came from.
 
 **Apply is additive by default** (`artifactory_prune: false`): create-or-update only,

@@ -172,3 +172,8 @@ CHAOS-FINDINGS.md
 # Live-instance config exports / backups from role testing (contain real config)
 ansible/trial-backups/
 ansible/artifactory-as-built*.yml
+# Captured Artifactory As-Built state — per-env (real hostnames/DNs/emails/XML).
+# Defence-in-depth alongside roles/artifactory/files/state/.gitignore.
+**/files/state/*/artifactory.*
+# Ansible inventory local overrides (real hostnames/URLs/secrets — never commit).
+ansible/inventories/**/local.yml
