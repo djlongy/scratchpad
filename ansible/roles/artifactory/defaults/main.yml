@@ -69,16 +69,11 @@ artifactory_export_omit_empty: true
 # the sidecar, which the opt-in XML re-apply path reads back.
 artifactory_export_system_config_files: true
 
-# ── Compare / merge (drift detection + MR-driven IaC) ─────────────────────
+# ── Compare (drift detection) ──────────────────────────────────────────────
 # compare: capture live As-Built, diff it against the saved state file, print a
 # per-section summary, and write a structured diff sidecar (<state>.drift.yml).
-# merge: pull artifactory_merge_sections from As-Built into the saved state file
-# and write a merge candidate (<state>.merged.yml) for review.
 # Fail the run when drift exists (turns compare into a CI gate).
 artifactory_compare_fail_on_drift: false
-# State-var names to pull from As-Built on merge, e.g.
-# [artifactory_local_repositories, artifactory_xray_policies].
-artifactory_merge_sections: []
 
 # ── Promotion safety ───────────────────────────────────────────────────────
 # Apply is ADDITIVE by default (artifactory_prune=false, below): create-or-update
@@ -94,6 +89,13 @@ artifactory_merge_sections: []
 artifactory_protected_envs:
   - prod
 artifactory_confirm_promote: false
+
+# Promote another environment's captured state onto this one: set this to the
+# SOURCE env (e.g. 'dev') and run apply with artifactory_env = the TARGET env
+# (e.g. 'prod'). The source is read from <state_dir>/<promote_from>/ — an
+# ABSOLUTE path, so promotion never depends on a fragile relative override.
+# Empty = apply this env's own state file (normal same-env apply).
+artifactory_promote_from: ""
 
 # ── Connection ────────────────────────────────────────────────────────────
 # Base platform URL, no trailing slash. Works for on-prem or SaaS.

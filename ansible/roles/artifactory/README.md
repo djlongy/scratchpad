@@ -133,13 +133,12 @@ watches before the policies they reference).
 
 Captured state is **per environment**. Set `artifactory_env` (in each env's
 `group_vars`); the role resolves one file per env — no separate input/output var,
-the **mode** decides direction (`backup` writes it, `apply`/`compare`/`merge` read it):
+the **mode** decides direction (`backup` writes it, `apply`/`compare` read it):
 
 ```
 roles/artifactory/files/state/<env>/artifactory.yml      # the state file
                                     artifactory.system-config.xml / .parsed.yml
                                     artifactory.drift.yml        # mode: compare
-                                    artifactory.merged.yml       # mode: merge
 ```
 
 Each backup stamps `_meta.environment`, so the role knows where a capture came from.
@@ -151,22 +150,24 @@ environment's state onto a **protected** env (`artifactory_protected_envs`, defa
 `[prod]`), or pruning a protected env, **fails unless `artifactory_confirm_promote: true`**
 — promotion into prod is always a conscious act; same-env apply and prod→dev are free.
 
+Promotion uses `artifactory_promote_from` — the SOURCE env to apply onto the
+target `artifactory_env`. The source is resolved against the absolute state dir,
+so it's never a fragile relative path.
+
 ```bash
 # 1. Capture prod  ->  files/state/prod/artifactory.yml
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
   -e artifactory_mode=backup -e artifactory_env=prod
 
-# 2. Clone prod -> dev  (apply prod's file onto dev; dev not protected = no prompt)
+# 2. Clone prod -> dev  (apply prod's capture onto dev; dev not protected = no prompt)
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$DEV \
-  -e artifactory_mode=apply -e artifactory_env=dev \
-  -e artifactory_state_file=roles/artifactory/files/state/prod/artifactory.yml
+  -e artifactory_mode=apply -e artifactory_env=dev -e artifactory_promote_from=prod
 
 #    …surgical changes in dev, then capture dev -> files/state/dev/artifactory.yml…
 
 # 3. Promote dev -> prod  (GUARD: dev state onto protected prod requires confirm)
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
-  -e artifactory_mode=apply -e artifactory_env=prod \
-  -e artifactory_state_file=roles/artifactory/files/state/dev/artifactory.yml \
+  -e artifactory_mode=apply -e artifactory_env=prod -e artifactory_promote_from=dev \
   -e artifactory_confirm_promote=true
 ```
 

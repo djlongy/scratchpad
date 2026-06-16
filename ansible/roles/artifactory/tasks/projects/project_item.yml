@@ -32,6 +32,7 @@
         method: GET
         headers: "{{ _af_headers }}"
         status_code: [200, 404]
+      check_mode: false
       register: _proj_get
       changed_when: false
 
@@ -73,6 +74,7 @@
         method: GET
         headers: "{{ _af_headers }}"
         status_code: [200, 403, 404]
+      check_mode: false
       register: _proj_roles_get
       changed_when: false
 

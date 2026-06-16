@@ -42,6 +42,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _af_ping
   retries: "{{ artifactory_health_retries }}"
   delay: "{{ artifactory_health_delay }}"
@@ -54,6 +55,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _af_version
   changed_when: false
   failed_when: false
@@ -73,17 +75,33 @@
 - name: Derive sidecar paths from the state file stem
   ansible.builtin.set_fact:
     _af_drift_file: "{{ _af_state_stem }}.drift.yml"
-    _af_merged_file: "{{ _af_state_stem }}.merged.yml"
 
-# ── Load saved state (apply/compare/merge) + promotion guards ─────────────
-- name: Check whether a saved state file exists
+# ── Resolve the apply desired-state source + existence checks ─────────────
+# For apply, desired state comes from artifactory_promote_from's env file when
+# promoting (resolved against the ABSOLUTE state_dir, so it never depends on a
+# fragile relative path), otherwise from this env's own state file.
+- name: Resolve the apply desired-state source file
+  ansible.builtin.set_fact:
+    _af_source_file: >-
+      {{ (artifactory_state_dir ~ '/' ~ artifactory_promote_from ~ '/artifactory.'
+          ~ ('json' if artifactory_export_format == 'json' else 'yml'))
+         if (artifactory_promote_from | length > 0) else artifactory_state_file }}
+
+- name: Check whether this env's state file exists (compare baseline)
   ansible.builtin.stat:
     path: "{{ artifactory_state_file }}"
   register: _af_state_stat
   delegate_to: localhost
   run_once: true
 
-- name: Require a saved baseline for compare/merge
+- name: Check whether the apply source file exists
+  ansible.builtin.stat:
+    path: "{{ _af_source_file }}"
+  register: _af_source_stat
+  delegate_to: localhost
+  run_once: true
+
+- name: Require a saved baseline for compare
   ansible.builtin.assert:
     that: _af_state_stat.stat.exists
     fail_msg: >-
@@ -91,7 +109,19 @@
       {{ artifactory_state_file }}, but none exists. Run mode: backup for
       environment '{{ artifactory_env }}' first.
     quiet: true
-  when: artifactory_mode in ['compare', 'merge']
+  when: artifactory_mode == 'compare'
+
+- name: Require the promotion source to exist
+  ansible.builtin.assert:
+    that: _af_source_stat.stat.exists
+    fail_msg: >-
+      artifactory_promote_from='{{ artifactory_promote_from }}' but no captured
+      state exists at {{ _af_source_file }}. Run mode: backup for environment
+      '{{ artifactory_promote_from }}' first.
+    quiet: true
+  when:
+    - artifactory_mode == 'apply'
+    - artifactory_promote_from | length > 0
 
 - name: Prune guard — pruning a protected environment needs confirmation
   ansible.builtin.assert:
@@ -111,11 +141,11 @@
 - name: Apply — load desired state + promotion guard
   when:
     - artifactory_mode == 'apply'
-    - _af_state_stat.stat.exists
+    - _af_source_stat.stat.exists
   block:
-    - name: Load the saved state file into a fact (for provenance + guard)
+    - name: Load the source state file into a fact (for provenance + guard)
       ansible.builtin.set_fact:
-        _af_loaded: "{{ lookup('ansible.builtin.file', artifactory_state_file) | from_yaml }}"
+        _af_loaded: "{{ lookup('ansible.builtin.file', _af_source_file) | from_yaml }}"
       delegate_to: localhost
       run_once: true
 
@@ -132,21 +162,20 @@
         success_msg: "Promotion into protected environment '{{ artifactory_env }}' confirmed."
         quiet: true
       when:
-        - artifactory_mode == 'apply'
         - artifactory_env in artifactory_protected_envs
         - (_af_loaded._meta.environment | default(artifactory_env)) != artifactory_env
 
-    - name: Load desired state from the saved state file (apply)
+    - name: Load desired state from the source state file
       ansible.builtin.include_vars:
-        file: "{{ artifactory_state_file }}"
-      when: artifactory_mode == 'apply'
+        file: "{{ _af_source_file }}"
 
 - name: Note when applying with no saved state file (provision-from-scratch)
   ansible.builtin.debug:
     msg: >-
-      No saved state file at {{ artifactory_state_file }} — applying the inline
-      role variables (provision-from-scratch). Run mode: backup first to capture
-      an environment's As-Built.
+      No saved state at {{ _af_source_file }} — applying the inline role
+      variables (provision-from-scratch). Run mode: backup first to capture an
+      environment's As-Built.
   when:
     - artifactory_mode == 'apply'
-    - not _af_state_stat.stat.exists
+    - not _af_source_stat.stat.exists
+    - artifactory_promote_from | length == 0

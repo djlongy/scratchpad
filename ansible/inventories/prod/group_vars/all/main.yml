@@ -1,0 +1,11 @@
+---
+# Runs the artifactory role as the 'prod' environment — state is captured to/read
+# from roles/artifactory/files/state/prod/. 'prod' is a protected env (default
+# artifactory_protected_envs), so applying another env's state here, or pruning,
+# requires -e artifactory_confirm_promote=true.
+artifactory_env: prod
+
+# The real Artifactory URL is supplied by the gitignored group_vars/all/local.yml
+# (or pass -e artifactory_url=...). The dev and prod sim inventories deliberately
+# point at the SAME instance, so promoting dev->prod reconciles it against itself.
+# artifactory_url: https://artifactory.example.com

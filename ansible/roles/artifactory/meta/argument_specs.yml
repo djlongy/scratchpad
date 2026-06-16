@@ -9,12 +9,11 @@ argument_specs:
     options:
       artifactory_mode:
         type: str
-        choices: [backup, apply, compare, merge]
+        choices: [backup, apply, compare]
         default: apply
         description: >-
           Operation mode. backup = export live As-Built; apply = reconcile IaC
-          into the instance; compare = diff As-Built vs saved baseline (drift);
-          merge = pull As-Built sections into the baseline for MR review.
+          into the instance; compare = diff As-Built vs saved baseline (drift).
       artifactory_url:
         type: str
         required: true
@@ -71,6 +70,13 @@ argument_specs:
         description: >-
           Explicit acknowledgement required to apply a different environment's
           state onto, or to prune, a protected environment.
+      artifactory_promote_from:
+        type: str
+        default: ""
+        description: >-
+          Source environment to promote FROM on apply (e.g. 'dev'); its captured
+          state under <state_dir>/<env>/ becomes the desired state, applied onto
+          the target artifactory_env. Empty = apply this env's own state file.
       artifactory_reconcile_existing:
         type: bool
         default: true

@@ -18,6 +18,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 400, 403]
+  check_mode: false
   register: _bk_sysconf
   changed_when: false
   when: artifactory_manage_system_config | bool
@@ -29,6 +30,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_repos
   changed_when: false
   when: artifactory_manage_repositories | bool
@@ -43,6 +45,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_trash
   changed_when: false
   when: artifactory_manage_repositories | bool
@@ -54,6 +57,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_grouplist
   changed_when: false
   when: artifactory_manage_groups | bool
@@ -64,6 +68,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_groupdetails
   changed_when: false
   loop: "{{ _bk_grouplist.json | default([]) }}"
@@ -78,6 +83,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_userlist
   changed_when: false
   when: artifactory_manage_users | bool
@@ -88,6 +94,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_userdetails
   changed_when: false
   loop: "{{ _bk_userlist.json | default([]) }}"
@@ -102,6 +109,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_permlist
   changed_when: false
   when: artifactory_manage_permissions | bool
@@ -112,6 +120,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_permdetails
   changed_when: false
   loop: "{{ _bk_permlist.json | default([]) }}"
@@ -126,6 +135,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_envs
   changed_when: false
   when: artifactory_manage_environments | bool
@@ -137,6 +147,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_projlist
   changed_when: false
   when: artifactory_manage_projects | bool
@@ -158,6 +169,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_ldap
   changed_when: false
   when: artifactory_manage_ldap | bool
@@ -168,6 +180,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_ldapg
   changed_when: false
   when: artifactory_manage_ldap | bool
@@ -178,6 +191,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_sso
   changed_when: false
   loop:
@@ -194,6 +208,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_vault
   changed_when: false
   when: artifactory_manage_vault | bool
@@ -205,6 +220,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_xpolist
   changed_when: false
   when: artifactory_manage_xray | bool
@@ -215,6 +231,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _bk_xpodetails
   changed_when: false
   # Tolerate both list shapes: newer Xray wraps in {"result": [...]}, older
@@ -230,6 +247,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_xwatches
   changed_when: false
   when: artifactory_manage_xray | bool
@@ -240,6 +258,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_xignore
   changed_when: false
   when: artifactory_manage_xray | bool
@@ -251,6 +270,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 404]
+  check_mode: false
   register: _bk_repl
   changed_when: false
   when: artifactory_manage_replications | bool
@@ -261,6 +281,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200, 403, 404]
+  check_mode: false
   register: _bk_webhooks
   changed_when: false
   when: artifactory_manage_webhooks | bool

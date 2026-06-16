@@ -14,6 +14,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _proj_roles
   changed_when: false
   failed_when: false
@@ -24,6 +25,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _proj_users
   changed_when: false
   failed_when: false
@@ -34,6 +36,7 @@
     method: GET
     headers: "{{ _af_headers }}"
     status_code: [200]
+  check_mode: false
   register: _proj_groups
   changed_when: false
   failed_when: false

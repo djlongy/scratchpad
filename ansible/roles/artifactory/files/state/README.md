@@ -7,7 +7,6 @@
 <env>/artifactory.system-config.xml         # raw global descriptor (self-hosted only)
 <env>/artifactory.system-config.parsed.yml  # XML→YAML reference
 <env>/artifactory.drift.yml                 # written by mode: compare
-<env>/artifactory.merged.yml                # written by mode: merge
 ```
 
 `artifactory_state_dir` defaults to this directory; override it to relocate.

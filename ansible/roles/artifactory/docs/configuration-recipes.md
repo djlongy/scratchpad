@@ -4,18 +4,13 @@ Working role inputs for the trickier sections, each verified against a live
 JFrog **Platform 7.146.17** trial (Artifactory Pro + Xray 3.143.26). These are
 the non-obvious shapes the API actually requires.
 
-## compare / merge (drift + MR-driven IaC)
+## compare (drift detection)
 
 ```bash
 # Drift: capture live As-Built, diff vs the env's saved state, write <state>.drift.yml
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
   -e artifactory_mode=compare -e artifactory_env=prod
 # add -e artifactory_compare_fail_on_drift=true to gate CI.
-
-# Merge: pull only chosen sections from live into the saved baseline (writes <state>.merged.yml)
-ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-  -e artifactory_mode=merge -e artifactory_env=prod \
-  -e '{"artifactory_merge_sections":["artifactory_local_repositories","artifactory_xray_policies"]}'
 ```
 
 `config_diff` matches list items by identity key (key/name/project_key/…); the

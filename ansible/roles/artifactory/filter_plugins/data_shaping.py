@@ -39,9 +39,9 @@ def drop_empty(data):
     return prune(data)
 
 
-# ── compare / merge (As-Built vs saved IaC) ────────────────────────────────
-# Identity key for each managed section's list items, so diffs and merges
-# match objects by their natural key rather than list position. Dotted paths
+# ── compare (As-Built vs saved IaC) ────────────────────────────────────────
+# Identity key for each managed section's list items, so diffs match objects by
+# their natural key rather than list position. Dotted paths
 # (e.g. general_data.name) address a nested key.
 SECTION_IDENTITY = {
     'artifactory_local_repositories': 'key',
@@ -120,22 +120,10 @@ def diff_summary(diff):
     return lines or ["no differences — As-Built matches saved IaC"]
 
 
-def merge_sections(saved, asbuilt, sections, identity=None):
-    """Surgical section merge for MR-driven IaC: return a copy of `saved` with
-    each name in `sections` replaced by its As-Built value. Sections not named
-    are left untouched, so a reviewer pulls only the slice they intend."""
-    out = dict(saved or {})
-    for sec in (sections or []):
-        if sec in (asbuilt or {}):
-            out[sec] = asbuilt[sec]
-    return out
-
-
 class FilterModule(object):
     def filters(self):
         return {
             'drop_empty': drop_empty,
             'config_diff': config_diff,
             'diff_summary': diff_summary,
-            'merge_sections': merge_sections,
         }
