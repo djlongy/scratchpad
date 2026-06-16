@@ -35,19 +35,42 @@ argument_specs:
         type: bool
         default: true
         description: Verify TLS certificates on API calls.
-      artifactory_export_file:
+      artifactory_env:
+        type: str
+        default: default
+        description: >-
+          Environment label that keys the state file (set per environment in
+          inventory, e.g. prod/dev/test). Keeps each environment's captured
+          state in its own file so captures never collide.
+      artifactory_state_dir:
+        type: str
+        default: "{{ role_path }}/files/state"
+        description: Base directory holding per-environment state (one sub-folder per env).
+      artifactory_state_file:
         type: str
         required: false
-        description: "[backup] Path to write captured state to."
+        description: >-
+          The single state file. backup WRITES it; apply/compare/merge READ it.
+          Resolved automatically as <state_dir>/<env>/artifactory.<ext>; override
+          only for a one-off non-standard path.
       artifactory_export_format:
         type: str
         choices: [yaml, json]
         default: yaml
-        description: "[backup] Serialisation format of the export file."
-      artifactory_import_file:
-        type: str
-        required: false
-        description: "[apply] Optional path to a prior backup file to load as desired state."
+        description: "[backup] Serialisation format of the state file."
+      artifactory_protected_envs:
+        type: list
+        elements: str
+        default: [prod]
+        description: >-
+          Environments for which a cross-environment apply (promotion) or a
+          prune requires artifactory_confirm_promote=true.
+      artifactory_confirm_promote:
+        type: bool
+        default: false
+        description: >-
+          Explicit acknowledgement required to apply a different environment's
+          state onto, or to prune, a protected environment.
       artifactory_reconcile_existing:
         type: bool
         default: true

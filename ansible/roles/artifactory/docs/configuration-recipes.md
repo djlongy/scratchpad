@@ -7,19 +7,15 @@ the non-obvious shapes the API actually requires.
 ## compare / merge (drift + MR-driven IaC)
 
 ```bash
-# Drift: capture live As-Built, diff vs saved IaC, write a structured report
+# Drift: capture live As-Built, diff vs the env's saved state, write <state>.drift.yml
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-  -e artifactory_mode=compare \
-  -e artifactory_compare_file=./artifactory-state.yml \
-  -e artifactory_diff_file=./artifactory-drift.yml
+  -e artifactory_mode=compare -e artifactory_env=prod
 # add -e artifactory_compare_fail_on_drift=true to gate CI.
 
-# Merge: pull only chosen sections from live into the saved baseline (MR candidate)
+# Merge: pull only chosen sections from live into the saved baseline (writes <state>.merged.yml)
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-  -e artifactory_mode=merge \
-  -e artifactory_compare_file=./artifactory-state.yml \
-  -e '{"artifactory_merge_sections":["artifactory_local_repositories","artifactory_xray_policies"]}' \
-  -e artifactory_merge_output_file=./artifactory-state.merged.yml
+  -e artifactory_mode=merge -e artifactory_env=prod \
+  -e '{"artifactory_merge_sections":["artifactory_local_repositories","artifactory_xray_policies"]}'
 ```
 
 `config_diff` matches list items by identity key (key/name/project_key/…); the

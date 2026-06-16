@@ -6,10 +6,9 @@
 # commits, after which `apply` reconciles it.
 #
 #   ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-#     -e artifactory_mode=merge \
-#     -e artifactory_compare_file=./artifactory-state.yml \
-#     -e '{"artifactory_merge_sections": ["artifactory_local_repositories","artifactory_xray_policies"]}' \
-#     -e artifactory_merge_output_file=./artifactory-state.merged.yml
+#     -e artifactory_mode=merge -e artifactory_env=prod \
+#     -e '{"artifactory_merge_sections": ["artifactory_local_repositories","artifactory_xray_policies"]}'
+#   (baseline = that env's saved state file; candidate written to <state>.merged.yml)
 
 - name: "Merge | Require sections to merge"
   ansible.builtin.assert:
@@ -24,7 +23,7 @@
 
 - name: "Merge | Load saved IaC baseline"
   ansible.builtin.set_fact:
-    _af_saved: "{{ lookup('ansible.builtin.file', artifactory_compare_file) | from_yaml }}"
+    _af_saved: "{{ lookup('ansible.builtin.file', artifactory_state_file) | from_yaml }}"
   delegate_to: localhost
   run_once: true
 
@@ -39,7 +38,7 @@
 - name: "Merge | Write merged IaC candidate"
   ansible.builtin.copy:
     content: "{{ _af_merged | to_pretty_yaml(indent=2, width=200, gap_depth=2, gap_blocks_only=true) }}"
-    dest: "{{ artifactory_merge_output_file }}"
+    dest: "{{ _af_merged_file }}"
     mode: "0640"
   delegate_to: localhost
   run_once: true
@@ -48,6 +47,7 @@
   ansible.builtin.debug:
     msg: >-
       Merged {{ artifactory_merge_sections | join(', ') }} from As-Built into
-      {{ artifactory_compare_file }} → {{ artifactory_merge_output_file }}.
-      Review as an MR, then apply with artifactory_mode=apply
-      artifactory_import_file={{ artifactory_merge_output_file }}.
+      {{ artifactory_state_file }} → {{ _af_merged_file }}. Review it as an MR;
+      once approved, replace the state file with it
+      (mv {{ _af_merged_file }} {{ artifactory_state_file }}) and run
+      artifactory_mode=apply.

@@ -34,17 +34,18 @@ for the full, live-tested API surface.
 ```bash
 export ARTIFACTORY_TOKEN='<admin token>'          # role reads this env var
 
-# 1. Back up everything to a file
+# 1. Back up everything for an environment
+#    (writes roles/artifactory/files/state/prod/artifactory.yml)
 ansible-playbook playbooks/artifactory.yml \
   -e artifactory_url=https://acme.jfrog.io \
   -e artifactory_mode=backup \
-  -e artifactory_export_file=./acme-state.yml      # or .json with -e artifactory_export_format=json
+  -e artifactory_env=prod                          # or .json with -e artifactory_export_format=json
 
-# 2. Rebuild an empty instance from that file
+# 2. Rebuild an empty instance from that environment's saved state
 ansible-playbook playbooks/artifactory.yml \
   -e artifactory_url=https://newbox.example.com \
   -e artifactory_mode=apply \
-  -e artifactory_import_file=./acme-state.yml
+  -e artifactory_env=prod
 
 # 3. Provision a designed estate (no prior backup needed)
 ansible-playbook playbooks/artifactory.yml \
@@ -128,6 +129,51 @@ wipes a stored bind password.
 Deletes run in reverse dependency order (virtual repos before their members; Xray
 watches before the policies they reference).
 
+## Environments & promotion
+
+Captured state is **per environment**. Set `artifactory_env` (in each env's
+`group_vars`); the role resolves one file per env — no separate input/output var,
+the **mode** decides direction (`backup` writes it, `apply`/`compare`/`merge` read it):
+
+```
+roles/artifactory/files/state/<env>/artifactory.yml      # the state file
+                                    artifactory.system-config.xml / .parsed.yml
+                                    artifactory.drift.yml        # mode: compare
+                                    artifactory.merged.yml       # mode: merge
+```
+
+Each backup stamps `_meta.environment`, so the role knows where a capture came from.
+
+**Apply is additive by default** (`artifactory_prune: false`): create-or-update only,
+never deleting objects absent from the state file — so promoting one env's state onto
+another can only add/update, never silently drop config. Applying a *different*
+environment's state onto a **protected** env (`artifactory_protected_envs`, default
+`[prod]`), or pruning a protected env, **fails unless `artifactory_confirm_promote: true`**
+— promotion into prod is always a conscious act; same-env apply and prod→dev are free.
+
+```bash
+# 1. Capture prod  ->  files/state/prod/artifactory.yml
+ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
+  -e artifactory_mode=backup -e artifactory_env=prod
+
+# 2. Clone prod -> dev  (apply prod's file onto dev; dev not protected = no prompt)
+ansible-playbook playbooks/artifactory.yml -e artifactory_url=$DEV \
+  -e artifactory_mode=apply -e artifactory_env=dev \
+  -e artifactory_state_file=roles/artifactory/files/state/prod/artifactory.yml
+
+#    …surgical changes in dev, then capture dev -> files/state/dev/artifactory.yml…
+
+# 3. Promote dev -> prod  (GUARD: dev state onto protected prod requires confirm)
+ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
+  -e artifactory_mode=apply -e artifactory_env=prod \
+  -e artifactory_state_file=roles/artifactory/files/state/dev/artifactory.yml \
+  -e artifactory_confirm_promote=true
+```
+
+To remove objects added to prod out-of-band: `mode: compare` shows drift vs the
+committed baseline, then a deliberate `artifactory_prune=true` (plus
+`artifactory_confirm_promote=true` for prod) prunes the unmanaged ones.
+
 ## Scoping a run
 
 ```bash
@@ -154,9 +200,11 @@ captured/applied.
 The intended operating loop for using this role as IaC with audit + approval:
 
 1. **Pull (As-Built)** — a scheduled/on-demand `mode: backup` writes the full
-   live config to an export ("as-built"). Commit it to an `as-built/` area of
-   the repo (or attach it as a CI artifact). Exports are deterministic — keys
-   sorted, stable layout — so two exports diff cleanly.
+   live config to `files/state/<env>/artifactory.yml`. In a **private** repo,
+   commit it for a diffable history; **this public repo gitignores captures**
+   (they carry real hostnames, LDAP DNs and emails) — point
+   `artifactory_state_dir` at a private location for committed history. Exports
+   are deterministic — keys sorted, stable layout — so two diff cleanly.
 2. **Compare & cherry-pick** — diff the as-built export against the desired
    state in `group_vars`/state files (`git diff` / `diff -u`; the export's
    blank-line-per-object layout keeps the diff readable). Whatever drift you
@@ -172,7 +220,8 @@ Secrets never live in either file: bind passwords come from Vault via
 `artifactory_ldap_manager_passwords`, user passwords are generated or supplied
 at apply time, token secrets are minted and exported to 0600 sidecars.
 
-`_meta` in the export records provenance (source URL, version) plus
+`_meta` in the export records provenance (environment, source URL, Artifactory
+version, capture timestamp) plus
 `trash_can`: repo-named folders whose deleted content still sits in the trash
 can (`auto-trashcan`). A name appearing there explains "the UI shows it under
 Trash" — its repo CONFIG may already be gone, so it won't be in the repo
@@ -246,9 +295,10 @@ is why this lives in a plugin.)
 
 ## JSON output
 
-Set `artifactory_export_format: json` to write the state as JSON instead of YAML. It
-re-imports the same way (`artifactory_import_file: state.json`). Real estates produce
-large files (thousands of lines) — that's expected; it's the full config.
+Set `artifactory_export_format: json` to write the state as JSON instead of YAML (the
+resolved state file then ends in `.json`). It re-imports the same way — apply reads the
+same per-environment file. Real estates produce large files (thousands of lines) —
+that's expected; it's the full config.
 
 ## Security
 

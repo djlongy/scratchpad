@@ -1,0 +1,11 @@
+# ── Captured Artifactory state — DO NOT COMMIT in this public repo ─────────
+# `mode: backup` writes <env>/artifactory.{yml,json} here, plus sidecars
+# (system-config XML, .drift.yml, .merged.yml). A capture contains real internal
+# detail — instance hostname, LDAP manager/group DNs, user emails, the full
+# system-config descriptor. This repository is public, so captures are ignored;
+# only this .gitignore and README.md are tracked, to keep the structure
+# documented. For a git-tracked As-Built history, point artifactory_state_dir at
+# a PRIVATE location instead.
+*
+!.gitignore
+!README.md

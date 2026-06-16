@@ -53,9 +53,11 @@ artifactory_ep:
 # (POST {xray_reports}/<type>). Used by the reports section.
 artifactory_xray_report_types: [vulnerabilities, licenses, violations, operationalRisks]
 
-# State-var keys that are export metadata (sidecar pointers), not configuration —
-# excluded from compare so they never show as spurious drift.
+# State-var keys that are export metadata (provenance / sidecar pointers), not
+# configuration — excluded from compare so they never show as spurious drift.
+# _meta carries captured_at (changes every capture), so it MUST be ignored.
 artifactory_compare_ignore_keys:
+  - _meta
   - artifactory_system_config_xml_file
 
 # Apply order for repositories (virtuals/federated reference the others).

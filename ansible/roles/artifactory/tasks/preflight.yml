@@ -65,9 +65,88 @@
       ({{ (_af_version.json.license | default('license n/a')) }})
       at {{ artifactory_url }} — mode={{ artifactory_mode }}
 
-- name: Load desired state from import file
-  ansible.builtin.include_vars:
-    file: "{{ artifactory_import_file }}"
+# ── Resolve the one state file + derived sidecar paths (every mode) ───────
+- name: Resolve the state file stem (basis for all sidecars)
+  ansible.builtin.set_fact:
+    _af_state_stem: "{{ artifactory_state_file | regex_replace('\\.(ya?ml|json)$', '') }}"
+
+- name: Derive sidecar paths from the state file stem
+  ansible.builtin.set_fact:
+    _af_drift_file: "{{ _af_state_stem }}.drift.yml"
+    _af_merged_file: "{{ _af_state_stem }}.merged.yml"
+
+# ── Load saved state (apply/compare/merge) + promotion guards ─────────────
+- name: Check whether a saved state file exists
+  ansible.builtin.stat:
+    path: "{{ artifactory_state_file }}"
+  register: _af_state_stat
+  delegate_to: localhost
+  run_once: true
+
+- name: Require a saved baseline for compare/merge
+  ansible.builtin.assert:
+    that: _af_state_stat.stat.exists
+    fail_msg: >-
+      mode: {{ artifactory_mode }} needs a saved baseline at
+      {{ artifactory_state_file }}, but none exists. Run mode: backup for
+      environment '{{ artifactory_env }}' first.
+    quiet: true
+  when: artifactory_mode in ['compare', 'merge']
+
+- name: Prune guard — pruning a protected environment needs confirmation
+  ansible.builtin.assert:
+    that:
+      - artifactory_confirm_promote | bool
+    fail_msg: >-
+      Refusing to prune protected environment '{{ artifactory_env }}'
+      (artifactory_prune=true) — pruning DELETES unmanaged objects. Review the
+      drift (mode: compare) first, then re-run with
+      -e artifactory_confirm_promote=true.
+    quiet: true
   when:
     - artifactory_mode == 'apply'
-    - artifactory_import_file | length > 0
+    - artifactory_prune | bool
+    - artifactory_env in artifactory_protected_envs
+
+- name: Apply — load desired state + promotion guard
+  when:
+    - artifactory_mode == 'apply'
+    - _af_state_stat.stat.exists
+  block:
+    - name: Load the saved state file into a fact (for provenance + guard)
+      ansible.builtin.set_fact:
+        _af_loaded: "{{ lookup('ansible.builtin.file', artifactory_state_file) | from_yaml }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Promotion guard — cross-env apply onto a protected environment needs confirmation
+      ansible.builtin.assert:
+        that:
+          - artifactory_confirm_promote | bool
+        fail_msg: >-
+          Refusing to apply state captured from environment
+          '{{ _af_loaded._meta.environment | default("?") }}' onto protected
+          environment '{{ artifactory_env }}'. This is a promotion (e.g.
+          dev -> prod). Review the drift (mode: compare) first, then re-run with
+          -e artifactory_confirm_promote=true.
+        success_msg: "Promotion into protected environment '{{ artifactory_env }}' confirmed."
+        quiet: true
+      when:
+        - artifactory_mode == 'apply'
+        - artifactory_env in artifactory_protected_envs
+        - (_af_loaded._meta.environment | default(artifactory_env)) != artifactory_env
+
+    - name: Load desired state from the saved state file (apply)
+      ansible.builtin.include_vars:
+        file: "{{ artifactory_state_file }}"
+      when: artifactory_mode == 'apply'
+
+- name: Note when applying with no saved state file (provision-from-scratch)
+  ansible.builtin.debug:
+    msg: >-
+      No saved state file at {{ artifactory_state_file }} — applying the inline
+      role variables (provision-from-scratch). Run mode: backup first to capture
+      an environment's As-Built.
+  when:
+    - artifactory_mode == 'apply'
+    - not _af_state_stat.stat.exists

@@ -7,16 +7,15 @@
 # file and/or fails on drift (CI gate).
 #
 #   ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-#     -e artifactory_mode=compare \
-#     -e artifactory_compare_file=./artifactory-state.yml \
-#     -e artifactory_diff_file=./artifactory-drift.yml
+#     -e artifactory_mode=compare -e artifactory_env=prod
+#   (baseline = that env's saved state file; drift written to <state>.drift.yml)
 
 - name: "Compare | Capture live As-Built state"
   ansible.builtin.import_tasks: backup.yml
 
 - name: "Compare | Load saved IaC baseline"
   ansible.builtin.set_fact:
-    _af_saved: "{{ lookup('ansible.builtin.file', artifactory_compare_file) | from_yaml }}"
+    _af_saved: "{{ lookup('ansible.builtin.file', artifactory_state_file) | from_yaml }}"
   delegate_to: localhost
   run_once: true
 
@@ -26,23 +25,22 @@
 
 - name: "Compare | Drift summary"
   ansible.builtin.debug:
-    msg: "{{ ['As-Built vs ' + artifactory_compare_file + '  (+added ~changed -removed):'] + (_af_diff | diff_summary) }}"
+    msg: "{{ ['As-Built vs ' + artifactory_state_file + '  (+added ~changed -removed):'] + (_af_diff | diff_summary) }}"
 
 - name: "Compare | Write structured diff report"
   ansible.builtin.copy:
     content: "{{ _af_diff | to_nice_yaml(indent=2) }}"
-    dest: "{{ artifactory_diff_file }}"
+    dest: "{{ _af_drift_file }}"
     mode: "0640"
   delegate_to: localhost
   run_once: true
-  when: artifactory_diff_file | length > 0
 
 - name: "Compare | Drift gate"
   ansible.builtin.assert:
     that: _af_diff | length == 0
     fail_msg: >-
       Drift detected in section(s): {{ _af_diff.keys() | list | join(', ') }}.
-      {{ ('See ' + artifactory_diff_file) if artifactory_diff_file | length > 0 else '' }}
+      See {{ _af_drift_file }}
     success_msg: "No drift — As-Built matches the saved IaC baseline."
     quiet: true
   when: artifactory_compare_fail_on_drift | bool

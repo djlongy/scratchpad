@@ -2,7 +2,7 @@
 # roles/artifactory/tasks/backup.yml
 # GET the full live configuration and write it to a single file shaped exactly
 # like the role's input variables, so the output is directly re-appliable
-# (mode: apply with artifactory_import_file=<this file>).
+# (mode: apply reads it back automatically for the matching environment).
 #
 # Not captured (cannot be read back): user passwords (hashed), access-token and
 # SSO/Vault secrets, and LDAP bind passwords (search.manager_password comes back
@@ -273,11 +273,13 @@
   ansible.builtin.set_fact:
     # Sidecar paths derived from the export file name (only used when set).
     _af_sysxml: "{{ _sysxml }}"
-    _af_sysxml_file: "{{ (artifactory_export_file | regex_replace('\\.(ya?ml|json)$', '') + '.system-config.xml') if _sysxml_external else '' }}"
+    _af_sysxml_file: "{{ (_af_state_stem + '.system-config.xml') if _sysxml_external else '' }}"
     _af_state:
       _meta:
+        environment: "{{ artifactory_env }}"
         source_url: "{{ artifactory_url }}"
         artifactory_version: "{{ _af_version.json.version | default('unknown') }}"
+        captured_at: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
         # Repo-named folders whose deleted content still sits in the trash can.
         # Informational: their CONFIG may be gone even though the UI shows them
         # under Trash until the retention period expires.
@@ -289,9 +291,7 @@
       # artifactory_system_config_xml_file when captured (readability), kept
       # inline only if artifactory_export_system_config_files is false.
       artifactory_system_config_xml: "{{ '' if _sysxml_external else _sysxml }}"
-      artifactory_system_config_xml_file: >-
-        {{ (artifactory_export_file | regex_replace('\.(ya?ml|json)$', '')
-            + '.system-config.xml') if _sysxml_external else '' }}
+      artifactory_system_config_xml_file: "{{ (_af_state_stem + '.system-config.xml') if _sysxml_external else '' }}"
       artifactory_local_repositories: "{{ _bk_repos.json.LOCAL | default([]) }}"
       artifactory_remote_repositories: "{{ _bk_repos.json.REMOTE | default([]) }}"
       artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"
@@ -319,6 +319,16 @@
       artifactory_replications: "{{ _bk_repl.json | default([]) if (_bk_repl.status | default(0) == 200) else [] }}"
       artifactory_webhooks: "{{ _bk_webhooks.json | default([]) if (_bk_webhooks.status | default(0) == 200) else [] }}"
 
+# ── Ensure the per-environment state directory exists before writing ──────
+- name: "Backup | Ensure the state directory exists"
+  ansible.builtin.file:
+    path: "{{ artifactory_state_file | dirname }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  run_once: true
+  when: artifactory_mode == 'backup'
+
 # ── System config sidecars (self-hosted only — SaaS never returns the XML) ──
 - name: "Backup | Write system config descriptor XML sidecar"
   ansible.builtin.copy:
@@ -326,10 +336,14 @@
     dest: "{{ _af_sysxml_file }}"
     mode: "0640"
   delegate_to: localhost
-  when: _af_sysxml_file | length > 0
+  when:
+    - _af_sysxml_file | length > 0
+    - artifactory_mode == 'backup'
 
 - name: "Backup | Write parsed system config reference (XML → YAML)"
-  when: _af_sysxml_file | length > 0
+  when:
+    - _af_sysxml_file | length > 0
+    - artifactory_mode == 'backup'
   block:
     - name: "Backup | Parse descriptor XML and write YAML reference"
       ansible.builtin.copy:
@@ -380,8 +394,7 @@
       {{ _af_state.artifactory_projects | length }} projects,
       {{ _af_state.artifactory_environments | length }} envs,
       {{ _af_state.artifactory_xray_policies | length }} xray-policies,
-      {{ _af_state.artifactory_xray_watches | length }} xray-watches →
-      {{ artifactory_export_file }}
+      {{ _af_state.artifactory_xray_watches | length }} xray-watches{{ (' → ' + artifactory_state_file) if artifactory_mode == 'backup' else '' }}
 
 # Drop keys whose value is empty (null / '' / [] / {}) so the As-Built vars
 # stay small — recursive, so deeply-nested empties go too. false and 0 are
@@ -399,6 +412,7 @@
       {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=2, gap_blocks_only=true)
          if artifactory_export_format == 'yaml'
          else (_af_state | to_nice_json(indent=2)) }}
-    dest: "{{ artifactory_export_file }}"
+    dest: "{{ artifactory_state_file }}"
     mode: "0640"
   delegate_to: localhost
+  when: artifactory_mode == 'backup'
