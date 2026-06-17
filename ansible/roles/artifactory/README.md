@@ -245,7 +245,9 @@ sidecars next to the export instead of bloating the state file
 | `<export>.system-config.parsed.yml` | XML→YAML **reference** for humans drafting `artifactory_system_config_yaml` IaC blocks (needs `xmltodict` on the controller; skipped with a note if absent) |
 
 The state file carries `artifactory_system_config_xml_file` pointing at the
-XML sidecar. The parsed YAML is a reference only — xmltodict conventions
+XML sidecar **by filename only** (not an absolute path), so the export stays
+portable across checkouts — on apply the role resolves it next to the state
+file. The parsed YAML is a reference only — xmltodict conventions
 (`'@'`-prefixed attributes, strings everywhere) mean it is NOT directly valid
 `artifactory_system_config_yaml` input; cherry-pick and clean the blocks you
 want to manage.

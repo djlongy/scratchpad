@@ -311,8 +311,12 @@
       # Raw XML config descriptor: externalized to the sidecar named in
       # artifactory_system_config_xml_file when captured (readability), kept
       # inline only if artifactory_export_system_config_files is false.
+      # Stored as a BARE FILENAME (not an absolute path) so the state file is
+      # portable: the sidecar always lives next to the state file, and apply
+      # resolves it there (preflight). A machine-specific absolute path would
+      # break the moment anyone else ran it from a different checkout.
       artifactory_system_config_xml: "{{ '' if _sysxml_external else _sysxml }}"
-      artifactory_system_config_xml_file: "{{ (_af_state_stem + '.system-config.xml') if _sysxml_external else '' }}"
+      artifactory_system_config_xml_file: "{{ ((_af_state_stem | basename) ~ '.system-config.xml') if _sysxml_external else '' }}"
       artifactory_local_repositories: "{{ _bk_repos.json.LOCAL | default([]) }}"
       artifactory_remote_repositories: "{{ _bk_repos.json.REMOTE | default([]) }}"
       artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"

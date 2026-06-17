@@ -36,18 +36,33 @@
     _af_json_headers: "{{ _af_headers | combine({'Content-Type': 'application/json'}) }}"
   no_log: true
 
-- name: Ping Artifactory until it responds
+# Health-gate the instance, but FAIL FAST on auth rejection. A revoked /
+# invalid / expired token returns 401 (403 if forbidden) even from the
+# otherwise-anonymous ping endpoint — retrying that for artifactory_health_retries
+# rounds just burns ~5 min before failing with a generic timeout. Accept the auth
+# codes here so the retry loop doesn't spin on them, then hard-fail immediately
+# below. Genuine "not up yet" conditions (connection refused, 502/503) are NOT in
+# the accept list, so they still fail the task and drive the retry/backoff loop.
+- name: Ping Artifactory until it responds (retry transient errors only)
   ansible.builtin.uri:
     url: "{{ artifactory_ep.ping }}"
     method: GET
     headers: "{{ _af_headers }}"
-    status_code: [200]
+    status_code: [200, 401, 403]
   check_mode: false
   register: _af_ping
   retries: "{{ artifactory_health_retries }}"
   delay: "{{ artifactory_health_delay }}"
-  until: _af_ping.status == 200
+  until: _af_ping.status in [200, 401, 403]
   changed_when: false
+
+- name: Fail fast on an unauthorized / revoked token
+  ansible.builtin.fail:
+    msg: >-
+      Artifactory rejected the credentials at {{ artifactory_url }}
+      (HTTP {{ _af_ping.status }}). The access token or admin password is
+      invalid, expired, or revoked — fix the credential rather than retrying.
+  when: _af_ping.status in [401, 403]
 
 - name: Read Artifactory version
   ansible.builtin.uri:
@@ -168,6 +183,18 @@
     - name: Load desired state from the source state file
       ansible.builtin.include_vars:
         file: "{{ _af_source_file }}"
+
+    # The state file stores artifactory_system_config_xml_file as a bare
+    # filename (portable). Re-anchor it to an absolute path next to the source
+    # state file so the XML re-apply lookup finds the sidecar regardless of the
+    # checkout location. Stripping to basename first also normalises any legacy
+    # state file that still carries a machine-specific absolute path. An explicit
+    # --extra-vars override still wins (higher precedence than this set_fact).
+    - name: Anchor the system-config XML sidecar next to the state file
+      ansible.builtin.set_fact:
+        artifactory_system_config_xml_file: >-
+          {{ (_af_source_file | dirname) ~ '/' ~ (artifactory_system_config_xml_file | basename) }}
+      when: artifactory_system_config_xml_file | default('') | length > 0
 
 - name: Note when applying with no saved state file (provision-from-scratch)
   ansible.builtin.debug:

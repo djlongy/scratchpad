@@ -196,9 +196,11 @@ artifactory_system_config_yaml: {}
 #     enabled: false
 
 artifactory_system_config_xml: ""
-# Path to a descriptor XML sidecar (written by backup when
-# artifactory_export_system_config_files is true). Used by the opt-in XML
-# re-apply path when artifactory_system_config_xml itself is empty.
+# Descriptor XML sidecar written by backup (when
+# artifactory_export_system_config_files is true). Stored in the state file as a
+# bare FILENAME, not an absolute path, so the export stays portable across
+# checkouts; on apply the role resolves it next to the state file. Used by the
+# opt-in XML re-apply path when artifactory_system_config_xml itself is empty.
 artifactory_system_config_xml_file: ""
 artifactory_apply_system_config_xml: false
 
