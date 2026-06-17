@@ -3,7 +3,7 @@
 `mode: backup` writes this tree, one folder per `artifactory_env`:
 
 ```
-<env>/artifactory.yml                       # the state file (apply/compare/merge read it)
+<env>/artifactory.yml                       # the state file (apply/compare read it)
 <env>/artifactory.system-config.xml         # raw global descriptor (self-hosted only)
 <env>/artifactory.system-config.parsed.yml  # XML→YAML reference
 <env>/artifactory.drift.yml                 # written by mode: compare

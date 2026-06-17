@@ -4,7 +4,7 @@
 # input. No PII — tenants are placeholders (alpha, beta). Apply with:
 #
 #   ARTIFACTORY_TOKEN=… ansible-playbook playbooks/artifactory.yml \
-#     -e artifactory_url=https://<host> -e artifactory_mode=apply \
+#     -e artifactory_url=https://<host> \
 #     -e @roles/artifactory/examples/multitenant.yml
 #
 # Model: each tenant gets a JFrog Project, dedicated local repos per package

@@ -143,5 +143,5 @@ Apply it with:
 
 ```bash
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-  -e artifactory_mode=apply -e @roles/artifactory/examples/multitenant.yml
+  -e @roles/artifactory/examples/multitenant.yml
 ```

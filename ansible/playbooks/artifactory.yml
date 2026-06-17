@@ -2,17 +2,20 @@
 # playbooks/artifactory.yml
 # Configure a JFrog Artifactory Enterprise instance over the REST API.
 #
-# Backup the live config to a file:
+# State is per-environment: set artifactory_env and the role resolves one file
+# at roles/artifactory/files/state/<env>/artifactory.yml — the mode decides the
+# direction (backup writes it, apply/compare read it). apply is the default mode.
+#
+# Backup the live config for an environment (WRITES that env's state file):
 #   ARTIFACTORY_TOKEN=... ansible-playbook playbooks/artifactory.yml \
 #     -e artifactory_url=https://acme.jfrog.io \
 #     -e artifactory_mode=backup \
-#     -e artifactory_export_file=./artifactory-state.yml
+#     -e artifactory_env=prod
 #
-# Re-provision an empty instance from that file:
+# Re-provision an empty instance from that env's saved state (READS it):
 #   ARTIFACTORY_TOKEN=... ansible-playbook playbooks/artifactory.yml \
 #     -e artifactory_url=https://newbox.example.com \
-#     -e artifactory_mode=apply \
-#     -e artifactory_import_file=./artifactory-state.yml
+#     -e artifactory_env=prod
 #
 # Credentials: set ARTIFACTORY_TOKEN (preferred) or ARTIFACTORY_USER +
 # ARTIFACTORY_PASSWORD in the environment, or pass via --extra-vars.

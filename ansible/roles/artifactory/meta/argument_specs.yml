@@ -49,7 +49,7 @@ argument_specs:
         type: str
         required: false
         description: >-
-          The single state file. backup WRITES it; apply/compare/merge READ it.
+          The single state file. backup WRITES it; apply/compare READ it.
           Resolved automatically as <state_dir>/<env>/artifactory.<ext>; override
           only for a one-off non-standard path.
       artifactory_export_format:
@@ -105,6 +105,30 @@ argument_specs:
         type: bool
         default: true
         description: Toggle the projects section (Access API).
+      artifactory_manage_environments:
+        type: bool
+        default: true
+        description: Toggle the global lifecycle environments (stages) section.
+      artifactory_manage_vault:
+        type: bool
+        default: true
+        description: Toggle the HashiCorp Vault connections section (Access).
+      artifactory_manage_ldap:
+        type: bool
+        default: true
+        description: Toggle the LDAP integration section (Access).
+      artifactory_manage_sso:
+        type: bool
+        default: true
+        description: Toggle the SSO section (SAML / OAuth / Crowd).
+      artifactory_manage_xray:
+        type: bool
+        default: true
+        description: Toggle the Xray section (policies / watches / ignore rules / reports).
+      artifactory_manage_replications:
+        type: bool
+        default: true
+        description: Toggle the replications section.
       artifactory_manage_webhooks:
         type: bool
         default: true

@@ -15,15 +15,16 @@
 # prior `backup` run wrote (see artifactory_state_file below). The backup output
 # IS valid role input — no translation.
 #
-# API shapes are best-effort against the public JFrog REST API docs
-# (https://jfrog.com/help/r/jfrog-rest-apis) and the Access API. No live
-# instance was available at authoring time; verify against your version.
+# API shapes are live-validated against Artifactory 7.156.2 / Xray 3.147.2
+# (Enterprise+); see docs/api-reference.md for the tested surface. Verify
+# against your version if it differs materially.
 
 # ── Mode ──────────────────────────────────────────────────────────────────
-# apply | backup | compare | merge.  Every mode reads or writes ONE artifact:
-# the per-environment state file resolved below. backup WRITES it; apply,
-# compare and merge READ it. There is no separate "input" vs "output" file to
-# keep in sync — the mode decides the direction.
+# apply | backup | compare.  Every mode reads or writes ONE artifact:
+# the per-environment state file resolved below. backup WRITES it; apply and
+# compare READ it. There is no separate "input" vs "output" file to keep in
+# sync — the mode decides the direction. (apply is the default, so only
+# backup/compare need to be passed explicitly.)
 artifactory_mode: apply
 
 # ── Environment & state file ───────────────────────────────────────────────
@@ -42,10 +43,10 @@ artifactory_state_dir: "{{ role_path }}/files/state"
 artifactory_export_format: yaml
 
 # THE state file, resolved automatically as <state_dir>/<env>/artifactory.<ext>:
-#   mode: backup              -> WRITES it (captures live As-Built)
-#   mode: apply/compare/merge -> READS it (desired state / baseline)
+#   mode: backup        -> WRITES it (captures live As-Built)
+#   mode: apply/compare -> READS it (desired state / baseline)
 # Sidecars derive from this same path (in preflight): <state>.system-config.xml,
-# <state>.system-config.parsed.yml, <state>.drift.yml, <state>.merged.yml.
+# <state>.system-config.parsed.yml, <state>.drift.yml.
 # Override only for a one-off non-standard location.
 artifactory_state_file: >-
   {{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.{{ 'json' if artifactory_export_format == 'json' else 'yml' }}

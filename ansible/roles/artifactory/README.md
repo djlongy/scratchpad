@@ -31,6 +31,8 @@ for the full, live-tested API surface.
 
 ## Quick start
 
+`apply` is the default mode, so only `backup`/`compare` are passed explicitly.
+
 ```bash
 export ARTIFACTORY_TOKEN='<admin token>'          # role reads this env var
 
@@ -41,16 +43,14 @@ ansible-playbook playbooks/artifactory.yml \
   -e artifactory_mode=backup \
   -e artifactory_env=prod                          # or .json with -e artifactory_export_format=json
 
-# 2. Rebuild an empty instance from that environment's saved state
+# 2. Rebuild an empty instance from that environment's saved state (apply = default)
 ansible-playbook playbooks/artifactory.yml \
   -e artifactory_url=https://newbox.example.com \
-  -e artifactory_mode=apply \
   -e artifactory_env=prod
 
 # 3. Provision a designed estate (no prior backup needed)
 ansible-playbook playbooks/artifactory.yml \
   -e artifactory_url=https://newbox.example.com \
-  -e artifactory_mode=apply \
   -e @roles/artifactory/examples/multitenant.yml
 ```
 
@@ -117,7 +117,7 @@ wipes a stored bind password.
 - **Surgical remove**: add `state: absent` to any object → it's DELETEd. Run with a
   one-object file to remove exactly one repo/project/group:
   ```bash
-  ansible-playbook playbooks/artifactory.yml -e artifactory_url=… -e artifactory_mode=apply \
+  ansible-playbook playbooks/artifactory.yml -e artifactory_url=… \
     -e '{"artifactory_local_repositories":[{"key":"old-repo","state":"absent"}]}'
   ```
 - **Prune (full reconcile)**: `-e artifactory_prune=true` deletes server objects of a
@@ -164,13 +164,13 @@ ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
 
 # 2. Clone prod -> dev  (apply prod's capture onto dev; dev not protected = no prompt)
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$DEV \
-  -e artifactory_mode=apply -e artifactory_env=dev -e artifactory_promote_from=prod
+  -e artifactory_env=dev -e artifactory_promote_from=prod
 
 #    …surgical changes in dev, then capture dev -> files/state/dev/artifactory.yml…
 
 # 3. Promote dev -> prod  (GUARD: dev state onto protected prod requires confirm)
 ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
-  -e artifactory_mode=apply -e artifactory_env=prod -e artifactory_promote_from=dev \
+  -e artifactory_env=prod -e artifactory_promote_from=dev \
   -e artifactory_confirm_promote=true
 ```
 
