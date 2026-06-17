@@ -1,0 +1,25 @@
+---
+# IPA-to-IPA realm migration INTO this realm, run on the new-realm primary.
+# 100% Ansible-driven (ipa-migrate). Defaults to DRY-RUN.
+#
+#   # dry-run (no writes):
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_migrate.yml
+#
+#   # apply:
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_migrate.yml \
+#     -e freeipa_migrate_dryrun=false
+#
+# Requires (in group_vars): freeipa_migrate_source, freeipa_migrate_source_host
+# (must exist in inventory for the CA slurp), freeipa_migrate_bind_pw_vault.
+
+- name: Migrate identities into the FreeIPA realm
+  hosts: freeipa_primary
+  gather_facts: true
+  become: true
+  become_user: root
+  become_method: ansible.builtin.sudo
+  tasks:
+    - name: Run IPA-to-IPA migration
+      ansible.builtin.include_role:
+        name: freeipa_server
+        tasks_from: migrate

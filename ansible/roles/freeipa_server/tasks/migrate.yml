@@ -1,0 +1,128 @@
+---
+# roles/freeipa_server/tasks/migrate.yml
+# IPA-to-IPA realm migration via ipa-migrate, run ON the new-realm primary.
+# Pulls users/groups/hosts/HBAC/sudo/etc. from a source (old) realm, rewriting
+# realm strings into this realm. Invoke via playbooks/L2_identity/freeipa_migrate.yml.
+#
+# Defaults to DRY-RUN — pass -e freeipa_migrate_dryrun=false to actually write.
+# Passwords are NOT migrated (Kerberos keys are realm-salted); after a real run,
+# users re-key via the migration web page, so migration mode is left ON unless
+# freeipa_migrate_disable_mode_after=true. See rb-freeipa-realm-migration.md.
+
+- name: Validate migration inputs
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_is_primary | bool
+      - freeipa_migrate_source | default('') | length > 0
+      - freeipa_migrate_source_host | default('') | length > 0
+      - freeipa_migrate_bind_pw_vault | default('') | length > 0
+    fail_msg: >-
+      Migration runs on the new-realm primary only and needs
+      freeipa_migrate_source (source IPA FQDN), freeipa_migrate_source_host
+      (inventory host for the source CA cert), and freeipa_migrate_bind_pw_vault
+      (Vault path holding the source realm bind password).
+
+- name: Fetch new-realm admin password for local kinit
+  ansible.builtin.set_fact:
+    _freeipa_migrate_admin_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Fetch source-realm bind password
+  ansible.builtin.set_fact:
+    _freeipa_migrate_bind_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_migrate_bind_pw_vault
+         + ':' + freeipa_migrate_bind_pw_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Read source-realm CA certificate from the source host
+  ansible.builtin.slurp:
+    src: "{{ freeipa_migrate_source_ca_path }}"
+  delegate_to: "{{ freeipa_migrate_source_host }}"
+  register: _freeipa_migrate_src_ca
+
+- name: Stage source-realm CA certificate on the primary
+  ansible.builtin.copy:
+    content: "{{ _freeipa_migrate_src_ca.content | b64decode }}"
+    dest: "{{ freeipa_migrate_ca_dest }}"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Stage source-realm bind password file
+  ansible.builtin.copy:
+    content: "{{ _freeipa_migrate_bind_pw }}"
+    dest: "{{ freeipa_migrate_bind_pw_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Acquire Kerberos ticket for the new realm
+  ansible.builtin.shell:
+    cmd: "set -o pipefail; echo '{{ _freeipa_migrate_admin_pw }}' | kinit admin@{{ freeipa_server_realm }}"
+    executable: /bin/bash
+  environment:
+    KRB5CCNAME: "{{ freeipa_migrate_ccache }}"
+  changed_when: false
+  no_log: true
+
+- name: Run ipa-migrate ({{ 'dry-run' if (freeipa_migrate_dryrun | bool) else 'APPLY' }})
+  ansible.builtin.command:
+    cmd: >-
+      ipa-migrate {{ freeipa_migrate_mode }} {{ freeipa_migrate_source }}
+      -D "{{ freeipa_migrate_bind_dn }}"
+      -j {{ freeipa_migrate_bind_pw_file }}
+      -Z {{ freeipa_migrate_ca_dest }}
+      -l {{ freeipa_migrate_log }}
+      -n {{ '-x' if (freeipa_migrate_dryrun | bool) else '' }}
+  environment:
+    KRB5CCNAME: "{{ freeipa_migrate_ccache }}"
+  register: _freeipa_migrate_run
+  changed_when: not (freeipa_migrate_dryrun | bool)
+
+- name: Show migration summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ _freeipa_migrate_run.stdout_lines
+         | select('search', 'migrated|Users:|Groups:|Hosts:|HBAC|Sudo|Error|Action Items') | list }}
+
+- name: Restart SSSD after a real migration
+  ansible.builtin.service:
+    name: sssd
+    state: restarted
+  when:
+    - not (freeipa_migrate_dryrun | bool)
+    - freeipa_migrate_restart_sssd | bool
+
+- name: Take the server out of migration mode (opt-in — only after password campaign)
+  ansible.builtin.command:
+    cmd: ipa config-mod --enable-migration=FALSE
+  environment:
+    KRB5CCNAME: "{{ freeipa_migrate_ccache }}"
+  register: _freeipa_migrate_modeoff
+  changed_when: "'Enable migration mode: False' in (_freeipa_migrate_modeoff.stdout | default(''))"
+  failed_when:
+    - _freeipa_migrate_modeoff.rc != 0
+    - "'no modifications' not in (_freeipa_migrate_modeoff.stderr | default(''))"
+  when:
+    - not (freeipa_migrate_dryrun | bool)
+    - freeipa_migrate_disable_mode_after | bool
+
+- name: Destroy migration Kerberos ticket
+  ansible.builtin.command:
+    cmd: "kdestroy -c {{ freeipa_migrate_ccache }}"
+  changed_when: false
+  failed_when: false
+
+- name: Remove staged source bind password file
+  ansible.builtin.file:
+    path: "{{ freeipa_migrate_bind_pw_file }}"
+    state: absent

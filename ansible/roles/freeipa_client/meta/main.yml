@@ -1,0 +1,30 @@
+---
+galaxy_info:
+  role_name: freeipa_client
+  author: example
+  description: >-
+    Enrol a host into a FreeIPA realm on EL-family or Debian/Ubuntu by wrapping
+    freeipa.ansible_freeipa.ipaclient, with CA trust, mkhomedir/automount, SSSD
+    sudo + HBAC enforcement, DNS self-registration, idempotent re-runs, and
+    effective stale-machine rejoin (incl. realm-cutover re-enrolment).
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+    - name: Fedora
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+    - name: Debian
+      versions: [all]
+  galaxy_tags:
+    - freeipa
+    - identity
+    - idam
+    - kerberos
+    - sssd
+
+# Requires the freeipa.ansible_freeipa collection (declared in
+# ansible/requirements.yml). Pairs with the freeipa_server role.
+dependencies: []

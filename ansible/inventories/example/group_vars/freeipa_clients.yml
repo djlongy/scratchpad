@@ -1,0 +1,10 @@
+---
+# Hosts enrolled as FreeIPA clients via the freeipa_client role.
+# Realm derives as domain | upper (EXAMPLE.COM).
+freeipa_client_domain: "example.com"
+
+# Admin-join credentials (or set freeipa_client_use_otp + freeipa_client_otp).
+freeipa_client_vault_secret: "kv/data/platform/freeipa/runtime"
+
+# Enrol against the servers in this inventory's `freeipa` group (else SRV discovery).
+freeipa_client_server_group: "freeipa"

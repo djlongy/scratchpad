@@ -1,0 +1,92 @@
+---
+# health_check.yml — Ensure all FreeIPA services are running before IDAM operations.
+#
+# Problem: After extended downtime or cold starts, `ipactl start` can time out
+# waiting for Directory Service (389-ds), leaving dependent services (krb5kdc,
+# kadmin, named, httpd, ipa-custodia, pki-tomcatd, ipa-otpd, ipa-dnskeysyncd)
+# stopped. IDAM operations (user/group/HBAC management) require a fully healthy
+# FreeIPA stack.
+#
+# Approach: Check `ipactl status`, and if any services are STOPPED, start them
+# individually via systemctl before falling back to `ipactl start --force`.
+
+- name: Ensure FreeIPA services are enabled at boot
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - krb5kdc
+    - kadmin
+    - named
+    - httpd
+    - ipa-custodia
+    - ipa-otpd.socket
+    - ipa-dnskeysyncd
+
+- name: Check FreeIPA service status
+  ansible.builtin.command: ipactl status
+  register: _freeipa_health_status
+  changed_when: false
+  failed_when: false
+
+- name: Parse stopped FreeIPA services
+  ansible.builtin.set_fact:
+    _freeipa_stopped_services: >-
+      {{
+        _freeipa_health_status.stdout_lines | default([])
+        | select('search', 'STOPPED')
+        | map('regex_replace', ':\s*STOPPED.*$', '')
+        | map('trim')
+        | list
+      }}
+
+- name: Display FreeIPA health status
+  ansible.builtin.debug:
+    msg: >-
+      {{ (_freeipa_stopped_services | length == 0)
+         | ternary('All FreeIPA services are running.',
+                   'Stopped services detected: ' + (_freeipa_stopped_services | join(', '))) }}
+
+- name: Start stopped FreeIPA services individually via systemctl
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+  loop: "{{ _freeipa_stopped_services }}"
+  loop_control:
+    label: "{{ item }}"
+  when: _freeipa_stopped_services | length > 0
+  register: _freeipa_individual_start
+  failed_when: false
+
+- name: Run ipactl start --force if individual service starts had failures
+  ansible.builtin.command: ipactl start --force
+  when:
+    - _freeipa_stopped_services | length > 0
+    - _freeipa_individual_start.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | list | length > 0
+  changed_when: true
+  register: _freeipa_force_start
+  failed_when: false
+
+- name: Wait for FreeIPA Directory Service to be responsive
+  ansible.builtin.wait_for:
+    port: 389
+    host: 127.0.0.1
+    timeout: 120
+    delay: 5
+  when: _freeipa_stopped_services | length > 0
+
+- name: Verify FreeIPA is fully healthy after recovery
+  ansible.builtin.command: ipactl status
+  register: _freeipa_health_verify
+  changed_when: false
+  when: _freeipa_stopped_services | length > 0
+
+- name: Fail if FreeIPA services are still not running
+  ansible.builtin.assert:
+    that:
+      - _freeipa_health_verify.stdout is not search('STOPPED')
+    fail_msg: >-
+      FreeIPA services are still not fully running after recovery attempts.
+      Output: {{ _freeipa_health_verify.stdout }}
+    success_msg: "All FreeIPA services recovered successfully."
+  when: _freeipa_stopped_services | length > 0

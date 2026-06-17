@@ -1,0 +1,118 @@
+---
+# roles/freeipa_server/tasks/hardening.yml
+# Opt-in post-install hardening. Each block is gated by a default-off/safe var,
+# idempotent, and runs on the primary only. Requires an admin Kerberos ticket.
+
+- name: Acquire Kerberos ticket for hardening operations
+  ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+  args:
+    stdin: "{{ freeipa_server_admin_password }}\n"
+  changed_when: false
+  no_log: true
+  when: >-
+    (freeipa_server_harden_anonymous_bind | bool)
+    or (freeipa_server_search_size_limit | int > 0)
+    or (freeipa_server_search_time_limit | int > 0)
+    or (freeipa_server_require_otp_groups | length > 0)
+    or (freeipa_server_disable_allow_all | bool)
+
+- name: Set LDAP search size limit
+  ansible.builtin.command: >-
+    ipa config-mod --searchrecordslimit={{ freeipa_server_search_size_limit | int }}
+  register: _freeipa_server_searchsize
+  changed_when: "'modified' in (_freeipa_server_searchsize.stdout | default('') | lower)"
+  failed_when:
+    - _freeipa_server_searchsize.rc != 0
+    - "'no modifications' not in (_freeipa_server_searchsize.stderr | default(''))"
+  when: freeipa_server_search_size_limit | int > 0
+
+- name: Set LDAP search time limit
+  ansible.builtin.command: >-
+    ipa config-mod --searchtimelimit={{ freeipa_server_search_time_limit | int }}
+  register: _freeipa_server_searchtime
+  changed_when: "'modified' in (_freeipa_server_searchtime.stdout | default('') | lower)"
+  failed_when:
+    - _freeipa_server_searchtime.rc != 0
+    - "'no modifications' not in (_freeipa_server_searchtime.stderr | default(''))"
+  when: freeipa_server_search_time_limit | int > 0
+
+- name: Restrict anonymous LDAP binds to rootdse
+  community.general.ldap_attrs:
+    dn: "cn=config"
+    attributes:
+      nsslapd-allow-anonymous-access: "rootdse"
+    state: exact
+    server_uri: "ldapi:///"
+  when: freeipa_server_harden_anonymous_bind | bool
+
+- name: Require OTP for hardened admin groups
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_server_admin_password }}"
+    name: "{{ item }}"
+    action: member
+    state: present
+  loop: "{{ freeipa_server_require_otp_groups }}"
+  loop_control:
+    label: "{{ item }}"
+  when: freeipa_server_require_otp_groups | length > 0
+  no_log: true
+
+# allow_all teardown — GUARDED: only proceed if replacement HBAC rules exist,
+# so the run cannot lock operators out.
+- name: Count enabled non-allow_all HBAC rules
+  ansible.builtin.command: ipa hbacrule-find --enabled --raw
+  register: _freeipa_server_hbac
+  changed_when: false
+  when: freeipa_server_disable_allow_all | bool
+
+- name: Assert a replacement HBAC rule exists before disabling allow_all
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_server_hbac.stdout
+         | regex_findall('cn:\\s+(?!allow_all)\\S+')) | length > 0
+    fail_msg: >-
+      Refusing to disable allow_all: no other enabled HBAC rule found. Create
+      and test replacement HBAC rules (freeipa_idam_hbac_rules) first, or you
+      will lock out all host access.
+  when: freeipa_server_disable_allow_all | bool
+
+- name: Disable the permissive allow_all HBAC rule
+  freeipa.ansible_freeipa.ipahbacrule:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_server_admin_password }}"
+    name: allow_all
+    state: disabled
+  when: freeipa_server_disable_allow_all | bool
+  no_log: true
+
+- name: Report current system crypto policy
+  ansible.builtin.command: update-crypto-policies --show
+  register: _freeipa_server_cryptopol
+  changed_when: false
+  failed_when: false
+  when: ansible_os_family == "RedHat"
+
+- name: Warn if crypto policy differs from the requested value
+  ansible.builtin.debug:
+    msg: >-
+      Requested crypto policy '{{ freeipa_server_crypto_policy }}' but host
+      reports '{{ _freeipa_server_cryptopol.stdout | default("unknown") | trim }}'.
+      Change system-wide crypto policy deliberately (it affects all IdM
+      components) — this role reports only.
+  when:
+    - freeipa_server_crypto_policy | length > 0
+    - ansible_os_family == "RedHat"
+    - (_freeipa_server_cryptopol.stdout | default('') | trim) != freeipa_server_crypto_policy
+
+- name: Destroy hardening Kerberos ticket
+  ansible.builtin.command: kdestroy
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: >-
+    (freeipa_server_harden_anonymous_bind | bool)
+    or (freeipa_server_search_size_limit | int > 0)
+    or (freeipa_server_search_time_limit | int > 0)
+    or (freeipa_server_require_otp_groups | length > 0)
+    or (freeipa_server_disable_allow_all | bool)

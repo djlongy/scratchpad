@@ -1,0 +1,17 @@
+---
+# Enrol + configure hosts in the `freeipa_clients` group as FreeIPA clients.
+# Idempotent; re-running re-joins any stale/realm-mismatched host. Realm + creds
+# come from inventory (see inventories/example/group_vars/freeipa_clients.yml).
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_client.yml
+#   # force a clean rejoin:
+#   ... -e freeipa_client_force_rejoin=true
+
+- name: Enrol FreeIPA clients
+  hosts: freeipa_clients
+  gather_facts: true
+  become: true
+  become_user: root
+  become_method: ansible.builtin.sudo
+  roles:
+    - role: freeipa_client

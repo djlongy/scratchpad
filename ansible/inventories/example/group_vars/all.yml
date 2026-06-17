@@ -1,0 +1,10 @@
+---
+# Base domain — the realm derives as its upper-case form (EXAMPLE.COM).
+# FreeIPA server FQDNs become <inventory_hostname>.<domain>, e.g. idm01.example.com.
+domain: "example.com"
+
+# HashiCorp Vault: the freeipa_server role reads admin/DM passwords via the
+# community.hashi_vault lookup, which needs VAULT_ADDR + a token in the
+# environment. For example:
+#   export VAULT_ADDR=https://vault.example.com:8200
+#   export VAULT_TOKEN=...        # or a valid ~/.vault-token

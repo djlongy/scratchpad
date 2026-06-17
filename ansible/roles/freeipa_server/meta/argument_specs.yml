@@ -1,0 +1,56 @@
+---
+argument_specs:
+  main:
+    short_description: Install and configure a FreeIPA server cluster.
+    options:
+      freeipa_server_domain:
+        type: str
+        required: true
+        description: FreeIPA primary DNS domain (lowercase).
+      freeipa_server_realm:
+        type: str
+        required: true
+        description: Kerberos realm (uppercase domain).
+      freeipa_server_vault_secret:
+        type: str
+        required: true
+        description: HashiCorp Vault KV path holding admin_password + dm_password.
+      freeipa_server_is_primary:
+        type: bool
+        required: false
+        description: Whether this host is the primary (first) server. Derived from inventory groups.
+      freeipa_server_primary_host:
+        type: str
+        required: false
+        description: FQDN of the primary server (replica enrolment target).
+      freeipa_server_forwarders:
+        type: list
+        elements: str
+        required: false
+        description: Upstream DNS forwarders for the IPA-managed zone.
+      freeipa_server_ca_mode:
+        type: str
+        required: false
+        choices: [self-signed, external-ca, ca-less]
+        description: Certificate authority deployment model.
+      freeipa_server_forward_policy:
+        type: str
+        required: false
+        choices: [only, first]
+        description: DNS forward policy.
+      freeipa_server_setup_kra:
+        type: bool
+        required: false
+        description: Install the Key Recovery Authority.
+      freeipa_server_no_hbac_allow:
+        type: bool
+        required: false
+        description: Skip creating the permissive allow_all HBAC rule at install.
+      freeipa_server_fips_required:
+        type: bool
+        required: false
+        description: Assert the host is in FIPS mode before install (never auto-enables).
+      freeipa_server_disable_allow_all:
+        type: bool
+        required: false
+        description: Tear down allow_all HBAC (guarded — requires replacement rules).

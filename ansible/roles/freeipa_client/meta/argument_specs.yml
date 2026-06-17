@@ -1,0 +1,74 @@
+---
+argument_specs:
+  main:
+    short_description: Enrol and configure a host as a FreeIPA client.
+    options:
+      freeipa_client_domain:
+        type: str
+        required: true
+        description: FreeIPA realm DNS domain to join.
+      freeipa_client_realm:
+        type: str
+        required: true
+        description: Kerberos realm to join (uppercase domain).
+      freeipa_client_servers:
+        type: list
+        elements: str
+        required: false
+        description: FreeIPA server FQDNs to enrol against (else SRV discovery).
+      freeipa_client_vault_secret:
+        type: str
+        required: false
+        description: Vault path holding the admin password (admin-join). Required unless use_otp.
+      freeipa_client_use_otp:
+        type: bool
+        required: false
+        description: Join with a one-time password instead of admin credentials.
+      freeipa_client_otp:
+        type: str
+        required: false
+        description: One-time enrolment password (when use_otp).
+      freeipa_client_rejoin_stale:
+        type: bool
+        required: false
+        description: Health-check an existing enrolment and re-join if broken/realm-mismatched.
+      freeipa_client_force_rejoin:
+        type: bool
+        required: false
+        description: Force uninstall + re-join regardless of health.
+      freeipa_client_mkhomedir:
+        type: bool
+        required: false
+        description: Create home directories on first login (oddjob/pam).
+      freeipa_client_no_sudo:
+        type: bool
+        required: false
+        description: Disable the SSSD sudo provider (true = no sudo via IPA).
+      freeipa_client_automount_location:
+        type: str
+        required: false
+        description: IPA automount location for NFS home dirs ("" disables).
+      freeipa_client_seed_dns_record:
+        type: bool
+        required: false
+        description: Seed this host's A (+PTR) record server-side at enrol time (admin-join only).
+      freeipa_client_seed_dns_reverse:
+        type: bool
+        required: false
+        description: When seeding, also create the reverse PTR (if a reverse zone exists).
+      freeipa_client_dns_zone:
+        type: str
+        required: false
+        description: IPA-owned DNS zone the seeded A record lives in (defaults to the realm domain).
+      freeipa_client_dns_reverse_zone:
+        type: str
+        required: false
+        description: Reverse zone for the seeded PTR (empty = auto-derive the /24 zone from the host IP).
+      freeipa_client_enable_dns_updates:
+        type: bool
+        required: false
+        description: Enable SSSD dyndns so the A record follows the host IP automatically.
+      freeipa_client_sync_dns_record:
+        type: bool
+        required: false
+        description: Force an immediate A-record refresh on drift (needs enable_dns_updates).

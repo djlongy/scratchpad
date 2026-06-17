@@ -1,0 +1,82 @@
+---
+# roles/freeipa_client/tasks/configure.yml
+# Post-join verification. The heavy lifting (SSSD with id/sudo/hbac providers,
+# CA trust in /etc/ipa/ca.crt + the system trust store, krb5.conf, mkhomedir via
+# oddjob, SSHFP/ssh config, NTP) is done by the upstream ipaclient role during
+# enrol. This phase confirms the result and surfaces what must be done elsewhere.
+#
+# SERVER-SIDE (NOT here — a client cannot self-assign these; need admin):
+#   - Host-group membership  -> freeipa_server IDAM `freeipa_idam_hostgroups`
+#                               (host lists) or a host-management play
+#   - HBAC rules             -> freeipa_server IDAM `freeipa_idam_hbac_rules`
+#                               (SSSD on this client enforces them automatically)
+#   - sudo rules             -> freeipa_server IDAM `freeipa_idam_sudo_rules`
+#                               (this client runs them via the SSSD sudo provider)
+#   - DNS zones/records beyond this host's own auto-registered A/SSHFP records
+
+- name: Ensure SSSD is enabled and running
+  ansible.builtin.service:
+    name: sssd
+    state: started
+    enabled: true
+
+- name: Confirm IPA CA cert is present in the system trust
+  ansible.builtin.stat:
+    path: /etc/ipa/ca.crt
+  register: _freeipa_client_cacrt
+  failed_when: not _freeipa_client_cacrt.stat.exists
+
+- name: Verify the host can authenticate with its keytab (kinit -k)
+  ansible.builtin.command: "kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}"
+  register: _freeipa_client_verify
+  changed_when: false
+
+- name: Destroy verification ticket
+  ansible.builtin.command: kdestroy
+  changed_when: false
+  failed_when: false
+
+- name: Verify SSSD resolves an IPA identity (admin)
+  ansible.builtin.command: id "admin@{{ freeipa_client_domain }}"
+  register: _freeipa_client_idcheck
+  changed_when: false
+  failed_when: false
+
+- name: Force DNS A-record sync to the host IP on drift (opt-in)
+  when:
+    - freeipa_client_enable_dns_updates | bool
+    - freeipa_client_sync_dns_record | bool
+    - freeipa_client_servers | length > 0   # need an explicit server for the authoritative query
+  block:
+    - name: Ensure dig is available for the authoritative A-record check
+      ansible.builtin.package:
+        name: "{{ 'bind-utils' if ansible_os_family == 'RedHat' else 'dnsutils' }}"
+        state: present
+
+    - name: Query the authoritative A record from the IPA DNS server
+      # dig @server bypasses /etc/hosts and the SSSD cache (unlike getent).
+      ansible.builtin.command: >-
+        dig +short +time=3 +tries=1 A {{ freeipa_client_fqdn }}
+        @{{ freeipa_client_servers | first }}
+      register: _freeipa_client_dns_a
+      changed_when: false
+      failed_when: false
+
+    - name: Restart SSSD to push a dyndns update when the A record has drifted
+      # Fail-safe: only act when we got a definitive answer AND it differs from
+      # the host's current primary IP — idempotent (no-op once in sync).
+      ansible.builtin.service:
+        name: sssd
+        state: restarted
+      when:
+        - (_freeipa_client_dns_a.rc | default(1)) == 0
+        - ansible_default_ipv4.address not in (_freeipa_client_dns_a.stdout | default(''))
+
+- name: Report client integration status
+  ansible.builtin.debug:
+    msg: >-
+      realm={{ freeipa_client_realm }} ca_cert={{ _freeipa_client_cacrt.stat.exists }}
+      host_kinit_rc={{ _freeipa_client_verify.rc }}
+      sssd_id_admin_rc={{ _freeipa_client_idcheck.rc }}
+      mkhomedir={{ freeipa_client_mkhomedir }} sudo={{ not (freeipa_client_no_sudo | bool) }}
+      automount={{ freeipa_client_automount_location | default('') | ternary(freeipa_client_automount_location, 'disabled') }}

@@ -1,0 +1,71 @@
+#!/bin/bash
+# FreeIPA data backup script
+# Managed by Ansible - do not edit manually
+#
+# Runs ipa-backup --data --online on the primary FreeIPA server.
+# Prunes old backups beyond the retention window.
+
+set -euo pipefail
+
+BACKUP_DIR="{{ freeipa_backup_dir }}"
+RETENTION_DAYS="{{ freeipa_backup_retention_days }}"
+LOG_FILE="/var/log/freeipa-backup.log"
+PROM_DIR="/var/lib/node_exporter/textfile_collector"
+BACKUP_SUCCESS=0
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"
+}
+
+write_metrics() {
+    mkdir -p "${PROM_DIR}"
+    local last_success_ts=0
+    if [ "${BACKUP_SUCCESS}" -eq 1 ]; then
+        last_success_ts=$(date +%s)
+    fi
+    cat > "${PROM_DIR}/freeipa_backup.prom.$$" <<PROM
+# HELP freeipa_backup_success Whether the last backup succeeded (1=success, 0=failure)
+# TYPE freeipa_backup_success gauge
+freeipa_backup_success ${BACKUP_SUCCESS}
+# HELP freeipa_backup_last_success_timestamp_seconds Unix timestamp of last successful backup
+# TYPE freeipa_backup_last_success_timestamp_seconds gauge
+freeipa_backup_last_success_timestamp_seconds ${last_success_ts}
+PROM
+    mv "${PROM_DIR}/freeipa_backup.prom.$$" "${PROM_DIR}/freeipa_backup.prom"
+}
+
+trap write_metrics EXIT
+
+error_exit() {
+    log "ERROR: $1"
+    exit 1
+}
+
+log "Starting FreeIPA data backup"
+
+# Run ipa-backup (data-only, online — no service downtime)
+ipa-backup --data --online 2>&1 | tee -a "${LOG_FILE}" \
+    || error_exit "ipa-backup --data --online failed"
+
+# Find the most recent backup directory
+LATEST=$(find "${BACKUP_DIR}" -maxdepth 1 -type d -name 'ipa-data-*' -printf '%T@ %p\n' \
+    | sort -rn | head -1 | cut -d' ' -f2-)
+if [ -z "${LATEST}" ]; then
+    error_exit "No backup directory found after ipa-backup"
+fi
+
+BACKUP_SIZE=$(du -sh "${LATEST}" | cut -f1)
+log "Backup created: ${LATEST} (${BACKUP_SIZE})"
+
+# Prune backup directories beyond retention window
+PRUNED=$(find "${BACKUP_DIR}" -maxdepth 1 -type d -name 'ipa-data-*' \
+    -mtime "+${RETENTION_DAYS}" -print | wc -l)
+if [ "${PRUNED}" -gt 0 ]; then
+    find "${BACKUP_DIR}" -maxdepth 1 -type d -name 'ipa-data-*' \
+        -mtime "+${RETENTION_DAYS}" -exec rm -rf {} +
+    log "Pruned ${PRUNED} backup(s) older than ${RETENTION_DAYS} days"
+fi
+
+BACKUP_SUCCESS=1
+log "FreeIPA backup complete"
+exit 0

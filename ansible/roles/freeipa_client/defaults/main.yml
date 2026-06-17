@@ -1,0 +1,130 @@
+---
+# roles/freeipa_client/defaults/main.yml
+#
+# Portable FreeIPA client role. Enrols a host into a FreeIPA realm and configures
+# identity/auth integration, with effective stale-machine rejoin and idempotency.
+# Behavioural defaults live here; env-specific values (Vault path) are commented
+# out for discoverability and set in inventory. All inputs are prefixed
+# freeipa_client_*; they map to upstream freeipa.ansible_freeipa.ipaclient vars
+# (ipaclient_*) at the include_role call in tasks/enroll.yml.
+
+# ── Identity / realm targeting (derived; override in inventory to break convention) ──
+# The realm the client joins. domain comes from group_vars/all.yml.
+freeipa_client_domain: "{{ domain }}"
+freeipa_client_realm: "{{ freeipa_client_domain | upper }}"
+
+# This client's own FQDN (replaces ansible_fqdn — see repo hostname convention).
+# A client may live in a different DNS domain than the realm; override if so.
+freeipa_client_fqdn: "{{ inventory_hostname }}.{{ domain }}"
+freeipa_client_set_hostname: true        # set the OS hostname to freeipa_client_fqdn before join
+
+# FreeIPA servers to enrol against. Defaults to the `freeipa` inventory group;
+# falls back to none (then DNS SRV discovery is used unless no_dns_lookup).
+freeipa_client_server_group: "freeipa"
+freeipa_client_servers: >-
+  {{ (groups[freeipa_client_server_group] | default([]))
+     | map('regex_replace', '^(.*)$', '\1.' + freeipa_client_domain) | list }}
+
+# ── Enrolment credentials ────────────────────────────────────────────────────
+# Admin-based join (default): reads admin password from Vault.
+# ENV-SPECIFIC — set in inventory:
+# freeipa_client_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
+freeipa_client_admin_principal: "admin"
+freeipa_client_admin_password_field: "admin_password"
+# OTP-based join (alternative — preferred for unattended/airgapped enrolment so no
+# admin password touches the client). When use_otp, supply a one-time password
+# (generate server-side with `ipa host-add --random` or `ipa-otptoken`).
+freeipa_client_use_otp: false
+freeipa_client_otp: ""
+
+# ── Join behaviour ───────────────────────────────────────────────────────────
+freeipa_client_force_join: false         # join even if the host entry already exists on the server
+freeipa_client_kinit_attempts: 5
+freeipa_client_no_dns_lookup: false      # true → ignore SRV discovery, use freeipa_client_servers only
+freeipa_client_on_master: false          # only true when (re)configuring a client ON an IPA server
+
+# ── Stale-machine rejoin (the resilience knob) ───────────────────────────────
+# When true, preflight health-checks an existing enrolment (host keytab + kinit -k
+# + realm match). A broken/realm-mismatched enrolment is uninstalled and re-joined.
+# This also drives realm-cutover re-enrolment (old realm → new realm).
+freeipa_client_rejoin_stale: true
+freeipa_client_force_rejoin: false       # force uninstall + re-join regardless of health
+
+# ── Home directories ─────────────────────────────────────────────────────────
+freeipa_client_mkhomedir: true           # oddjob/pam_oddjob_mkhomedir on first login
+# Optional IPA-managed NFS automount of home dirs ("" disables). Requires the
+# automount location + maps to exist server-side (ipa automountlocation-*).
+freeipa_client_automount_location: ""
+
+# ── sudo (SSSD sudo provider) ────────────────────────────────────────────────
+# false = sudo via SSSD enabled (client enforces server-defined sudo rules).
+# Sudo RULES themselves are SERVER-SIDE — define them in freeipa_server IDAM
+# (freeipa_idam_sudo_rules), not here.
+freeipa_client_no_sudo: false
+
+# ── HBAC ─────────────────────────────────────────────────────────────────────
+# HBAC is enforced automatically by SSSD (access_provider=ipa) once enrolled —
+# there is no client-side toggle. HBAC RULES are SERVER-SIDE (freeipa_server IDAM
+# freeipa_idam_hbac_rules). See README.
+
+# ── Host groups ──────────────────────────────────────────────────────────────
+# Host-group MEMBERSHIP is a SERVER-SIDE operation (needs admin; a client cannot
+# add itself). Manage it in freeipa_server IDAM (freeipa_idam_hostgroups with a
+# host list) or a dedicated host-management play. See README.
+
+# ── DNS record propagation ───────────────────────────────────────────────────
+# The client self-registers its A/SSHFP records during the JOIN (ipa-client-install)
+# — but ONLY when the realm's integrated DNS is authoritative for the client's
+# zone (e.g. a client named *.ipa.<env>.<domain> when IPA owns that zone). For a
+# client in a zone IPA does NOT own, the record must come from site DNS or a
+# server-side `ipa dnsrecord-add`. See README "DNS record propagation".
+freeipa_client_all_ip_addresses: false   # register all NIC IPs (not just the primary)
+# Immediate server-side seed: write this host's A (+ reverse PTR) record at enrol
+# time via the admin API, independent of join-time self-registration and SSSD
+# dyndns. Guarantees the record exists even with dyndns off, and seeds the PTR
+# that ipa-client-install does NOT create. SSSD dyndns then maintains it ("seed
+# once, machine keeps it current"). Admin-join only (needs admin creds); skipped
+# for OTP-joined hosts. Tolerant — warns (not fails) if IPA isn't authoritative
+# for the zone. The zone is freeipa_client_dns_zone (defaults to the realm domain).
+freeipa_client_seed_dns_record: false
+freeipa_client_seed_dns_reverse: true    # also seed the reverse PTR (when a reverse zone exists)
+freeipa_client_dns_zone: "{{ freeipa_client_domain }}"  # IPA-owned zone the A record lives in
+# Reverse zone for the PTR. Empty = auto-derive the /24 zone (c.b.a.in-addr.arpa)
+# from the host IP. Override for non-/24 reverse delegations (see README).
+freeipa_client_dns_reverse_zone: ""
+# Ongoing self-healing: configure SSSD dyndns_update (maps to upstream
+# ipasssd_enable_dns_updates). SSSD re-registers the A record on every sssd
+# start/reboot and on dyndns_refresh_interval (default daily). TESTED CAVEAT: a
+# live in-place IP change is NOT picked up promptly (no update within ~100s of an
+# nmcli re-IP) — it catches up at the next sssd restart/reboot or refresh cycle.
+# Default off (matches upstream; avoids failed nsupdate noise for non-IPA zones).
+freeipa_client_enable_dns_updates: false
+# Force an immediate A-record refresh during the run if it has drifted from the
+# host's current IP (restarts SSSD to trigger a dyndns update only on mismatch).
+# This is the reliable way to get DNS correct right after an Ansible-driven re-IP,
+# since SSSD won't do it on its own until the next restart/refresh (see above).
+# TESTED: corrects real drift in ~8s; idempotent once IPA's bind-dyndb-ldap layer
+# has caught up (a back-to-back re-run during that few-second lag may re-fire
+# harmlessly). Needs freeipa_client_enable_dns_updates.
+freeipa_client_sync_dns_record: false
+freeipa_client_no_dns_sshfp: false       # false = publish SSHFP records
+freeipa_client_ssh_trust_dns: true       # trust SSHFP from DNS (sshd VerifyHostKeyDNS)
+freeipa_client_no_ssh: false             # configure ssh
+freeipa_client_no_sshd: false            # configure sshd
+freeipa_client_no_dnssec_validation: true
+# Repoint the client's resolver at the IPA DNS servers (off by default — most
+# estates resolve the realm via site DNS forwarders instead).
+freeipa_client_configure_dns_resolver: false
+
+# ── Time sync ────────────────────────────────────────────────────────────────
+# Kerberos needs <5 min skew. Default: let the installer manage NTP. Set no_ntp
+# true only if time sync is guaranteed by the baseline.
+freeipa_client_no_ntp: false
+freeipa_client_ntp_servers: []
+freeipa_client_ntp_pool: ""
+
+# ── Subordinate IDs (optional, rootless-container hosts) ─────────────────────
+freeipa_client_subid: false
+
+# ── Preflight tolerances ─────────────────────────────────────────────────────
+freeipa_client_preflight_time_tolerance_sec: 120

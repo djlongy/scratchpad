@@ -1,0 +1,15 @@
+---
+# roles/freeipa_server/vars/main.yml
+# Non-overridable derived constants (high precedence — do not put env values here).
+
+freeipa_server_realm_systemd_instance: "{{ freeipa_server_realm | replace('.', '-') }}"
+freeipa_server_dirsrv_service_name: "dirsrv@{{ freeipa_server_realm_systemd_instance }}.service"
+
+# Backup settings (bespoke Borg-readable pipeline). Names intentionally kept as
+# freeipa_backup_* (not freeipa_server_backup_*) to match the Prometheus textfile
+# metric prefix emitted by the backup script; the var-naming role-prefix rule is
+# waived for these four on purpose.
+freeipa_backup_dir: "/var/lib/ipa/backup"  # noqa: var-naming[no-role-prefix]
+freeipa_backup_retention_days: 14  # noqa: var-naming[no-role-prefix]
+freeipa_backup_reader_group: "ansible"  # noqa: var-naming[no-role-prefix]
+freeipa_backup_script_path: "/usr/local/bin/freeipa-backup.sh"  # noqa: var-naming[no-role-prefix]

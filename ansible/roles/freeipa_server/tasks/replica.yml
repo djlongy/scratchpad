@@ -1,0 +1,73 @@
+---
+# roles/freeipa_server/tasks/replica.yml
+# Point resolver at the primary for enrolment, then wrap
+# freeipa.ansible_freeipa.ipareplica. Idempotent via the configured check.
+
+- name: Check if IPA replica is already configured
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_server_replica_configured
+
+- name: Get active NetworkManager connection UUID for the primary interface
+  ansible.builtin.command:
+    cmd: nmcli -t -f UUID,DEVICE con show --active
+  register: _freeipa_server_nm_cons
+  changed_when: false
+  when: not _freeipa_server_replica_configured.stat.exists
+
+- name: Resolve the active connection UUID
+  ansible.builtin.set_fact:
+    _freeipa_server_con_uuid: >-
+      {{ (_freeipa_server_nm_cons.stdout_lines
+          | select('search', ':' + connection_name + '$') | first).split(':')[0] }}
+  when: not _freeipa_server_replica_configured.stat.exists
+
+- name: Point DNS at the primary IPA server for enrolment
+  ansible.builtin.command:
+    cmd: nmcli con mod {{ _freeipa_server_con_uuid }} ipv4.dns "{{ freeipa_server_primary_ip }}"
+  changed_when: true
+  when: not _freeipa_server_replica_configured.stat.exists
+
+- name: Reapply DNS settings without cycling the connection
+  ansible.builtin.command:
+    cmd: nmcli dev reapply {{ connection_name }}
+  changed_when: true
+  when: not _freeipa_server_replica_configured.stat.exists
+
+- name: Ensure primary FQDN is in /etc/hosts for enrolment
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ freeipa_server_primary_ip }} {{ freeipa_server_primary_host }}"
+    state: present
+    mode: "0644"
+  when: not _freeipa_server_replica_configured.stat.exists
+
+- name: Install FreeIPA replica via upstream ipareplica role
+  ansible.builtin.include_role:
+    name: freeipa.ansible_freeipa.ipareplica
+  vars:  # upstream ipareplica/ipaserver role inputs, not this role's vars
+    ipareplica_domain: "{{ freeipa_server_domain }}"
+    ipareplica_realm: "{{ freeipa_server_realm }}"
+    ipareplica_hostname: "{{ freeipa_server_fqdn }}"
+    ipareplica_servers: ["{{ freeipa_server_primary_host }}"]
+    ipareplica_ip_addresses: "{{ freeipa_server_ip_addresses }}"
+    ipaadmin_password: "{{ freeipa_server_admin_password }}"
+    ipadm_password: "{{ freeipa_server_dm_password }}"
+    ipareplica_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
+    ipareplica_setup_kra: "{{ freeipa_server_setup_kra }}"
+    ipareplica_setup_dns: "{{ freeipa_server_setup_dns }}"
+    ipareplica_forwarders: "{{ freeipa_server_forwarders }}"
+    ipareplica_forward_policy: "{{ freeipa_server_forward_policy }}"
+    ipareplica_no_forwarders: "{{ freeipa_server_no_forwarders }}"
+    # Replicas must NOT auto-create reverse zones — the primary already created
+    # them and they replicate in. Auto-reverse here fails the install with
+    # "DNS zone <reverse> already exists". Reverse zones are a primary concern.
+    ipareplica_auto_reverse: false
+    ipareplica_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
+  no_log: true
+
+- name: Ensure IPA service is enabled and started
+  ansible.builtin.service:
+    name: ipa
+    state: started
+    enabled: true

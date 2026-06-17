@@ -1,0 +1,29 @@
+---
+# Vault paths holding admin_password + dm_password for THIS realm.
+# (KV v2 lookup path includes /data/.)
+freeipa_server_vault_secret: "kv/data/platform/freeipa/runtime"
+freeipa_idam_vault_secret: "kv/data/platform/freeipa/runtime"
+
+# Upstream DNS forwarder(s) for the IPA-managed zone.
+freeipa_server_forwarders:
+  - 10.0.0.1
+
+# NetworkManager connection name on the hosts (used by the replica DNS prep).
+connection_name: "eth0"
+
+# FreeIPA needs IPv6 on loopback (::1). Only relevant if you run a baseline
+# that disables IPv6 — then re-enable it for these hosts:
+# baseline_disable_ipv6: false
+
+# ── Install options (examples — all optional; see role defaults/main.yml) ──
+# freeipa_server_ca_mode: "self-signed"     # self-signed | external-ca | ca-less
+# freeipa_server_setup_kra: false
+# freeipa_server_no_hbac_allow: false
+# freeipa_server_idstart: 0                 # 0 = let FreeIPA choose
+# freeipa_server_ntp_servers: ["ntp1.example.com"]
+
+# ── IPA-to-IPA migration source (only for playbooks/freeipa_migrate.yml) ──
+# The source host must also exist in this inventory so its CA cert can be read.
+# freeipa_migrate_source: "freeipa01.old.example.com"   # source IPA FQDN
+# freeipa_migrate_source_host: "old-freeipa01"          # inventory host of the source
+# freeipa_migrate_bind_pw_vault: "kv/data/platform/freeipa/old-runtime"

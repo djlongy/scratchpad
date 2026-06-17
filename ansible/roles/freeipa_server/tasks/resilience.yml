@@ -1,0 +1,268 @@
+---
+# Ensure FreeIPA services recover gracefully from shutdown/restart.
+#
+# Problem: `ipactl start` can time out waiting for Directory Service during
+# staggered cold starts. DS later becomes healthy, but KDC/kadmin/Dogtag can
+# remain stopped because their first startup attempt hit LDAP before it was
+# ready.
+#
+# Fix: Increase the dirsrv systemd timeout, then run a delayed and periodic
+# recovery service that waits for network/time/LDAP readiness before retrying
+# ipactl.
+
+- name: Create dirsrv systemd override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/dirsrv@.service.d
+    state: directory
+    mode: "0755"
+
+- name: Increase dirsrv startup timeout
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/dirsrv@.service.d/timeout.conf
+    content: |
+      [Service]
+      TimeoutStartSec={{ freeipa_server_dirsrv_timeout_sec }}
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Deploy IPA recovery script with retries
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/ipa-recovery.sh
+    content: |
+      #!/bin/bash
+      # FreeIPA recovery: retry ipactl start after boot prerequisites settle.
+      set -u
+
+      MAX_RETRIES={{ freeipa_server_recovery_max_retries | int }}
+      RETRY_DELAY={{ freeipa_server_recovery_retry_delay_seconds | int }}
+      IPACTL_TIMEOUT={{ freeipa_server_recovery_ipactl_timeout_sec | int }}
+      LDAP_WAIT_ATTEMPTS={{ freeipa_server_recovery_ldap_wait_attempts | int }}
+      IPA_SERVICE="ipa.service"
+      DIRSRV_SERVICE="{{ freeipa_server_dirsrv_service_name }}"
+
+      log() {
+        echo "[ipa-recovery] $*"
+      }
+
+      wait_for_ipa_service_to_settle() {
+        for _ in $(seq 1 36); do
+          state="$(systemctl is-active "$IPA_SERVICE" 2>/dev/null || true)"
+          if [ "$state" != "activating" ]; then
+            return 0
+          fi
+
+          log "$IPA_SERVICE is still activating; waiting before recovery"
+          sleep 10
+        done
+
+        log "$IPA_SERVICE is still activating after waiting; continuing recovery"
+      }
+
+      wait_for_time_sync() {
+        if command -v chronyc >/dev/null 2>&1; then
+          chronyc waitsync 30 {{ freeipa_server_recovery_chrony_max_correction }} >/dev/null 2>&1 \
+            || log "chronyc waitsync did not report sync; continuing with IPA retry"
+        fi
+      }
+
+      wait_for_local_ldap() {
+        if ! systemctl is-active --quiet "$DIRSRV_SERVICE"; then
+          log "$DIRSRV_SERVICE is not active; starting it before IPA recovery"
+          systemctl start "$DIRSRV_SERVICE" 2>&1 || true
+        fi
+
+        for ldap_attempt in $(seq 1 "$LDAP_WAIT_ATTEMPTS"); do
+          if ldapsearch -x -H ldap://127.0.0.1 -s base -b "" dn >/dev/null 2>&1; then
+            return 0
+          fi
+
+          log "Local LDAP is not ready ($ldap_attempt/$LDAP_WAIT_ATTEMPTS); waiting"
+          sleep 10
+        done
+
+        log "Local LDAP did not become ready"
+        return 1
+      }
+
+      start_if_status_stopped() {
+        status="$1"
+        label="$2"
+        unit="$3"
+
+        if grep -q "$label Service: STOPPED" <<< "$status"; then
+          log "$label is stopped; starting $unit directly"
+          systemctl start "$unit" 2>&1 || true
+        fi
+      }
+
+      start_stopped_systemd_units() {
+        status="$1"
+
+        start_if_status_stopped "$status" "krb5kdc" "krb5kdc.service"
+        start_if_status_stopped "$status" "kadmin" "kadmin.service"
+        start_if_status_stopped "$status" "named" "named.service"
+        start_if_status_stopped "$status" "httpd" "httpd.service"
+        start_if_status_stopped "$status" "ipa-custodia" "ipa-custodia.service"
+        start_if_status_stopped "$status" "pki-tomcatd" "pki-tomcatd@pki-tomcat.service"
+        start_if_status_stopped "$status" "ipa-otpd" "ipa-otpd.socket"
+        start_if_status_stopped "$status" "ipa-dnskeysyncd" "ipa-dnskeysyncd.service"
+      }
+
+      reset_failed_units() {
+        systemctl reset-failed \
+          "$IPA_SERVICE" \
+          "$DIRSRV_SERVICE" \
+          krb5kdc.service \
+          kadmin.service \
+          named.service \
+          httpd.service \
+          ipa-custodia.service \
+          pki-tomcatd@pki-tomcat.service \
+          ipa-otpd.socket \
+          ipa-dnskeysyncd.service 2>/dev/null || true
+      }
+
+      ipa_healthy() {
+        status="$(ipactl status 2>&1)"
+        rc=$?
+        printf '%s\n' "$status"
+
+        if [ "$rc" -ne 0 ]; then
+          return 1
+        fi
+
+        ! grep -q "STOPPED" <<< "$status"
+      }
+
+      for attempt in $(seq 1 $MAX_RETRIES); do
+        log "Attempt $attempt/$MAX_RETRIES"
+
+        wait_for_ipa_service_to_settle
+
+        if ipa_healthy; then
+          reset_failed_units
+          log "All IPA services are running"
+          exit 0
+        fi
+
+        wait_for_time_sync
+        reset_failed_units
+
+        if ! wait_for_local_ldap; then
+          log "Prerequisites are not ready; retrying after ${RETRY_DELAY}s"
+          sleep $RETRY_DELAY
+          continue
+        fi
+
+        status="$(ipactl status 2>&1 || true)"
+        start_stopped_systemd_units "$status"
+        sleep 10
+
+        if ipa_healthy; then
+          reset_failed_units
+          log "All IPA services recovered by direct systemd starts on attempt $attempt"
+          exit 0
+        fi
+
+        log "Direct starts did not recover all services; running bounded ipactl start --force"
+        timeout "$IPACTL_TIMEOUT" ipactl start --force 2>&1 \
+          || log "ipactl start --force did not complete successfully within ${IPACTL_TIMEOUT}s"
+
+        if ipa_healthy; then
+          reset_failed_units
+          log "All IPA services recovered on attempt $attempt"
+          exit 0
+        fi
+
+        log "Services still not fully up, waiting ${RETRY_DELAY}s"
+        sleep $RETRY_DELAY
+      done
+
+      log "FAILED: services still stopped after $MAX_RETRIES attempts"
+      ipactl status
+      exit 1
+    mode: "0755"
+  notify: Restart IPA recovery timer
+
+- name: Deploy IPA recovery service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ipa-recovery.service
+    content: |
+      [Unit]
+      Description=FreeIPA recovery - ensure all services are running
+      Wants=network-online.target chronyd.service {{ freeipa_server_dirsrv_service_name }}
+      After=network-online.target chronyd.service ipa.service {{ freeipa_server_dirsrv_service_name }}
+      StartLimitIntervalSec={{ freeipa_server_recovery_start_limit_interval }}
+      StartLimitBurst={{ freeipa_server_recovery_start_limit_burst }}
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/ipa-recovery.sh
+      ExecStartPost=-/bin/systemctl reset-failed ipa.service {{ freeipa_server_dirsrv_service_name }} krb5kdc.service kadmin.service named.service httpd.service ipa-custodia.service pki-tomcatd@pki-tomcat.service ipa-otpd.socket ipa-dnskeysyncd.service
+      TimeoutStartSec={{ freeipa_server_recovery_service_timeout }}
+      Restart=on-failure
+      RestartSec={{ freeipa_server_recovery_restart_sec }}
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart IPA recovery timer
+
+- name: Deploy IPA recovery timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ipa-recovery.timer
+    content: |
+      [Unit]
+      Description=FreeIPA recovery timer
+
+      [Timer]
+      OnBootSec={{ freeipa_server_recovery_initial_delay }}
+      OnUnitActiveSec={{ freeipa_server_recovery_periodic_interval }}
+      Persistent=true
+      Unit=ipa-recovery.service
+
+      [Install]
+      WantedBy=timers.target
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart IPA recovery timer
+
+- name: Enable IPA recovery timer
+  ansible.builtin.systemd:
+    name: ipa-recovery.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ── HTTPD ccache cleanup ────────────────────────────────────────────────────
+# /usr/lib/tmpfiles.d/ipa.conf creates /run/ipa/ccaches but has no age field,
+# so mod_auth_gssapi's per-request ccaches accumulate until /run (tmpfs) is
+# exhausted. Add an age-based 'e' directive and tighten the cleanup cadence
+# from the systemd default of 1d so /run cannot fill between runs.
+
+- name: Deploy tmpfiles age policy for /run/ipa/ccaches
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/ipa-ccaches-cleanup.conf
+    content: |
+      # Clean FreeIPA HTTPD per-request Kerberos ccaches older than {{ freeipa_server_ccache_max_age }}.
+      # See roles/freeipa_server/tasks/resilience.yml for rationale.
+      e /run/ipa/ccaches - - - {{ freeipa_server_ccache_max_age }}
+    mode: "0644"
+  notify: Clean ipa ccaches now
+
+- name: Create systemd-tmpfiles-clean.timer override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/systemd-tmpfiles-clean.timer.d
+    state: directory
+    mode: "0755"
+
+- name: Tighten systemd-tmpfiles cleanup interval to {{ freeipa_server_tmpfiles_clean_interval }}
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/systemd-tmpfiles-clean.timer.d/freeipa-ccaches.conf
+    content: |
+      [Timer]
+      OnUnitActiveSec={{ freeipa_server_tmpfiles_clean_interval }}
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart tmpfiles clean timer

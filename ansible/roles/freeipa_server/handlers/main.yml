@@ -1,0 +1,21 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart IPA recovery timer
+  ansible.builtin.systemd:
+    name: ipa-recovery.timer
+    enabled: true
+    state: restarted
+    daemon_reload: true
+
+- name: Restart tmpfiles clean timer
+  ansible.builtin.systemd:
+    name: systemd-tmpfiles-clean.timer
+    state: restarted
+    daemon_reload: true
+
+- name: Clean ipa ccaches now
+  ansible.builtin.command: systemd-tmpfiles --clean
+  changed_when: false

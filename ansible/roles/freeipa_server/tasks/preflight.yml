@@ -1,0 +1,100 @@
+---
+# roles/freeipa_server/tasks/preflight.yml
+# Dependency-ordering guards. ASSERT prerequisites; never reboot or destructively
+# mutate. Runs on every host before install. Skipped cheaply if already installed.
+
+- name: Check whether FreeIPA is already configured
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_server_configured
+
+- name: Configure offline package repository
+  ansible.builtin.yum_repository:
+    name: "{{ freeipa_server_package_repo.name }}"
+    description: "FreeIPA offline repo"
+    baseurl: "{{ freeipa_server_package_repo.baseurl }}"
+    gpgcheck: "{{ freeipa_server_package_repo.gpgcheck | default(true) }}"
+    state: present
+  when:
+    - freeipa_server_offline | bool
+    - freeipa_server_package_repo is defined
+    - ansible_os_family == "RedHat"
+
+- name: Detect FIPS mode
+  ansible.builtin.slurp:
+    src: /proc/sys/crypto/fips_enabled
+  register: _freeipa_server_fips
+  failed_when: false
+  changed_when: false
+
+- name: Assert FIPS is enabled before install when required
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_server_fips.content | default('MA==') | b64decode | trim) == "1"
+    fail_msg: >-
+      freeipa_server_fips_required is true but the host is not in FIPS mode.
+      Enable FIPS (fips-mode-setup --enable) and reboot BEFORE installing
+      FreeIPA — it cannot be migrated into FIPS after install.
+  when:
+    - freeipa_server_fips_required | bool
+    - not _freeipa_server_configured.stat.exists
+
+- name: Ensure chrony time synchronisation is active
+  ansible.builtin.command: chronyc tracking
+  register: _freeipa_server_chrony
+  changed_when: false
+  failed_when: false
+  when: not _freeipa_server_configured.stat.exists
+
+- name: Assert clock skew is within Kerberos tolerance
+  ansible.builtin.assert:
+    that:
+      - _freeipa_server_chrony.rc == 0
+      - >-
+        (_freeipa_server_chrony.stdout
+        | regex_search('System time *: *([0-9.]+)', '\\1') | first | float)
+        < (freeipa_server_preflight_time_tolerance_sec | float)
+    fail_msg: >-
+      Chrony is not tracking or system clock skew exceeds
+      {{ freeipa_server_preflight_time_tolerance_sec }}s. Kerberos auth fails
+      above 300s skew. Fix NTP before installing.
+  when:
+    - not _freeipa_server_configured.stat.exists
+    - _freeipa_server_chrony.rc == 0
+
+- name: Set the system hostname to the FreeIPA FQDN
+  ansible.builtin.hostname:
+    name: "{{ freeipa_server_fqdn }}"
+  when: not _freeipa_server_configured.stat.exists
+
+- name: Ensure this host's FQDN resolves via /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^{{ ansible_host | regex_escape }}\s'
+    line: "{{ ansible_host }} {{ freeipa_server_fqdn }} {{ inventory_hostname }}"
+    state: present
+    mode: "0644"
+  when: not _freeipa_server_configured.stat.exists
+
+- name: Wait for the primary FreeIPA LDAP port before replica enrolment
+  ansible.builtin.wait_for:
+    host: "{{ freeipa_server_primary_ip }}"
+    port: 389
+    timeout: "{{ freeipa_server_preflight_wait_primary_timeout }}"
+  when:
+    - not (freeipa_server_is_primary | bool)
+    - not _freeipa_server_configured.stat.exists
+
+- name: Assert external CA cert files are provided when ca_mode is external-ca
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_external_cert_files | length > 0
+    fail_msg: >-
+      freeipa_server_ca_mode is external-ca but freeipa_server_external_cert_files
+      is empty. external-ca is two-phase: the first run emits a CSR
+      (/root/ipa.csr), which must be signed by your external CA; supply the
+      signed cert chain via freeipa_server_external_cert_files and re-run.
+  when:
+    - freeipa_server_ca_mode == "external-ca"
+    - freeipa_server_is_primary | bool
+    - not _freeipa_server_configured.stat.exists

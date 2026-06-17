@@ -1,0 +1,7 @@
+---
+# Mirrors the origin repo policy: correctness-only (profile: min) — parse / load /
+# module-resolution / syntax-check. Style rules (yaml line-length, var-naming,
+# risky-shell-pipe, fqcn, jinja formatting) are deferred, exactly as the
+# freeipa_server role is linted in its source repo.
+profile: min
+offline: true

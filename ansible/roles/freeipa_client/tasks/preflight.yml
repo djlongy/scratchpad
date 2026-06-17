@@ -1,0 +1,89 @@
+---
+# roles/freeipa_client/tasks/preflight.yml
+# Hostname/time guards + stale-enrolment detection and cleanup. This is what makes
+# rejoining stale machines reliable: an existing enrolment is health-checked
+# (realm match + host-keytab kinit), and a broken or realm-mismatched one is
+# uninstalled so enroll.yml can cleanly re-join. A healthy, correct enrolment is
+# left untouched (idempotent — enroll.yml then no-ops).
+
+- name: Set the system hostname to the client FQDN
+  ansible.builtin.hostname:
+    name: "{{ freeipa_client_fqdn }}"
+  when: freeipa_client_set_hostname | bool
+
+- name: Ensure chrony is synchronised (Kerberos needs < 5 min skew)
+  ansible.builtin.command: chronyc tracking
+  register: _freeipa_client_chrony
+  changed_when: false
+  failed_when: false
+
+- name: Warn if time sync is not healthy
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: chrony not tracking (rc={{ _freeipa_client_chrony.rc }}). Kerberos
+      enrolment fails above ~5 min clock skew — fix NTP if join fails.
+  when: _freeipa_client_chrony.rc != 0
+
+- name: Check whether the host is already IPA-enrolled
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_client_conf
+
+- name: Read current enrolment config (if enrolled)
+  ansible.builtin.slurp:
+    src: /etc/ipa/default.conf
+  register: _freeipa_client_conf_raw
+  when: _freeipa_client_conf.stat.exists
+
+- name: Parse current enrolment realm
+  ansible.builtin.set_fact:
+    _freeipa_client_current_realm: >-
+      {{ (_freeipa_client_conf_raw.content | b64decode
+          | regex_search('realm\s*=\s*(\S+)', '\1') | first | default('')) | trim }}
+  when: _freeipa_client_conf.stat.exists
+
+- name: Health-check existing enrolment via host-keytab kinit
+  ansible.builtin.command: "kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}"
+  register: _freeipa_client_kinit
+  changed_when: false
+  failed_when: false
+  when:
+    - _freeipa_client_conf.stat.exists
+    - freeipa_client_rejoin_stale | bool
+
+- name: Destroy health-check ticket
+  ansible.builtin.command: kdestroy
+  changed_when: false
+  failed_when: false
+  when:
+    - _freeipa_client_conf.stat.exists
+    - freeipa_client_rejoin_stale | bool
+
+- name: Decide whether the enrolment is stale and needs a rejoin
+  ansible.builtin.set_fact:
+    _freeipa_client_stale: >-
+      {{ (freeipa_client_force_rejoin | bool)
+         or (_freeipa_client_conf.stat.exists and freeipa_client_rejoin_stale | bool and (
+              (_freeipa_client_current_realm | default('')) != freeipa_client_realm
+              or (_freeipa_client_kinit.rc | default(1)) != 0
+         )) }}
+
+- name: Report enrolment state
+  ansible.builtin.debug:
+    msg: >-
+      enrolled={{ _freeipa_client_conf.stat.exists }}
+      current_realm={{ _freeipa_client_current_realm | default('none') }}
+      target_realm={{ freeipa_client_realm }}
+      host_keytab_kinit_rc={{ _freeipa_client_kinit.rc | default('n/a') }}
+      needs_rejoin={{ _freeipa_client_stale }}
+
+- name: Uninstall stale enrolment before rejoin
+  ansible.builtin.command: ipa-client-install --uninstall --unattended
+  register: _freeipa_client_uninstall
+  changed_when: _freeipa_client_uninstall.rc == 0
+  failed_when:
+    - _freeipa_client_uninstall.rc != 0
+    - "'not configured' not in (_freeipa_client_uninstall.stdout | default('') ~ _freeipa_client_uninstall.stderr | default(''))"
+  when:
+    - _freeipa_client_conf.stat.exists
+    - _freeipa_client_stale | bool

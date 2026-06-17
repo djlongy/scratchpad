@@ -1,0 +1,37 @@
+---
+# roles/freeipa_server/tasks/main.yml
+#
+# Phase order (a no-tag run executes everything):
+#   preflight  → dependency-ordering guards (FIPS, time, FQDN/DNS, primary-up)
+#   install    → upstream ipaserver/ipareplica (packages, firewall, install)
+#   resilience → cold-start timeout override + recovery timer
+#   hardening  → opt-in post-install hardening
+#   backup     → Borg-readable backup timer (primary only)
+#   idam       → declarative IDAM reconciliation (primary only)
+
+- name: Run FreeIPA dependency-ordering preflight guards
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [preflight]
+
+- name: Install FreeIPA (upstream primary or replica)
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Apply FreeIPA cold-start resilience fixes
+  ansible.builtin.import_tasks: resilience.yml
+  tags: [configure, resilience]
+
+- name: Apply FreeIPA post-install hardening (opt-in)
+  ansible.builtin.import_tasks: hardening.yml
+  when: freeipa_server_is_primary | bool
+  tags: [hardening]
+
+- name: Configure FreeIPA backup (primary only)
+  ansible.builtin.import_tasks: backup.yml
+  when: freeipa_server_is_primary | bool
+  tags: [backup]
+
+- name: Reconcile declarative IDAM data (primary only)
+  ansible.builtin.import_tasks: idam.yml
+  when: freeipa_server_is_primary | bool
+  tags: [idam, users, groups, hbac, sudo]

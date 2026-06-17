@@ -1,0 +1,64 @@
+---
+# FreeIPA backup automation — runs on primary only
+# Tag: backup
+
+- name: Set FreeIPA backup directory permissions for Borg read access
+  ansible.builtin.file:
+    path: "{{ freeipa_backup_dir }}"
+    state: directory
+    owner: root
+    group: "{{ freeipa_backup_reader_group }}"
+    mode: '2750'
+
+- name: Create FreeIPA backup log file
+  ansible.builtin.file:
+    path: /var/log/freeipa-backup.log
+    state: touch
+    owner: root
+    group: root
+    mode: '0644'
+  changed_when: false
+
+- name: Deploy FreeIPA backup script
+  ansible.builtin.template:
+    src: freeipa-backup.sh.j2
+    dest: "{{ freeipa_backup_script_path }}"
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Deploy FreeIPA backup systemd service
+  ansible.builtin.template:
+    src: freeipa-backup.service.j2
+    dest: /etc/systemd/system/freeipa-backup.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Deploy FreeIPA backup systemd timer
+  ansible.builtin.template:
+    src: freeipa-backup.timer.j2
+    dest: /etc/systemd/system/freeipa-backup.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Deploy logrotate config for FreeIPA backup log
+  ansible.builtin.template:
+    src: logrotate-freeipa-backup.j2
+    dest: /etc/logrotate.d/freeipa-backup
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Flush handlers to reload systemd if needed
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start FreeIPA backup timer
+  ansible.builtin.systemd:
+    name: freeipa-backup.timer
+    state: started
+    enabled: true
+    daemon_reload: true

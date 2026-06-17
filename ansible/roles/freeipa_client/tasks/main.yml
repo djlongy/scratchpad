@@ -1,0 +1,27 @@
+---
+# roles/freeipa_client/tasks/main.yml
+#
+# Phase order (a no-tag run executes everything):
+#   preflight  → hostname/time guards + stale-enrolment detection & cleanup
+#   enroll     → upstream ipaclient join (idempotent; re-joins if preflight found stale)
+#   dns        → seed this host's A/PTR record server-side (opt-in; admin-join only)
+#   configure  → post-join client config (automount homes, verification)
+
+- name: Run FreeIPA client preflight (incl. stale-rejoin cleanup)
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [preflight]
+
+- name: Enrol the host as a FreeIPA client
+  ansible.builtin.import_tasks: enroll.yml
+  tags: [enroll, install]
+
+- name: Seed this host's DNS record server-side
+  ansible.builtin.import_tasks: dns.yml
+  when:
+    - freeipa_client_seed_dns_record | bool
+    - not (freeipa_client_use_otp | bool)   # server-side write needs admin creds
+  tags: [dns]
+
+- name: Configure post-join client integration
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure]

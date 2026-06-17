@@ -1,0 +1,19 @@
+[Unit]
+Description=FreeIPA data backup
+After=ipa.service
+Wants=ipa.service
+
+[Service]
+Type=oneshot
+ExecStart={{ freeipa_backup_script_path }}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=freeipa-backup
+User=root
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths={{ freeipa_backup_dir }} /var/log /var/lib/node_exporter
+
+[Install]
+WantedBy=multi-user.target

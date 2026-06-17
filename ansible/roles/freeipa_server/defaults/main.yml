@@ -1,0 +1,156 @@
+---
+# roles/freeipa_server/defaults/main.yml
+#
+# Portable FreeIPA server role. Behavioural defaults live here; env-specific
+# values (IPs, vault paths) are commented out for discoverability and set in
+# inventory group_vars. All inputs are prefixed freeipa_server_*.
+#
+# Install/replica options map 1:1 to upstream freeipa.ansible_freeipa
+# (ipaserver_* / ipareplica_*) at the include_role call in tasks/primary.yml
+# and tasks/replica.yml.
+
+# ── Identity (derived; override in inventory only to break convention) ───────
+freeipa_server_domain: "{{ domain }}"
+freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
+
+# This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
+freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
+
+# Topology derived from inventory groups (supports single-server + clusters).
+# A single host in the `freeipa` group → it is the primary, replica path never
+# dispatches. Add a 2nd host (optionally to freeipa_replica) to grow a cluster.
+freeipa_server_primary_group: "freeipa_primary"
+freeipa_server_primary_host_name: >-
+  {{ (groups[freeipa_server_primary_group] | default(groups['freeipa']))[0] }}
+freeipa_server_primary_host: "{{ freeipa_server_primary_host_name }}.{{ freeipa_server_domain }}"
+freeipa_server_primary_ip: "{{ hostvars[freeipa_server_primary_host_name].ansible_host }}"
+freeipa_server_is_primary: "{{ inventory_hostname == freeipa_server_primary_host_name }}"
+# True only when more than one FreeIPA server is defined in inventory.
+freeipa_server_has_replicas: "{{ (groups['freeipa'] | default([])) | length > 1 }}"
+
+# This host's IP address (passed to the installer).
+freeipa_server_ip_addresses:
+  - "{{ ansible_host }}"
+
+# ── Vault credentials (ENV-SPECIFIC — set in inventory group_vars) ──────────
+# freeipa_server_vault_secret: "kv/data/platform/freeipa/runtime"
+freeipa_server_admin_password_field: "admin_password"
+freeipa_server_dm_password_field: "dm_password"
+
+# ── Packaging / firewall (upstream owns these) ──────────────────────────────
+freeipa_server_install_packages: true
+freeipa_server_setup_firewalld: true
+freeipa_server_firewalld_zone: ""        # "" → upstream default zone
+
+# ── Airgap / offline install (default online) ───────────────────────────────
+freeipa_server_offline: false
+# When offline, point to a pre-staged internal repo (handled in preflight):
+# freeipa_server_package_repo:
+#   name: "idm-local"
+#   baseurl: "https://repo.internal/idm/$releasever/$basearch"
+#   gpgcheck: true
+
+# ── CA design ───────────────────────────────────────────────────────────────
+# self-signed | external-ca | ca-less
+freeipa_server_ca_mode: "self-signed"
+freeipa_server_subject_base: ""          # "" → upstream derives O=<REALM>
+freeipa_server_ca_subject: ""            # "" → upstream default
+freeipa_server_random_serial_numbers: false
+# external-ca (two-phase: 1st run emits CSR, sign, 2nd run consumes certs):
+freeipa_server_external_cert_files: []
+# ca-less (provide HTTP/LDAP cert files via upstream vars when chosen):
+# documented in README; not defaulted.
+
+# ── KRA / PKINIT ────────────────────────────────────────────────────────────
+freeipa_server_setup_kra: false
+freeipa_server_no_pkinit: false
+
+# ── DNS ─────────────────────────────────────────────────────────────────────
+freeipa_server_setup_dns: true
+freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["10.0.0.1"]
+freeipa_server_forward_policy: "only"    # only | first
+freeipa_server_no_forwarders: false
+freeipa_server_auto_reverse: true
+freeipa_server_reverse_zones: []
+freeipa_server_no_dnssec_validation: true
+freeipa_server_allow_zone_overlap: true
+
+# ── POSIX ID range / HBAC / homedirs ────────────────────────────────────────
+freeipa_server_idstart: 0                 # 0 → upstream/random default
+freeipa_server_idmax: 0
+freeipa_server_no_hbac_allow: false       # keep allow_all at install; tear down in hardening
+freeipa_server_mkhomedir: true
+
+# ── Time (replaces the old hardcoded --no-ntp) ──────────────────────────────
+freeipa_server_setup_ntp: true
+freeipa_server_ntp_servers: []            # e.g. ["ntp1.internal", "ntp2.internal"]
+freeipa_server_ntp_pool: ""
+
+# ── FIPS (preflight assertion only — never auto-enabled) ────────────────────
+freeipa_server_fips_required: false
+
+# ── Preflight tolerances ────────────────────────────────────────────────────
+freeipa_server_preflight_time_tolerance_sec: 120   # Kerberos fails > 300s skew
+freeipa_server_preflight_wait_primary_timeout: 600  # replica waits for primary LDAP
+
+# ── Post-install hardening (ALL opt-in; default = no behaviour change) ───────
+freeipa_server_harden_anonymous_bind: false        # true → set rootdse (not full off)
+freeipa_server_search_size_limit: 0                 # 0 → leave as-is
+freeipa_server_search_time_limit: 0                 # 0 → leave as-is
+freeipa_server_require_otp_groups: []               # admin groups to force OTP on
+freeipa_server_disable_allow_all: false             # true → tear down allow_all (guarded)
+freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "FIPS", "DEFAULT"
+
+# ── Cold-start resilience tuning (behavioural — sensible defaults) ───────────
+freeipa_server_dirsrv_timeout_sec: 600
+freeipa_server_recovery_initial_delay: 6min
+freeipa_server_recovery_periodic_interval: 10min
+freeipa_server_recovery_max_retries: 1
+freeipa_server_recovery_retry_delay_seconds: 30
+freeipa_server_recovery_ipactl_timeout_sec: 90
+freeipa_server_recovery_ldap_wait_attempts: 30
+freeipa_server_recovery_service_timeout: 1800
+freeipa_server_recovery_restart_sec: 2min
+freeipa_server_recovery_start_limit_interval: 30min
+freeipa_server_recovery_start_limit_burst: 10
+freeipa_server_recovery_chrony_max_correction: "0.5"
+
+# ── HTTPD ccache cleanup (behavioural — sensible defaults) ──────────────────
+freeipa_server_ccache_max_age: "4h"
+freeipa_server_tmpfiles_clean_interval: "1h"
+
+# ── Declarative IDAM data contract (UNCHANGED names — see spec §5) ───────────
+# freeipa_idam_vault_secret: "kv/data/platform/freeipa/runtime"
+freeipa_idam_admin_principal: "admin"
+freeipa_idam_admin_password_field: "admin_password"
+freeipa_idam_managed_group: "idam-managed-users"
+freeipa_idam_groups: []
+freeipa_idam_users: []
+freeipa_idam_hostgroups: []
+freeipa_idam_hbac_rules: []
+freeipa_idam_sudo_commands: []
+freeipa_idam_sudo_rules: []
+freeipa_idam_pwpolicies: []
+freeipa_idam_password_expiration_floors: []
+freeipa_idam_protected_users:
+  - admin
+
+# ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
+# Runs ipa-migrate ON this (new-realm) primary, pulling identities from a source
+# (old) realm. Passwords are NOT migrated (Kerberos keys are realm-salted).
+freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write
+freeipa_migrate_mode: "prod-mode"               # prod-mode (preserve SIDs/DNA) | stage-mode
+freeipa_migrate_bind_dn: "cn=Directory Manager"
+freeipa_migrate_bind_pw_field: "dm_password"
+freeipa_migrate_source_ca_path: "/etc/ipa/ca.crt"   # CA cert path on the source host
+freeipa_migrate_log: "/var/log/ipa-migrate.log"
+freeipa_migrate_restart_sssd: true
+freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
+# ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
+# freeipa_migrate_source: "freeipa01.example.com"   # source IPA FQDN (ipa-migrate arg)
+# freeipa_migrate_source_host: "freeipa01"       # inventory host for CA slurp
+# freeipa_migrate_bind_pw_vault: "kv/data/platform/freeipa/runtime"  # source DM pw path
+# Internal staged paths (behavioural):
+freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
+freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
+freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"

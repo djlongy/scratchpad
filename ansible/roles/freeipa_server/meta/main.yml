@@ -1,0 +1,31 @@
+---
+galaxy_info:
+  role_name: freeipa_server
+  author: example
+  description: >-
+    Install and configure a FreeIPA server cluster (primary + replicas) on
+    EL-family or Debian/Ubuntu by wrapping freeipa.ansible_freeipa, with
+    bespoke cold-start resilience, Borg-readable backup, declarative IDAM
+    reconciliation, and an opt-in post-install hardening baseline.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+    - name: Fedora
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+    - name: Debian
+      versions: [all]
+  galaxy_tags:
+    - freeipa
+    - identity
+    - idam
+    - kerberos
+    - ldap
+
+# Requires the freeipa.ansible_freeipa collection (declared in
+# ansible/requirements.yml). Not listed as a role dependency to avoid
+# implicit pre-run; install roles are invoked explicitly via include_role.
+dependencies: []

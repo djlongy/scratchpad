@@ -1,0 +1,17 @@
+---
+# Deploy a FreeIPA server cluster (primary + replicas) with the freeipa_server role.
+# Topology, realm, and options come from inventory (see inventories/example/).
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags idam
+#
+# Single host in the `freeipa` group → single-server. Two+ → primary + replicas.
+
+- name: Deploy FreeIPA server
+  hosts: freeipa
+  gather_facts: true
+  become: true
+  become_user: root
+  become_method: ansible.builtin.sudo
+  roles:
+    - role: freeipa_server

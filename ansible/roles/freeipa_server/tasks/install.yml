@@ -1,0 +1,29 @@
+---
+# roles/freeipa_server/tasks/install.yml
+# Fetch credentials from Vault, then dispatch to upstream primary/replica wrap.
+# Packaging + firewall are owned by the upstream ipaserver/ipareplica roles.
+
+- name: Fetch FreeIPA credentials from HashiCorp Vault
+  ansible.builtin.set_fact:
+    freeipa_server_admin_password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_admin_password_field) }}
+    freeipa_server_dm_password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_dm_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Deploy primary FreeIPA server
+  ansible.builtin.include_tasks: primary.yml
+  when: freeipa_server_is_primary | bool
+
+# Replica path dispatches only for non-primary hosts. A single-server site has
+# exactly one host (the primary), so this is skipped — single-server is fully
+# supported with no replica config.
+- name: Deploy FreeIPA replica server
+  ansible.builtin.include_tasks: replica.yml
+  when: not (freeipa_server_is_primary | bool)

@@ -1,0 +1,84 @@
+---
+# roles/freeipa_client/tasks/dns.yml
+# Seed this host's forward A record (and reverse PTR) server-side immediately at
+# enrol time, so the record exists regardless of join-time self-registration or
+# whether SSSD dyndns is enabled. SSSD dyndns (freeipa_client_enable_dns_updates)
+# then maintains it from here — "seed once, machine keeps it current".
+#
+# Admin-driven: uses the ipaadmin password the role already fetched for admin-join
+# (_freeipa_client_admin_pw). OTP-joined hosts have no admin creds, so main.yml
+# skips this file for them — they rely on ipa-client-install self-registration.
+#
+# Runs ON the enrolled client: it has python3-ipalib (pulled by ipa-client) and a
+# configured IPA context (/etc/ipa/default.conf), and can reach the IPA API.
+#
+# Only meaningful when IPA is authoritative for the client's zone. If it is not,
+# the writes are tolerated (warn, not fail) — manage those records via site DNS.
+
+- name: Seed DNS | Derive the record name relative to its zone
+  ansible.builtin.set_fact:
+    _freeipa_client_dns_name: >-
+      {{ freeipa_client_fqdn
+         | regex_replace('\.' ~ (freeipa_client_dns_zone | regex_escape) ~ '$', '') }}
+    _freeipa_client_ip_octets: "{{ ansible_default_ipv4.address.split('.') }}"
+
+- name: Seed DNS | Derive the reverse zone + PTR name
+  # /24 default (zone = c.b.a.in-addr.arpa, name = d). For non-/24 reverse
+  # delegations set freeipa_client_dns_reverse_zone explicitly (the PTR name
+  # then needs to match that delegation — see README).
+  ansible.builtin.set_fact:
+    _freeipa_client_rev_zone: >-
+      {{ freeipa_client_dns_reverse_zone if (freeipa_client_dns_reverse_zone | length > 0)
+         else (_freeipa_client_ip_octets[2] ~ '.' ~ _freeipa_client_ip_octets[1]
+               ~ '.' ~ _freeipa_client_ip_octets[0] ~ '.in-addr.arpa') }}
+    _freeipa_client_rev_name: "{{ _freeipa_client_ip_octets[3] }}"
+
+- name: Seed DNS | Ensure the forward A record exists for this host
+  freeipa.ansible_freeipa.ipadnsrecord:
+    ipaadmin_password: "{{ _freeipa_client_admin_pw }}"
+    zone_name: "{{ freeipa_client_dns_zone }}"
+    name: "{{ _freeipa_client_dns_name }}"
+    a_record: "{{ ansible_default_ipv4.address }}"
+    state: present
+  register: _freeipa_client_seed_a
+  failed_when:
+    - _freeipa_client_seed_a is failed
+    - "'not found' not in (_freeipa_client_seed_a.msg | default('') | lower)"
+  no_log: true
+
+- name: Seed DNS | Warn when the forward zone is not IPA-authoritative
+  ansible.builtin.debug:
+    msg: >-
+      Forward zone '{{ freeipa_client_dns_zone }}' is not managed by IPA — A record
+      for {{ freeipa_client_fqdn }} was not seeded. Manage it via site DNS instead.
+  when: _freeipa_client_seed_a is failed
+
+- name: Seed DNS | Ensure the reverse PTR record exists for this host
+  # Managed explicitly in the reverse zone (not via create_reverse, which only
+  # fires when the A record is newly added in the same call — the A usually
+  # already exists from ipa-client-install self-registration).
+  freeipa.ansible_freeipa.ipadnsrecord:
+    ipaadmin_password: "{{ _freeipa_client_admin_pw }}"
+    zone_name: "{{ _freeipa_client_rev_zone }}"
+    name: "{{ _freeipa_client_rev_name }}"
+    ptr_record: "{{ freeipa_client_fqdn }}."
+    state: present
+  register: _freeipa_client_seed_ptr
+  failed_when:
+    - _freeipa_client_seed_ptr is failed
+    - "'not found' not in (_freeipa_client_seed_ptr.msg | default('') | lower)"
+  no_log: true
+  when:
+    - freeipa_client_seed_dns_reverse | bool
+    - _freeipa_client_seed_a is not failed
+
+- name: Seed DNS | Warn when no reverse zone exists for the PTR
+  ansible.builtin.debug:
+    msg: >-
+      No reverse zone '{{ _freeipa_client_rev_zone }}' in IPA — PTR for
+      {{ ansible_default_ipv4.address }} not seeded. Create it (ipa dnszone-add)
+      or set freeipa_client_dns_reverse_zone to enable PTRs.
+  when:
+    - freeipa_client_seed_dns_reverse | bool
+    - _freeipa_client_seed_ptr is defined
+    - _freeipa_client_seed_ptr is failed
