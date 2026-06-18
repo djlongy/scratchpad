@@ -317,6 +317,10 @@
       # break the moment anyone else ran it from a different checkout.
       artifactory_system_config_xml: "{{ '' if _sysxml_external else _sysxml }}"
       artifactory_system_config_xml_file: "{{ ((_af_state_stem | basename) ~ '.system-config.xml') if _sysxml_external else '' }}"
+      # Portable pointer to the PATCH-ready YAML config sidecar — the resilient,
+      # version-tolerant restore input (apply auto-loads it). Bare filename;
+      # resolved next to the state file on apply (preflight), same as the XML.
+      artifactory_system_config_yaml_file: "{{ ((_af_state_stem | basename) ~ '.system-config.apply.yml') if _sysxml_external else '' }}"
       artifactory_local_repositories: "{{ _bk_repos.json.LOCAL | default([]) }}"
       artifactory_remote_repositories: "{{ _bk_repos.json.REMOTE | default([]) }}"
       artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"
@@ -365,24 +369,29 @@
     - _af_sysxml_file | length > 0
     - artifactory_mode == 'backup'
 
-- name: "Backup | Write parsed system config reference (XML → YAML)"
+- name: "Backup | Write PATCH-ready system config YAML (resilient restore input)"
   when:
     - _af_sysxml_file | length > 0
     - artifactory_mode == 'backup'
   block:
-    - name: "Backup | Parse descriptor XML and write YAML reference"
+    - name: "Backup | Transform descriptor XML → PATCH-ready config YAML sidecar"
+      # descriptor_to_config flattens the XML to the YAML-PATCH schema (keyed
+      # maps, native types), drops master-key-encrypted secrets and the blocks
+      # the role manages elsewhere (repos/replications/keyPairs). This sidecar
+      # is the version-tolerant restore payload; apply auto-loads it.
       ansible.builtin.copy:
-        content: "{{ _af_sysxml | ansible.utils.from_xml | to_pretty_yaml(gap_depth=2) }}"
-        dest: "{{ _af_sysxml_file | regex_replace('\\.xml$', '') }}.parsed.yml"
+        content: "{{ _af_sysxml | ansible.utils.from_xml | descriptor_to_config | to_pretty_yaml(gap_depth=2) }}"
+        dest: "{{ _af_sysxml_file | regex_replace('\\.xml$', '') }}.apply.yml"
         mode: "0640"
       delegate_to: localhost
   rescue:
-    - name: "Backup | Note that the parsed reference was skipped"
+    - name: "Backup | Note that the PATCH-ready YAML was skipped"
       ansible.builtin.debug:
         msg: >-
-          Could not convert the config descriptor XML to YAML (is the
-          'xmltodict' python library installed on the controller?). The raw
-          XML sidecar was still written. Error: {{ ansible_failed_result.msg | default('unknown') }}
+          Could not transform the config descriptor XML to PATCH-ready YAML (is
+          the 'xmltodict' python library installed on the controller?). The raw
+          XML sidecar was still written; system-config restore then falls back
+          to the opt-in raw-XML path. Error: {{ ansible_failed_result.msg | default('unknown') }}
 
 # ── Omit empty values (native Jinja; gated by artifactory_export_omit_empty) ──
 # Drop keys whose value is null / '' / [] / {} so the As-Built vars stay small.

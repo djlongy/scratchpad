@@ -1,39 +1,120 @@
 ---
 # roles/artifactory/tasks/system/system_config.yml
-# Apply global configuration.
+# Apply global/system configuration. Two paths:
 #
-# Primary path: structured YAML descriptor → PATCH (additive, supported,
-# maintainable). Use this for the settings you actually manage.
+#  1. YAML PATCH (default, RESILIENT across Artifactory versions). Uses
+#     artifactory_system_config_yaml — hand-authored, or AUTO-LOADED from the
+#     PATCH-ready sidecar a backup wrote (artifactory_system_config_yaml_file),
+#     so you never copy-paste config into group_vars. Applied PER-BLOCK and
+#     fail-soft: a block this Artifactory version rejects is reported and
+#     skipped instead of sinking the whole restore — that is what makes
+#     up/downgrade restores work. Secrets the backup stripped (master-key
+#     encrypted) can be re-supplied via artifactory_system_config_secrets.
 #
-# DR path (opt-in): re-POST the raw XML descriptor captured at backup time.
-# This is a full replace — heavy-handed, version-sensitive — so it is gated
-# behind artifactory_apply_system_config_xml.
+#  2. Raw XML full-replace (opt-in DR). Re-POSTs the captured descriptor
+#     verbatim — heavy-handed, version-bound (xsd-tagged) and carrying
+#     master-key-encrypted secrets, so it only works same-instance/same-version.
+#     Guarded below to refuse a schema-version mismatch (which would 500).
 
-- name: "System_config | Apply YAML configuration descriptor"
+# ── 1. YAML PATCH path (resilient default) ────────────────────────────────
+- name: "System_config | Check for a captured PATCH-ready YAML sidecar"
+  ansible.builtin.stat:
+    path: "{{ artifactory_system_config_yaml_file }}"
+  register: _af_cfgyaml_stat
+  delegate_to: localhost
+  when: artifactory_system_config_yaml_file | default('') | length > 0
+
+- name: "System_config | Auto-load captured PATCH-ready YAML (unless hand-authored)"
+  ansible.builtin.set_fact:
+    artifactory_system_config_yaml: "{{ lookup('ansible.builtin.file', artifactory_system_config_yaml_file) | from_yaml }}"
+  when:
+    - artifactory_system_config_yaml | default({}) | length == 0
+    - _af_cfgyaml_stat.stat.exists | default(false)
+
+- name: "System_config | Merge re-supplied secrets into the desired config"
+  ansible.builtin.set_fact:
+    artifactory_system_config_yaml: "{{ artifactory_system_config_yaml | combine(artifactory_system_config_secrets, recursive=true) }}"
+  when:
+    - artifactory_system_config_yaml | default({}) | length > 0
+    - artifactory_system_config_secrets | default({}) | length > 0
+  no_log: true
+
+- name: "System_config | Apply YAML config descriptor block by block (fail-soft)"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.system_config }}"
     method: PATCH
     headers: "{{ _af_headers | combine({'Content-Type': 'application/yaml'}) }}"
-    body: "{{ artifactory_system_config_yaml | to_nice_yaml(indent=2) }}"
+    body: "{{ {item.key: item.value} | to_nice_yaml(indent=2) }}"
     status_code: [200]
   register: _ap_sysyaml
   changed_when: _ap_sysyaml.status == 200
-  when: artifactory_system_config_yaml | length > 0
+  failed_when: false
+  loop: "{{ artifactory_system_config_yaml | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
 
-# The XML body comes inline (artifactory_system_config_xml) or from the
-# sidecar file a backup wrote (artifactory_system_config_xml_file).
-- name: "System_config | Re-apply raw XML descriptor (full replace, opt-in)"
-  ansible.builtin.uri:
-    url: "{{ artifactory_ep.system_config }}"
-    method: POST
-    headers: "{{ _af_headers | combine({'Content-Type': 'application/xml'}) }}"
-    body: >-
-      {{ artifactory_system_config_xml
-         if artifactory_system_config_xml | length > 0
-         else lookup('ansible.builtin.file', artifactory_system_config_xml_file) }}
-    status_code: [200]
-  register: _ap_sysxml
-  changed_when: _ap_sysxml.status == 200
+- name: "System_config | Report config blocks the target rejected"
+  vars:
+    _failed_blocks: >-
+      {{ _ap_sysyaml.results | default([])
+         | rejectattr('status', 'equalto', 200) | map(attribute='item.key') | list }}
+  ansible.builtin.debug:
+    msg: >-
+      System-config blocks NOT applied (rejected by this Artifactory version —
+      review/adjust, or accept the version gap): {{ _failed_blocks | join(', ') }}
+  when: _failed_blocks | length > 0
+
+- name: "System_config | Fail if a block was rejected and fail-fast is set"
+  vars:
+    _failed_blocks: >-
+      {{ _ap_sysyaml.results | default([])
+         | rejectattr('status', 'equalto', 200) | map(attribute='item.key') | list }}
+  ansible.builtin.fail:
+    msg: "System-config blocks rejected by the target: {{ _failed_blocks | join(', ') }} (artifactory_fail_fast is true)."
+  when:
+    - artifactory_fail_fast | bool
+    - _failed_blocks | length > 0
+
+# ── 2. Raw XML full-replace (opt-in DR, schema-version guarded) ───────────
+- name: "System_config | Raw XML descriptor re-apply (opt-in, same-version only)"
   when:
     - artifactory_apply_system_config_xml | bool
     - (artifactory_system_config_xml | length > 0) or (artifactory_system_config_xml_file | length > 0)
+  vars:
+    _captured_xml: >-
+      {{ artifactory_system_config_xml if (artifactory_system_config_xml | length > 0)
+         else lookup('ansible.builtin.file', artifactory_system_config_xml_file) }}
+  block:
+    - name: "System_config | GET live descriptor to read its schema version"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.system_config }}"
+        method: GET
+        headers: "{{ _af_headers }}"
+        status_code: [200]
+      check_mode: false
+      register: _af_live_desc
+      changed_when: false
+
+    - name: "System_config | Guard — refuse raw XML across schema versions"
+      vars:
+        _af_xsd_captured: "{{ _captured_xml | regex_search('xsd/[0-9.]+') | default('?', true) }}"
+        _af_xsd_live: "{{ _af_live_desc.content | regex_search('xsd/[0-9.]+') | default('?', true) }}"
+      ansible.builtin.assert:
+        that: _af_xsd_captured == _af_xsd_live
+        fail_msg: >-
+          Refusing raw-XML system-config replace: captured descriptor schema
+          ({{ _af_xsd_captured }}) != target ({{ _af_xsd_live }}). The
+          full-replace POST is version-bound and would 500. Use the YAML PATCH
+          path (default) for cross-version restore, or re-capture on this version.
+        success_msg: "Descriptor schema matches ({{ _af_xsd_captured }}) — raw XML replace allowed."
+        quiet: true
+
+    - name: "System_config | Re-apply raw XML descriptor (full replace)"
+      ansible.builtin.uri:
+        url: "{{ artifactory_ep.system_config }}"
+        method: POST
+        headers: "{{ _af_headers | combine({'Content-Type': 'application/xml'}) }}"
+        body: "{{ _captured_xml }}"
+        status_code: [200]
+      register: _ap_sysxml
+      changed_when: _ap_sysxml.status == 200

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def drop_empty(data):
     """Recursively remove mapping keys whose value is "empty" — None, an empty
@@ -120,10 +122,132 @@ def diff_summary(diff):
     return lines or ["no differences — As-Built matches saved IaC"]
 
 
+# ── system-config descriptor (XML) → PATCH-ready YAML config ────────────────
+# The global config descriptor can only be GET as XML (no native YAML read), and
+# the raw-XML full-replace POST is version-bound (xsd-tagged) and carries
+# master-key-encrypted secrets, so it does not port across instances/versions.
+# The supported, version-tolerant restore path is the YAML PATCH
+# (Content-Type: application/yaml), whose schema mirrors the descriptor's element
+# names FLATTENED — but named collections are KEYED MAPS (by key/name), not the
+# XML's <plural><singular>…</singular></plural> wrapper. This transform converts
+# an xmltodict parse of the descriptor into that PATCH-ready shape. Validated
+# live against Artifactory 7.156.2 (all blocks PATCH 200).
+
+# Top-level blocks NOT emitted into the system-config YAML:
+#  * repositories/replications — managed by the role's own dedicated sections
+#    (artifactory_*_repositories / artifactory_replications), not system-config.
+#  * keyPairs — GPG signing PRIVATE keys (per-instance secret, cannot port).
+#  * xrayConfig is KEPT but its secret leaf (password) is stripped below; it is
+#    an internal binding, review before promoting across instances.
+#  * revision — server-managed optimistic-lock counter; never send it.
+#  * addons — UI state (showAddonsInfoCookie is generated; PATCH rejects it).
+_CONFIG_EXCLUDE = {
+    'localRepositories', 'remoteRepositories', 'virtualRepositories',
+    'federatedRepositories', 'releaseBundlesRepositories',
+    'localReplications', 'remoteReplications',
+    'keyPairs', 'revision', 'addons', '@xmlns',
+}
+
+# XML list-wrapper -> (child element name, identity field). xmltodict renders
+# <plural><singular key=…>…</singular></plural> as {plural: {singular: [..]}};
+# the PATCH wants {plural: {<identity>: {…}}} keyed by the item's natural id.
+# Applied at ANY depth (propertySets nest properties → predefinedValues).
+_CONFIG_WRAP = {
+    'backups': ('backup', 'key'),
+    'proxies': ('proxy', 'key'),
+    'reverseProxies': ('reverseProxy', 'key'),
+    'propertySets': ('propertySet', 'name'),
+    'repoLayouts': ('repoLayout', 'name'),
+    'properties': ('property', 'name'),
+    'predefinedValues': ('predefinedValue', 'value'),
+    'retentionPolicies': ('retentionPolicy', 'name'),
+}
+
+# Leaf keys whose VALUE is a secret encrypted under the source instance's master
+# key — stripped so the export carries no unportable/secret material. Matched
+# case-insensitively on the whole leaf-key name (so 'key'/'apiKey' differ).
+_SECRET_RE = re.compile(
+    r'(password|passwd|secret|sslkey|privatekey|passphrase|refreshtoken'
+    r'|clientsecret|apikey|encryptionkey|bindpassword|managerpassword'
+    r'|masterkey)$', re.I)
+
+# Identity-provider sub-blocks under <security>: managed by the role's own
+# integrations (LDAP/SSO) and secret-bearing — dropped from system-config YAML.
+_SECURITY_SUBKEYS_DROP = {
+    'ldapSettings', 'ldapGroupSettings', 'crowdSettings',
+    'samlSettings', 'oauthSettings', 'httpSsoSettings',
+}
+
+
+def _coerce_scalar(v):
+    """xmltodict yields every leaf as a string; restore native bool/int so the
+    YAML PATCH receives typed values (string cron/host expressions untouched)."""
+    if isinstance(v, str):
+        low = v.lower()
+        if low in ('true', 'false'):
+            return low == 'true'
+        if re.fullmatch(r'-?\d+', v):
+            return int(v)
+    return v
+
+
+def _clean_config(node, parent=None):
+    """Recursively reshape an xmltodict descriptor node into PATCH-ready form:
+    drop @attrs/secrets/empties, unwrap list-wrappers into keyed maps, and
+    coerce scalar types. Empties (None/''/[]/{}) are pruned so unset fields are
+    simply absent (PATCH is additive — absent leaves existing values alone)."""
+    if isinstance(node, dict):
+        out = {}
+        for k, val in node.items():
+            if k.startswith('@') or _SECRET_RE.search(k):
+                continue
+            if parent == 'security' and k in _SECURITY_SUBKEYS_DROP:
+                continue
+            if k in _CONFIG_WRAP:
+                child, idf = _CONFIG_WRAP[k]
+                inner = val.get(child) if isinstance(val, dict) else val
+                if inner is None:
+                    continue
+                items = inner if isinstance(inner, list) else [inner]
+                keyed = {}
+                for it in items:
+                    ci = _clean_config(it, k)
+                    if not isinstance(ci, dict):
+                        continue
+                    idv = ci.pop(idf, None)
+                    if idv is not None:
+                        keyed[idv] = ci
+                if keyed:
+                    out[k] = keyed
+                continue
+            cv = _clean_config(val, k)
+            if cv not in (None, '', [], {}):
+                out[k] = cv
+        return out
+    if isinstance(node, list):
+        return [_clean_config(x, parent) for x in node]
+    return _coerce_scalar(node)
+
+
+def descriptor_to_config(parsed):
+    """Convert an xmltodict parse of the Artifactory config descriptor into the
+    PATCH-ready (application/yaml) config dict — the version-tolerant restore
+    payload. `parsed` may be the full {'config': {...}} document or the inner
+    config mapping. Returns {} for empty/invalid input."""
+    if not isinstance(parsed, dict):
+        return {}
+    cfg = parsed.get('config', parsed)
+    if not isinstance(cfg, dict):
+        return {}
+    top = {k: v for k, v in cfg.items() if k not in _CONFIG_EXCLUDE}
+    return _clean_config(top)
+
+
 class FilterModule(object):
     def filters(self):
         return {
             'drop_empty': drop_empty,
             'config_diff': config_diff,
             'diff_summary': diff_summary,
+            'descriptor_to_config': descriptor_to_config,
         }

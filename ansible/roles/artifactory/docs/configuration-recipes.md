@@ -66,7 +66,24 @@ artifactory_system_config_yaml:
   urlBase: https://artifactory.example.com
 ```
 
-These round-trip cleanly via the descriptor PATCH (application/yaml).
+These round-trip cleanly via the descriptor PATCH (`application/yaml`), applied
+per-block and fail-soft. Keys mirror the descriptor element names **flattened** —
+there is **no `general:` wrapper** (the PATCH rejects it). Named collections are
+**keyed maps**, not lists — e.g. `backups:` is keyed by the backup `key`,
+`reverseProxies:`/`proxies:` by `key`, `propertySets:`/`repoLayouts:` by `name`:
+
+```yaml
+artifactory_system_config_yaml:
+  fileUploadMaxSizeMb: 100
+  trashcanConfig: {enabled: true, retentionPeriodDays: 14}
+  backups:
+    backup-daily: {enabled: true, cronExp: "0 0 2 ? * MON-FRI"}
+```
+
+You normally don't hand-write this: a backup captures the whole descriptor and
+writes a PATCH-ready `*.system-config.apply.yml` sidecar, which apply auto-loads
+when `artifactory_system_config_yaml` is empty. See the role README's
+"System config descriptor — resilient, cross-version restore" section.
 
 ## ⚠️ Docker access method — do NOT set `dockerReverseProxyMethod: subDomain` on a `direct` proxy
 

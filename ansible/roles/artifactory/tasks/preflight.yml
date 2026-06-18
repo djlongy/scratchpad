@@ -196,6 +196,12 @@
           {{ (_af_source_file | dirname) ~ '/' ~ (artifactory_system_config_xml_file | basename) }}
       when: artifactory_system_config_xml_file | default('') | length > 0
 
+    - name: Anchor the PATCH-ready system-config YAML sidecar next to the state file
+      ansible.builtin.set_fact:
+        artifactory_system_config_yaml_file: >-
+          {{ (_af_source_file | dirname) ~ '/' ~ (artifactory_system_config_yaml_file | basename) }}
+      when: artifactory_system_config_yaml_file | default('') | length > 0
+
 - name: Note when applying with no saved state file (provision-from-scratch)
   ansible.builtin.debug:
     msg: >-

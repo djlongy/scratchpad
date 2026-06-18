@@ -233,24 +233,42 @@ lists; only its content lingers until the retention period expires. There is
 no public REST API for the repository-trash view itself (the UI uses internal
 `/ui/api` endpoints that reject access tokens).
 
-### System config descriptor (self-hosted only)
+### System config descriptor — resilient, cross-version restore (self-hosted only)
 
-When the global config descriptor XML is captured, it is externalized to
-sidecars next to the export instead of bloating the state file
-(`artifactory_export_system_config_files: true`):
+The global config descriptor only **reads** as XML, and the raw-XML
+full-replace POST is a dead end across instances/versions: it's bound to an xsd
+schema version (`xmlns=…/xsd/X.Y.Z`, tied to the Artifactory release) **and**
+carries passwords encrypted under the *source* instance's master key — so
+promoting prod→dev, or restoring across an up/downgrade, fails (a schema 400 or
+a master-key 500). The supported, version-tolerant path is the **YAML PATCH**
+(`application/yaml`): stable keys, additive, validated per-key.
+
+So when the descriptor is captured (`artifactory_export_system_config_files:
+true`) the role externalizes two sidecars next to the export:
 
 | File | Purpose |
 |---|---|
-| `<export>.system-config.xml` | raw descriptor — authoritative, used by the opt-in DR re-apply path (`artifactory_apply_system_config_xml`) |
-| `<export>.system-config.parsed.yml` | XML→YAML **reference** for humans drafting `artifactory_system_config_yaml` IaC blocks (needs `xmltodict` on the controller; skipped with a note if absent) |
+| `<export>.system-config.xml` | raw descriptor — full fidelity; the opt-in same-version DR re-apply path (`artifactory_apply_system_config_xml`) |
+| `<export>.system-config.apply.yml` | **PATCH-ready** YAML config (the `descriptor_to_config` transform: flattened to the PATCH schema, list sections as keyed maps, native types) with master-key-encrypted secrets and role-managed blocks (repos/replications/keyPairs) **stripped**. This is the resilient restore input. |
 
-The state file carries `artifactory_system_config_xml_file` pointing at the
-XML sidecar **by filename only** (not an absolute path), so the export stays
-portable across checkouts — on apply the role resolves it next to the state
-file. The parsed YAML is a reference only — xmltodict conventions
-(`'@'`-prefixed attributes, strings everywhere) mean it is NOT directly valid
-`artifactory_system_config_yaml` input; cherry-pick and clean the blocks you
-want to manage.
+The state file points at both **by filename only** (not absolute paths), so the
+export is portable across checkouts; on apply the role resolves them next to the
+state file.
+
+**On apply** (default, no extra flags): if you didn't hand-author
+`artifactory_system_config_yaml`, the role **auto-loads** the `.apply.yml`
+sidecar — no copy-paste into `group_vars` — and PATCHes it **block by block,
+fail-soft**. A block this Artifactory version doesn't accept is reported and
+skipped (set `artifactory_fail_fast: true` to make that fatal) — which is
+exactly what lets you restore across versions and see precisely what didn't map.
+
+**Secrets** the capture stripped (mail/proxy passwords, ssl keys) can't port —
+re-supply only the ones you need via `artifactory_system_config_secrets` (deep-
+merged before PATCH, ideally from Vault), same idea as the LDAP bind passwords.
+
+**Raw XML** (`artifactory_apply_system_config_xml: true`) stays available for
+same-version DR but now refuses up front if the captured descriptor's schema
+version ≠ the target's — so it can't silently 500.
 
 ## Trimming empty values
 

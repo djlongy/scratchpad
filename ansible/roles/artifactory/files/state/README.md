@@ -4,8 +4,8 @@
 
 ```
 <env>/artifactory.yml                       # the state file (apply/compare read it)
-<env>/artifactory.system-config.xml         # raw global descriptor (self-hosted only)
-<env>/artifactory.system-config.parsed.yml  # XML→YAML reference
+<env>/artifactory.system-config.xml         # raw global descriptor (DR / same-version full-replace)
+<env>/artifactory.system-config.apply.yml   # PATCH-ready config (resilient cross-version restore; auto-loaded on apply)
 <env>/artifactory.drift.yml                 # written by mode: compare
 ```
 

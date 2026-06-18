@@ -168,39 +168,55 @@ artifactory_prune_sections: [repositories, groups, users, permissions, projects,
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── System / global configuration ─────────────────────────────────────────
-# Two representations, by design (GET returns XML, apply wants YAML):
+# The global config descriptor only READS as XML, but the RESILIENT,
+# version-tolerant restore path is the YAML PATCH. Representations:
 #
-#  * artifactory_system_config_yaml — structured YAML config descriptor, the
-#    maintainable declarative path. Applied via PATCH /api/system/configuration
-#    (Content-Type: application/yaml). This is what you hand-edit.
+#  * artifactory_system_config_yaml — declarative config in the YAML-PATCH
+#    schema, applied PER-BLOCK and fail-soft (PATCH /api/system/configuration,
+#    application/yaml). Hand-author it, OR leave it empty and the role
+#    AUTO-LOADS the PATCH-ready sidecar a backup wrote
+#    (artifactory_system_config_yaml_file). Keys mirror the descriptor element
+#    names flattened; named collections are KEYED MAPS (by key/name). NOTE:
+#    there is NO `general:` wrapper — baseUrl/serverName/… are top-level.
 #
-#  * artifactory_system_config_xml — the raw config descriptor exactly as the
-#    server returned it on backup (full fidelity, for diff / DR / reference).
-#    Only re-applied when artifactory_apply_system_config_xml is true, via the
-#    heavy-handed POST /api/system/configuration full-replace. Off by default.
+#  * artifactory_system_config_xml / _xml_file — the raw descriptor as the
+#    server returned it (full fidelity, for diff / DR). Only re-applied when
+#    artifactory_apply_system_config_xml is true, via the heavy-handed POST
+#    full-replace — version-bound and carrying master-key-encrypted secrets, so
+#    same-instance/same-version only (the role guards a schema mismatch). For
+#    up/downgrades use the YAML path above.
 artifactory_system_config_yaml: {}
-#   general:
-#     baseUrl: "https://artifactory.dev.example.com"
-#     fileUploadMaxSizeMb: 100
-#   proxies:
-#     corp:
-#       host: proxy.example.com
-#       port: 8080
-#       defaultProxy: true
+#   urlBase: "https://artifactory.dev.example.com"
+#   serverName: artifactory.dev.example.com
+#   fileUploadMaxSizeMb: 100
+#   trashcanConfig:
+#     enabled: true
+#     retentionPeriodDays: 14
 #   backups:
-#     backup-daily:
+#     backup-daily:                 # keyed map — the key IS the backup's `key`
 #       enabled: true
 #       cronExp: "0 0 2 ? * MON-FRI"
 #       excludeNewRepositories: false
-#   mailServer:
-#     enabled: false
+
+# PATCH-ready YAML config sidecar written by backup (when
+# artifactory_export_system_config_files is true) — the resilient restore input
+# apply auto-loads when artifactory_system_config_yaml is empty. Stored in the
+# state file as a bare FILENAME (portable); resolved next to the state file on
+# apply. Secrets and role-managed blocks (repos/replications/keyPairs) are
+# stripped from it at capture time.
+artifactory_system_config_yaml_file: ""
+
+# Re-supply secrets the backup stripped (master-key encrypted — cannot port):
+# deep-merged into the desired config before PATCH. Same shape as the config but
+# secrets only, ideally from Vault. Example:
+#   artifactory_system_config_secrets:
+#     mailServer: {password: "{{ lookup('community.hashi_vault.hashi_vault', '…') }}"}
+artifactory_system_config_secrets: {}
 
 artifactory_system_config_xml: ""
-# Descriptor XML sidecar written by backup (when
-# artifactory_export_system_config_files is true). Stored in the state file as a
-# bare FILENAME, not an absolute path, so the export stays portable across
-# checkouts; on apply the role resolves it next to the state file. Used by the
-# opt-in XML re-apply path when artifactory_system_config_xml itself is empty.
+# Descriptor XML sidecar written by backup. Stored in the state file as a bare
+# FILENAME (portable); resolved next to the state file on apply. Used by the
+# opt-in raw-XML re-apply path when artifactory_system_config_xml itself is empty.
 artifactory_system_config_xml_file: ""
 artifactory_apply_system_config_xml: false
 

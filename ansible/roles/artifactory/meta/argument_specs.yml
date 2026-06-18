@@ -137,6 +137,28 @@ argument_specs:
         type: bool
         default: false
         description: Toggle access-token creation (mints new secrets; never exported).
+      artifactory_system_config_yaml:
+        type: dict
+        default: {}
+        description: >-
+          Global/system config in the YAML-PATCH schema (keys mirror the
+          descriptor flattened; named collections are keyed maps). Applied
+          per-block, fail-soft. Empty = auto-load the PATCH-ready sidecar a
+          backup wrote. The resilient, version-tolerant restore path.
+      artifactory_system_config_secrets:
+        type: dict
+        default: {}
+        description: >-
+          Secrets the backup stripped (master-key encrypted) to re-supply,
+          deep-merged into artifactory_system_config_yaml before PATCH. Same
+          shape as the config but secrets only — ideally from Vault.
+      artifactory_apply_system_config_xml:
+        type: bool
+        default: false
+        description: >-
+          Opt-in DR path: re-POST the captured raw XML descriptor (full
+          replace). Same-version only; the role refuses a schema-version
+          mismatch. Prefer the YAML path for cross-version restore.
       artifactory_local_repositories:
         type: list
         elements: dict
