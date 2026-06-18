@@ -257,10 +257,18 @@ state file.
 
 **On apply** (default, no extra flags): if you didn't hand-author
 `artifactory_system_config_yaml`, the role **auto-loads** the `.apply.yml`
-sidecar — no copy-paste into `group_vars` — and PATCHes it **block by block,
-fail-soft**. A block this Artifactory version doesn't accept is reported and
-skipped (set `artifactory_fail_fast: true` to make that fatal) — which is
-exactly what lets you restore across versions and see precisely what didn't map.
+sidecar — no copy-paste into `group_vars`. It then applies the config with the
+`artifactory_config_apply` module (`library/`), which is **version-adaptive**:
+the YAML-PATCH schema is only the *writable* properties and that set **drifts
+between Artifactory versions** (an older instance 400s a key a newer one
+accepts, with `is not a property` / `is not part of the configuration`). So the
+module PATCHes each block and, on such a 400, **drops the exact key the server
+named and retries** — the server is the schema oracle, so the maximal
+version-compatible subset applies on *any* version, up or downgrade. Every
+dropped key is listed in `dropped` and any block it couldn't salvage in
+`rejected` (set `artifactory_fail_fast: true` to make a rejection fatal) — so a
+cross-version restore tells you precisely what didn't map instead of failing
+opaquely.
 
 **Secrets** the capture stripped (mail/proxy passwords, ssl keys) can't port —
 re-supply only the ones you need via `artifactory_system_config_secrets` (deep-
@@ -340,6 +348,8 @@ roles/artifactory/
 ├── vars/main.yml              # API endpoint constants (live-validated)
 ├── meta/{main,argument_specs}.yml
 ├── tasks/                     # main → preflight → backup | apply → per-section files
+├── filter_plugins/            # drop_empty, config_diff, descriptor_to_config, to_pretty_yaml
+├── library/                   # artifactory_config_apply (version-adaptive system-config PATCH)
 ├── examples/multitenant.yml   # project-per-tenant reference design
 └── docs/api-reference.md      # full API surface, statuses, shapes
 ```

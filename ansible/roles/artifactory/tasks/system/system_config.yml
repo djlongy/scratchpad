@@ -39,41 +39,41 @@
     - artifactory_system_config_secrets | default({}) | length > 0
   no_log: true
 
-- name: "System_config | Apply YAML config descriptor block by block (fail-soft)"
-  ansible.builtin.uri:
+- name: "System_config | Apply YAML config per-block, dropping version-unknown keys"
+  # Version-adaptive: PATCHes each top-level block and, on a 400 naming a key the
+  # target's schema doesn't accept ("is not a property" on older versions / "is
+  # not part of the configuration" on newer), drops that key and retries — so the
+  # maximal version-compatible subset applies and every dropped/failed key is
+  # reported. This is what makes restore work ACROSS Artifactory versions.
+  artifactory_config_apply:
     url: "{{ artifactory_ep.system_config }}"
-    method: PATCH
-    headers: "{{ _af_headers | combine({'Content-Type': 'application/yaml'}) }}"
-    body: "{{ {item.key: item.value} | to_nice_yaml(indent=2) }}"
-    status_code: [200]
+    config: "{{ artifactory_system_config_yaml }}"
+    token: "{{ artifactory_access_token | default('', true) }}"
+    username: "{{ artifactory_admin_username if (_af_use_basic | default(false)) else omit }}"
+    password: "{{ artifactory_admin_password if (_af_use_basic | default(false)) else omit }}"
+    validate_certs: "{{ artifactory_validate_certs }}"
+    timeout: "{{ artifactory_request_timeout }}"
   register: _ap_sysyaml
-  changed_when: _ap_sysyaml.status == 200
+  changed_when: _ap_sysyaml.applied | default([]) | length > 0
   failed_when: false
-  loop: "{{ artifactory_system_config_yaml | default({}) | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
+  when: artifactory_system_config_yaml | default({}) | length > 0
 
-- name: "System_config | Report config blocks the target rejected"
-  vars:
-    _failed_blocks: >-
-      {{ _ap_sysyaml.results | default([])
-         | rejectattr('status', 'equalto', 200) | map(attribute='item.key') | list }}
+- name: "System_config | Report dropped / rejected config keys"
   ansible.builtin.debug:
     msg: >-
-      System-config blocks NOT applied (rejected by this Artifactory version —
-      review/adjust, or accept the version gap): {{ _failed_blocks | join(', ') }}
-  when: _failed_blocks | length > 0
+      system-config: {{ _ap_sysyaml.applied | default([]) | length }} block(s) applied.
+      {{ ('Dropped version-incompatible keys: ' ~ _ap_sysyaml.dropped) if (_ap_sysyaml.dropped | default({})) else '' }}
+      {{ ('FAILED blocks (review): ' ~ _ap_sysyaml.failed) if (_ap_sysyaml.failed | default({})) else '' }}
+  when:
+    - _ap_sysyaml is defined
+    - (_ap_sysyaml.dropped | default({})) or (_ap_sysyaml.failed | default({}))
 
-- name: "System_config | Fail if a block was rejected and fail-fast is set"
-  vars:
-    _failed_blocks: >-
-      {{ _ap_sysyaml.results | default([])
-         | rejectattr('status', 'equalto', 200) | map(attribute='item.key') | list }}
+- name: "System_config | Fail if blocks were rejected and fail-fast is set"
   ansible.builtin.fail:
-    msg: "System-config blocks rejected by the target: {{ _failed_blocks | join(', ') }} (artifactory_fail_fast is true)."
+    msg: "System-config blocks failed on this target: {{ _ap_sysyaml.failed.keys() | list | join(', ') }} (artifactory_fail_fast is true)."
   when:
     - artifactory_fail_fast | bool
-    - _failed_blocks | length > 0
+    - _ap_sysyaml.failed | default({}) | length > 0
 
 # ── 2. Raw XML full-replace (opt-in DR, schema-version guarded) ───────────
 - name: "System_config | Raw XML descriptor re-apply (opt-in, same-version only)"
