@@ -24,9 +24,11 @@
   delegate_to: localhost
   when: artifactory_system_config_yaml_file | default('') | length > 0
 
-- name: "System_config | Auto-load captured PATCH-ready YAML (unless hand-authored)"
-  ansible.builtin.set_fact:
-    artifactory_system_config_yaml: "{{ lookup('ansible.builtin.file', artifactory_system_config_yaml_file) | from_yaml }}"
+- name: "System_config | Auto-load captured config (named root → variable, unless hand-authored)"
+  # The sidecar carries a named root (artifactory_system_config_yaml:), so
+  # include_vars populates the variable directly — same file is a drop-in for
+  # group_vars/all. Only loads when no base was hand-authored (length == 0).
+  ansible.builtin.include_vars: "{{ artifactory_system_config_yaml_file }}"
   when:
     - artifactory_system_config_yaml | default({}) | length == 0
     - _af_cfgyaml_stat.stat.exists | default(false)

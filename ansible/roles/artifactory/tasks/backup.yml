@@ -377,10 +377,13 @@
     - name: "Backup | Transform descriptor XML → PATCH-ready config YAML sidecar"
       # descriptor_to_config flattens the XML to the YAML-PATCH schema (keyed
       # maps, native types), drops master-key-encrypted secrets and the blocks
-      # the role manages elsewhere (repos/replications/keyPairs). This sidecar
-      # is the version-tolerant restore payload; apply auto-loads it.
+      # the role manages elsewhere (repos/replications/keyPairs). The sidecar is
+      # written under a NAMED ROOT (artifactory_system_config_yaml:) so it is
+      # self-documenting and a literal drop-in for group_vars — copy it into
+      # playbooks/group_vars/all/ and it IS the shared base. apply auto-loads it
+      # via include_vars.
       ansible.builtin.copy:
-        content: "{{ _af_sysxml | ansible.utils.from_xml | descriptor_to_config | to_pretty_yaml(gap_depth=2) }}"
+        content: "{{ {'artifactory_system_config_yaml': (_af_sysxml | ansible.utils.from_xml | descriptor_to_config)} | to_pretty_yaml(gap_depth=3) }}"
         dest: "{{ _af_sysxml_file | regex_replace('\\.xml$', '') }}.apply.yml"
         mode: "0640"
       delegate_to: localhost
@@ -440,10 +443,24 @@
     _af_state: "{{ _af_state | drop_empty }}"
   when: artifactory_export_omit_empty | bool
 
+# Header prepended to YAML exports only (a '#' line would make a JSON export
+# invalid). It warns that `_meta` is provenance, never applied — most importantly
+# that `_meta.trash_can` REPORTS the trash bin, it does not request a delete.
 - name: "Backup | Write state file"
+  vars:
+    _af_state_header: |
+      # Artifactory captured config — As-Built, and the desired state for `mode: apply`.
+      #
+      # `_meta` is PROVENANCE ONLY and is NEVER applied — apply/compare ignore it
+      # (see artifactory_compare_ignore_keys in vars/main.yml). In particular
+      # `_meta.trash_can` is a READ-ONLY REPORT of repo-named folders whose deleted
+      # content still sits in Artifactory's trash bin. It is informational — it is
+      # NOT a request to delete or "trash" those repositories. Removing repos is
+      # only ever done by an explicit `state: absent` or opt-in `artifactory_prune`.
+      #
   ansible.builtin.copy:
     content: >-
-      {{ _af_state | to_pretty_yaml(indent=2, width=200, gap_depth=2, gap_blocks_only=true)
+      {{ (_af_state_header + (_af_state | to_pretty_yaml(indent=2, width=200, gap_depth=2, gap_blocks_only=true)))
          if artifactory_export_format == 'yaml'
          else (_af_state | to_nice_json(indent=2)) }}
     dest: "{{ artifactory_state_file }}"
