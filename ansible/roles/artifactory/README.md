@@ -274,6 +274,41 @@ opaquely.
 re-supply only the ones you need via `artifactory_system_config_secrets` (deep-
 merged before PATCH, ideally from Vault), same idea as the LDAP bind passwords.
 
+#### One config, many environments (dev / test / prod)
+
+Don't template or copy a per-machine descriptor. Keep the **shared** config in
+`group_vars/all` and put only the keys that **differ per environment** (`urlBase`,
+`serverName`, a mail host…) in `inventories/<env>/group_vars` via
+`artifactory_system_config_yaml_overrides`. The role deep-merges
+**base ◁ per-env overrides ◁ secrets** (recursive, so a nested override changes
+one leaf and keeps its siblings) and PATCHes the result — same playbook, just
+`-i inventories/<env>`:
+
+```yaml
+# group_vars/all/artifactory.yml          — shared across every environment
+artifactory_system_config_yaml:
+  fileUploadMaxSizeMb: 100
+  trashcanConfig: {enabled: true, retentionPeriodDays: 14}
+  backups:
+    backup-daily: {enabled: true, cronExp: "0 0 2 ? * MON-FRI"}
+
+# inventories/prod/group_vars/all/artifactory.yml   — only what's prod-specific
+artifactory_system_config_yaml_overrides:
+  urlBase: "https://artifactory.prod.example.com/artifactory/"
+  serverName: artifactory-prod
+
+# inventories/dev/group_vars/all/artifactory.yml
+artifactory_system_config_yaml_overrides:
+  urlBase: "https://artifactory.dev.example.com/artifactory/"
+  serverName: artifactory-dev
+  trashcanConfig: {retentionPeriodDays: 7}   # nested override; `enabled` stays true
+```
+
+You template the *data* (mergeable, version-neutral) and let the YAML PATCH
+serialise it against whatever schema each box runs — never a hand-templated,
+schema-stamped XML file. (The merge is computed into an internal fact, so it
+holds even if a base is passed via `--extra-vars`.)
+
 #### Scope — the YAML config-as-code is a deliberate SUBSET
 
 Not everything in `artifactory.config.latest.xml` is applied here, **by JFrog's

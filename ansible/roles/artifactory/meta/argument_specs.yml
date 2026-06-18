@@ -145,6 +145,15 @@ argument_specs:
           descriptor flattened; named collections are keyed maps). Applied
           per-block, fail-soft. Empty = auto-load the PATCH-ready sidecar a
           backup wrote. The resilient, version-tolerant restore path.
+      artifactory_system_config_yaml_overrides:
+        type: dict
+        default: {}
+        description: >-
+          Per-environment overrides deep-merged onto artifactory_system_config_yaml
+          before PATCH. Keep shared config in group_vars/all and put only the keys
+          that differ per env (urlBase, serverName, …) here in
+          inventories/<env>/group_vars — one shared desired-state, no per-machine
+          files.
       artifactory_system_config_secrets:
         type: dict
         default: {}

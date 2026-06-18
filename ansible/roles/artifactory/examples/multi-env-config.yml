@@ -1,0 +1,44 @@
+---
+# examples/multi-env-config.yml
+# One shared system-config across dev/test/prod — no per-machine files, no XML
+# templating. Split the three blocks below into the indicated files. The role
+# deep-merges base ◁ per-env overrides ◁ secrets (recursive) and applies the
+# result via the YAML Config API PATCH. Run the SAME playbook per environment:
+#
+#   ansible-playbook playbooks/artifactory.yml -i inventories/prod  # or dev / test
+#
+# Only the keys that genuinely differ per environment go in the override file;
+# everything common lives once in group_vars/all.
+
+# ── group_vars/all/artifactory.yml ──────────  shared across EVERY environment
+artifactory_system_config_yaml:
+  fileUploadMaxSizeMb: 100
+  offlineMode: false
+  trashcanConfig:
+    enabled: true
+    retentionPeriodDays: 14
+  folderDownloadConfig:
+    enabled: true
+    maxDownloadSizeMb: 1024
+  backups:
+    backup-daily:                       # keyed map — the key IS the backup's `key`
+      enabled: true
+      cronExp: "0 0 2 ? * MON-FRI"
+      excludeNewRepositories: false
+
+# ── inventories/prod/group_vars/all/artifactory.yml ──────  prod-specific only
+# artifactory_system_config_yaml_overrides:
+#   urlBase: "https://artifactory.prod.example.com/artifactory/"
+#   serverName: artifactory-prod
+
+# ── inventories/dev/group_vars/all/artifactory.yml ───────  dev-specific only
+# artifactory_system_config_yaml_overrides:
+#   urlBase: "https://artifactory.dev.example.com/artifactory/"
+#   serverName: artifactory-dev
+#   trashcanConfig:
+#     retentionPeriodDays: 7            # nested override — `enabled` stays true (base)
+
+# ── Secrets (any env) — from Vault, never committed ──────────────────────────
+# artifactory_system_config_secrets:
+#   mailServer:
+#     password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=…') }}"

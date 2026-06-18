@@ -31,12 +31,21 @@
     - artifactory_system_config_yaml | default({}) | length == 0
     - _af_cfgyaml_stat.stat.exists | default(false)
 
-- name: "System_config | Merge re-supplied secrets into the desired config"
+# Build the effective desired config in an INTERNAL fact, so the merge result is
+# never shadowed by the precedence of its inputs (e.g. a base config passed via
+# --extra-vars would otherwise out-rank a set_fact that re-set the same name).
+# Layering: shared base ◁ per-env overrides ◁ re-supplied secrets.
+#   base       = artifactory_system_config_yaml (hand-authored or auto-loaded)
+#   overrides  = artifactory_system_config_yaml_overrides (inventories/<env>/group_vars)
+#   secrets    = artifactory_system_config_secrets (Vault)
+- name: "System_config | Compose desired config (base ◁ per-env overrides)"
   ansible.builtin.set_fact:
-    artifactory_system_config_yaml: "{{ artifactory_system_config_yaml | combine(artifactory_system_config_secrets, recursive=true) }}"
-  when:
-    - artifactory_system_config_yaml | default({}) | length > 0
-    - artifactory_system_config_secrets | default({}) | length > 0
+    _af_syscfg: "{{ artifactory_system_config_yaml | default({}) | combine(artifactory_system_config_yaml_overrides | default({}), recursive=true) }}"
+
+- name: "System_config | Layer re-supplied secrets onto the desired config"
+  ansible.builtin.set_fact:
+    _af_syscfg: "{{ _af_syscfg | combine(artifactory_system_config_secrets, recursive=true) }}"
+  when: artifactory_system_config_secrets | default({}) | length > 0
   no_log: true
 
 - name: "System_config | Apply YAML config per-block, dropping version-unknown keys"
@@ -47,7 +56,7 @@
   # reported. This is what makes restore work ACROSS Artifactory versions.
   artifactory_config_apply:
     url: "{{ artifactory_ep.system_config }}"
-    config: "{{ artifactory_system_config_yaml }}"
+    config: "{{ _af_syscfg }}"
     token: "{{ artifactory_access_token | default('', true) }}"
     username: "{{ artifactory_admin_username if (_af_use_basic | default(false)) else omit }}"
     password: "{{ artifactory_admin_password if (_af_use_basic | default(false)) else omit }}"
@@ -56,7 +65,7 @@
   register: _ap_sysyaml
   changed_when: _ap_sysyaml.applied | default([]) | length > 0
   failed_when: false
-  when: artifactory_system_config_yaml | default({}) | length > 0
+  when: _af_syscfg | default({}) | length > 0
 
 - name: "System_config | Report dropped / rejected config keys"
   ansible.builtin.debug:

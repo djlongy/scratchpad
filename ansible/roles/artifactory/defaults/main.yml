@@ -206,6 +206,18 @@ artifactory_system_config_yaml: {}
 # stripped from it at capture time.
 artifactory_system_config_yaml_file: ""
 
+# Per-environment overrides, deep-merged onto the shared config before PATCH.
+# This is how you run ONE shared desired-state across dev/test/prod without
+# copying per-machine files: keep the common config in group_vars/all
+# (artifactory_system_config_yaml), and put ONLY the keys that differ per env
+# (urlBase, serverName, a mail host, …) in inventories/<env>/group_vars here.
+# Recursive merge, so a nested override touches one leaf and keeps its siblings.
+#   # inventories/prod/group_vars/all/artifactory.yml
+#   artifactory_system_config_yaml_overrides:
+#     urlBase: "https://artifactory.prod.example.com/artifactory/"
+#     serverName: artifactory-prod
+artifactory_system_config_yaml_overrides: {}
+
 # Re-supply secrets the backup stripped (master-key encrypted — cannot port):
 # deep-merged into the desired config before PATCH. Same shape as the config but
 # secrets only, ideally from Vault. Example:
