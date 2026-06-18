@@ -27,7 +27,12 @@ artifactory_ep:
   groups: "{{ artifactory_api }}/security/groups"
   users: "{{ artifactory_api }}/security/users"
   permissions: "{{ artifactory_api }}/v2/security/permissions"
-  # auth / SSO (dedicated endpoints — work on SaaS)
+  # auth / SSO. LDAP already uses the Access service (where auth-provider config
+  # moved in 7.5x: LDAP 7.54, Crowd 7.57, HTTP SSO 7.58, all out of the global
+  # descriptor by 7.59). SAML/OAuth/Crowd below still use the older Artifactory
+  # endpoints — functional, but on the deprecation path toward Access REST /
+  # Access Bootstrap YAML (and GET/POST /api/system/security is removed
+  # 2026-07-01; this role does not use it).
   saml: "{{ artifactory_api }}/saml/config"
   oauth: "{{ artifactory_api }}/oauth"
   crowd: "{{ artifactory_api }}/crowd"

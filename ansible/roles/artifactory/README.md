@@ -274,9 +274,37 @@ opaquely.
 re-supply only the ones you need via `artifactory_system_config_secrets` (deep-
 merged before PATCH, ideally from Vault), same idea as the LDAP bind passwords.
 
-**Raw XML** (`artifactory_apply_system_config_xml: true`) stays available for
-same-version DR but now refuses up front if the captured descriptor's schema
-version ≠ the target's — so it can't silently 500.
+#### Scope — the YAML config-as-code is a deliberate SUBSET
+
+Not everything in `artifactory.config.latest.xml` is applied here, **by JFrog's
+design** — so a restore that doesn't reproduce the whole descriptor is expected,
+not a bug. The config-as-code surface has shrunk over 7.x:
+
+| Config | Lives in | Managed by (this role) |
+|---|---|---|
+| General / proxies / mail / backups / property sets / repo layouts / replication toggles / indexer / GC | the descriptor (YAML config-as-code) | this section (YAML PATCH) |
+| **Repositories** (left the descriptor in 7.49.x) | `artifactory.repository.config.*.json` / Repositories REST | `artifactory_*_repositories` |
+| **LDAP / SAML / OAuth / Crowd / password policy** (left the descriptor in 7.59+) | the **Access** service | `artifactory_ldap_*` (Access API) / `artifactory_*_config` |
+| Install (DB, filestore, ports, keys) | `system.yaml` | out of scope — the install role |
+
+Two more reasons a captured key may land in `dropped`: the shipped descriptor's
+element **names differ from the YAML/REST key names** (JAXB XML vs the config-as-
+code schema — the `artifactory.xsd` is authoritative, and the example XML JFrog
+ships is itself incomplete), and many descriptor fields are read-only/computed.
+Dropped keys are overwhelmingly these — name divergence and non-writable
+internals — not meaningful settings silently lost. Check the `dropped` list; if
+a setting you care about is there, set it explicitly in
+`artifactory_system_config_yaml` under its config-as-code key name.
+
+**Raw XML** (`artifactory_apply_system_config_xml: true`) — *discouraged.* The
+descriptor is xsd-version-stamped; a mismatched one makes Artifactory run schema
+converters, and a failed conversion errors out (the runtime API POST this role
+uses returns 400/500 — the related *file* bootstrap path, `config.import.xml`
+read at boot, instead **crash-boot-loops** the service, which is why the role
+never writes that file). JFrog's own guidance is "do not modify
+`artifactory.config.xml` directly." So this path is **same-version DR only** —
+the role refuses up front when the captured schema version ≠ the target's;
+prefer the YAML PATCH for anything crossing versions or instances.
 
 ## Trimming empty values
 
