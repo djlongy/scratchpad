@@ -243,6 +243,63 @@ promoting prod→dev, or restoring across an up/downgrade, fails (a schema 400 o
 a master-key 500). The supported, version-tolerant path is the **YAML PATCH**
 (`application/yaml`): stable keys, additive, validated per-key.
 
+#### How config-as-code works (PATCH, not POST) — and how to set ANY setting
+
+Two operations get conflated; they are not the same thing:
+
+| | A — POST the whole XML (fails cross-version) | B — PATCH a YAML fragment (always works) |
+|---|---|---|
+| Call | `POST …/configuration` (`application/xml`) | `PATCH …/configuration` (`application/yaml`) |
+| Body | the WHOLE descriptor | only the keys you're changing |
+| Semantics | full **replace** | **merge** |
+| Schema | xsd-version-stamped | none — you send intent |
+| Secrets | carries the source's encrypted secrets | carries none |
+
+A single field (e.g. a docker reverse-proxy method) was always settable with one
+B-style call — it was never "blocked". What failed was A. **What PATCH does, step
+by step:**
+
+1. Verb `PATCH` = *partial modify* (vs POST/PUT = replace the whole document) —
+   this alone bounds the blast radius.
+2. Body is a **fragment** — only the keys you're changing. Everything you don't
+   mention is left exactly as-is; you carry none of the other settings and none
+   of the encrypted secrets.
+3. The running binary **merges** it into the live config, writing it into *its
+   own* current internal schema. You never name a schema version; it owns that.
+4. Deletes are explicit: a key set to `null` is removed; **absence = leave alone,
+   `null` = delete**.
+
+**Why A fails but B works** — three independent reasons: the verb (replace vs
+merge), the payload (whole doc vs fragment), the format (xsd-stamped XML vs
+schema-less YAML). A cross-version XML POST runs the target's schema converters
+(mismatch → boot-loop) and tries to decrypt the source's secrets with the wrong
+master key (→ 500); a YAML PATCH does neither.
+
+Block-by-block is just this same PATCH repeated once per top-level section (one
+for `backups`, one for `reverseProxies`, …) for **fault isolation**. Validated
+behaviour: if your fragment holds a key the version doesn't accept, the API
+rejects *that whole PATCH* and **names the offending key** — so the role drops
+just that key and re-PATCHes; the rest of the block still applies on the retry.
+
+**To manage a NEW setting you do NOT touch the role.** `artifactory_system_config_yaml`
+(and `…_overrides`) is a free-form pass-through dict — the role PATCHes whatever
+you give it, block by block. Just add the key:
+
+```yaml
+artifactory_system_config_yaml:
+  someBlock:
+    someKey: value        # nothing in the role predefines this — it's passed through
+```
+
+Two caveats: (1) it must be a real **writable** config-as-code key for your
+version — discover the exact names by running `mode: backup` and reading the
+`.system-config.apply.yml` sidecar (the precise keys your instance accepts), or
+the JFrog YAML-config docs / `artifactory.xsd`; an invalid or read-only key is
+simply dropped + reported, never fatal. (2) This is the global **descriptor**
+only — **repositories** (left the descriptor at 7.49) and **LDAP/SAML/OAuth/Crowd**
+(left at 7.59, now in the Access service) are NOT set here; they have their own
+sections/APIs.
+
 So when the descriptor is captured (`artifactory_export_system_config_files:
 true`) the role externalizes two sidecars next to the export:
 
