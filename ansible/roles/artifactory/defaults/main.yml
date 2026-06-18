@@ -15,9 +15,8 @@
 # prior `backup` run wrote (see artifactory_state_file below). The backup output
 # IS valid role input — no translation.
 #
-# API shapes are live-validated against Artifactory 7.156.2 / Xray 3.147.2
-# (Enterprise+); see docs/api-reference.md for the tested surface. Verify
-# against your version if it differs materially.
+# API shapes target JFrog Artifactory / Xray Enterprise; see docs/api-reference.md
+# for the endpoint surface. Verify against your version if it differs materially.
 
 # ── Mode ──────────────────────────────────────────────────────────────────
 # apply | backup | compare.  Every mode reads or writes ONE artifact:
@@ -46,7 +45,7 @@ artifactory_export_format: yaml
 #   mode: backup        -> WRITES it (captures live As-Built)
 #   mode: apply/compare -> READS it (desired state / baseline)
 # Sidecars derive from this same path (in preflight): <state>.system-config.xml,
-# <state>.system-config.parsed.yml, <state>.drift.yml.
+# <state>.system-config.apply.yml, <state>.drift.yml.
 # Override only for a one-off non-standard location.
 artifactory_state_file: >-
   {{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.{{ 'json' if artifactory_export_format == 'json' else 'yml' }}
@@ -63,11 +62,13 @@ artifactory_export_omit_empty: true
 # it OUT of the state file into sidecars next to it instead of inlining a
 # multi-thousand-character string:
 #   <state>.system-config.xml         the raw descriptor (authoritative, DR)
-#   <state>.system-config.parsed.yml  XML→YAML reference for drafting IaC
-#                                     blocks (needs `xmltodict` on the
-#                                     controller; skipped with a note if absent)
-# The state file then carries artifactory_system_config_xml_file pointing at
-# the sidecar, which the opt-in XML re-apply path reads back.
+#   <state>.system-config.apply.yml   PATCH-ready YAML under a named root
+#                                     (artifactory_system_config_yaml:) — the
+#                                     resilient restore input apply auto-loads;
+#                                     a drop-in for group_vars (needs `xmltodict`
+#                                     on the controller; skipped with a note if absent)
+# The state file then carries artifactory_system_config_xml_file (raw XML) and
+# artifactory_system_config_yaml_file (the .apply.yml) pointing at the sidecars.
 artifactory_export_system_config_files: true
 
 # ── Compare (drift detection) ──────────────────────────────────────────────

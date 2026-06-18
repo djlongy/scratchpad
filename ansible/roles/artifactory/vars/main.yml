@@ -1,8 +1,7 @@
 ---
 # roles/artifactory/vars/main.yml
 # Non-overridable constants: REST API paths and fixed enums. High precedence —
-# no environment values here. Endpoints validated live against Artifactory
-# 7.156.2 / Xray 3.147.2 (see docs/api-reference.md).
+# no environment values here. See docs/api-reference.md for the endpoint surface.
 
 # Service API bases (joined to artifactory_url).
 artifactory_api: "{{ artifactory_url }}/artifactory/api"

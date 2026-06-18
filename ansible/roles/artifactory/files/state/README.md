@@ -11,15 +11,14 @@
 
 `artifactory_state_dir` defaults to this directory; override it to relocate.
 
-## Why captures are gitignored here
+## Why captures are gitignored by default
 
 A capture contains real internal configuration — instance hostname, LDAP manager
-and group DNs, user emails, repository layout, and the full system-config XML.
-**This is a public repository**, so the captured files are gitignored (see
-`.gitignore`); only this README and the ignore rule are tracked, so the structure
-stays documented.
+and group DNs, user emails, repository layout, and the full system-config XML —
+so the captured files are gitignored (see `.gitignore`); only this README and the
+ignore rule are tracked, so the structure stays documented.
 
 To keep a git-tracked As-Built **history** (e.g. to diff prod over time, or to
-prune against a committed baseline), set `artifactory_state_dir` to a **private**
-path — e.g. a private inventory/ops repo — where committing the real config is
-safe.
+prune against a committed baseline), set `artifactory_state_dir` to a location
+where committing the captured config is acceptable (e.g. a dedicated inventory/ops
+repo).

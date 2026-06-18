@@ -1,12 +1,12 @@
 ---
 # roles/artifactory/tasks/integrations/sso.yml
 # Single-object SSO integrations. Each runs only when its config dict is set, so
-# the default (empty) skips them — and you can't accidentally lock yourself out
-# of the trial. Secrets (client secret, SAML cert private parts) are not fully
-# returned by GET; supply them at apply time via vars/Vault.
+# the default (empty) skips them — and you can't accidentally lock yourself out.
+# Secrets (client secret, SAML cert private parts) are not fully returned by GET;
+# supply them at apply time via vars/Vault.
 #
-# Per-endpoint write methods, verified live (OPTIONS) on BOTH JFrog Cloud and
-# self-hosted 7.146 — identical on both: SAML=PUT, OAuth=POST, Crowd=PUT.
+# Per-endpoint write methods (JFrog Cloud and self-hosted are identical):
+# SAML=PUT, OAuth=POST, Crowd=PUT.
 # (A blunt artifactory_sso_method override still forces all three if you must.)
 
 - name: "SSO | Configure SAML"
@@ -29,7 +29,7 @@
 - name: "SSO | Configure OAuth"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.oauth }}"
-    # POST, not PUT — /api/oauth only allows POST (PUT 405s; verified live).
+    # POST, not PUT — /api/oauth only allows POST (PUT 405s).
     method: "{{ artifactory_sso_method | default('POST') }}"
     headers: "{{ _af_json_headers }}"
     body_format: json

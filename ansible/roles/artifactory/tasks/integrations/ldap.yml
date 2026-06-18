@@ -4,7 +4,7 @@
 # the collection URL) updates — the per-key URL only allows GET/DELETE (a PUT
 # there returns 405). ldap_groups are managed similarly under …/ldap/groups.
 #
-# Bind passwords never round-trip (verified live against Artifactory Cloud):
+# Bind passwords never round-trip:
 #   * GET masks search.manager_password as a fixed run of asterisks
 #   * PUT/POST with the masked value back is rejected (400)
 #   * PUT with manager_password omitted WIPES the stored password

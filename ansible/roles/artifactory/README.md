@@ -17,9 +17,8 @@ instance URL and an admin API token.
 > Xray, or SSO (those live in the database, not the files). This role rebuilds the
 > **whole** estate via API, and removes/changes things surgically.
 
-Validated live against Artifactory **7.156.2** / Xray **3.147.2** (Enterprise+),
-ansible-lint clean at the `production` profile. See [`docs/api-reference.md`](docs/api-reference.md)
-for the full, live-tested API surface.
+Built for JFrog Artifactory Enterprise; ansible-lint clean at the `production`
+profile. See [`docs/api-reference.md`](docs/api-reference.md) for the API surface.
 
 ## Requirements
 
@@ -137,8 +136,9 @@ the **mode** decides direction (`backup` writes it, `apply`/`compare` read it):
 
 ```
 roles/artifactory/files/state/<env>/artifactory.yml      # the state file
-                                    artifactory.system-config.xml / .parsed.yml
-                                    artifactory.drift.yml        # mode: compare
+                                    artifactory.system-config.xml        # raw descriptor (DR)
+                                    artifactory.system-config.apply.yml  # PATCH-ready, named-root, drop-in
+                                    artifactory.drift.yml                # mode: compare
 ```
 
 The resolved path is `artifactory_state_file` (defaults to
@@ -204,11 +204,11 @@ captured/applied.
 The intended operating loop for using this role as IaC with audit + approval:
 
 1. **Pull (As-Built)** — a scheduled/on-demand `mode: backup` writes the full
-   live config to `files/state/<env>/artifactory.yml`. In a **private** repo,
-   commit it for a diffable history; **this public repo gitignores captures**
-   (they carry real hostnames, LDAP DNs and emails) — point
-   `artifactory_state_dir` at a private location for committed history. Exports
-   are deterministic — keys sorted, stable layout — so two diff cleanly.
+   live config to `files/state/<env>/artifactory.yml`. Captures carry real
+   hostnames, LDAP DNs and emails, so they are gitignored by default; to keep a
+   diffable committed history, point `artifactory_state_dir` at a location where
+   committing the captured config is acceptable. Exports are deterministic —
+   keys sorted, stable layout — so two diff cleanly.
 2. **Compare & cherry-pick** — diff the as-built export against the desired
    state in `group_vars`/state files (`git diff` / `diff -u`; the export's
    blank-line-per-object layout keeps the diff readable). Whatever drift you
@@ -230,7 +230,7 @@ version, capture timestamp) plus
 can (`auto-trashcan`). A name appearing there explains "the UI shows it under
 Trash" — its repo CONFIG may already be gone, so it won't be in the repo
 lists; only its content lingers until the retention period expires. There is
-no public REST API for the repository-trash view itself (the UI uses internal
+no documented REST API for the repository-trash view itself (the UI uses internal
 `/ui/api` endpoints that reject access tokens).
 
 ### System config descriptor — resilient, cross-version restore (self-hosted only)
@@ -465,7 +465,7 @@ that's expected; it's the full config.
 ```
 roles/artifactory/
 ├── defaults/main.yml          # the full schema + behavioural defaults
-├── vars/main.yml              # API endpoint constants (live-validated)
+├── vars/main.yml              # API endpoint constants
 ├── meta/{main,argument_specs}.yml
 ├── tasks/                     # main → preflight → backup | apply → per-section files
 ├── filter_plugins/            # drop_empty, config_diff, descriptor_to_config, to_pretty_yaml
@@ -474,9 +474,8 @@ roles/artifactory/
 └── docs/api-reference.md      # full API surface, statuses, shapes
 ```
 
-## Tested
+## Coverage
 
-Live round-trip on the Enterprise+ trial: `backup` (full capture), `apply` greenfield
-(repos local/remote/virtual, group, permission, project + member, Xray policy + watch
-— all verified created), and `apply` with `state: absent` (all verified deleted, correct
-ordering). No test artifacts left behind.
+The role round-trips: `backup` (full capture), `apply` greenfield (repos
+local/remote/virtual, groups, permissions, projects + members, Xray policies +
+watches), and `apply` with `state: absent` (deletes in correct dependency order).

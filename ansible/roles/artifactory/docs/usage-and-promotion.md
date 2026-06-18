@@ -1,10 +1,9 @@
 # Using repos + promoting DEV → PROD
 
-Practical, **live-tested** recipes for the repo topology this role provisions:
-per-tenant `*-dev-local` / `*-prod-local` locals, a `*-docker-dev` virtual that
-aggregates the tenant's locals + shared remotes, and JFrog **Projects** as the
-tenant boundary. Every command below was run against a real Artifactory 7.156.2
-trial.
+Practical recipes for the repo topology this role provisions: per-tenant
+`*-dev-local` / `*-prod-local` locals, a `*-docker-dev` virtual that aggregates
+the tenant's locals + shared remotes, and JFrog **Projects** as the tenant
+boundary.
 
 Set up auth once:
 
@@ -80,7 +79,7 @@ curl -X POST -H "$H" -H 'Content-Type: application/json' \
 
 This is the canonical flow: publish **build-info** for the build, then promote the
 build — Artifactory moves/copies every artifact the build produced and records a
-signed promotion status. **Exactly the flow validated on the trial:**
+signed promotion status. **The flow:**
 
 ```bash
 # (1) deploy artifacts to DEV, tagging them with the build coordinates
@@ -126,8 +125,8 @@ jf rt build-promote  acme-app 15 acme-generic-prod-local \
 For tamper-evident promotion across the project **environments** (DEV → PROD
 stages) use **Release Bundles v2** + the Lifecycle API: build the bundle from the
 build, then `POST /lifecycle/api/v2/promotion/records/{name}/{version}` to advance
-it, each step adding DSSE-signed evidence. (Needs Release Bundles enabled; not on
-the basic trial.) The `copy`/build-promote flow above is the everyday equivalent.
+it, each step adding DSSE-signed evidence. (Needs Release Bundles enabled.) The
+`copy`/build-promote flow above is the everyday equivalent.
 
 ## 4. Multitenancy — how the tenants interact
 

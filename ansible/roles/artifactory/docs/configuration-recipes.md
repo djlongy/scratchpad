@@ -1,8 +1,7 @@
-# Configuration recipes (live-validated)
+# Configuration recipes
 
-Working role inputs for the trickier sections, each verified against a live
-JFrog **Platform 7.146.17** trial (Artifactory Pro + Xray 3.143.26). These are
-the non-obvious shapes the API actually requires.
+Working role inputs for the trickier sections — the non-obvious shapes the API
+actually requires.
 
 ## compare (drift detection)
 
@@ -87,7 +86,7 @@ when `artifactory_system_config_yaml` is empty. See the role README's
 
 ## ⚠️ Docker access method — do NOT set `dockerReverseProxyMethod: subDomain` on a `direct` proxy
 
-**Live-verified footgun (Platform 7.146):** setting
+**Footgun:** setting
 
 ```yaml
 reverseProxies:
@@ -101,10 +100,10 @@ puts the UI into an **infinite redirect loop on every page** — Artifactory tri
 to redirect the UI into the subdomain form, which loops. The `direct` web-server
 type and `subDomain` method are an invalid combination.
 
-The Sub-Domain method works **without** this setting: an nginx sidecar rewrites
-`<repo>.<host>/v2/...` → `/artifactory/api/docker/<repo>/v2/...` (see lab
-`sw_jfrog_trial`), so **keep Artifactory at the default `path`/`direct`** and let
-the proxy do the routing — docker login/push/pull via the subdomain still works.
+The Sub-Domain method works **without** this setting when an external nginx
+sidecar rewrites `<repo>.<host>/v2/...` → `/artifactory/api/docker/<repo>/v2/...`,
+so **keep Artifactory at the default `path`/`direct`** and let the proxy do the
+routing — docker login/push/pull via the subdomain still works.
 The trade-off is only cosmetic (the "Set Me Up" tab shows Repository Path). If you
 want the UI to *display* Sub Domain, set `webServerType: nginx` (not `direct`) and
 generate the matching reverse-proxy config — but `direct + subDomain` must be
@@ -144,12 +143,11 @@ Idempotent by name (create-if-absent). The list endpoint is a `POST` (with a
 pagination body), not a GET. Report *data* only populates once Xray's
 vulnerability DB has finished its initial sync.
 
-## OAuth / OIDC SSO — known gap on Platform 7.x (provider add is UI-only)
+## OAuth / OIDC SSO — known gap (provider add is UI-only)
 
-`artifactory_oauth_config` posts to `/artifactory/api/oauth`, which on Platform
-7.146 sets the **global** OAuth settings (enabled, persistUsers, allowUserToAccessProfile)
-but does **not** persist providers. The provider-add endpoints are all dead on
-7.146 (exhaustively probed):
+`artifactory_oauth_config` posts to `/artifactory/api/oauth`, which sets the
+**global** OAuth settings (enabled, persistUsers, allowUserToAccessProfile) but
+does **not** persist providers. The provider-add endpoints are all dead:
 
 | endpoint | result |
 |---|---|

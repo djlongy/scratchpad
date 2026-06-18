@@ -130,8 +130,7 @@ def diff_summary(diff):
 # (Content-Type: application/yaml), whose schema mirrors the descriptor's element
 # names FLATTENED — but named collections are KEYED MAPS (by key/name), not the
 # XML's <plural><singular>…</singular></plural> wrapper. This transform converts
-# an xmltodict parse of the descriptor into that PATCH-ready shape. Validated
-# live against Artifactory 7.156.2 (all blocks PATCH 200).
+# an xmltodict parse of the descriptor into that PATCH-ready shape.
 
 # Top-level blocks NOT emitted into the system-config YAML:
 #  * repositories/replications — managed by the role's own dedicated sections

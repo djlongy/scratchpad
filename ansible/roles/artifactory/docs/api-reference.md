@@ -1,19 +1,14 @@
 # Artifactory Enterprise — REST API Surface for Configuration-as-Code
 
-Authoritative, **live-validated** map of every configuration endpoint the
-`artifactory` role uses or could use, with status, shape, and the verbs needed
-for backup/restore/CRUD.
-
-**Validated against** a real JFrog SaaS trial (`<tenant>.jfrog.io`),
-Artifactory **7.156.2**, Xray **3.147.2**, Access (current), license
-`Enterprise / enterprise_xray_team` — on 2026-06-11 with an admin access token.
+Map of every configuration endpoint the `artifactory` role uses or could use,
+with status, shape, and the verbs needed for backup/restore/CRUD.
 
 > **SaaS vs self-hosted.** "Artifactory Online" (SaaS/cloud) blocks a handful of
 > endpoints that JFrog manages for you — most importantly the global **config
 > descriptor** (`/api/system/configuration`) and the mail/reverse-proxy config.
-> On **self-hosted Enterprise** (e.g. a work dev box) those work. Every row below
-> is tagged `[both]`, `[self-hosted]`, or `[saas-blocked]`. The work target is
-> self-hosted, so the role supports the descriptor; the trial just can't test it.
+> On **self-hosted Enterprise** those work. Every row below is tagged `[both]`,
+> `[self-hosted]`, or `[saas-blocked]`. Self-hosted targets support the
+> descriptor; SaaS does not.
 
 Auth: `Authorization: Bearer <admin access token>` on every call. A token scoped
 to Artifactory admin can read `/artifactory/...` but may get **403** on some
@@ -96,7 +91,7 @@ Strip before write: `revision` (computed).
 | GET | `/artifactory/api/security/permissions` (v1) | legacy, still present |
 | GET | `/artifactory/api/security/lockedUsers` | `[]` |
 | GET | `/artifactory/api/security/apiKey` | `{blockCreateApiKey}` (API keys deprecated) |
-| — | `/artifactory/api/security/keys/trusted` | **403** on trial (Enterprise multi-key only) |
+| — | `/artifactory/api/security/keys/trusted` | **403** (Enterprise multi-key only) |
 
 ## 5. Authentication / SSO integrations `[both — dedicated endpoints]`
 
@@ -182,13 +177,13 @@ Vault instead of storing them locally.
 
 ---
 
-## Not available on the trial (noted for completeness)
+## Not available in all editions (noted for completeness)
 
 | Path | Status | Why |
 |---|---|---|
 | `/artifactory/api/mail`, `.../system/configuration/webServer` | 403 cloud | self-hosted only |
 | `/access/api/v1/users`, `/groups`, `/config` | 403 | needs **platform-admin** token (Artifactory-admin token insufficient) |
-| `/distribution/...`, `/lifecycle/api/v2/release_bundle/...` | 404 | Distribution / Release Bundles v2 not enabled on this trial |
+| `/distribution/...`, `/lifecycle/api/v2/release_bundle/...` | 404 | Distribution / Release Bundles v2 not enabled |
 | `/artifactory/api/federation/...` | 404 | needs a federated repo to exist first |
 | `/artifactory/api/security/keys/trusted` | 403 | multi-trusted-key is Enterprise+ feature gate |
 
