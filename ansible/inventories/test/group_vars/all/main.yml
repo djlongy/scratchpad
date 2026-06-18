@@ -1,0 +1,10 @@
+---
+# Runs the artifactory role as the 'test' environment — state is captured to/read
+# from roles/artifactory/files/state/test/.
+artifactory_env: test
+
+# Per-environment system-config overrides go in the gitignored local.yml beside
+# this file (so real hostnames are never committed). Example shape:
+#   artifactory_system_config_yaml_overrides:
+#     urlBase: "{{ artifactory_url }}/artifactory/"
+#     serverName: artifactory-test

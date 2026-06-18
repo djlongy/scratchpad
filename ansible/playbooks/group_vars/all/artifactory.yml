@@ -1,0 +1,24 @@
+---
+# playbooks/group_vars/all/artifactory.yml
+# SHARED Artifactory system-config — applied to EVERY environment. This file sits
+# next to the playbook, so it is loaded for the `hosts: localhost` play no matter
+# which `-i inventories/<env>` you pass. Put here everything that is the SAME
+# across dev/test/prod.
+#
+# Per-environment differences (urlBase, serverName, a mail host, …) do NOT go
+# here — they live in inventories/<env>/group_vars/all/local.yml as
+# `artifactory_system_config_yaml_overrides`, which the role deep-merges on top.
+artifactory_system_config_yaml:
+  fileUploadMaxSizeMb: 100
+  offlineMode: false
+  trashcanConfig:
+    enabled: true
+    retentionPeriodDays: 14
+  folderDownloadConfig:
+    enabled: true
+    maxDownloadSizeMb: 1024
+  backups:
+    backup-daily:                       # keyed map — the key IS the backup's `key`
+      enabled: true
+      cronExp: "0 0 2 ? * MON-FRI"
+      excludeNewRepositories: false

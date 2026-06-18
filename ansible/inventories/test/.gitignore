@@ -1,0 +1,2 @@
+# Real connection details for local simulation — never commit (public repo).
+group_vars/all/local.yml
