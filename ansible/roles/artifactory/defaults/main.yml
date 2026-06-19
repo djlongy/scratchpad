@@ -2,18 +2,16 @@
 # roles/artifactory/defaults/main.yml
 #
 # Portable, API-driven configuration of a JFrog Artifactory **Enterprise**
-# instance. Two modes share ONE schema so the role round-trips:
+# instance. Desired state lives in GROUP_VARS; captures are reference-only.
 #
-#   mode: backup   →  GET every setting over the REST API and write the whole
-#                     state to a single YAML (or JSON) file, shaped exactly
-#                     like the variables below.
-#   mode: apply    →  reconcile that same state into a fresh/empty instance
-#                     (create-or-update every object). This is also the
-#                     "provision from scratch" path.
+#   mode: apply    →  reconcile the desired state from group_vars into the
+#                     instance (create-or-update; also provision-from-scratch).
+#   mode: backup   →  GET every setting over the REST API and write per-env
+#                     REFERENCE files (never applied).
+#   mode: compare  →  diff live state against the group_vars desired state.
 #
-# Restore == apply: it automatically reads the same per-environment state file a
-# prior `backup` run wrote (see artifactory_state_file below). The backup output
-# IS valid role input — no translation.
+# A capture's section shapes match these vars exactly, so copying a section from
+# a reference file into group_vars is valid input — no translation.
 #
 # API shapes target JFrog Artifactory / Xray Enterprise; see docs/api-reference.md
 # for the endpoint surface. Verify against your version if it differs materially.
@@ -40,13 +38,13 @@ artifactory_state_dir: "{{ role_path }}/files/state"
 # Serialisation format of the reference capture: yaml | json.
 artifactory_export_format: yaml
 
-# THE bundled reference file, resolved as <state_dir>/<env>/artifactory.reference.<ext>.
+# THE bundled reference file, resolved as <state_dir>/<env>/artifactory.config.reference.<ext>.
 # Written by `mode: backup` (reference only). Per-env sidecars alongside it:
 #   <env>/artifactory.system-config.reference.yml   (system config, reference)
 #   <env>/artifactory.drift.yml                      (mode: compare output)
 # Override only for a one-off non-standard location.
 artifactory_state_file: >-
-  {{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.reference.{{ 'json' if artifactory_export_format == 'json' else 'yml' }}
+  {{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.config.reference.{{ 'json' if artifactory_export_format == 'json' else 'yml' }}
 
 # ── Backup shaping ─────────────────────────────────────────────────────────
 # Omit keys with an "empty" value (null, '', [], {}) from the export, so the

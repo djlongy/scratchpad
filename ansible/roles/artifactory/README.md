@@ -40,7 +40,7 @@ default mode, so only `backup`/`compare` are passed explicitly.
 export ARTIFACTORY_TOKEN='<admin token>'          # role reads this env var
 
 # 1. Capture an env's live config to REFERENCE files (NOT applied):
-#    writes files/state/prod/artifactory.reference.yml (+ .system-config.reference.yml)
+#    writes files/state/prod/artifactory.config.reference.yml (+ .system-config.reference.yml)
 ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=backup
 
 # 2. Apply the desired state from that env's group_vars (apply = default):
@@ -140,7 +140,7 @@ ansible-playbook playbooks/artifactory.yml -i inventories/dev      # or test / p
 # Capture an env's live state to REFERENCE files (NOT applied):
 ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=backup
 #   writes files/state/prod/:
-#     artifactory.reference.yml                 # bundled capture (repos / security / …)
+#     artifactory.config.reference.yml                 # bundled capture (repos / security / …)
 #     artifactory.system-config.reference.yml   # system config, named-root
 #   → copy the sections you want into group_vars to manage them
 
@@ -184,7 +184,7 @@ captured/applied.
 The intended operating loop for using this role as IaC with audit + approval:
 
 1. **Pull (reference)** — a scheduled/on-demand `mode: backup` writes the live
-   config to `files/state/<env>/artifactory.reference.yml` (+ the system-config
+   config to `files/state/<env>/artifactory.config.reference.yml` (+ the system-config
    reference). These are REFERENCE ONLY — never applied. Captures carry real
    hostnames, LDAP DNs and emails, so they are gitignored by default; to keep a
    diffable committed history, point `artifactory_state_dir` at a location where

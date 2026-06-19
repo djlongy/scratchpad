@@ -313,7 +313,12 @@
       artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"
       artifactory_federated_repositories: "{{ _bk_repos.json.FEDERATED | default([]) }}"
       artifactory_groups: "{{ _bk_groupdetails.results | default([]) | map(attribute='json') | list }}"
-      artifactory_users: "{{ _bk_userdetails.results | default([]) | map(attribute='json') | list }}"
+      # Only INTERNAL users are captured — external-realm users (ldap/saml/crowd/
+      # oauth) are provisioned by their identity provider, so there is no point
+      # carrying them into group_vars; only internal users are ever generated.
+      artifactory_users: >-
+        {{ _bk_userdetails.results | default([]) | map(attribute='json')
+           | selectattr('realm', 'defined') | selectattr('realm', 'eq', 'internal') | list }}
       artifactory_permissions: "{{ _bk_permdetails.results | default([]) | map(attribute='json') | list }}"
       artifactory_environments: "{{ _bk_envs.json | default([]) if (_bk_envs.status | default(0) == 200) else [] }}"
       artifactory_projects: "{{ _bk_projects | default([]) }}"
