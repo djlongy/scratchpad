@@ -1,7 +1,11 @@
 ---
 # roles/artifactory/tasks/preflight.yml
-# Resolve auth, confirm the instance is reachable, and (apply mode) load any
-# import file as desired state.
+# Resolve auth, confirm the instance is reachable, and derive the per-env output
+# paths used by backup/compare.
+#
+# Desired state comes ONLY from group_vars (the section vars + the system-config
+# dict). This role never loads a capture as desired state — captures are
+# reference-only. So there is no promote-from / state-file-load machinery here.
 
 - name: Assert a base URL was provided
   ansible.builtin.assert:
@@ -82,133 +86,28 @@
       ({{ (_af_version.json.license | default('license n/a')) }})
       at {{ artifactory_url }} — mode={{ artifactory_mode }}
 
-# ── Resolve the one state file + derived sidecar paths (every mode) ───────
-- name: Resolve the state file stem (basis for all sidecars)
+# ── Per-env output paths (backup writes them, compare reads only the drift) ──
+# All derive from the per-env directory that holds the bundled reference file.
+- name: Resolve the per-env output directory and reference paths
   ansible.builtin.set_fact:
-    _af_state_stem: "{{ artifactory_state_file | regex_replace('\\.(ya?ml|json)$', '') }}"
+    _af_state_dir_env: "{{ artifactory_state_file | dirname }}"
+    _af_drift_file: "{{ artifactory_state_file | dirname }}/artifactory.drift.yml"
+    _af_syscfg_ref: "{{ artifactory_state_file | dirname }}/artifactory.system-config.reference.yml"
 
-- name: Derive sidecar paths from the state file stem
-  ansible.builtin.set_fact:
-    _af_drift_file: "{{ _af_state_stem }}.drift.yml"
-
-# ── Resolve the apply desired-state source + existence checks ─────────────
-# For apply, desired state comes from artifactory_promote_from's env file when
-# promoting (resolved against the ABSOLUTE state_dir, so it never depends on a
-# fragile relative path), otherwise from this env's own state file.
-- name: Resolve the apply desired-state source file
-  ansible.builtin.set_fact:
-    _af_source_file: >-
-      {{ (artifactory_state_dir ~ '/' ~ artifactory_promote_from ~ '/artifactory.'
-          ~ ('json' if artifactory_export_format == 'json' else 'yml'))
-         if (artifactory_promote_from | length > 0) else artifactory_state_file }}
-
-- name: Check whether this env's state file exists (compare baseline)
-  ansible.builtin.stat:
-    path: "{{ artifactory_state_file }}"
-  register: _af_state_stat
-  delegate_to: localhost
-  run_once: true
-
-- name: Check whether the apply source file exists
-  ansible.builtin.stat:
-    path: "{{ _af_source_file }}"
-  register: _af_source_stat
-  delegate_to: localhost
-  run_once: true
-
-- name: Require a saved baseline for compare
-  ansible.builtin.assert:
-    that: _af_state_stat.stat.exists
-    fail_msg: >-
-      mode: {{ artifactory_mode }} needs a saved baseline at
-      {{ artifactory_state_file }}, but none exists. Run mode: backup for
-      environment '{{ artifactory_env }}' first.
-    quiet: true
-  when: artifactory_mode == 'compare'
-
-- name: Require the promotion source to exist
-  ansible.builtin.assert:
-    that: _af_source_stat.stat.exists
-    fail_msg: >-
-      artifactory_promote_from='{{ artifactory_promote_from }}' but no captured
-      state exists at {{ _af_source_file }}. Run mode: backup for environment
-      '{{ artifactory_promote_from }}' first.
-    quiet: true
-  when:
-    - artifactory_mode == 'apply'
-    - artifactory_promote_from | length > 0
-
+# ── Prune safety (apply only) ─────────────────────────────────────────────
+# prune deletes server objects of a managed type not present in the desired
+# group_vars — dangerous, so on a PROTECTED env it needs explicit confirmation.
 - name: Prune guard — pruning a protected environment needs confirmation
   ansible.builtin.assert:
     that:
-      - artifactory_confirm_promote | bool
+      - artifactory_confirm_prune | bool
     fail_msg: >-
       Refusing to prune protected environment '{{ artifactory_env }}'
       (artifactory_prune=true) — pruning DELETES unmanaged objects. Review the
       drift (mode: compare) first, then re-run with
-      -e artifactory_confirm_promote=true.
+      -e artifactory_confirm_prune=true.
     quiet: true
   when:
     - artifactory_mode == 'apply'
     - artifactory_prune | bool
     - artifactory_env in artifactory_protected_envs
-
-- name: Apply — load desired state + promotion guard
-  when:
-    - artifactory_mode == 'apply'
-    - _af_source_stat.stat.exists
-  block:
-    - name: Load the source state file into a fact (for provenance + guard)
-      ansible.builtin.set_fact:
-        _af_loaded: "{{ lookup('ansible.builtin.file', _af_source_file) | from_yaml }}"
-      delegate_to: localhost
-      run_once: true
-
-    - name: Promotion guard — cross-env apply onto a protected environment needs confirmation
-      ansible.builtin.assert:
-        that:
-          - artifactory_confirm_promote | bool
-        fail_msg: >-
-          Refusing to apply state captured from environment
-          '{{ _af_loaded._meta.environment | default("?") }}' onto protected
-          environment '{{ artifactory_env }}'. This is a promotion (e.g.
-          dev -> prod). Review the drift (mode: compare) first, then re-run with
-          -e artifactory_confirm_promote=true.
-        success_msg: "Promotion into protected environment '{{ artifactory_env }}' confirmed."
-        quiet: true
-      when:
-        - artifactory_env in artifactory_protected_envs
-        - (_af_loaded._meta.environment | default(artifactory_env)) != artifactory_env
-
-    - name: Load desired state from the source state file
-      ansible.builtin.include_vars:
-        file: "{{ _af_source_file }}"
-
-    # The state file stores artifactory_system_config_xml_file as a bare
-    # filename (portable). Re-anchor it to an absolute path next to the source
-    # state file so the XML re-apply lookup finds the sidecar regardless of the
-    # checkout location. Stripping to basename first also normalises any legacy
-    # state file that still carries a machine-specific absolute path. An explicit
-    # --extra-vars override still wins (higher precedence than this set_fact).
-    - name: Anchor the system-config XML sidecar next to the state file
-      ansible.builtin.set_fact:
-        artifactory_system_config_xml_file: >-
-          {{ (_af_source_file | dirname) ~ '/' ~ (artifactory_system_config_xml_file | basename) }}
-      when: artifactory_system_config_xml_file | default('') | length > 0
-
-    - name: Anchor the PATCH-ready system-config YAML sidecar next to the state file
-      ansible.builtin.set_fact:
-        artifactory_system_config_yaml_file: >-
-          {{ (_af_source_file | dirname) ~ '/' ~ (artifactory_system_config_yaml_file | basename) }}
-      when: artifactory_system_config_yaml_file | default('') | length > 0
-
-- name: Note when applying with no saved state file (provision-from-scratch)
-  ansible.builtin.debug:
-    msg: >-
-      No saved state at {{ _af_source_file }} — applying the inline role
-      variables (provision-from-scratch). Run mode: backup first to capture an
-      environment's As-Built.
-  when:
-    - artifactory_mode == 'apply'
-    - not _af_source_stat.stat.exists
-    - artifactory_promote_from | length == 0

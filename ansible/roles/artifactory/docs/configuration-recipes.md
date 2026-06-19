@@ -6,16 +6,14 @@ actually requires.
 ## compare (drift detection)
 
 ```bash
-# Drift: capture live As-Built, diff vs the env's saved state, write <state>.drift.yml
-ansible-playbook playbooks/artifactory.yml -e artifactory_url=$AF \
-  -e artifactory_mode=compare -e artifactory_env=prod
+# Drift: capture live state, diff vs the env's group_vars, write <env>/artifactory.drift.yml
+ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=compare
 # add -e artifactory_compare_fail_on_drift=true to gate CI.
 ```
 
 `config_diff` matches list items by identity key (key/name/project_key/…); the
-diff report groups each section into `added` / `changed` / `removed`. Export
-metadata (e.g. `artifactory_system_config_xml_file`) is excluded via
-`artifactory_compare_ignore_keys`.
+diff report groups each section into `added` / `changed` / `removed`. Capture
+metadata (`_meta`) is excluded via `artifactory_compare_ignore_keys`.
 
 ## LDAP groups → privileges (the hard one)
 
@@ -79,10 +77,10 @@ artifactory_system_config_yaml:
     backup-daily: {enabled: true, cronExp: "0 0 2 ? * MON-FRI"}
 ```
 
-You normally don't hand-write this: a backup captures the whole descriptor and
-writes a PATCH-ready `*.system-config.apply.yml` sidecar, which apply auto-loads
-when `artifactory_system_config_yaml` is empty. See the role README's
-"System config descriptor — resilient, cross-version restore" section.
+You normally don't hand-write this from scratch: a backup captures the whole
+descriptor and writes a PATCH-ready `*.system-config.reference.yml` (named root,
+reference only) — copy the dict (or just the blocks you want) into group_vars.
+See the role README's "System config descriptor" section.
 
 ## ⚠️ Docker access method — do NOT set `dockerReverseProxyMethod: subDomain` on a `direct` proxy
 

@@ -1,11 +1,12 @@
 # Artifactory captured state (per environment)
 
-`mode: backup` writes this tree, one folder per `artifactory_env`:
+`mode: backup` writes this tree, one folder per `artifactory_env`. Everything
+here is **REFERENCE ONLY** — the role never applies it; desired state lives in
+group_vars. To manage a section, copy it from a reference file into group_vars.
 
 ```
-<env>/artifactory.yml                       # the state file (apply/compare read it)
-<env>/artifactory.system-config.xml         # raw global descriptor (DR / same-version full-replace)
-<env>/artifactory.system-config.apply.yml   # PATCH-ready config (resilient cross-version restore; auto-loaded on apply)
+<env>/artifactory.reference.yml             # bundled capture (repos / security / projects / xray …)
+<env>/artifactory.system-config.reference.yml   # system config, named-root, PATCH-ready
 <env>/artifactory.drift.yml                 # written by mode: compare
 ```
 
@@ -14,8 +15,8 @@
 ## Why captures are gitignored by default
 
 A capture contains real internal configuration — instance hostname, LDAP manager
-and group DNs, user emails, repository layout, and the full system-config XML —
-so the captured files are gitignored (see `.gitignore`); only this README and the
+and group DNs, user emails, repository layout, and the full system config — so
+the captured files are gitignored (see `.gitignore`); only this README and the
 ignore rule are tracked, so the structure stays documented.
 
 To keep a git-tracked As-Built **history** (e.g. to diff prod over time, or to

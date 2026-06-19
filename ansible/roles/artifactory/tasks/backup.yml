@@ -290,11 +290,9 @@
 - name: "Backup | Assemble state document"
   vars:
     _sysxml: "{{ _bk_sysconf.content | default('') if (_bk_sysconf.status | default(0) == 200) else '' }}"
-    _sysxml_external: "{{ (artifactory_export_system_config_files | bool) and (_sysxml | length > 0) }}"
   ansible.builtin.set_fact:
-    # Sidecar paths derived from the export file name (only used when set).
+    # Raw descriptor XML, kept only to generate the system-config reference file.
     _af_sysxml: "{{ _sysxml }}"
-    _af_sysxml_file: "{{ (_af_state_stem + '.system-config.xml') if _sysxml_external else '' }}"
     _af_state:
       _meta:
         environment: "{{ artifactory_env }}"
@@ -308,19 +306,8 @@
           {{ _bk_trash.json.children | default([]) | map(attribute='uri')
              | map('regex_replace', '^/', '') | list
              if (_bk_trash.status | default(0) == 200) else [] }}
-      # Raw XML config descriptor: externalized to the sidecar named in
-      # artifactory_system_config_xml_file when captured (readability), kept
-      # inline only if artifactory_export_system_config_files is false.
-      # Stored as a BARE FILENAME (not an absolute path) so the state file is
-      # portable: the sidecar always lives next to the state file, and apply
-      # resolves it there (preflight). A machine-specific absolute path would
-      # break the moment anyone else ran it from a different checkout.
-      artifactory_system_config_xml: "{{ '' if _sysxml_external else _sysxml }}"
-      artifactory_system_config_xml_file: "{{ ((_af_state_stem | basename) ~ '.system-config.xml') if _sysxml_external else '' }}"
-      # Portable pointer to the PATCH-ready YAML config sidecar — the resilient,
-      # version-tolerant restore input (apply auto-loads it). Bare filename;
-      # resolved next to the state file on apply (preflight), same as the XML.
-      artifactory_system_config_yaml_file: "{{ ((_af_state_stem | basename) ~ '.system-config.apply.yml') if _sysxml_external else '' }}"
+      # System config is captured to its OWN reference file
+      # (artifactory.system-config.reference.yml), not bundled in here.
       artifactory_local_repositories: "{{ _bk_repos.json.LOCAL | default([]) }}"
       artifactory_remote_repositories: "{{ _bk_repos.json.REMOTE | default([]) }}"
       artifactory_virtual_repositories: "{{ _bk_repos.json.VIRTUAL | default([]) }}"
@@ -358,43 +345,38 @@
   run_once: true
   when: artifactory_mode == 'backup'
 
-# ── System config sidecars (self-hosted only — SaaS never returns the XML) ──
-- name: "Backup | Write system config descriptor XML sidecar"
-  ansible.builtin.copy:
-    content: "{{ _af_sysxml }}"
-    dest: "{{ _af_sysxml_file }}"
-    mode: "0640"
-  delegate_to: localhost
+# ── System-config REFERENCE file (self-hosted only — SaaS never returns it) ──
+# A descriptor_to_config transform of the live config, under a named root, with
+# a header making clear it is reference-only. NOT applied — to manage system
+# config you copy the dict into group_vars.
+- name: "Backup | Write system-config reference (PATCH-ready YAML, NOT applied)"
   when:
-    - _af_sysxml_file | length > 0
+    - artifactory_export_system_config_files | bool
+    - _af_sysxml | length > 0
     - artifactory_mode == 'backup'
-
-- name: "Backup | Write PATCH-ready system config YAML (resilient restore input)"
-  when:
-    - _af_sysxml_file | length > 0
-    - artifactory_mode == 'backup'
+  vars:
+    _af_syscfg_header: |
+      # REFERENCE ONLY — this file is NOT applied.
+      # System config is managed from group_vars. To change it, copy the
+      # artifactory_system_config_yaml dict below (or just the blocks you want)
+      # into group_vars and run apply. descriptor_to_config has flattened the
+      # live descriptor to the YAML-PATCH schema (keyed maps, native types) and
+      # stripped secrets + role-managed blocks (repos/replications/keyPairs).
+      #
   block:
-    - name: "Backup | Transform descriptor XML → PATCH-ready config YAML sidecar"
-      # descriptor_to_config flattens the XML to the YAML-PATCH schema (keyed
-      # maps, native types), drops master-key-encrypted secrets and the blocks
-      # the role manages elsewhere (repos/replications/keyPairs). The sidecar is
-      # written under a NAMED ROOT (artifactory_system_config_yaml:) so it is
-      # self-documenting and a literal drop-in for group_vars — copy it into
-      # playbooks/group_vars/all/ and it IS the shared base. apply auto-loads it
-      # via include_vars.
+    - name: "Backup | Transform descriptor XML → system-config reference YAML"
       ansible.builtin.copy:
-        content: "{{ {'artifactory_system_config_yaml': (_af_sysxml | ansible.utils.from_xml | descriptor_to_config)} | to_pretty_yaml(gap_depth=3) }}"
-        dest: "{{ _af_sysxml_file | regex_replace('\\.xml$', '') }}.apply.yml"
+        content: "{{ _af_syscfg_header + ({'artifactory_system_config_yaml': (_af_sysxml | ansible.utils.from_xml | descriptor_to_config)} | to_pretty_yaml(gap_depth=3)) }}"
+        dest: "{{ _af_syscfg_ref }}"
         mode: "0640"
       delegate_to: localhost
   rescue:
-    - name: "Backup | Note that the PATCH-ready YAML was skipped"
+    - name: "Backup | Note that the system-config reference was skipped"
       ansible.builtin.debug:
         msg: >-
-          Could not transform the config descriptor XML to PATCH-ready YAML (is
-          the 'xmltodict' python library installed on the controller?). The raw
-          XML sidecar was still written; system-config restore then falls back
-          to the opt-in raw-XML path. Error: {{ ansible_failed_result.msg | default('unknown') }}
+          Could not transform the config descriptor XML to YAML (is the
+          'xmltodict' python library installed on the controller?). Skipped the
+          system-config reference file. Error: {{ ansible_failed_result.msg | default('unknown') }}
 
 # ── Omit empty values (native Jinja; gated by artifactory_export_omit_empty) ──
 # Drop keys whose value is null / '' / [] / {} so the As-Built vars stay small.
@@ -444,19 +426,20 @@
   when: artifactory_export_omit_empty | bool
 
 # Header prepended to YAML exports only (a '#' line would make a JSON export
-# invalid). It warns that `_meta` is provenance, never applied — most importantly
-# that `_meta.trash_can` REPORTS the trash bin, it does not request a delete.
-- name: "Backup | Write state file"
+# invalid). It makes clear the file is reference-only and warns that
+# `_meta.trash_can` REPORTS the trash bin, it does not request a delete.
+- name: "Backup | Write reference file"
   vars:
     _af_state_header: |
-      # Artifactory captured config — As-Built, and the desired state for `mode: apply`.
+      # Artifactory captured config — REFERENCE ONLY. This file is NOT applied.
       #
-      # `_meta` is PROVENANCE ONLY and is NEVER applied — apply/compare ignore it
-      # (see artifactory_compare_ignore_keys in vars/main.yml). In particular
-      # `_meta.trash_can` is a READ-ONLY REPORT of repo-named folders whose deleted
-      # content still sits in Artifactory's trash bin. It is informational — it is
-      # NOT a request to delete or "trash" those repositories. Removing repos is
-      # only ever done by an explicit `state: absent` or opt-in `artifactory_prune`.
+      # Desired state lives in group_vars; the role only ever applies group_vars.
+      # To manage a section, copy it from below (artifactory_local_repositories,
+      # artifactory_groups, …) into group_vars and run apply.
+      #
+      # `_meta` is provenance. `_meta.trash_can` is a READ-ONLY REPORT of
+      # repo-named folders still in Artifactory's trash bin — informational, NOT
+      # a request to delete or "trash" those repositories.
       #
   ansible.builtin.copy:
     content: >-

@@ -19,36 +19,34 @@
 # for the endpoint surface. Verify against your version if it differs materially.
 
 # ── Mode ──────────────────────────────────────────────────────────────────
-# apply | backup | compare.  Every mode reads or writes ONE artifact:
-# the per-environment state file resolved below. backup WRITES it; apply and
-# compare READ it. There is no separate "input" vs "output" file to keep in
-# sync — the mode decides the direction. (apply is the default, so only
-# backup/compare need to be passed explicitly.)
+# apply | backup | compare.
+#   backup  -> capture live state to REFERENCE files (never applied).
+#   apply   -> reconcile the desired state from GROUP_VARS into the instance.
+#   compare -> diff live state against the desired state in group_vars (drift).
+# Desired state is ALWAYS group_vars; captures are reference-only. apply is the
+# default, so only backup/compare are passed explicitly.
 artifactory_mode: apply
 
-# ── Environment & state file ───────────────────────────────────────────────
-# Environment label — the discriminator that keeps each environment's captured
-# state in its own file, so a dev capture can never overwrite prod's. Set it per
-# environment in inventory, e.g. group_vars/prod.yml:  artifactory_env: prod
+# ── Environment & reference files ──────────────────────────────────────────
+# Environment label — keeps each environment's reference capture in its own
+# folder. Set it per environment in inventory, e.g.  artifactory_env: prod
 artifactory_env: default
 
-# Base directory for per-environment state. Kept INSIDE the role (files/) so the
-# As-Built travels with the role and git is the history. One sub-folder per env.
+# Base directory for the per-environment REFERENCE captures (one sub-folder per
+# env). These files are written by `mode: backup` for human reference / diffing
+# and are NEVER applied — desired state lives in group_vars.
 artifactory_state_dir: "{{ role_path }}/files/state"
 
-# Serialisation format of the state file: yaml | json. The yaml layout is fixed
-# in tasks/backup.yml via to_pretty_yaml (gap_depth=2, gap_blocks_only=true) —
-# edit those literals to change it; see filter_plugins/yaml_pretty.py.
+# Serialisation format of the reference capture: yaml | json.
 artifactory_export_format: yaml
 
-# THE state file, resolved automatically as <state_dir>/<env>/artifactory.<ext>:
-#   mode: backup        -> WRITES it (captures live As-Built)
-#   mode: apply/compare -> READS it (desired state / baseline)
-# Sidecars derive from this same path (in preflight): <state>.system-config.xml,
-# <state>.system-config.apply.yml, <state>.drift.yml.
+# THE bundled reference file, resolved as <state_dir>/<env>/artifactory.reference.<ext>.
+# Written by `mode: backup` (reference only). Per-env sidecars alongside it:
+#   <env>/artifactory.system-config.reference.yml   (system config, reference)
+#   <env>/artifactory.drift.yml                      (mode: compare output)
 # Override only for a one-off non-standard location.
 artifactory_state_file: >-
-  {{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.{{ 'json' if artifactory_export_format == 'json' else 'yml' }}
+  {{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.reference.{{ 'json' if artifactory_export_format == 'json' else 'yml' }}
 
 # ── Backup shaping ─────────────────────────────────────────────────────────
 # Omit keys with an "empty" value (null, '', [], {}) from the export, so the
@@ -58,46 +56,31 @@ artifactory_state_file: >-
 # Set false for a fully faithful dump that records every field explicitly.
 artifactory_export_omit_empty: true
 
-# When the global config descriptor XML is captured (self-hosted only), write
-# it OUT of the state file into sidecars next to it instead of inlining a
-# multi-thousand-character string:
-#   <state>.system-config.xml         the raw descriptor (authoritative, DR)
-#   <state>.system-config.apply.yml   PATCH-ready YAML under a named root
-#                                     (artifactory_system_config_yaml:) — the
-#                                     resilient restore input apply auto-loads;
-#                                     a drop-in for group_vars (needs `xmltodict`
-#                                     on the controller; skipped with a note if absent)
-# The state file then carries artifactory_system_config_xml_file (raw XML) and
-# artifactory_system_config_yaml_file (the .apply.yml) pointing at the sidecars.
+# On `mode: backup`, write the captured system config to its own reference file
+# (<env>/artifactory.system-config.reference.yml) — a descriptor_to_config
+# transform under a named root (artifactory_system_config_yaml:). Reference only;
+# to manage system config, copy the dict into group_vars. Needs `xmltodict` on
+# the controller; skipped with a note if absent.
 artifactory_export_system_config_files: true
 
 # ── Compare (drift detection) ──────────────────────────────────────────────
-# compare: capture live As-Built, diff it against the saved state file, print a
-# per-section summary, and write a structured diff sidecar (<state>.drift.yml).
-# Fail the run when drift exists (turns compare into a CI gate).
+# compare: capture live state, diff it against the desired state in group_vars,
+# print a per-section summary, and write a structured diff sidecar
+# (<env>/artifactory.drift.yml). Set true to fail on drift (a CI gate).
 artifactory_compare_fail_on_drift: false
 
-# ── Promotion safety ───────────────────────────────────────────────────────
+# ── Prune safety ───────────────────────────────────────────────────────────
 # Apply is ADDITIVE by default (artifactory_prune=false, below): create-or-update
-# only — it never deletes objects that exist in the target but are absent from
-# the state file. So promoting dev -> prod can only add/update prod, never
-# silently drop its config. Deletion is always deliberate: per-item
-# `state: absent`, or opt-in bulk artifactory_prune.
+# only — it never deletes objects present in the instance but absent from the
+# desired group_vars. Deletion is always deliberate: per-item `state: absent`, or
+# opt-in bulk artifactory_prune.
 #
-# Environments treated as protected. Applying a DIFFERENT environment's captured
-# state onto one of these (e.g. a 'dev' state file onto 'prod'), or pruning one
-# of these, FAILS unless artifactory_confirm_promote is true — so dev -> prod is
-# always a conscious act. Same-env apply and prod -> dev stay friction-free.
+# Environments treated as protected: a prune against one of these FAILS unless
+# artifactory_confirm_prune is true, so a destructive prune on prod is a
+# conscious act.
 artifactory_protected_envs:
   - prod
-artifactory_confirm_promote: false
-
-# Promote another environment's captured state onto this one: set this to the
-# SOURCE env (e.g. 'dev') and run apply with artifactory_env = the TARGET env
-# (e.g. 'prod'). The source is read from <state_dir>/<promote_from>/ — an
-# ABSOLUTE path, so promotion never depends on a fragile relative override.
-# Empty = apply this env's own state file (normal same-env apply).
-artifactory_promote_from: ""
+artifactory_confirm_prune: false
 
 # ── Connection ────────────────────────────────────────────────────────────
 # Base platform URL, no trailing slash. Works for on-prem or SaaS.
@@ -163,29 +146,18 @@ artifactory_prune: false
 artifactory_prune_sections: [repositories, groups, users, permissions, projects, environments, vault, webhooks, xray]
 
 # ╔══════════════════════════════════════════════════════════════════════════╗
-# ║ DESIRED STATE  —  the round-trip schema                                   ║
-# ║ Populated by `mode: backup`; consumed by `mode: apply`. Empty here so a   ║
-# ║ bare run is a safe no-op. Put real values in inventory or a backup file.  ║
+# ║ DESIRED STATE  —  set these in GROUP_VARS                                 ║
+# ║ Empty here so a bare run is a safe no-op. Put real values in inventory    ║
+# ║ group_vars; `mode: backup` writes reference files you can copy from.      ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── System / global configuration ─────────────────────────────────────────
-# The global config descriptor only READS as XML, but the RESILIENT,
-# version-tolerant restore path is the YAML PATCH. Representations:
-#
-#  * artifactory_system_config_yaml — declarative config in the YAML-PATCH
-#    schema, applied PER-BLOCK and fail-soft (PATCH /api/system/configuration,
-#    application/yaml). Hand-author it, OR leave it empty and the role
-#    AUTO-LOADS the PATCH-ready sidecar a backup wrote
-#    (artifactory_system_config_yaml_file). Keys mirror the descriptor element
-#    names flattened; named collections are KEYED MAPS (by key/name). NOTE:
-#    there is NO `general:` wrapper — baseUrl/serverName/… are top-level.
-#
-#  * artifactory_system_config_xml / _xml_file — the raw descriptor as the
-#    server returned it (full fidelity, for diff / DR). Only re-applied when
-#    artifactory_apply_system_config_xml is true, via the heavy-handed POST
-#    full-replace — version-bound and carrying master-key-encrypted secrets, so
-#    same-instance/same-version only (the role guards a schema mismatch). For
-#    up/downgrades use the YAML path above.
+# artifactory_system_config_yaml — declarative config in the YAML-PATCH schema,
+# applied PER-BLOCK and fail-soft (PATCH /api/system/configuration,
+# application/yaml). Keys mirror the descriptor element names flattened; named
+# collections are KEYED MAPS (by key/name). NOTE: there is NO `general:`
+# wrapper — baseUrl/serverName/… are top-level. A backup writes a reference copy
+# (artifactory.system-config.reference.yml); copy the dict here to manage it.
 artifactory_system_config_yaml: {}
 #   urlBase: "https://artifactory.dev.example.com"
 #   serverName: artifactory.dev.example.com
@@ -198,14 +170,6 @@ artifactory_system_config_yaml: {}
 #       enabled: true
 #       cronExp: "0 0 2 ? * MON-FRI"
 #       excludeNewRepositories: false
-
-# PATCH-ready YAML config sidecar written by backup (when
-# artifactory_export_system_config_files is true) — the resilient restore input
-# apply auto-loads when artifactory_system_config_yaml is empty. Stored in the
-# state file as a bare FILENAME (portable); resolved next to the state file on
-# apply. Secrets and role-managed blocks (repos/replications/keyPairs) are
-# stripped from it at capture time.
-artifactory_system_config_yaml_file: ""
 
 # Per-environment overrides, deep-merged onto the shared config before PATCH.
 # This is how you run ONE shared desired-state across dev/test/prod without
@@ -225,13 +189,6 @@ artifactory_system_config_yaml_overrides: {}
 #   artifactory_system_config_secrets:
 #     mailServer: {password: "{{ lookup('community.hashi_vault.hashi_vault', '…') }}"}
 artifactory_system_config_secrets: {}
-
-artifactory_system_config_xml: ""
-# Descriptor XML sidecar written by backup. Stored in the state file as a bare
-# FILENAME (portable); resolved next to the state file on apply. Used by the
-# opt-in raw-XML re-apply path when artifactory_system_config_xml itself is empty.
-artifactory_system_config_xml_file: ""
-artifactory_apply_system_config_xml: false
 
 # ── Repositories ──────────────────────────────────────────────────────────
 # Each entry is the FULL repo config object the /api/repositories API accepts

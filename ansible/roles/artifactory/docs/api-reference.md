@@ -52,9 +52,8 @@ server, property sets, repository layouts, security-general, sumo/bintray**.
 | POST | `/artifactory/api/system/configuration` | self-hosted | full XML replace (heavy-handed) |
 | PATCH | `/artifactory/api/system/configuration` | self-hosted | `Content-Type: application/yaml` — additive, supported, **the** way to manage proxies/backups/layouts/property-sets/general as code |
 
-Role: `artifactory_system_config_yaml` (PATCH) + `artifactory_system_config_xml`
-(captured raw, optional full-replace). On SaaS the role tolerates the 400 and
-skips this section.
+Role: `artifactory_system_config_yaml` (group_vars) applied via PATCH. On SaaS
+the role tolerates the 400 and skips this section.
 
 ## 3. Repositories `[both]`
 

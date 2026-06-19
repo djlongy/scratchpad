@@ -1,45 +1,18 @@
 ---
 # roles/artifactory/tasks/system/system_config.yml
-# Apply global/system configuration. Two paths:
-#
-#  1. YAML PATCH (default, RESILIENT across Artifactory versions). Uses
-#     artifactory_system_config_yaml — hand-authored, or AUTO-LOADED from the
-#     PATCH-ready sidecar a backup wrote (artifactory_system_config_yaml_file),
-#     so you never copy-paste config into group_vars. Applied PER-BLOCK and
-#     fail-soft: a block this Artifactory version rejects is reported and
-#     skipped instead of sinking the whole restore — that is what makes
-#     up/downgrade restores work. Secrets the backup stripped (master-key
-#     encrypted) can be re-supplied via artifactory_system_config_secrets.
-#
-#  2. Raw XML full-replace (opt-in DR). Re-POSTs the captured descriptor
-#     verbatim — heavy-handed, version-bound (xsd-tagged) and carrying
-#     master-key-encrypted secrets, so it only works same-instance/same-version.
-#     Guarded below to refuse a schema-version mismatch (which would 500).
-
-# ── 1. YAML PATCH path (resilient default) ────────────────────────────────
-- name: "System_config | Check for a captured PATCH-ready YAML sidecar"
-  ansible.builtin.stat:
-    path: "{{ artifactory_system_config_yaml_file }}"
-  register: _af_cfgyaml_stat
-  delegate_to: localhost
-  when: artifactory_system_config_yaml_file | default('') | length > 0
-
-- name: "System_config | Auto-load captured config (named root → variable, unless hand-authored)"
-  # The sidecar carries a named root (artifactory_system_config_yaml:), so
-  # include_vars populates the variable directly — same file is a drop-in for
-  # group_vars/all. Only loads when no base was hand-authored (length == 0).
-  ansible.builtin.include_vars: "{{ artifactory_system_config_yaml_file }}"
-  when:
-    - artifactory_system_config_yaml | default({}) | length == 0
-    - _af_cfgyaml_stat.stat.exists | default(false)
+# Apply global/system configuration via the YAML PATCH (the supported,
+# version-tolerant path). Desired state comes ONLY from group_vars:
+#   base      = artifactory_system_config_yaml            (group_vars/all)
+#   overrides = artifactory_system_config_yaml_overrides  (inventories/<env>/group_vars)
+#   secrets   = artifactory_system_config_secrets         (Vault)
+# These are deep-merged, then PATCHed PER-BLOCK and fail-soft: a block this
+# Artifactory version rejects is reported and skipped instead of sinking the
+# whole apply. A backup writes artifactory.system-config.reference.yml as a
+# REFERENCE — it is never auto-loaded; copy the dict into group_vars to manage it.
 
 # Build the effective desired config in an INTERNAL fact, so the merge result is
-# never shadowed by the precedence of its inputs (e.g. a base config passed via
+# never shadowed by the precedence of its inputs (e.g. a base passed via
 # --extra-vars would otherwise out-rank a set_fact that re-set the same name).
-# Layering: shared base ◁ per-env overrides ◁ re-supplied secrets.
-#   base       = artifactory_system_config_yaml (hand-authored or auto-loaded)
-#   overrides  = artifactory_system_config_yaml_overrides (inventories/<env>/group_vars)
-#   secrets    = artifactory_system_config_secrets (Vault)
 - name: "System_config | Compose desired config (base ◁ per-env overrides)"
   ansible.builtin.set_fact:
     _af_syscfg: "{{ artifactory_system_config_yaml | default({}) | combine(artifactory_system_config_yaml_overrides | default({}), recursive=true) }}"
@@ -51,11 +24,11 @@
   no_log: true
 
 - name: "System_config | Apply YAML config per-block, dropping version-unknown keys"
-  # Version-adaptive: PATCHes each top-level block and, on a 400 naming a key the
-  # target's schema doesn't accept ("is not a property" on older versions / "is
-  # not part of the configuration" on newer), drops that key and retries — so the
-  # maximal version-compatible subset applies and every dropped/failed key is
-  # reported. This is what makes restore work ACROSS Artifactory versions.
+  # Version-adaptive: PATCHes each top-level block and, on a 400 that names a key
+  # the target's schema doesn't accept ("Key <x> is not part of the
+  # configuration"), drops that key and retries — so the maximal version-
+  # compatible subset applies and every dropped/rejected key is reported. This is
+  # what makes the same desired config apply across Artifactory up/downgrades.
   artifactory_config_apply:
     url: "{{ artifactory_ep.system_config }}"
     config: "{{ _af_syscfg }}"
@@ -74,58 +47,14 @@
     msg: >-
       system-config: {{ _ap_sysyaml.applied | default([]) | length }} block(s) applied.
       {{ ('Dropped version-incompatible keys: ' ~ _ap_sysyaml.dropped) if (_ap_sysyaml.dropped | default({})) else '' }}
-      {{ ('FAILED blocks (review): ' ~ _ap_sysyaml.failed) if (_ap_sysyaml.failed | default({})) else '' }}
+      {{ ('REJECTED blocks (review): ' ~ _ap_sysyaml.rejected) if (_ap_sysyaml.rejected | default({})) else '' }}
   when:
     - _ap_sysyaml is defined
-    - (_ap_sysyaml.dropped | default({})) or (_ap_sysyaml.failed | default({}))
+    - (_ap_sysyaml.dropped | default({})) or (_ap_sysyaml.rejected | default({}))
 
 - name: "System_config | Fail if blocks were rejected and fail-fast is set"
   ansible.builtin.fail:
-    msg: "System-config blocks failed on this target: {{ _ap_sysyaml.failed.keys() | list | join(', ') }} (artifactory_fail_fast is true)."
+    msg: "System-config blocks rejected on this target: {{ _ap_sysyaml.rejected.keys() | list | join(', ') }} (artifactory_fail_fast is true)."
   when:
     - artifactory_fail_fast | bool
-    - _ap_sysyaml.failed | default({}) | length > 0
-
-# ── 2. Raw XML full-replace (opt-in DR, schema-version guarded) ───────────
-- name: "System_config | Raw XML descriptor re-apply (opt-in, same-version only)"
-  when:
-    - artifactory_apply_system_config_xml | bool
-    - (artifactory_system_config_xml | length > 0) or (artifactory_system_config_xml_file | length > 0)
-  vars:
-    _captured_xml: >-
-      {{ artifactory_system_config_xml if (artifactory_system_config_xml | length > 0)
-         else lookup('ansible.builtin.file', artifactory_system_config_xml_file) }}
-  block:
-    - name: "System_config | GET live descriptor to read its schema version"
-      ansible.builtin.uri:
-        url: "{{ artifactory_ep.system_config }}"
-        method: GET
-        headers: "{{ _af_headers }}"
-        status_code: [200]
-      check_mode: false
-      register: _af_live_desc
-      changed_when: false
-
-    - name: "System_config | Guard — refuse raw XML across schema versions"
-      vars:
-        _af_xsd_captured: "{{ _captured_xml | regex_search('xsd/[0-9.]+') | default('?', true) }}"
-        _af_xsd_live: "{{ _af_live_desc.content | regex_search('xsd/[0-9.]+') | default('?', true) }}"
-      ansible.builtin.assert:
-        that: _af_xsd_captured == _af_xsd_live
-        fail_msg: >-
-          Refusing raw-XML system-config replace: captured descriptor schema
-          ({{ _af_xsd_captured }}) != target ({{ _af_xsd_live }}). The
-          full-replace POST is version-bound and would 500. Use the YAML PATCH
-          path (default) for cross-version restore, or re-capture on this version.
-        success_msg: "Descriptor schema matches ({{ _af_xsd_captured }}) — raw XML replace allowed."
-        quiet: true
-
-    - name: "System_config | Re-apply raw XML descriptor (full replace)"
-      ansible.builtin.uri:
-        url: "{{ artifactory_ep.system_config }}"
-        method: POST
-        headers: "{{ _af_headers | combine({'Content-Type': 'application/xml'}) }}"
-        body: "{{ _captured_xml }}"
-        status_code: [200]
-      register: _ap_sysxml
-      changed_when: _ap_sysxml.status == 200
+    - _ap_sysyaml.rejected | default({}) | length > 0

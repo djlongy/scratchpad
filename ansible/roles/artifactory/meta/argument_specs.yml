@@ -56,27 +56,18 @@ argument_specs:
         type: str
         choices: [yaml, json]
         default: yaml
-        description: "[backup] Serialisation format of the state file."
+        description: "[backup] Serialisation format of the reference capture."
       artifactory_protected_envs:
         type: list
         elements: str
         default: [prod]
         description: >-
-          Environments for which a cross-environment apply (promotion) or a
-          prune requires artifactory_confirm_promote=true.
-      artifactory_confirm_promote:
+          Environments for which a prune requires artifactory_confirm_prune=true.
+      artifactory_confirm_prune:
         type: bool
         default: false
         description: >-
-          Explicit acknowledgement required to apply a different environment's
-          state onto, or to prune, a protected environment.
-      artifactory_promote_from:
-        type: str
-        default: ""
-        description: >-
-          Source environment to promote FROM on apply (e.g. 'dev'); its captured
-          state under <state_dir>/<env>/ becomes the desired state, applied onto
-          the target artifactory_env. Empty = apply this env's own state file.
+          Explicit acknowledgement required to prune a protected environment.
       artifactory_reconcile_existing:
         type: bool
         default: true
@@ -161,13 +152,6 @@ argument_specs:
           Secrets the backup stripped (master-key encrypted) to re-supply,
           deep-merged into artifactory_system_config_yaml before PATCH. Same
           shape as the config but secrets only — ideally from Vault.
-      artifactory_apply_system_config_xml:
-        type: bool
-        default: false
-        description: >-
-          Opt-in DR path: re-POST the captured raw XML descriptor (full
-          replace). Same-version only; the role refuses a schema-version
-          mismatch. Prefer the YAML path for cross-version restore.
       artifactory_local_repositories:
         type: list
         elements: dict

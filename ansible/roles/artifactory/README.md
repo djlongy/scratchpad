@@ -1,15 +1,18 @@
 # artifactory
 
 Portable, API-driven configuration of a **JFrog Artifactory Enterprise** instance.
-One role, one schema, two directions:
+Desired state lives in **group_vars** (one inventory per environment); captures
+are reference-only. Three modes:
 
-- **`backup`** — read the entire live configuration over the REST API and write it
-  to a single YAML/JSON file.
-- **`apply`** — reconcile that same schema into a fresh/empty instance (provision
-  from scratch) or an existing one (brownfield add/update/remove).
+- **`apply`** — reconcile the desired state from group_vars into the instance
+  (provision from scratch, or brownfield add/update/remove). The default mode.
+- **`backup`** — read the entire live configuration over the REST API and write
+  it to per-env REFERENCE files (never applied).
+- **`compare`** — diff the live state against the group_vars desired state.
 
-The backup output **is** valid apply input — no translation. All you need is the
-instance URL and an admin API token.
+A capture's section shapes match the role's group_vars exactly, so copying a
+section from a reference file into group_vars is valid apply input with no
+translation. All you need is the instance URL and an admin API token.
 
 > Why not just import the config JSON/XML? Because copying
 > `artifactory.config.latest.xml` + `artifactory.repository.config.latest.json` only
@@ -30,27 +33,21 @@ profile. See [`docs/api-reference.md`](docs/api-reference.md) for the API surfac
 
 ## Quick start
 
-`apply` is the default mode, so only `backup`/`compare` are passed explicitly.
+Desired state lives in **group_vars**, one inventory per env. `apply` is the
+default mode, so only `backup`/`compare` are passed explicitly.
 
 ```bash
 export ARTIFACTORY_TOKEN='<admin token>'          # role reads this env var
 
-# 1. Back up everything for an environment
-#    (writes roles/artifactory/files/state/prod/artifactory.yml)
-ansible-playbook playbooks/artifactory.yml \
-  -e artifactory_url=https://acme.jfrog.io \
-  -e artifactory_mode=backup \
-  -e artifactory_env=prod                          # or .json with -e artifactory_export_format=json
+# 1. Capture an env's live config to REFERENCE files (NOT applied):
+#    writes files/state/prod/artifactory.reference.yml (+ .system-config.reference.yml)
+ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=backup
 
-# 2. Rebuild an empty instance from that environment's saved state (apply = default)
-ansible-playbook playbooks/artifactory.yml \
-  -e artifactory_url=https://newbox.example.com \
-  -e artifactory_env=prod
+# 2. Apply the desired state from that env's group_vars (apply = default):
+ansible-playbook playbooks/artifactory.yml -i inventories/prod
 
-# 3. Provision a designed estate (no prior backup needed)
-ansible-playbook playbooks/artifactory.yml \
-  -e artifactory_url=https://newbox.example.com \
-  -e @roles/artifactory/examples/multitenant.yml
+# 3. Drift: live state vs the env's group_vars
+ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=compare
 ```
 
 ## What it manages
@@ -108,7 +105,7 @@ wipes a stored bind password.
 
 ## Modes, state, and surgical changes
 
-- **Greenfield**: `mode: apply` against an empty box with a full state file → builds
+- **Greenfield**: `mode: apply` against an empty box with full group_vars → builds
   everything in dependency order (repos → security → projects → integrations → xray).
 - **Brownfield add/update**: `mode: apply` with only the objects you want — each
   section is a no-op when its list is empty. Existing objects are updated when
@@ -128,55 +125,38 @@ wipes a stored bind password.
 Deletes run in reverse dependency order (virtual repos before their members; Xray
 watches before the policies they reference).
 
-## Environments & promotion
+## Environments — per-env group_vars
 
-Captured state is **per environment**. Set `artifactory_env` (in each env's
-`group_vars`); the role resolves one file per env — no separate input/output var,
-the **mode** decides direction (`backup` writes it, `apply`/`compare` read it):
-
-```
-roles/artifactory/files/state/<env>/artifactory.yml      # the state file
-                                    artifactory.system-config.xml        # raw descriptor (DR)
-                                    artifactory.system-config.apply.yml  # PATCH-ready, named-root, drop-in
-                                    artifactory.drift.yml                # mode: compare
-```
-
-The resolved path is `artifactory_state_file` (defaults to
-`{{ artifactory_state_dir }}/{{ artifactory_env }}/artifactory.<ext>`); override it
-only for a one-off non-standard location, and use an **absolute** path if you do.
-Each backup stamps `_meta.environment`, so the role knows where a capture came from.
-
-**Apply is additive by default** (`artifactory_prune: false`): create-or-update only,
-never deleting objects absent from the state file — so promoting one env's state onto
-another can only add/update, never silently drop config. Applying a *different*
-environment's state onto a **protected** env (`artifactory_protected_envs`, default
-`[prod]`), or pruning a protected env, **fails unless `artifactory_confirm_promote: true`**
-— promotion into prod is always a conscious act; same-env apply and prod→dev are free.
-
-Promotion uses `artifactory_promote_from` — the SOURCE env to apply onto the
-target `artifactory_env`. The source is resolved against the absolute state dir,
-so it's never a fragile relative path.
+**Desired state is group_vars, one inventory per environment.** The role applies
+ONLY group_vars; captures are reference-only and never replayed. `artifactory_env`
+(set in each inventory's group_vars) just labels where a backup writes that env's
+reference files. Layer it: shared config in `group_vars/all`, per-env differences
+in `inventories/<env>/group_vars`. Same playbook, pick the env by inventory:
 
 ```bash
-# 1. Capture prod  ->  files/state/prod/artifactory.yml
-ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
-  -e artifactory_mode=backup -e artifactory_env=prod
+# Apply dev / test / prod — each picks up its own group_vars
+ansible-playbook playbooks/artifactory.yml -i inventories/dev      # or test / prod
 
-# 2. Clone prod -> dev  (apply prod's capture onto dev; dev not protected = no prompt)
-ansible-playbook playbooks/artifactory.yml -e artifactory_url=$DEV \
-  -e artifactory_env=dev -e artifactory_promote_from=prod
+# Capture an env's live state to REFERENCE files (NOT applied):
+ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=backup
+#   writes files/state/prod/:
+#     artifactory.reference.yml                 # bundled capture (repos / security / …)
+#     artifactory.system-config.reference.yml   # system config, named-root
+#   → copy the sections you want into group_vars to manage them
 
-#    …surgical changes in dev, then capture dev -> files/state/dev/artifactory.yml…
-
-# 3. Promote dev -> prod  (GUARD: dev state onto protected prod requires confirm)
-ansible-playbook playbooks/artifactory.yml -e artifactory_url=$PROD \
-  -e artifactory_env=prod -e artifactory_promote_from=dev \
-  -e artifactory_confirm_promote=true
+# Drift: live state vs your declared group_vars
+ansible-playbook playbooks/artifactory.yml -i inventories/dev -e artifactory_mode=compare
 ```
 
-To remove objects added to prod out-of-band: `mode: compare` shows drift vs the
-committed baseline, then a deliberate `artifactory_prune=true` (plus
-`artifactory_confirm_promote=true` for prod) prunes the unmanaged ones.
+**Promotion between envs** = curate each env's group_vars (copy what you want from
+an env's reference into shared/per-env group_vars). There is no "apply one env's
+capture onto another" — desired state is always the explicit group_vars.
+
+**Apply is additive by default** (`artifactory_prune: false`): create-or-update
+only, never deleting objects absent from your group_vars. Deletion is deliberate:
+per-item `state: absent`, or opt-in `artifactory_prune` — which on a **protected**
+env (`artifactory_protected_envs`, default `[prod]`) needs
+`artifactory_confirm_prune: true`.
 
 ## Scoping a run
 
@@ -203,22 +183,21 @@ captured/applied.
 
 The intended operating loop for using this role as IaC with audit + approval:
 
-1. **Pull (As-Built)** — a scheduled/on-demand `mode: backup` writes the full
-   live config to `files/state/<env>/artifactory.yml`. Captures carry real
+1. **Pull (reference)** — a scheduled/on-demand `mode: backup` writes the live
+   config to `files/state/<env>/artifactory.reference.yml` (+ the system-config
+   reference). These are REFERENCE ONLY — never applied. Captures carry real
    hostnames, LDAP DNs and emails, so they are gitignored by default; to keep a
    diffable committed history, point `artifactory_state_dir` at a location where
-   committing the captured config is acceptable. Exports are deterministic —
-   keys sorted, stable layout — so two diff cleanly.
-2. **Compare & cherry-pick** — diff the as-built export against the desired
-   state in `group_vars`/state files (`git diff` / `diff -u`; the export's
-   blank-line-per-object layout keeps the diff readable). Whatever drift you
-   want to KEEP, copy into the desired state in a merge request; whatever you
-   don't, leave out.
+   committing the captured config is acceptable.
+2. **Cherry-pick into group_vars** — diff the reference against your declared
+   desired state in `group_vars` (`mode: compare`, or `git diff` / `diff -u`).
+   Whatever drift you want to KEEP, copy from the reference into group_vars in a
+   merge request; whatever you don't, leave out.
 3. **Approve** — the MR review is the approval gate; history is the audit log.
-4. **Push (Apply)** — on merge, CI runs `mode: apply` with the desired state.
-   With `artifactory_prune: true` the instance is fully reconciled (server
-   objects not in the desired state are deleted — protected built-ins
-   excepted); without it, apply is additive/corrective only.
+4. **Push (Apply)** — on merge, CI runs `mode: apply` (group_vars = desired
+   state). With `artifactory_prune: true` the instance is fully reconciled
+   (objects not in group_vars are deleted — protected built-ins excepted);
+   without it, apply is additive/corrective only.
 
 Secrets never live in either file: bind passwords come from Vault via
 `artifactory_ldap_manager_passwords`, user passwords are generated or supplied
@@ -293,39 +272,32 @@ artifactory_system_config_yaml:
 
 Two caveats: (1) it must be a real **writable** config-as-code key for your
 version — discover the exact names by running `mode: backup` and reading the
-`.system-config.apply.yml` sidecar (the precise keys your instance accepts), or
+`.system-config.reference.yml` file (the precise keys your instance accepts), or
 the JFrog YAML-config docs / `artifactory.xsd`; an invalid or read-only key is
 simply dropped + reported, never fatal. (2) This is the global **descriptor**
 only — **repositories** (left the descriptor at 7.49) and **LDAP/SAML/OAuth/Crowd**
 (left at 7.59, now in the Access service) are NOT set here; they have their own
 sections/APIs.
 
-So when the descriptor is captured (`artifactory_export_system_config_files:
-true`) the role externalizes two sidecars next to the export:
-
-| File | Purpose |
-|---|---|
-| `<export>.system-config.xml` | raw descriptor — full fidelity; the opt-in same-version DR re-apply path (`artifactory_apply_system_config_xml`) |
-| `<export>.system-config.apply.yml` | **PATCH-ready** YAML config (the `descriptor_to_config` transform: flattened to the PATCH schema, list sections as keyed maps, native types) with master-key-encrypted secrets and role-managed blocks (repos/replications/keyPairs) **stripped**. This is the resilient restore input. |
-
-The state file points at both **by filename only** (not absolute paths), so the
-export is portable across checkouts; on apply the role resolves them next to the
-state file.
-
-**On apply** (default, no extra flags): if you didn't hand-author
-`artifactory_system_config_yaml`, the role **auto-loads** the `.apply.yml`
-sidecar — no copy-paste into `group_vars`. It then applies the config with the
+**On apply**, the desired config is **group_vars only** —
+`artifactory_system_config_yaml` deep-merged with
+`artifactory_system_config_yaml_overrides` (per env) and
+`artifactory_system_config_secrets`. It is applied by the
 `artifactory_config_apply` module (`library/`), which is **version-adaptive**:
 the YAML-PATCH schema is only the *writable* properties and that set **drifts
-between Artifactory versions** (an older instance 400s a key a newer one
-accepts, with `is not a property` / `is not part of the configuration`). So the
-module PATCHes each block and, on such a 400, **drops the exact key the server
-named and retries** — the server is the schema oracle, so the maximal
-version-compatible subset applies on *any* version, up or downgrade. Every
-dropped key is listed in `dropped` and any block it couldn't salvage in
+between Artifactory versions**. The module PATCHes each block and, on a 400
+naming a key the target doesn't accept (`Key "<x>" is not part of the
+configuration`), **drops that key and retries** — the server is the schema
+oracle, so the maximal version-compatible subset applies on *any* version, up or
+downgrade. Dropped keys are listed in `dropped`, any block it couldn't salvage in
 `rejected` (set `artifactory_fail_fast: true` to make a rejection fatal) — so a
-cross-version restore tells you precisely what didn't map instead of failing
-opaquely.
+restore tells you precisely what didn't map.
+
+A `mode: backup` writes `artifactory.system-config.reference.yml` — the same
+`descriptor_to_config` transform (flattened to the PATCH schema, keyed maps,
+native types, secrets + role-managed blocks stripped) under a named root, with a
+"REFERENCE ONLY" header. It is **never auto-applied** — copy the dict (or the
+blocks you want) into group_vars to manage it.
 
 **Secrets** the capture stripped (mail/proxy passwords, ssl keys) can't port —
 re-supply only the ones you need via `artifactory_system_config_secrets` (deep-
@@ -388,15 +360,10 @@ internals — not meaningful settings silently lost. Check the `dropped` list; i
 a setting you care about is there, set it explicitly in
 `artifactory_system_config_yaml` under its config-as-code key name.
 
-**Raw XML** (`artifactory_apply_system_config_xml: true`) — *discouraged.* The
-descriptor is xsd-version-stamped; a mismatched one makes Artifactory run schema
-converters, and a failed conversion errors out (the runtime API POST this role
-uses returns 400/500 — the related *file* bootstrap path, `config.import.xml`
-read at boot, instead **crash-boot-loops** the service, which is why the role
-never writes that file). JFrog's own guidance is "do not modify
-`artifactory.config.xml` directly." So this path is **same-version DR only** —
-the role refuses up front when the captured schema version ≠ the target's;
-prefer the YAML PATCH for anything crossing versions or instances.
+> Raw-XML full-replace of the descriptor is deliberately NOT supported: it's
+> xsd-version-stamped and carries master-key-encrypted secrets, so it can't port
+> across versions/instances (JFrog's own guidance is "do not modify
+> `artifactory.config.xml` directly"). The YAML PATCH above is the only path.
 
 ## Trimming empty values
 
@@ -447,10 +414,10 @@ is why this lives in a plugin.)
 
 ## JSON output
 
-Set `artifactory_export_format: json` to write the state as JSON instead of YAML (the
-resolved state file then ends in `.json`). It re-imports the same way — apply reads the
-same per-environment file. Real estates produce large files (thousands of lines) —
-that's expected; it's the full config.
+Set `artifactory_export_format: json` to write the reference capture as JSON
+instead of YAML (it then ends in `.json`). Real estates produce large files
+(thousands of lines) — that's expected; it's the full config. (Reference only —
+desired state is still group_vars.)
 
 ## Security
 
