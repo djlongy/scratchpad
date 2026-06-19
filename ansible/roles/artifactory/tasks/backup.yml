@@ -1,13 +1,13 @@
 ---
 # roles/artifactory/tasks/backup.yml
-# GET the full live configuration and write it to a single file shaped exactly
-# like the role's input variables, so the output is directly re-appliable
-# (mode: apply reads it back automatically for the matching environment).
+# GET the full live configuration and write it to per-env REFERENCE files, shaped
+# like the role's group_vars so you can copy sections in to manage them. These
+# files are NEVER applied — desired state is group_vars.
 #
-# Not captured (cannot be read back): user passwords (hashed), access-token and
-# SSO/Vault secrets, and LDAP bind passwords (search.manager_password comes back
-# masked as asterisks — re-supply via artifactory_ldap_manager_passwords on
-# apply). Self-hosted-only: global config descriptor.
+# Not captured: user passwords (hashed), access-token and SSO/Vault secrets, and
+# LDAP bind passwords (search.manager_password comes back masked — re-supply via
+# artifactory_ldap_manager_passwords on apply). External-realm users are excluded
+# (only internal users are captured). Self-hosted-only: global config descriptor.
 # Access admin sections (vault/ldap) may 403 with an Artifactory-only token —
 # tolerated; they're simply omitted.
 
@@ -286,8 +286,8 @@
   changed_when: false
   when: artifactory_manage_webhooks | bool
 
-# ── Assemble the round-trip document ──────────────────────────────────────
-- name: "Backup | Assemble state document"
+# ── Assemble the reference document ───────────────────────────────────────
+- name: "Backup | Assemble reference document"
   vars:
     _sysxml: "{{ _bk_sysconf.content | default('') if (_bk_sysconf.status | default(0) == 200) else '' }}"
   ansible.builtin.set_fact:

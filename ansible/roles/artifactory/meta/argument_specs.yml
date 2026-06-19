@@ -12,8 +12,9 @@ argument_specs:
         choices: [backup, apply, compare]
         default: apply
         description: >-
-          Operation mode. backup = export live As-Built; apply = reconcile IaC
-          into the instance; compare = diff As-Built vs saved baseline (drift).
+          Operation mode. apply = reconcile the group_vars desired state into
+          the instance; backup = write live state to reference files (not
+          applied); compare = diff live state vs the group_vars desired (drift).
       artifactory_url:
         type: str
         required: true
@@ -38,9 +39,9 @@ argument_specs:
         type: str
         default: default
         description: >-
-          Environment label that keys the state file (set per environment in
-          inventory, e.g. prod/dev/test). Keeps each environment's captured
-          state in its own file so captures never collide.
+          Environment label that keys the reference capture folder (set per
+          environment in inventory, e.g. prod/dev/test). Keeps each
+          environment's reference files separate so they never collide.
       artifactory_state_dir:
         type: str
         default: "{{ role_path }}/files/state"
@@ -134,8 +135,8 @@ argument_specs:
         description: >-
           Global/system config in the YAML-PATCH schema (keys mirror the
           descriptor flattened; named collections are keyed maps). Applied
-          per-block, fail-soft. Empty = auto-load the PATCH-ready sidecar a
-          backup wrote. The resilient, version-tolerant restore path.
+          per-block, fail-soft. Set in group_vars; a backup writes a reference
+          copy you can paste from. The resilient, version-tolerant config path.
       artifactory_system_config_yaml_overrides:
         type: dict
         default: {}

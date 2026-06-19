@@ -14,7 +14,7 @@
       url_password: "{{ (artifactory_admin_password if (_af_use_basic | default(false)) else omit) }}"
       return_content: true
   block:
-    - name: Run preflight (auth, health, load import file)
+    - name: Run preflight (auth, health, output paths)
       ansible.builtin.import_tasks: preflight.yml
       tags: [always]
 
@@ -28,7 +28,7 @@
       when: artifactory_mode == 'apply'
       tags: [apply]
 
-    - name: Compare As-Built against saved IaC (drift report)
+    - name: Compare live state against the desired group_vars (drift report)
       ansible.builtin.import_tasks: compare.yml
       when: artifactory_mode == 'compare'
       tags: [compare]

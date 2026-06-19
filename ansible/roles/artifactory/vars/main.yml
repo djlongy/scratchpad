@@ -53,18 +53,11 @@ artifactory_ep:
   xray_binmgr: "{{ artifactory_xray_api }}/v1/binMgr"
   xray_reports: "{{ artifactory_xray_api }}/v1/reports"
 
-# Xray report types → the per-type create sub-path under xray_reports
-# (POST {xray_reports}/<type>). Used by the reports section.
-artifactory_xray_report_types: [vulnerabilities, licenses, violations, operationalRisks]
-
 # Keys that are capture metadata (provenance), not configuration — excluded from
 # compare so they never show as spurious drift. _meta carries captured_at (it
 # changes every capture), so it MUST be ignored.
 artifactory_compare_ignore_keys:
   - _meta
-
-# Apply order for repositories (virtuals/federated reference the others).
-artifactory_rclass_order: [local, remote, virtual, federated]
 
 # Computed/read-only keys to strip from a repo object before writing.
 artifactory_repo_strip_keys:

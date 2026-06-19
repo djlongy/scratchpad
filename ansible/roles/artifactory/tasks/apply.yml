@@ -1,6 +1,6 @@
 ---
 # roles/artifactory/tasks/apply.yml
-# Reconcile desired state (inline vars, inventory, or a loaded import file).
+# Reconcile the desired state (from group_vars) into the instance.
 # Order: foundational config → repos → security → projects (reference repos) →
 # integrations → xray → eventing. Each section self-skips when its data is empty.
 

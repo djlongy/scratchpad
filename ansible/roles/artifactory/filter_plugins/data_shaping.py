@@ -41,7 +41,7 @@ def drop_empty(data):
     return prune(data)
 
 
-# ── compare (As-Built vs saved IaC) ────────────────────────────────────────
+# ── compare (group_vars desired vs As-Built) ──────────────────────────────
 # Identity key for each managed section's list items, so diffs match objects by
 # their natural key rather than list position. Dotted paths
 # (e.g. general_data.name) address a nested key.
@@ -78,10 +78,10 @@ def _get_path(obj, path):
 
 
 def config_diff(saved, asbuilt, identity=None, ignore=None):
-    """Diff two role-state dicts (saved IaC vs As-Built export) section by
-    section. Keyed-list sections are matched by their identity key; everything
-    else is compared whole. `ignore` is a list of section keys to skip (export
-    metadata like sidecar-file pointers). Returns only sections that differ:
+    """Diff two role-state dicts (group_vars desired vs As-Built capture) section
+    by section. Keyed-list sections are matched by their identity key; everything
+    else is compared whole. `ignore` is a list of section keys to skip (capture
+    metadata like _meta). Returns only sections that differ:
 
         {section: {added:[...], removed:[...], changed:[{id,before,after}]}}   # keyed lists
         {section: {before:..., after:...}}                                     # scalars/maps
@@ -119,7 +119,7 @@ def diff_summary(diff):
                 sec, len(d['added']), len(d['changed']), len(d['removed'])))
         else:
             lines.append("%-40s changed (scalar/map)" % sec)
-    return lines or ["no differences — As-Built matches saved IaC"]
+    return lines or ["no differences — live state matches the desired group_vars"]
 
 
 # ── system-config descriptor (XML) → PATCH-ready YAML config ────────────────
