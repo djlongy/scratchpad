@@ -5,6 +5,7 @@
 #   preflight  → dependency-ordering guards (FIPS, time, FQDN/DNS, primary-up)
 #   install    → upstream ipaserver/ipareplica (packages, firewall, install)
 #   resilience → cold-start timeout override + recovery timer
+#   certs      → import trusted external CAs (primary only; opt-in)
 #   hardening  → opt-in post-install hardening
 #   backup     → Borg-readable backup timer (primary only)
 #   idam       → declarative IDAM reconciliation (primary only)
@@ -20,6 +21,14 @@
 - name: Apply FreeIPA cold-start resilience fixes
   ansible.builtin.import_tasks: resilience.yml
   tags: [configure, resilience]
+
+- name: Import trusted external CA certificates (primary only)
+  ansible.builtin.import_tasks: certs.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_server_trusted_external_cas | length > 0
+    - freeipa_server_ca_mode != 'ca-less'
+  tags: [certs, ca]
 
 - name: Apply FreeIPA post-install hardening (opt-in)
   ansible.builtin.import_tasks: hardening.yml

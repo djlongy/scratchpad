@@ -41,6 +41,7 @@ ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags r
 | `preflight` | FIPS/time/FQDN/primary-up dependency guards |
 | `install` | Vault creds + upstream primary/replica install |
 | `configure` / `resilience` | Cold-start timeout override + recovery timer |
+| `certs` (`ca`) | Import trusted external CAs into the IPA trust store (primary only, opt-in) |
 | `hardening` | Opt-in post-install hardening (primary only) |
 | `backup` | Borg-readable backup timer (primary only) |
 | `idam` (`users`/`groups`/`hbac`/`sudo`) | Declarative IDAM reconciliation (primary only) |
@@ -89,6 +90,33 @@ Topology comes from inventory — no code change between sizes:
 emits `/root/ipa.csr`, which you sign with your external CA; supply the signed
 chain via `freeipa_server_external_cert_files` and re-run. Preflight asserts the
 files are present.
+
+> `external-ca` makes the IPA CA itself a **subordinate** of your CA. To instead
+> **trust other CAs** (other domains/devices) *alongside* the IPA CA, see below.
+
+## Trusting external CAs (additive to the IPA CA)
+
+`freeipa_server_trusted_external_cas` imports third-party / other-domain CA
+certs into the IPA trust store (`ipa-cacert-manage install` + `ipa-certupdate`),
+so IPA and its enrolled clients **trust certificates issued by those CAs**. This
+is *additive* — it does not change the IPA CA. Primary only; replicates to the
+cluster. Idempotent (skips nicknames already present); skipped in `ca-less` mode.
+
+```yaml
+freeipa_server_trusted_external_cas:
+  - name: corp-root            # nickname in the IPA trust store
+    src: files/corp-root.pem   # PEM on the control node
+  - name: partner-domain
+    content: |                 # …or inline PEM
+      -----BEGIN CERTIFICATE-----
+      ...
+      -----END CERTIFICATE-----
+```
+
+Provide the full chain (root, and intermediates if any). Run the `certs` tag to
+apply just this step. Auth uses the **Directory Manager** password from
+`freeipa_server_vault_secret` (`ipa-cacert-manage`, fed on stdin);
+`ipa-certupdate` runs as root via the host keytab.
 
 ## Hardening (opt-in, default off)
 

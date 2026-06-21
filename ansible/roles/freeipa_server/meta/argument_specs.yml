@@ -33,6 +33,28 @@ argument_specs:
         required: false
         choices: [self-signed, external-ca, ca-less]
         description: Certificate authority deployment model.
+      freeipa_server_trusted_external_cas:
+        type: list
+        elements: dict
+        required: false
+        description: External/third-party CA certs to import into the IPA trust store (additive to the IPA CA).
+        options:
+          name:
+            type: str
+            required: true
+            description: Nickname for the CA in the IPA trust store.
+          src:
+            type: str
+            required: false
+            description: Path to a PEM CA cert on the control node (use this or content).
+          content:
+            type: str
+            required: false
+            description: Inline PEM CA cert text (use this or src).
+      freeipa_server_trusted_ca_staging_dir:
+        type: str
+        required: false
+        description: Temp directory on the primary for staging CA certs before import.
       freeipa_server_forward_policy:
         type: str
         required: false

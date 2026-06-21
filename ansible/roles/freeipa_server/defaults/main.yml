@@ -61,6 +61,19 @@ freeipa_server_external_cert_files: []
 # ca-less (provide HTTP/LDAP cert files via upstream vars when chosen):
 # documented in README; not defaulted.
 
+# ── Trusted external CAs (ADDITIVE to the IPA CA) ────────────────────────────
+# Import third-party / other-domain CA certs into the IPA trust store so IPA and
+# its enrolled clients (via ipa-certupdate) TRUST certificates issued by them.
+# This does NOT change the IPA CA chosen by freeipa_server_ca_mode — it adds
+# trusted roots alongside it. Primary only; replicates to the rest of the cluster.
+# Each item: { name: <trust-store nickname>, src: <PEM on the control node> }
+#         or { name: <nickname>, content: "<inline PEM text>" }
+# Idempotent (skips nicknames already present). Needs the IPA CA store, so it is
+# skipped in ca-less mode. Auth uses the Directory Manager password from
+# freeipa_server_vault_secret + freeipa_server_dm_password_field (fed on stdin).
+freeipa_server_trusted_external_cas: []
+freeipa_server_trusted_ca_staging_dir: "/root/.freeipa-trusted-cas"
+
 # ── KRA / PKINIT ────────────────────────────────────────────────────────────
 freeipa_server_setup_kra: false
 freeipa_server_no_pkinit: false

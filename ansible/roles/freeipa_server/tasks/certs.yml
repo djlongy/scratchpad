@@ -1,0 +1,90 @@
+---
+# roles/freeipa_server/tasks/certs.yml
+# Import third-party / other-domain CA certificates into the IPA trust store so
+# IPA and its enrolled clients TRUST certificates issued by those CAs. This is
+# ADDITIVE — it does not change the IPA CA (freeipa_server_ca_mode); it adds
+# trusted roots alongside it via `ipa-cacert-manage install` + `ipa-certupdate`.
+#
+# Primary only (the trust store replicates to the rest of the cluster). Requires
+# the IPA CA store, so the caller skips this file in ca-less mode. There is no
+# ansible_freeipa module for cacert-manage, so we shell out:
+#   - ipa-cacert-manage install  -> needs the Directory Manager password; fed on
+#                                   STDIN (not argv) so it never lands in `ps`.
+#   - ipa-certupdate             -> runs as root via the host keytab (no kinit).
+# Idempotent: nicknames already in `ipa-cacert-manage list` are skipped, and
+# ipa-certupdate runs only when something was installed.
+
+- name: Trusted CAs | Validate each entry has a name and a source
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') | length > 0
+      - (item.src | default('') | length > 0) or (item.content | default('') | length > 0)
+    fail_msg: >-
+      Each freeipa_server_trusted_external_cas entry needs 'name' and one of
+      'src' (PEM on the control node) or 'content' (inline PEM).
+    quiet: true
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: Trusted CAs | Fetch Directory Manager password
+  ansible.builtin.set_fact:
+    _freeipa_trusted_ca_dm_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_dm_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Trusted CAs | Ensure the staging directory exists
+  ansible.builtin.file:
+    path: "{{ freeipa_server_trusted_ca_staging_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Trusted CAs | Stage CA certificates on the primary
+  ansible.builtin.copy:
+    src: "{{ item.src | default(omit) }}"
+    content: "{{ item.content | default(omit) }}"
+    dest: "{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.name }}.pem"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Trusted CAs | List currently trusted CA certificates
+  ansible.builtin.command: ipa-cacert-manage list
+  register: _freeipa_trusted_ca_list
+  changed_when: false
+
+- name: Trusted CAs | Install external CA certificates not already trusted
+  ansible.builtin.command:
+    argv:
+      - ipa-cacert-manage
+      - install
+      - -n
+      - "{{ item.name }}"
+      - "{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.name }}.pem"
+    stdin: "{{ _freeipa_trusted_ca_dm_pw }}"
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in _freeipa_trusted_ca_list.stdout
+  register: _freeipa_trusted_ca_install
+  changed_when: true
+  no_log: true
+
+- name: Trusted CAs | Distribute trust across the deployment (ipa-certupdate)
+  ansible.builtin.command: ipa-certupdate
+  when: _freeipa_trusted_ca_install is changed
+  changed_when: true
+
+- name: Trusted CAs | Remove the staging directory
+  ansible.builtin.file:
+    path: "{{ freeipa_server_trusted_ca_staging_dir }}"
+    state: absent
