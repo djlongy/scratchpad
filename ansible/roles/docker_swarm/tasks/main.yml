@@ -66,7 +66,14 @@
       tags: [swarm, install]
 
     - name: Create configured application overlay networks
-      ansible.builtin.import_tasks: overlays.yml
+      # include_tasks (dynamic) so the file is skipped cleanly when no overlays
+      # are configured — a static import would still template the delegate_to:
+      # "{{ _ovl_bootstrap }}" on inner tasks (undefined) even when the `when`
+      # is false.
+      ansible.builtin.include_tasks:
+        file: overlays.yml
+        apply:
+          tags: [overlays, swarm]
       when:
         - docker_swarm_manage_overlays | bool
         - docker_swarm_overlay_networks | length > 0

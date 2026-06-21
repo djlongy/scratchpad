@@ -1,43 +1,50 @@
 ---
-# swarm_stack — generic Docker Swarm service deployer.
+# swarm_stack — generic compose-first Docker Swarm stack deployer.
 #
-# Caller supplies a list of services (top-level scalars only — see the
-# resilience note below), an image map, NFS volume layout, encrypted
-# overlay networks, optional docker-config templates, and a list of
-# secrets read from Ansible variables. This role does:
-#   1. mkdir each NFS subpath on the NFS server (delegated)
-#   2. docker config create (rolling versions, content-hashed name)
-#   3. docker secret create (rolling versions, value piped via stdin, no_log)
-#   4. docker_network for each overlay (attachable + encrypted IPSec)
-#   5. docker_volume on every candidate worker (NFS-backed local driver)
-#   6. docker_swarm_service per entry in swarm_stack_services
-#   7. prune obsolete labeled secrets/configs
+# A thin <app>_swarm wrapper role supplies a compose template + a manifest
+# (the variables below) and calls `include_role: swarm_stack`. This engine:
+#   1. mkdir each NFS subpath / bind path (delegated)
+#   2. (optional) bootstrap missing Vault secrets with auto-generated passphrases
+#   3. docker secret create (external, rolling versions, value via stdin, no_log)
+#   4. docker config create (external, rolling versions, content-hashed name)
+#   5. docker_network per overlay (attachable + encrypted IPSec)
+#   6. docker_volume on every candidate host (NFS-backed local driver)
+#   7. render compose.yml.j2 with resolved object names injected
+#   8. docker stack deploy -c (prune + resolve-image + optional registry auth)
+#   9. prune obsolete labeled secret/config versions
 #
-# RESILIENCE TO LAZY VAR EVAL
+# SECRETS ARE CONSUMED VIA /run/secrets — HARD RULE
 # ──────────────────────────────────────────────────────────────────────
-# Anything in `swarm_stack_services` is loaded eagerly when the wrapper
-# calls include_role. So entries MUST contain only:
-#   - already-resolved scalars (strings, ints, bools, lists of strings)
-#   - references to vars defined OUTSIDE this role (inventory, wrapper
-#     defaults), never to vars this role itself populates
-#     (swarm_stack_secret_values / _names, swarm_stack_config_names).
+# The engine NEVER reads a plaintext secret value into an Ansible var for
+# templating, nor bakes one into the rendered compose file. Containers
+# read their secret from /run/secrets/<logical_name> (native *_FILE env
+# var, or an entrypoint shim that exports from the tmpfs file at start).
 #
-# To bake late-resolved values (secret values, hashed config names) into
-# a service's env block, point `env_template` at a Jinja YAML template.
-# It's rendered via lookup('template', ...) inside deploy.yml AFTER
-# secrets/configs have been registered, so the template can freely
-# reference swarm_stack_secret_values / swarm_stack_config_names.
-#
-# REDEPLOY
+# COMPOSE TEMPLATE CONTRACT
 # ──────────────────────────────────────────────────────────────────────
-# tasks/teardown.yml is tagged [never, redeploy, teardown]. Default runs
-# skip it. Run with `--tags redeploy` for full destroy → recreate, or
-# `--tags teardown` to only tear down. NFS data on disk is preserved by
-# default; add `--tags wipe-data` to also nuke the on-disk dirs.
+# deploy.yml renders swarm_stack_compose_template with three dicts in
+# scope so the compose file references the resolved (versioned) names:
+#   secret_names[<logical>]   → external docker secret name (e.g. pg_password_v0003)
+#   config_names[<logical>]   → external docker config name
+#   network_names[<logical>]  → overlay network name
+# Reference them in the compose `secrets:` / `configs:` / `networks:`
+# top-level maps as `external: true` + `name: "{{ secret_names.x }}"`.
 
 # ── Stack identity ────────────────────────────────────────────────────
 swarm_stack_name: ""
 swarm_stack_dir: "/opt/swarm-stacks/{{ swarm_stack_name }}"
+
+# Absolute path to the stack's compose template (set by the wrapper role,
+# typically "{{ role_path }}/templates/compose.yml.j2").
+swarm_stack_compose_template: ""
+
+# Keep the rendered compose file on the manager (0640, no secrets inside)
+# for auditability/debugging. Set false to render-and-remove.
+swarm_stack_keep_rendered: true
+
+# Pass --with-registry-auth so swarm workers can pull from a private
+# registry using the manager's stored credentials. Enable for Harbor etc.
+swarm_stack_with_registry_auth: false
 
 # ── NFS shared backend ────────────────────────────────────────────────
 #   host:   inventory_hostname of the NFS server (used for delegate_to
@@ -51,100 +58,57 @@ swarm_stack_nfs:
   base: /srv/nfs
 
 # ── Volume list ───────────────────────────────────────────────────────
-# Each entry both:
-#   1. creates a directory under nfs.base/<subpath> on the NFS server, and
-#   2. pre-creates a `local`-driver NFS-backed docker volume on every
-#      host in `swarm_stack_volume_hosts` (so when swarm schedules a
-#      service that references the volume `external: true`, every
-#      candidate worker already has the volume present).
-#   - name:    docker volume name
-#     subpath: directory under nfs.base
-#     uid:     numeric uid for chown   (default 0)
-#     gid:     numeric gid for chown   (default 0)
-#     mode:    chmod string            (default "0755")
+# Each entry is one of three types:
+#   type: volume (default) — NFS-backed local-driver docker volume.
+#     name, subpath, [uid=0], [gid=0], [mode="0755"]
+#   type: bind             — host path bind mount.
+#     name, source, [bind_hosts=swarm_stack_volume_hosts], [uid], [gid], [mode]
+#   type: tmpfs            — RAM-only; nothing pre-created here.
+#     name
 swarm_stack_volumes: []
 
-# Hosts on which the NFS-backed volumes get pre-created. Defaults to
-# every swarm worker (where stateful services typically run via
-# node.role == worker constraints).
+# Hosts on which the NFS-backed volumes get pre-created. Defaults to every
+# swarm worker (where stateful services typically run).
 swarm_stack_volume_hosts: "{{ groups['swarm_workers'] | default(groups['swarm_cluster'] | default([])) }}"
 
 # ── Overlay networks ──────────────────────────────────────────────────
-# Pre-created via docker_network with `attachable: true` and
-# `encrypted: true` (IPSec) before services deploy.
-#
-# NOTE: encrypted overlays wrap VXLAN in ESP (protocol 50). Every swarm
-# host's firewalld must allow ESP + UDP 4500 (NAT-T) or east-west
-# traffic times out at the TCP layer. Make sure your swarm-baseline
-# role has:
-#   firewall-cmd --permanent --add-protocol=esp
-#   firewall-cmd --permanent --add-port=4500/udp
-#
-#   - name:       docker network name
+# Pre-created via docker_network with attachable+encrypted (IPSec) before
+# deploy. Encrypted overlays wrap VXLAN in ESP (protocol 50): every swarm
+# host's firewalld must allow ESP + UDP 4500 (NAT-T).
+#   - name:       docker network name (also the compose external name)
 #     attachable: bool, default true
 #     encrypted:  bool, default true
+#     subnet:     CIDR (pin via swarm_overlay_subnets registry; omit to
+#                 let swarm auto-pick from its default pool)
+#     gateway:    optional gateway IP inside subnet
+#     ip_range:   optional restriction within subnet
 swarm_stack_networks: []
 
 # ── Docker configs ────────────────────────────────────────────────────
-# Rendered from a Jinja template at deploy time, hashed for versioning,
-# created via community.docker.docker_config (rolling_versions=true).
-# Hashed name lands in swarm_stack_config_names[name].
+# Rendered from a Jinja template, hashed for versioning, created via
+# community.docker.docker_config (rolling_versions=true). Resolved name
+# lands in config_names[name] for the compose template.
 #   - name: logical key
 #     src:  absolute path to the template file
 swarm_stack_configs: []
 
-# ── Docker secrets ────────────────────────────────────────────────────
-# Each value is read from an Ansible variable (typically defined in an
-# ansible-vault-encrypted YAML like group_vars/swarm/vault.yml), then
-# created via community.docker.docker_secret (rolling_versions=true).
-# Hashed name lands in swarm_stack_secret_names[name]; raw value lands
-# in swarm_stack_secret_values[name] (no_log on producing tasks) for
-# templates that need to bake the value into a config or env file.
-#   - name: logical key (used in stack template / env template)
-#     var:  Ansible variable name to read the value from
-#
-# When you adopt a centralised secret store (Vault, AWS SM, etc), swap
-# the read step in create_secrets.yml — keep the same {name, var} shape
-# at the wrapper boundary so wrappers don't change.
+# ── Docker secrets (Vault-backed) ─────────────────────────────────────
+# Each value is read from Vault on the control node, then created via
+# community.docker.docker_secret (rolling_versions=true). Resolved name
+# lands in secret_names[name] for the compose template. The plaintext
+# value is NEVER retained — see the /run/secrets hard rule above.
+#   - name:           logical key
+#     vault_path:     full KV path, e.g. kv/apps/mattermost/runtime
+#     vault_field:    field within that path
+#     auto_generate:  true → generate passphrase + write to Vault if missing
+#                     false → fail if missing (caller must seed it)
 swarm_stack_secrets: []
 
-# ── Services ──────────────────────────────────────────────────────────
-# Per-service deploy via community.docker.docker_swarm_service. EVERY
-# field below must be a top-level scalar or a reference to a var from
-# OUTSIDE this role (no swarm_stack_secret_values references, etc — see
-# the resilience note at top of file). Late-binding goes in env_template.
-#
-#   - name:       service name (final swarm name = <stack>_<name>)
-#     image:      required, full image URL with tag
-#                 (e.g. "{{ mattermost_app_image }}" — defined in the
-#                 wrapper's defaults so swap-once-propagate-everywhere
-#                 still works without an indirection layer)
-#     hostname:   optional container hostname
-#     replicas:   int (default 1)
-#     networks:   list of network names (subset of swarm_stack_networks)
-#     mounts:     list of {source, target, [type]}  (type defaults to "volume")
-#     publish:    list of {published_port, target_port, [protocol], [mode]}
-#     secrets:    list of secret logical names (subset of swarm_stack_secrets)
-#                 — each is mounted at /run/secrets/<logical_name>
-#     placement:  list of constraint strings, e.g. ["node.role == worker"]
-#     placement_max_replicas_per_node: int (optional). Maps to swarm's
-#                  placement.replicas_max_per_node — limits how many
-#                  replicas of this service may run on a single node.
-#     limits:     {memory: "512M", cpus: "0.5"}        — both optional
-#     restart:    {condition: any, delay: "10s", max_attempts: 5}
-#     update:     {parallelism: 1, delay: "30s", order: stop-first,
-#                  failure_action: rollback}
-#     healthcheck:{test: [...], interval: "30s", timeout: "30s",
-#                  retries: 5, start_period: "8m"}
-#     env_template: optional path to a Jinja YAML template — rendered
-#                   inside deploy.yml AFTER secrets/configs resolve, so
-#                   it can reference swarm_stack_secret_values and
-#                   swarm_stack_config_names freely.
-#     env_static:   optional dict of literal env vars (used when no
-#                   late-binding is needed). env_template wins if both set.
-swarm_stack_services: []
+# Vault address the control node uses to read/write the declared secrets.
+# Defaults to the VAULT_ADDR in the operator's environment, falling back to
+# a placeholder — set this in inventory (or export VAULT_ADDR) for your site.
+swarm_stack_vault_addr: "{{ lookup('ansible.builtin.env', 'VAULT_ADDR') | default('https://vault.example.com:8200', true) }}"
 
 # Number of old hashed secret/config versions to retain for rollback.
-# (Currently informational — prune.yml drops anything not in the
-# resolved-name registry.)
+# (prune_objects.yml drops anything not in the resolved-name registry.)
 swarm_stack_keep_versions: 2

@@ -1,19 +1,17 @@
 ---
 # Pre-create overlay networks (attachable + encrypted) so each service
-# can attach via name in swarm_stack_services. Encryption (IPSec) is
-# opt-in for swarm overlays — without `--opt encrypted` the east-west
-# VXLAN traffic between swarm hosts is in the clear.
+# can attach by name in the compose file. Encryption (IPSec) is opt-in
+# for swarm overlays — without `--opt encrypted` the east-west VXLAN
+# traffic between swarm hosts is in the clear.
 #
-# Runs on the swarm manager — overlay networks are swarm-wide objects
-# in raft, so creating once on a manager is sufficient.
+# Runs on the swarm manager — overlay networks are swarm-wide objects in
+# raft, so creating once on a manager is sufficient.
 #
 # IPAM: if `subnet` is set on the entry, the network is created with an
 # explicit IPAM config (subnet + optional gateway + ip_range). Without
-# it, swarm picks from the default pool (10.0.0.0/8 by default), which
-# can collide unpredictably between stacks. Best practice is to pin
-# subnets via a central registry — see swarm_overlay_subnets in
-# group_vars/all.yml so every stack's overlay range is reviewable in
-# one place.
+# it, swarm picks from the default pool, which can collide unpredictably
+# between stacks. Best practice is to pin subnets via the
+# swarm_overlay_subnets registry in group_vars/all.yml.
 
 - name: Create overlay networks for the stack
   community.docker.docker_network:
@@ -38,3 +36,12 @@
       {{ item.name }}
       (encrypted={{ item.encrypted | default(true) }},
       subnet={{ item.subnet | default('auto') }})
+
+# Overlay names are stable (not versioned like secrets/configs), but
+# publish a name registry anyway so the compose template references all
+# external objects through the same injected-dict pattern.
+- name: Build resolved network-name registry
+  ansible.builtin.set_fact:
+    swarm_stack_network_names: >-
+      {{ dict(swarm_stack_networks | map(attribute='name')
+              | zip(swarm_stack_networks | map(attribute='name'))) }}

@@ -1,0 +1,66 @@
+---
+# mattermost_swarm manifest — the swarm_stack engine contract.
+#
+# tasks/main.yml include_vars this file, then (when LDAP is enabled)
+# appends the conditional ldap_bind_password secret + mm_ldap_ca config
+# via set_fact BEFORE calling include_role: swarm_stack. All values here
+# reference the role's mattermost_* defaults so per-environment overrides
+# flow through from inventory.
+#
+# Secrets are consumed by containers via /run/secrets/<name>; no plaintext
+# value is read into a var or baked into the rendered compose file.
+
+swarm_stack_name: "{{ mattermost_stack_name }}"
+swarm_stack_dir: "{{ mattermost_stack_dir }}"
+swarm_stack_compose_template: "{{ swarm_stack_caller_role }}/templates/compose.yml.j2"
+
+# ── NFS backend ───────────────────────────────────────────────────────
+swarm_stack_nfs:
+  host: "{{ mattermost_nfs_host }}"
+  server: "{{ mattermost_nfs_server }}"
+  base: "{{ mattermost_nfs_base }}"
+
+# ── Docker secrets (Vault-backed, rolling versions) ───────────────────
+# pg_password / at_rest_key / public_link_salt auto-generate on first run.
+# The LDAP bind password (auto_generate: false — seeded by
+# mattermost_freeipa_prep.yml) is appended in tasks/main.yml when LDAP is on.
+swarm_stack_secrets:
+  - name: mm_pg_password
+    vault_path: "{{ mattermost_vault_path }}"
+    vault_field: pg_password
+    auto_generate: true
+  - name: mm_at_rest_key
+    vault_path: "{{ mattermost_vault_path }}"
+    vault_field: at_rest_encrypt_key
+    auto_generate: true
+  - name: mm_public_link_salt
+    vault_path: "{{ mattermost_vault_path }}"
+    vault_field: public_link_salt
+    auto_generate: true
+
+# ── Docker configs ────────────────────────────────────────────────────
+# The FreeIPA CA config (mm_ldap_ca) is appended in tasks/main.yml only
+# when mattermost_ldap_enabled. None by default.
+swarm_stack_configs: []
+
+# ── Overlay network ───────────────────────────────────────────────────
+swarm_stack_networks:
+  - name: mm_overlay
+    attachable: true
+    encrypted: true
+    subnet: "{{ swarm_overlay_subnets[mattermost_stack_name] | default(omit) }}"
+
+# ── NFS-backed volumes ────────────────────────────────────────────────
+swarm_stack_volumes:
+  - name: mm_pgdata
+    type: volume
+    subpath: "{{ mattermost_pgdata_subpath }}"
+    uid: "{{ mattermost_pg_uid }}"
+    gid: "{{ mattermost_pg_gid }}"
+    mode: "0700"
+  - name: mm_app_data
+    type: volume
+    subpath: "{{ mattermost_data_subpath }}"
+    uid: "{{ mattermost_app_uid }}"
+    gid: "{{ mattermost_app_gid }}"
+    mode: "0750"

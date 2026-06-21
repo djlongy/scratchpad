@@ -66,6 +66,7 @@ docker_swarm_python_packages:
   - python3-docker
   - python3-requests
   - python3-jsondiff
+  - python3-pyyaml        # required by community.docker.docker_stack (compose parsing)
 
 # Docker Python SDK install method:
 #   dnf — distro packages above (default).
@@ -77,6 +78,7 @@ docker_swarm_sdk_pip_packages:
   - "docker>=5.0.3"
   - "jsondiff"
   - "requests"
+  - "PyYAML"              # required by community.docker.docker_stack (compose parsing)
 
 # /etc/pip.conf — written only when pip method + enabled. Points pip at an
 # internal index (e.g. Artifactory) instead of PyPI.

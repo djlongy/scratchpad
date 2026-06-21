@@ -1,7 +1,7 @@
 ---
 # Render each config template to disk on the manager (template module
 # always produces a string file — avoids the lookup('template') JSON
-# auto-parse that turns a JSON file into a Python dict repr), then
+# auto-parse that turned config.json into a Python dict repr), then
 # slurp + b64-pass to community.docker.docker_config.
 
 - name: Ensure config staging dir exists

@@ -1,75 +1,78 @@
 ---
 argument_specs:
   main:
-    short_description: "Deploy a stack of services onto an existing Docker Swarm"
+    short_description: Generic compose-first Docker Swarm stack deployer.
     description:
-      - >-
-        Generic Swarm service deployer. The caller passes a complete
-        swarm_stack_* spec (services, volumes, networks, configs, secrets);
-        the role creates each object and one docker_swarm_service per entry.
-      - >-
-        Inputs load eagerly, so swarm_stack_services entries must be scalars
-        or references to vars defined OUTSIDE this role. Late-bound values
-        (secret values, hashed config names) belong in env_template.
-      - >-
-        Phase-tagged: a no-tag run deploys; --tags redeploy does a full
-        teardown+recreate; --tags teardown only tears down.
-
+      - Pre-creates external docker secrets, configs, overlay networks and
+        NFS/bind volumes, then renders the stack's compose template with the
+        resolved (versioned) object names injected and runs
+        C(docker stack deploy -c).
+      - Secrets are consumed by containers via C(/run/secrets/<name>); the
+        engine never reads a plaintext value into a variable for templating.
     options:
       swarm_stack_name:
         type: str
         required: true
-        description: "Stack name. Final swarm service name = <stack>_<service>."
+        description: Stack name (becomes the docker stack name and label).
+      swarm_stack_compose_template:
+        type: str
+        required: true
+        description: >-
+          Absolute path to the stack's compose.yml.j2 on the control node,
+          typically "{{ role_path }}/templates/compose.yml.j2".
       swarm_stack_dir:
         type: str
-        description: "Staging dir on the manager. Default /opt/swarm-stacks/<name>."
-      swarm_stack_nfs:
-        type: dict
-        description: >-
-          NFS backend: host (inventory host for delegate_to), server (mount
-          IP/host), base (export root). Required when NFS-backed volumes are
-          declared.
-      swarm_stack_volumes:
-        type: list
-        elements: dict
-        description: >-
-          Volume specs. Each: name, type (volume|bind|tmpfs), subpath or
-          source, uid, gid, mode, bind_hosts. Per-type schema in
-          defaults/main.yml.
-      swarm_stack_volume_hosts:
-        type: list
-        elements: str
-        description: >-
-          Hosts to pre-create NFS-backed local-driver volumes on. Defaults to
-          the swarm_workers inventory group.
-      swarm_stack_networks:
-        type: list
-        elements: dict
-        description: >-
-          Overlay networks. Each: name, attachable, encrypted, subnet,
-          gateway, ip_range.
-      swarm_stack_configs:
-        type: list
-        elements: dict
-        description: >-
-          Docker configs rendered from Jinja templates. Each: name, src,
-          target, mode.
+        default: /opt/swarm-stacks/<name>
+        description: Staging dir on the manager for the rendered compose + configs.
+      swarm_stack_keep_rendered:
+        type: bool
+        default: true
+        description: Keep the rendered compose file on disk (it holds no secrets).
+      swarm_stack_with_registry_auth:
+        type: bool
+        default: false
+        description: Pass --with-registry-auth for private-registry pulls.
       swarm_stack_secrets:
         type: list
         elements: dict
+        default: []
         description: >-
-          Docker secrets. Each: name, var — value read from the named Ansible
-          variable (e.g. ansible-vault). Swap the read step in
-          create_secrets.yml for a live secret store.
-      swarm_stack_services:
+          List of {name, vault_path, vault_field, auto_generate}. Created as
+          external rolling-version docker secrets; resolved versioned name is
+          exposed to the compose template as secret_names[<name>].
+      swarm_stack_configs:
         type: list
         elements: dict
+        default: []
         description: >-
-          Service specs: name, image, replicas, networks, mounts, publish,
-          secrets, placement, placement_max_replicas_per_node, limits,
-          restart, update, healthcheck, env_template/env_static. Full schema
-          in defaults/main.yml.
+          List of {name, src[, target, mode]} docker configs. Resolved name
+          exposed as config_names[<name>].
+      swarm_stack_networks:
+        type: list
+        elements: dict
+        default: []
+        description: >-
+          Overlay networks [{name, encrypted, attachable, subnet, gateway,
+          ip_range}]. Name exposed as network_names[<name>].
+      swarm_stack_volumes:
+        type: list
+        elements: dict
+        default: []
+        description: >-
+          Volumes [{name, type: volume|bind|tmpfs, subpath|source, bind_hosts,
+          uid, gid, mode}].
+      swarm_stack_volume_hosts:
+        type: list
+        elements: str
+        default: "groups['swarm_workers']"
+        description: Hosts on which NFS-backed local-driver volumes are pre-created.
+      swarm_stack_nfs:
+        type: dict
+        default: {}
+        description: >-
+          NFS backend {host, server, base}. Required when any NFS-backed
+          (type=volume) entry is declared in swarm_stack_volumes.
       swarm_stack_keep_versions:
         type: int
         default: 2
-        description: "Old hashed secret/config versions to retain (informational)."
+        description: Old hashed secret/config versions to retain for rollback.

@@ -1,0 +1,96 @@
+---
+# Ensure host-side paths exist and pre-create NFS-backed local-driver
+# volumes. Three concerns, split by mount type:
+#   1. NFS subpaths   — mkdir on the NFS server (delegated)
+#   2. bind paths     — mkdir on each bind host (delegated)
+#   3. NFS volumes    — docker_volume(local+nfs) on every candidate node
+# tmpfs entries need nothing pre-created (RAM-only at runtime).
+
+# ── 1. NFS subpaths ─────────────────────────────────────────────────────
+- name: Ensure NFS subpaths exist
+  ansible.builtin.file:
+    path: "{{ swarm_stack_nfs.base }}/{{ item.subpath }}"
+    state: directory
+    owner: "{{ item.uid | default(0) }}"
+    group: "{{ item.gid | default(0) }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop: "{{ _swarm_stack_nfs_volumes }}"
+  loop_control:
+    label: "{{ item.subpath }}"
+  delegate_to: "{{ swarm_stack_nfs.host }}"
+  become: true
+  when: _swarm_stack_nfs_volumes | length > 0
+
+# ── 2. bind-mount host paths ────────────────────────────────────────────
+# A bind entry shape (in swarm_stack_volumes):
+#   - name: es_data
+#     type: bind
+#     source: /var/lib/swarm-data/es   # host path, used as `source`
+#     bind_hosts: [worker_1]           # optional; defaults to volume_hosts
+#     uid: 1000
+#     gid: 0
+#     mode: "0750"
+- name: Validate bind entries
+  ansible.builtin.assert:
+    that:
+      - item.source | default('') | length > 0
+    fail_msg: >-
+      bind volume '{{ item.name | default('?') }}' requires a `source`
+      (absolute host path).
+  loop: "{{ _swarm_stack_bind_mounts }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  when: _swarm_stack_bind_mounts | length > 0
+
+# Flatten each (entry, host) pair so we can drive a single delegate_to
+# loop. Each entry's hosts default to swarm_stack_volume_hosts when not
+# explicitly set.
+- name: Build bind (entry × host) pair list
+  ansible.builtin.set_fact:
+    _swarm_stack_bind_mount_host_pairs: >-
+      {{ (_swarm_stack_bind_mount_host_pairs | default([]))
+         + ([item]
+            | product(item.bind_hosts | default(swarm_stack_volume_hosts))
+            | list) }}
+  loop: "{{ _swarm_stack_bind_mounts }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  when: _swarm_stack_bind_mounts | length > 0
+
+- name: Ensure bind-mount directories exist
+  ansible.builtin.file:
+    path: "{{ item.0.source }}"
+    state: directory
+    owner: "{{ item.0.uid | default(0) }}"
+    group: "{{ item.0.gid | default(0) }}"
+    mode: "{{ item.0.mode | default('0755') }}"
+  delegate_to: "{{ item.1 }}"
+  become: true
+  loop: "{{ _swarm_stack_bind_mount_host_pairs | default([]) }}"
+  loop_control:
+    label: "{{ item.0.source }} on {{ item.1 }}"
+  # Ansible 2.19's strict templating evaluates `delegate_to: item.1`
+  # even when the loop is empty — gate at the task level so we skip
+  # cleanly when there are no bind mounts.
+  when: (_swarm_stack_bind_mount_host_pairs | default([])) | length > 0
+
+# ── 3. NFS-backed local-driver volumes ──────────────────────────────────
+# Local-driver volumes aren't replicated by swarm — each node creates its
+# own mount handle — so they must exist on every node where the service
+# might be scheduled. Same name + same NFS driver_opts means every node
+# attaches the same export; data is preserved across stack rm/redeploy.
+- name: Pre-create NFS-backed docker volumes on every candidate host
+  community.docker.docker_volume:
+    name: "{{ item.0.name }}"
+    driver: local
+    driver_options:
+      type: nfs
+      o: "addr={{ swarm_stack_nfs.server }},rw,nfsvers=4.1,hard"
+      device: ":{{ swarm_stack_nfs.base }}/{{ item.0.subpath }}"
+    labels:
+      swarm_stack: "{{ swarm_stack_name }}"
+  delegate_to: "{{ item.1 }}"
+  loop: "{{ _swarm_stack_nfs_volumes | product(swarm_stack_volume_hosts) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} on {{ item.1 }}"
+  when: _swarm_stack_nfs_volumes | length > 0

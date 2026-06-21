@@ -1,0 +1,104 @@
+---
+# Validate caller inputs and classify volume entries. Runs under the
+# `always` tag so every phase (even when narrowed with --tags) sees the
+# classified volume sub-lists and resolved-name registers.
+
+- name: Validate core stack inputs
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_name | length > 0
+      - swarm_stack_compose_template | length > 0
+    fail_msg: >-
+      swarm_stack requires swarm_stack_name and swarm_stack_compose_template
+      (absolute path to the stack's compose.yml.j2). Anchor it on the CALLER
+      role, not role_path: set `swarm_stack_caller_role: "{{ '{{' }} role_path
+      {{ '}}' }}"` in the thin role BEFORE importing this engine, then use
+      "{{ '{{' }} swarm_stack_caller_role {{ '}}' }}/templates/compose.yml.j2".
+      A bare role_path resolves to swarm_stack's own dir once imported.
+  tags: [always]
+
+- name: Assert compose template file exists
+  ansible.builtin.stat:
+    path: "{{ swarm_stack_compose_template }}"
+  register: _swarm_stack_compose_stat
+  delegate_to: localhost
+  become: false
+  tags: [always]
+
+- name: Fail when compose template is missing
+  ansible.builtin.assert:
+    that:
+      - _swarm_stack_compose_stat.stat.exists
+    fail_msg: >-
+      swarm_stack_compose_template '{{ swarm_stack_compose_template }}'
+      does not exist on the control node.
+  tags: [always]
+
+- name: Initialise resolved-name registers
+  ansible.builtin.set_fact:
+    swarm_stack_config_names: {}
+    swarm_stack_secret_names: {}
+    swarm_stack_network_names: {}
+  tags: [always]
+
+# Classify volume entries by mount type. Untyped entries default to
+# 'volume' (NFS-backed local-driver) for back-compat with wrappers
+# written before the type field existed. The volumes.yml phase loops on
+# the resulting sub-lists, so this MUST run before it.
+- name: Classify volume entries by mount type
+  ansible.builtin.set_fact:
+    _swarm_stack_nfs_volumes: >-
+      {{ (swarm_stack_volumes | rejectattr('type', 'defined') | list)
+         + (swarm_stack_volumes | selectattr('type', 'defined')
+            | selectattr('type', 'eq', 'volume') | list) }}
+    _swarm_stack_bind_mounts: >-
+      {{ swarm_stack_volumes | selectattr('type', 'defined')
+         | selectattr('type', 'eq', 'bind') | list }}
+    _swarm_stack_tmpfs_mounts: >-
+      {{ swarm_stack_volumes | selectattr('type', 'defined')
+         | selectattr('type', 'eq', 'tmpfs') | list }}
+  tags: [always]
+
+- name: Validate volume types are supported
+  ansible.builtin.assert:
+    that:
+      - item.type | default('volume') in ['volume', 'bind', 'tmpfs']
+    fail_msg: >-
+      swarm_stack_volumes entry '{{ item.name | default('?') }}' has
+      unsupported type '{{ item.type | default('volume') }}'. Allowed:
+      volume (NFS-backed local-driver), bind, tmpfs.
+  loop: "{{ swarm_stack_volumes }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  tags: [always]
+
+# When the stack uses NFS-backed volumes, the role needs an NFS
+# host + server + base path AND at least one swarm host to pre-create
+# the local-driver volumes on. Asserting up front turns a late,
+# confusing "delegate_to ''" or empty-loop silent skip into a clear
+# failure at validate time. Bind-only / tmpfs-only stacks don't need it.
+- name: Validate NFS settings when NFS volumes are declared
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_nfs.host is defined and (swarm_stack_nfs.host | length) > 0
+      - swarm_stack_nfs.server is defined and (swarm_stack_nfs.server | length) > 0
+      - swarm_stack_nfs.base is defined and (swarm_stack_nfs.base | length) > 0
+    fail_msg: >-
+      swarm_stack_volumes contains NFS-backed entries (type=volume) but
+      swarm_stack_nfs is incomplete. Set swarm_stack_nfs.host (inventory
+      hostname for delegate_to), swarm_stack_nfs.server (IP/host for the
+      mount option), and swarm_stack_nfs.base (export root).
+  when: _swarm_stack_nfs_volumes | length > 0
+  tags: [always]
+
+- name: Validate swarm_stack_volume_hosts when NFS volumes are declared
+  ansible.builtin.assert:
+    that:
+      - swarm_stack_volume_hosts | length > 0
+    fail_msg: >-
+      swarm_stack_volumes contains NFS-backed entries but
+      swarm_stack_volume_hosts resolved to an empty list. Define a
+      swarm_workers (or swarm_cluster) inventory group, or set
+      swarm_stack_volume_hosts explicitly.
+  when: _swarm_stack_nfs_volumes | length > 0
+  tags: [always]

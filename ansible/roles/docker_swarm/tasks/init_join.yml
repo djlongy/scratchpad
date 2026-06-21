@@ -116,7 +116,7 @@
       {% if docker_swarm_listen_addr | length > 0 %}--listen-addr {{ docker_swarm_listen_addr }}{% endif %}
       {{ _docker_swarm_join_addr }}
   when:
-    - inventory_hostname in groups[docker_swarm_managers_group]
+    - inventory_hostname in (groups[docker_swarm_managers_group] | default([]))
     - inventory_hostname != _docker_swarm_bootstrap
     - _docker_swarm_state.stdout == "inactive"
   changed_when: true
@@ -132,7 +132,7 @@
       {% if docker_swarm_listen_addr | length > 0 %}--listen-addr {{ docker_swarm_listen_addr }}{% endif %}
       {{ _docker_swarm_join_addr }}
   when:
-    - inventory_hostname in groups[docker_swarm_workers_group]
+    - inventory_hostname in (groups[docker_swarm_workers_group] | default([]))
     - _docker_swarm_state.stdout == "inactive"
   changed_when: true
   no_log: true

@@ -1,0 +1,165 @@
+---
+# Non-destructive stop / start of the stack's services for host
+# maintenance (kernel updates, reboots, hardware work). Scaling a
+# replicated service to 0 stops every task/container while preserving the
+# service definition, its mounted volumes + on-disk data, and all external
+# secrets/configs/networks. This is the swarm equivalent of `docker stop`,
+# NOT `docker stack rm` — nothing is removed and no data is lost.
+#
+#   --tags stop    Save each service's current desired replica count to
+#                  <swarm_stack_dir>/.scale-state.json, then scale every
+#                  replicated service in the stack to 0 and wait for drain.
+#   --tags start   Restore each service to its saved replica count and wait
+#                  for convergence.
+#
+# Both are `never`-gated so a normal converge never stops a live stack.
+# docker service scale is cluster-wide and idempotent, so running against a
+# single manager or the whole manager group is equally safe. Global-mode
+# services cannot be scaled to 0 without rewriting their spec, so they are
+# reported and left running (drain their nodes for true host maintenance).
+#
+# NOTE on replica counts: `docker service ls --format {{.Replicas}}` appends
+# a "(max N per node)" annotation when max_replicas_per_node is set, which
+# corrupts naive parsing. We read the authoritative desired count from
+# `docker service inspect .Spec.Mode.Replicated.Replicas` instead, and strip
+# the annotation (split on space, take the running/desired token) in the
+# convergence waits.
+
+# ── STOP ─────────────────────────────────────────────────────────────────
+- name: Stop the stack (scale all replicated services to 0)
+  when: "'stop' in ansible_run_tags"
+  block:
+
+    - name: Discover replicated service names for this stack
+      ansible.builtin.command:
+        cmd: >-
+          docker service ls
+          --filter label=com.docker.stack.namespace={{ swarm_stack_name }}
+          --filter mode=replicated
+          --format '{% raw %}{{.Name}}{% endraw %}'
+      register: _swarm_stack_repl_names
+      changed_when: false
+
+    - name: Discover global services for this stack (cannot be scaled to 0)
+      ansible.builtin.command:
+        cmd: >-
+          docker service ls
+          --filter label=com.docker.stack.namespace={{ swarm_stack_name }}
+          --filter mode=global
+          --format '{% raw %}{{.Name}}{% endraw %}'
+      register: _swarm_stack_glob_ls
+      changed_when: false
+
+    - name: Warn about global services that scaling cannot stop
+      ansible.builtin.debug:
+        msg: >-
+          Global-mode service(s) {{ _swarm_stack_glob_ls.stdout_lines }} cannot
+          be scaled to 0 without rewriting their spec — left running. Drain
+          their node(s) (docker node update --availability drain) for true host
+          maintenance.
+      when: _swarm_stack_glob_ls.stdout_lines | length > 0
+
+    - name: Read the authoritative desired replica count for each service
+      ansible.builtin.command:
+        cmd: >-
+          docker service inspect {{ item }}
+          --format '{% raw %}{{.Spec.Mode.Replicated.Replicas}}{% endraw %}'
+      loop: "{{ _swarm_stack_repl_names.stdout_lines }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _swarm_stack_repl_inspect
+      changed_when: false
+
+    - name: Build the service -> desired-replica map
+      ansible.builtin.set_fact:
+        _swarm_stack_replica_map: "{{ dict(_swarm_stack_repl_names.stdout_lines | zip(_counts)) }}"
+      vars:
+        _counts: "{{ _swarm_stack_repl_inspect.results | map(attribute='stdout') | map('trim') | list }}"
+
+    - name: Ensure the stack state directory exists
+      ansible.builtin.file:
+        path: "{{ swarm_stack_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Save the replica map so start can restore it exactly
+      ansible.builtin.copy:
+        content: "{{ _swarm_stack_replica_map | to_nice_json }}\n"
+        dest: "{{ swarm_stack_dir }}/.scale-state.json"
+        mode: "0644"
+
+    - name: Scale each replicated service to 0 (non-destructive stop)
+      ansible.builtin.command:
+        cmd: "docker service scale --detach {{ item.key }}=0"
+      loop: "{{ _swarm_stack_replica_map | dict2items }}"
+      loop_control:
+        label: "{{ item.key }} -> 0 (was {{ item.value }})"
+      register: _swarm_stack_scale_down
+      changed_when: item.value | int > 0
+
+    # Converged when every "running/desired" pair has equal halves (0/0).
+    # The leading `split(' ')|first` drops the "(max N per node)" annotation;
+    # map('unique') then collapses ['0','0'] -> ['0'] (len 1), while a
+    # still-draining "2/0" stays ['2','0'] (len 2). No len-2 pairs = all stopped.
+    - name: Wait for all replicated services to drain to 0/0
+      ansible.builtin.command:
+        cmd: >-
+          docker service ls
+          --filter label=com.docker.stack.namespace={{ swarm_stack_name }}
+          --filter mode=replicated
+          --format '{% raw %}{{.Replicas}}{% endraw %}'
+      register: _swarm_stack_stop_state
+      until: >-
+        (_swarm_stack_stop_state.stdout_lines
+         | map('split', ' ') | map('first')
+         | map('split', '/') | map('unique') | map('length') | list)
+        | select('eq', 2) | list | length == 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+# ── START ────────────────────────────────────────────────────────────────
+- name: Start the stack (restore saved replica counts)
+  when: "'start' in ansible_run_tags"
+  block:
+
+    - name: Read the saved replica state
+      ansible.builtin.slurp:
+        src: "{{ swarm_stack_dir }}/.scale-state.json"
+      register: _swarm_stack_saved_state
+      failed_when: false
+
+    - name: Fail with guidance when no saved state exists
+      ansible.builtin.assert:
+        that:
+          - _swarm_stack_saved_state.content is defined
+        fail_msg: >-
+          No {{ swarm_stack_dir }}/.scale-state.json on this host — the stack
+          was not stopped via `--tags stop` here. Run the role with no tags to
+          restore replicas from the compose definition instead.
+        success_msg: "Saved replica state found — restoring services."
+
+    - name: Restore each service to its saved replica count
+      ansible.builtin.command:
+        cmd: "docker service scale --detach {{ item.key }}={{ item.value }}"
+      loop: "{{ (_swarm_stack_saved_state.content | b64decode | from_json) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }} -> {{ item.value }}"
+      changed_when: true
+
+    - name: Wait for restored services to converge (running == desired)
+      ansible.builtin.command:
+        cmd: >-
+          docker service ls
+          --filter label=com.docker.stack.namespace={{ swarm_stack_name }}
+          --filter mode=replicated
+          --format '{% raw %}{{.Replicas}}{% endraw %}'
+      register: _swarm_stack_start_state
+      until: >-
+        (_swarm_stack_start_state.stdout_lines
+         | map('split', ' ') | map('first')
+         | map('split', '/') | map('unique') | map('length') | list)
+        | select('eq', 2) | list | length == 0
+      retries: 60
+      delay: 5
+      changed_when: false

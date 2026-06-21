@@ -1,16 +1,15 @@
 ---
-# Per-service deploy via community.docker.docker_swarm_service. Each
-# entry in swarm_stack_services produces one swarm service named
-# `<stack>_<service>` with the `swarm_stack` label so teardown can
-# find it later.
+# Render the stack's compose template with resolved (versioned) docker
+# object names injected, then deploy via `docker stack deploy -c`.
 #
-# The service's env block is rendered LATE (here in deploy.yml) — after
-# secrets/configs are registered. The wrapper points env_template at a
-# Jinja YAML file; lookup('template', ...) renders it against the
-# current variable context, where swarm_stack_secret_values and
-# swarm_stack_config_names are now populated. This sidesteps the
-# include_role lazy-eval trap that would otherwise blow up the moment
-# we tried to loop over swarm_stack_services.
+# WHY THIS PRESERVES ROLLING SECRET ROTATION
+# ──────────────────────────────────────────────────────────────────────
+# Secrets/configs are created with rolling_versions=true, so their real
+# names carry a _vNNN suffix. The compose template references them as
+# `external: true` + `name: "{{ secret_names.<logical> }}"`. Rotating a
+# value in Vault → new version → new name → compose diff → swarm rolls
+# the service. No plaintext value is rendered into the compose file;
+# containers read /run/secrets/<name>.
 
 - name: Ensure stack staging dir exists
   ansible.builtin.file:
@@ -20,93 +19,44 @@
     group: root
     mode: "0750"
 
-# Build a logical-name → mount-spec map for use inside the per-service
-# loop. docker_swarm_service expects a list of {secret_name, filename}
-# under the `secrets:` key.
-- name: Build secret-mount lookup
-  ansible.builtin.set_fact:
-    _swarm_stack_secret_mount_map: >-
-      {{ _swarm_stack_secret_mount_map | default({})
-         | combine({
-             item.name: {
-               'secret_name': swarm_stack_secret_names[item.name],
-               'filename':    '/run/secrets/' ~ item.name
-             }
-           }) }}
-  loop: "{{ swarm_stack_secrets | default([]) }}"
-  loop_control:
-    label: "{{ item.name }}"
+- name: Render compose file
+  ansible.builtin.template:
+    src: "{{ swarm_stack_compose_template }}"
+    dest: "{{ swarm_stack_dir }}/compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  vars:
+    secret_names: "{{ swarm_stack_secret_names | default({}) }}"
+    config_names: "{{ swarm_stack_config_names | default({}) }}"
+    network_names: "{{ swarm_stack_network_names | default({}) }}"
 
-- name: Build config-mount lookup
-  ansible.builtin.set_fact:
-    _swarm_stack_config_mount_map: >-
-      {{ _swarm_stack_config_mount_map | default({})
-         | combine({
-             item.name: {
-               'config_name': swarm_stack_config_names[item.name],
-               'filename':    item.target | default('/etc/' ~ item.name),
-               'mode':        item.mode   | default('0444') | int(base=8)
-             }
-           }) }}
-  loop: "{{ swarm_stack_configs | default([]) }}"
-  loop_control:
-    label: "{{ item.name }}"
-
-- name: Deploy each service
-  community.docker.docker_swarm_service:
-    name: "{{ swarm_stack_name }}_{{ item.name }}"
-    image: "{{ item.image }}"
-    hostname: "{{ item.hostname | default(omit) }}"
-    networks: "{{ item.networks | default([]) }}"
-    mounts: "{{ item.mounts | default([]) }}"
-    publish: "{{ item.publish | default([]) }}"
-    secrets: >-
-      {{ item.secrets | default([])
-         | map('extract', _swarm_stack_secret_mount_map | default({}))
-         | list }}
-    configs: >-
-      {{ item.configs | default([])
-         | map('extract', _swarm_stack_config_mount_map | default({}))
-         | list }}
-    placement:
-      constraints: "{{ item.placement | default([]) }}"
-      replicas_max_per_node: "{{ item.placement_max_replicas_per_node | default(omit) }}"
-    mode: replicated
-    replicas: "{{ item.replicas | default(1) | int }}"
-    # `item.get('update', ...)` not `item.update` — `update` is a built-in
-    # dict method and `item.update` resolves to the method object.
-    restart_config: "{{ item.restart | default(omit) }}"
-    update_config: "{{ item.get('update', omit) }}"
-    healthcheck: "{{ item.healthcheck | default(omit) }}"
-    limits: "{{ item.limits | default(omit) }}"
-    # Per-service logging beats stack-wide; omit if neither is set so
-    # docker keeps its daemon default (typically json-file). Shape is
-    # `{driver_name: <str>, options: <dict>}`. For syslog, set
-    # options.mode=non-blocking + a sensible max-buffer-size, otherwise
-    # an unreachable syslog endpoint can stall the container's stdio.
-    logging: "{{ item.logging | default(swarm_stack_logging | default(omit)) }}"
-    env: >-
-      {{ ((lookup('template', item.env_template) | from_yaml)
-          if (item.env_template is defined and (item.env_template | length) > 0)
-          else (item.env_static | default({}))) }}
-    labels:
-      swarm_stack: "{{ swarm_stack_name }}"
-      swarm_stack_service: "{{ item.name }}"
-    container_labels:
-      swarm_stack: "{{ swarm_stack_name }}"
-      swarm_stack_service: "{{ item.name }}"
+- name: Deploy the stack
+  community.docker.docker_stack:
+    name: "{{ swarm_stack_name }}"
+    compose:
+      - "{{ swarm_stack_dir }}/compose.yml"
+    prune: true
+    resolve_image: always
+    with_registry_auth: "{{ swarm_stack_with_registry_auth | bool }}"
     state: present
-    resolve_image: true
-  loop: "{{ swarm_stack_services }}"
-  loop_control:
-    label: "{{ item.name }}"
+  register: _swarm_stack_deploy
 
 - name: Summarise deployed services
   ansible.builtin.command:
-    cmd: "docker service ls --format '{% raw %}{{.Name}}\t{{.Replicas}}\t{{.Image}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }}"
+    cmd: "docker stack services {{ swarm_stack_name }} --format '{% raw %}{{.Name}}\t{{.Replicas}}\t{{.Image}}{% endraw %}'"
   register: _swarm_stack_summary
   changed_when: false
 
 - name: Service summary
   ansible.builtin.debug:
     msg: "{{ _swarm_stack_summary.stdout_lines }}"
+
+# The rendered compose file holds no secrets (only external references),
+# so it's kept at 0640 for auditability by default. Set
+# swarm_stack_keep_rendered=false to render-and-remove (zero footprint).
+- name: Remove rendered compose file when keep-rendered is disabled
+  ansible.builtin.file:
+    path: "{{ swarm_stack_dir }}/compose.yml"
+    state: absent
+  when: not (swarm_stack_keep_rendered | bool)

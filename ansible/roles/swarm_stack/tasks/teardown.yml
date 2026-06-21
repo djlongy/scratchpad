@@ -6,22 +6,53 @@
 # NFS data on disk is preserved by default. To also wipe data, run with
 # `--tags wipe-data` in addition to redeploy/teardown.
 #
-# Service discovery uses two filters and dedupes: by our own
-# `swarm_stack=<name>` label (services this role created) AND by
-# name prefix `<stack>_` (services left over from a legacy stack
-# deploy that didn't carry our label).
+# Service discovery uses three filters and dedupes:
+#   - by our own `swarm_stack=<name>` label (services this role created)
+#   - by the legacy `app_swarm_stack=<name>` label (transition support
+#     for stacks deployed before the rename — safe to remove once every
+#     stack has been redeployed under the new label)
+#   - by name prefix `<stack>_` (services left over from a legacy stack
+#     deploy that didn't carry either label)
 
-- name: Discover existing services for this stack
+# Explicit `docker stack rm` — the community.docker.docker_stack state=absent
+# path can report changed without actually removing the stack on newer
+# docker/community.docker combos, so we shell out (verified reliable).
+- name: Remove the stack (all its services at once)
+  ansible.builtin.command:
+    cmd: "docker stack rm {{ swarm_stack_name }}"
+  register: _swarm_stack_rm
+  changed_when: "'Removing' in (_swarm_stack_rm.stdout + _swarm_stack_rm.stderr)"
+  failed_when:
+    - _swarm_stack_rm.rc != 0
+    - "'nothing found' not in (_swarm_stack_rm.stderr | lower)"
+
+- name: Wait for the stack's services to drain
+  ansible.builtin.command:
+    cmd: >-
+      docker service ls
+      --filter label=com.docker.stack.namespace={{ swarm_stack_name }}
+      --format '{% raw %}{{.Name}}{% endraw %}'
+  register: _swarm_stack_drain
+  until: _swarm_stack_drain.stdout | trim | length == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
+# Belt-and-braces: sweep any stragglers left under the stack's labels or
+# name prefix (e.g. services from a legacy per-service deploy that didn't
+# go through `docker stack deploy`, so `docker stack rm` doesn't see them).
+- name: Discover any straggler services for this stack
   ansible.builtin.shell:
     cmd: |
-      set -euo pipefail
+      set -o pipefail
       ( docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }};
+        docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }};
         docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter name={{ swarm_stack_name }}_ ) | sort -u
     executable: /bin/bash
   register: _swarm_stack_existing_services
   changed_when: false
 
-- name: Remove services
+- name: Remove straggler services
   community.docker.docker_swarm_service:
     name: "{{ item }}"
     state: absent
@@ -29,22 +60,13 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Wait for service tasks to drain
+- name: Discover existing configs for this stack
   ansible.builtin.shell:
     cmd: |
-      set -o pipefail
-      ( docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }};
-        docker service ls --format '{% raw %}{{.Name}}{% endraw %}' --filter name={{ swarm_stack_name }}_ ) | sort -u
+      set -euo pipefail
+      ( docker config ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }};
+        docker config ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }} ) | sort -u
     executable: /bin/bash
-  register: _swarm_stack_drain
-  retries: 30
-  delay: 2
-  until: _swarm_stack_drain.stdout_lines | default([]) | length == 0
-  changed_when: false
-
-- name: Discover existing configs for this stack
-  ansible.builtin.command:
-    cmd: "docker config ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }}"
   register: _swarm_stack_existing_configs
   changed_when: false
 
@@ -58,8 +80,12 @@
     label: "{{ item }}"
 
 - name: Discover existing secrets for this stack
-  ansible.builtin.command:
-    cmd: "docker secret ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      ( docker secret ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=swarm_stack={{ swarm_stack_name }};
+        docker secret ls --format '{% raw %}{{.Name}}{% endraw %}' --filter label=app_swarm_stack={{ swarm_stack_name }} ) | sort -u
+    executable: /bin/bash
   register: _swarm_stack_existing_secrets
   changed_when: false
 

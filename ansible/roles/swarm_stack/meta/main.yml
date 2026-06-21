@@ -1,25 +1,17 @@
 ---
 galaxy_info:
   role_name: swarm_stack
-  author: longy
+  author: lab
   description: >-
-    Generic Docker Swarm service deployer. The caller supplies a list of
-    services, an NFS-backed volume layout, encrypted overlay networks,
-    optional docker-config templates, and secrets read from Ansible
-    variables; the role creates the networks, volumes, configs, and
-    secrets, deploys one docker_swarm_service per entry, then prunes
-    obsolete labelled objects. Fully agnostic — all values come from the
-    caller / inventory.
+    Generic Docker Swarm stack engine — reconciles networks, configs, secrets
+    (with Vault-backed bootstrap), volumes, bind/NFS subpaths, and deploys a
+    compose stack, with prune/teardown. Consumed via include_role by service
+    roles (e.g. mattermost_swarm). Stack name, compose, and resources are inputs.
   license: MIT
   min_ansible_version: "2.14"
-  platforms:
-    - name: EL
-      versions: [all]
   galaxy_tags:
-    - docker
     - swarm
-    - container
-    - orchestration
+    - docker
+    - stack
     - deploy
-
 dependencies: []

@@ -1,0 +1,196 @@
+{#
+  mattermost_swarm — compose-first stack template for the swarm_stack engine.
+
+  The engine pre-creates the external docker secrets / configs / networks /
+  volumes and renders this template with three resolved-name dicts in scope:
+    secret_names[<logical>]  → versioned external docker secret name
+    config_names[<logical>]  → versioned external docker config name
+    network_names[<logical>] → overlay network name
+
+  HARD RULE — no plaintext secret value appears in this rendered file.
+  Containers read their secret from /run/secrets/<logical>:
+    * mm-postgres uses the native POSTGRES_PASSWORD_FILE pattern.
+    * mm-app has no *_FILE env for the DSN / at-rest key / public-link salt /
+      LDAP bind password, so an entrypoint shim exports them from the tmpfs
+      secret files before exec'ing the real entrypoint.
+#}
+version: "3.8"
+
+services:
+
+  mm-postgres:
+    image: "{{ mattermost_postgres_image }}"
+    hostname: mm-postgres
+    networks:
+      - mm_overlay
+    volumes:
+      - type: volume
+        source: mm_pgdata
+        target: /var/lib/postgresql/data
+    secrets:
+      - mm_pg_password
+    environment:
+      POSTGRES_DB: "{{ mattermost_pg_db }}"
+      POSTGRES_USER: "{{ mattermost_pg_user }}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/mm_pg_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ mattermost_pg_user }} -d {{ mattermost_pg_db }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - "node.role == worker"
+{% if mattermost_pg_pinned_node | length > 0 %}
+          - "node.hostname == {{ mattermost_pg_pinned_node }}"
+{% endif %}
+      restart_policy:
+        condition: any
+        delay: 10s
+      resources:
+        limits:
+          memory: 512M
+
+  mm-app:
+    image: "{{ mattermost_app_image }}"
+    hostname: mm-app
+    networks:
+      - mm_overlay
+    volumes:
+      - type: volume
+        source: mm_app_data
+        target: /mattermost/data
+    secrets:
+      - mm_pg_password
+      - mm_at_rest_key
+      - mm_public_link_salt
+{% if mattermost_ldap_enabled %}
+      - mm_ldap_bind_password
+{% endif %}
+{% if mattermost_ldap_enabled %}
+    configs:
+      - source: mm_ldap_ca
+        target: "{{ mattermost_ldap_ca_cert_path }}"
+        mode: "0444"
+{% endif %}
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SERVICESETTINGS_SITEURL: "{{ mattermost_site_url }}"
+      MM_SERVICESETTINGS_LISTENADDRESS: ":8065"
+      MM_SERVICESETTINGS_FORWARD80TO443: "false"
+      MM_SERVICESETTINGS_TRUSTEDPROXYIPHEADER: "X-Forwarded-For"
+      MM_TEAMSETTINGS_SITENAME: "Mattermost"
+      MM_LOGSETTINGS_ENABLECONSOLE: "true"
+      MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
+      MM_LOGSETTINGS_CONSOLEJSON: "true"
+      TZ: "{{ mattermost_timezone }}"
+{% if mattermost_ldap_enabled %}
+      MM_LDAPSETTINGS_ENABLE: "true"
+      MM_LDAPSETTINGS_ENABLESYNC: "true"
+      MM_LDAPSETTINGS_LDAPSERVER: "{{ mattermost_ldap_host }}"
+      MM_LDAPSETTINGS_LDAPPORT: "{{ mattermost_ldap_port }}"
+      MM_LDAPSETTINGS_CONNECTIONSECURITY: "{{ mattermost_ldap_connection_security }}"
+      MM_LDAPSETTINGS_SKIPCERTIFICATEVERIFICATION: "{{ 'true' if mattermost_ldap_skip_certificate_verification else 'false' }}"
+      MM_LDAPSETTINGS_PUBLICCERTIFICATEFILE: "{{ mattermost_ldap_ca_cert_path }}"
+      MM_LDAPSETTINGS_BASEDN: "{{ mattermost_ldap_base_dn }}"
+      MM_LDAPSETTINGS_BINDUSERNAME: "{{ mattermost_ldap_bind_username }}"
+      MM_LDAPSETTINGS_USERFILTER: "{{ mattermost_ldap_user_filter }}"
+      MM_LDAPSETTINGS_GROUPFILTER: "{{ mattermost_ldap_group_filter }}"
+      MM_LDAPSETTINGS_IDATTRIBUTE: "{{ mattermost_ldap_id_attribute }}"
+      MM_LDAPSETTINGS_LOGINIDATTRIBUTE: "{{ mattermost_ldap_login_id_attribute }}"
+      MM_LDAPSETTINGS_USERNAMEATTRIBUTE: "{{ mattermost_ldap_username_attribute }}"
+      MM_LDAPSETTINGS_EMAILATTRIBUTE: "{{ mattermost_ldap_email_attribute }}"
+      MM_LDAPSETTINGS_FIRSTNAMEATTRIBUTE: "{{ mattermost_ldap_first_name_attribute }}"
+      MM_LDAPSETTINGS_LASTNAMEATTRIBUTE: "{{ mattermost_ldap_last_name_attribute }}"
+      MM_LDAPSETTINGS_NICKNAMEATTRIBUTE: "{{ mattermost_ldap_nickname_attribute }}"
+      MM_LDAPSETTINGS_POSITIONATTRIBUTE: "{{ mattermost_ldap_position_attribute }}"
+{% endif %}
+    # NOTE: `docker stack deploy` runs compose-style ${}/$( ) interpolation
+    # over this file, so every `$` that must reach the CONTAINER shell is
+    # doubled to `$$` here. docker collapses `$$` → `$`, and the container's
+    # `sh -c` then runs the real `$(cat /run/secrets/...)` at start-up. A
+    # single `$` would be interpolated (and emptied) at deploy time and the
+    # secrets would never be read.
+    command:
+      - sh
+      - -c
+      - >-
+        export MM_SQLSETTINGS_DATASOURCE="postgres://{{ mattermost_pg_user }}:$$(cat /run/secrets/mm_pg_password)@mm-postgres:5432/{{ mattermost_pg_db }}?sslmode=disable&connect_timeout=10&binary_parameters=yes";
+        export MM_SQLSETTINGS_ATRESTENCRYPTKEY="$$(cat /run/secrets/mm_at_rest_key)";
+        export MM_FILESETTINGS_PUBLICLINKSALT="$$(cat /run/secrets/mm_public_link_salt)";
+{% if mattermost_ldap_enabled %}
+        export MM_LDAPSETTINGS_BINDPASSWORD="$$(cat /run/secrets/mm_ldap_bind_password)";
+{% endif %}
+        exec /entrypoint.sh mattermost
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8065/api/v4/system/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    ports:
+      # `published` must be an integer for `docker stack deploy` (quoting it
+      # makes the long-form schema reject it as a string).
+      - target: 8065
+        published: {{ mattermost_published_port | int }}
+        protocol: tcp
+        mode: ingress
+    deploy:
+      replicas: {{ mattermost_replicas }}
+      placement:
+        max_replicas_per_node: {{ mattermost_max_per_node }}
+        constraints:
+{% for constraint in mattermost_app_placement_constraints %}
+          - "{{ constraint }}"
+{% endfor %}
+      update_config:
+        parallelism: 1
+        delay: 30s
+        order: stop-first
+        failure_action: rollback
+      restart_policy:
+        condition: any
+        delay: 15s
+        max_attempts: 5
+      resources:
+        limits:
+          memory: 1G
+
+networks:
+  mm_overlay:
+    external: true
+    name: "{{ network_names.mm_overlay }}"
+
+volumes:
+  mm_pgdata:
+    external: true
+    name: mm_pgdata
+  mm_app_data:
+    external: true
+    name: mm_app_data
+
+secrets:
+  mm_pg_password:
+    external: true
+    name: "{{ secret_names.mm_pg_password }}"
+  mm_at_rest_key:
+    external: true
+    name: "{{ secret_names.mm_at_rest_key }}"
+  mm_public_link_salt:
+    external: true
+    name: "{{ secret_names.mm_public_link_salt }}"
+{% if mattermost_ldap_enabled %}
+  mm_ldap_bind_password:
+    external: true
+    name: "{{ secret_names.mm_ldap_bind_password }}"
+{% endif %}
+{% if mattermost_ldap_enabled %}
+
+configs:
+  mm_ldap_ca:
+    external: true
+    name: "{{ config_names.mm_ldap_ca }}"
+{% endif %}

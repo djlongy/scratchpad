@@ -1,189 +1,59 @@
 ---
-# Thin wrapper over swarm_stack. Captures this role's path up front
-# (role_path inside the include_role vars block lazily resolves to the
-# *included* role's path), then hands a complete swarm_stack_* spec to
-# the generic role.
+# Thin compose-first wrapper over swarm_stack. Loads the manifest
+# (swarm_stack_* spec), appends the conditional LDAP secret + config when
+# mattermost_ldap_enabled, then hands off to the generic engine.
 #
-# RESILIENCE: every value in swarm_stack_services below is a top-level
-# scalar or a reference to a wrapper-defaults / inventory variable. No
-# entry references swarm_stack_secret_values or swarm_stack_config_names
-# — those late-bound values are baked in via env_template instead. See
-# the resilience note at the top of swarm_stack/defaults/main.yml.
+# The engine pre-creates the external docker secrets/configs/networks/
+# volumes and renders templates/compose.yml.j2 with the resolved object
+# names injected. Secrets are consumed by containers via /run/secrets/<name>
+# — no plaintext value is read into a var or baked into the compose file.
 #
-# Secret values are read from Ansible variables defined in your
-# ansible-vault-encrypted YAML file (e.g. group_vars/swarm/vault.yml):
-#
-#   ---
-#   $ANSIBLE_VAULT;1.1;AES256
-#   <encrypted blob>
-#
-#   # Decrypted contents:
-#   vault_mm_pg_password:        "..."
-#   vault_mm_at_rest_key:        "..."             # >= 32 chars
-#   vault_mm_public_link_salt:   "..."             # >= 32 chars
-#   vault_mm_admin_password:     "..."
+# LDAP: the bind password is NOT auto-generated (auto_generate: false) —
+# playbooks/mattermost_freeipa_prep.yml seeds it into Vault
+# first, against the same FreeIPA user it sets. That ordering keeps
+# password creation co-located with the directory it authenticates against.
 
-- name: Capture wrapper role path
+# Anchor the manifest's template paths on the caller role's own path. After
+# swarm_stack is imported, `role_path` refers to the engine, so a bare
+# `{{ role_path }}` in the manifest would resolve to swarm_stack/templates
+# and the compose file would not be found.
+- name: Resolve caller role path for manifest path references
   ansible.builtin.set_fact:
-    _mattermost_swarm_role_path: "{{ role_path }}"
+    swarm_stack_caller_role: "{{ role_path }}"
   tags: [always]
 
-# When mattermost_swarm_ldap_enabled, we extend the secrets list and turn
-# swarm_stack_configs from [] into a one-entry list (the FreeIPA CA
-# cert). Composing via set_fact instead of inline-conditionals keeps
-# the literal lists in include_role's vars block readable.
-- name: Compose swarm_stack_secrets list
+- name: Load mattermost_swarm manifest
+  ansible.builtin.include_vars:
+    file: manifest.yml
+  tags: [always]
+
+- name: Append LDAP bind-password secret when LDAP is enabled
   ansible.builtin.set_fact:
-    _mattermost_swarm_secrets: >-
-      {{
-        [
-          {'name': 'mm_pg_password',      'var': 'vault_mm_pg_password'},
-          {'name': 'mm_at_rest_key',      'var': 'vault_mm_at_rest_key'},
-          {'name': 'mm_public_link_salt', 'var': 'vault_mm_public_link_salt'},
-          {'name': 'mm_admin_password',   'var': 'vault_mm_admin_password'}
-        ]
-        + (
-          [{'name': 'mm_ldap_bind_password', 'var': 'vault_mm_ldap_bind_password'}]
-          if mattermost_swarm_ldap_enabled else []
-        )
-      }}
-  tags: [always]
-
-- name: Compose swarm_stack_configs list
-  ansible.builtin.set_fact:
-    _mattermost_swarm_configs: >-
-      {{
-        (
-          [{'name':   'mm_freeipa_ca_cert',
-            'src':    _mattermost_swarm_role_path + '/templates/mm-freeipa-ca-cert.j2',
-            'target': mattermost_swarm_ldap_ca_cert_path,
-            'mode':   '0444'}]
-          if mattermost_swarm_ldap_enabled else []
-        )
-      }}
-  tags: [always]
-
-- name: Compose mm-app config refs
-  ansible.builtin.set_fact:
-    _mattermost_swarm_app_configs: >-
-      {{ ['mm_freeipa_ca_cert'] if mattermost_swarm_ldap_enabled else [] }}
-  tags: [always]
-
-# Slurp the FreeIPA CA cert at deploy time from a FreeIPA server's
-# canonical path. The cert is public (LDAPS verifiers need it), so it
-# doesn't belong in ansible-vault. The fact then feeds the
-# mm-freeipa-ca-cert.j2 template, which swarm_stack renders on the
-# manager and ships as a docker config to mm-app.
-- name: Slurp FreeIPA CA cert
-  ansible.builtin.slurp:
-    src: "{{ mattermost_swarm_freeipa_ca_cert_src }}"
-  delegate_to: "{{ groups['freeipa'][0] }}"
-  become: true
-  register: _mattermost_swarm_freeipa_ca_cert_slurp
-  when: mattermost_swarm_ldap_enabled
-  tags: [always]
-
-- name: Decode CA cert into a fact
-  ansible.builtin.set_fact:
-    _mattermost_swarm_freeipa_ca_cert_pem: "{{ _mattermost_swarm_freeipa_ca_cert_slurp.content | b64decode }}"
-  when: mattermost_swarm_ldap_enabled
-  tags: [always]
-
-- name: Deploy mattermost via swarm_stack
-  ansible.builtin.include_role:
-    name: swarm_stack
-  tags: [always]
+    swarm_stack_secrets: "{{ swarm_stack_secrets + [_mm_ldap_bind_secret] }}"
   vars:
-    swarm_stack_name: "{{ mattermost_swarm_stack_name }}"
-    swarm_stack_dir: "{{ mattermost_swarm_stack_dir }}"
+    _mm_ldap_bind_secret:
+      name: mm_ldap_bind_password
+      vault_path: "{{ mattermost_vault_path }}"
+      vault_field: ldap_bind_password
+      auto_generate: false
+  when: mattermost_ldap_enabled | bool
+  tags: [always]
 
-    swarm_stack_nfs:
-      host: "{{ mattermost_swarm_nfs_host }}"
-      server: "{{ mattermost_swarm_nfs_server }}"
-      base: "{{ mattermost_swarm_nfs_base }}"
+- name: Append FreeIPA CA docker config when LDAP is enabled
+  ansible.builtin.set_fact:
+    swarm_stack_configs: "{{ swarm_stack_configs + [_mm_ldap_ca_config] }}"
+  vars:
+    _mm_ldap_ca_config:
+      name: mm_ldap_ca
+      src: "{{ swarm_stack_caller_role }}/templates/mm-freeipa-ca-cert.j2"
+  when: mattermost_ldap_enabled | bool
+  tags: [always]
 
-    # Subnet pinned via the swarm_overlay_subnets registry in
-    # group_vars/all.yml — single source of truth so collisions are
-    # caught at PR review, not at runtime.
-    swarm_stack_networks:
-      - name: mm_overlay
-        attachable: true
-        encrypted: true
-        subnet: "{{ swarm_overlay_subnets[mattermost_swarm_stack_name] }}"
-
-    swarm_stack_volumes:
-      - name: mm_pgdata
-        subpath: "{{ mattermost_swarm_pgdata_subpath }}"
-        uid: "{{ mattermost_swarm_pg_uid }}"
-        gid: "{{ mattermost_swarm_pg_gid }}"
-        mode: "0700"
-      - name: mm_app_data
-        subpath: "{{ mattermost_swarm_data_subpath }}"
-        uid: "{{ mattermost_swarm_app_uid }}"
-        gid: "{{ mattermost_swarm_app_gid }}"
-        mode: "0750"
-
-    # Mattermost mutates config.json at runtime (writes version stamp
-    # on first boot) so we can't ship config.json itself as a docker
-    # config. We DO ship the FreeIPA CA cert as a docker config when
-    # LDAP is on — Mattermost only reads that file, never writes it.
-    swarm_stack_configs: "{{ _mattermost_swarm_configs }}"
-
-    # Postgres reads its password via the *_FILE pattern (native).
-    # The other secrets are templated into MM_* env vars in the
-    # mm-app.env.yml.j2 template via swarm_stack_secret_values. Each
-    # `var` references a variable defined in your ansible-vault-
-    # encrypted YAML. The LDAP bind password joins that list when
-    # mattermost_swarm_ldap_enabled.
-    swarm_stack_secrets: "{{ _mattermost_swarm_secrets }}"
-
-    swarm_stack_services:
-      - name: mm-postgres
-        image: "{{ mattermost_swarm_postgres_image }}"
-        hostname: mm-postgres
-        replicas: 1
-        networks: [mm_overlay]
-        mounts:
-          - source: mm_pgdata
-            target: /var/lib/postgresql/data
-            type: volume
-        secrets: [mm_pg_password]
-        placement: "{{ ['node.role == worker']
-                       + (['node.hostname == ' ~ mattermost_swarm_pg_pinned_node]
-                          if (mattermost_swarm_pg_pinned_node | length > 0) else []) }}"
-        restart:
-          condition: any
-          delay: 10s
-        limits:
-          memory: "{{ mattermost_swarm_pg_limit_memory }}"
-        env_template: "{{ _mattermost_swarm_role_path }}/templates/mm-postgres.env.yml.j2"
-
-      - name: mm-app
-        image: "{{ mattermost_swarm_app_image }}"
-        hostname: mm-app
-        replicas: "{{ mattermost_swarm_replicas }}"
-        networks: [mm_overlay]
-        mounts:
-          - source: mm_app_data
-            target: /mattermost/data
-            type: volume
-        configs: "{{ _mattermost_swarm_app_configs }}"
-        publish:
-          - target_port: 8065
-            published_port: "{{ mattermost_swarm_published_port }}"
-            protocol: tcp
-            mode: ingress
-        placement: "{{ mattermost_swarm_app_placement_constraints }}"
-        placement_max_replicas_per_node: "{{ mattermost_swarm_max_per_node }}"
-        update:
-          parallelism: 1
-          delay: 30s
-          order: stop-first
-          failure_action: rollback
-        restart:
-          condition: any
-          delay: 15s
-          max_attempts: 5
-        limits:
-          memory: "{{ mattermost_swarm_app_limit_memory }}"
-        env_template: "{{ _mattermost_swarm_role_path }}/templates/mm-app.env.yml.j2"
+# NOT tagged [always]: import_role propagates its tags to every engine task
+# at compile time, so [always] here would force the whole engine to run on
+# every invocation and defeat --tags stop/start/teardown/deploy refinement.
+# Untagged, each engine task's own tags govern (validate is [always], the
+# deploy phases run on a no-tag converge, scale/teardown on their opt-in tags).
+- name: Deploy Mattermost via the swarm_stack engine
+  ansible.builtin.import_role:
+    name: swarm_stack
