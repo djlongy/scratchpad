@@ -1,0 +1,37 @@
+---
+# roles/baseline/tasks/fapolicyd.yml
+# fapolicyd application allow-listing (EL only). Opt-in via
+# baseline_fapolicyd_enabled. Config + custom rules are template-driven.
+# Defaults to PERMISSIVE — enforcing without a tuned ruleset will break a
+# desktop; switch baseline_fapolicyd_permissive to false only after validating
+# in permissive (audit) mode.
+
+- name: fapolicyd | Install
+  ansible.builtin.package:
+    name: fapolicyd
+    state: present
+
+- name: fapolicyd | Deploy fapolicyd.conf
+  ansible.builtin.template:
+    src: fapolicyd.conf.j2
+    dest: /etc/fapolicyd/fapolicyd.conf
+    owner: root
+    group: fapolicyd
+    mode: "0644"
+  notify: Restart fapolicyd
+
+- name: fapolicyd | Deploy custom allow rules
+  ansible.builtin.template:
+    src: fapolicyd-custom.rules.j2
+    dest: "/etc/fapolicyd/rules.d/{{ baseline_fapolicyd_rules_priority }}-baseline-custom.rules"
+    owner: root
+    group: fapolicyd
+    mode: "0644"
+  when: baseline_fapolicyd_rules | default([]) | length > 0
+  notify: Recompile fapolicyd rules
+
+- name: fapolicyd | Enable and start
+  ansible.builtin.service:
+    name: fapolicyd
+    state: started
+    enabled: true

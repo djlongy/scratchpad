@@ -1,0 +1,34 @@
+---
+# roles/baseline/tasks/network.yml
+# Distro-agnostic IP/DNS via NetworkManager (nmcli) for SOE desktops (EL +
+# Debian/Ubuntu-with-NetworkManager). Dynamic interface name — defaults to the
+# host's primary interface (ens*/eth*/eno*) unless baseline_network_interface
+# is set. Opt-in: only runs when baseline_network_manage is true AND the
+# connection details are provided. Hostname/timezone are handled separately
+# (common/update_hostname.yml).
+#
+# Ubuntu Server uses netplan (not NetworkManager); for those hosts set
+# baseline_network_manage: false and manage netplan out of band.
+
+- name: Network | Resolve the interface to configure
+  ansible.builtin.set_fact:
+    _baseline_net_iface: >-
+      {{ baseline_network_interface
+         | default(connection_name | default(ansible_default_ipv4.interface, true), true) }}
+
+- name: Network | Configure IPv4 address, gateway, DNS via NetworkManager
+  community.general.nmcli:
+    type: ethernet
+    conn_name: "{{ _baseline_net_iface }}"
+    ifname: "{{ _baseline_net_iface }}"
+    ip4: "{{ baseline_network_ip4 | default(ansible_host ~ '/' ~ (baseline_network_prefix | default(24))) }}"
+    gw4: "{{ baseline_network_gateway | default((ansible_host.split('.')[:3] | join('.')) ~ '.1') }}"
+    dns4: "{{ baseline_network_dns | default([dns_nameserver]) }}"
+    dns4_search: "{{ baseline_network_search | default([search_domain]) }}"
+    state: present
+  register: _baseline_nmcli
+
+- name: Network | Reload NetworkManager connections
+  ansible.builtin.command: nmcli general reload
+  changed_when: false
+  when: _baseline_nmcli is changed

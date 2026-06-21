@@ -1,0 +1,27 @@
+---
+- name: Fetch breakglass password from Vault
+  ansible.builtin.set_fact:
+    _breakglass_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=' + baseline_breakglass_vault_secret) }}"
+  no_log: true
+
+- name: Ensure breakglass local admin account exists
+  ansible.builtin.user:
+    name: breakglass
+    comment: "Breakglass emergency local admin"
+    groups: "{{ 'wheel' if ansible_os_family == 'RedHat' else 'sudo' }}"
+    append: true
+    shell: /bin/bash
+    create_home: true
+    password: "{{ _breakglass_password | password_hash('sha512', 65534 | random(seed=inventory_hostname) | string) }}"
+    password_lock: false
+    update_password: on_create
+  no_log: true
+
+- name: Ensure breakglass sudoers file is present
+  ansible.builtin.copy:
+    content: "breakglass ALL=(ALL) NOPASSWD: ALL\n"
+    dest: /etc/sudoers.d/breakglass
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s

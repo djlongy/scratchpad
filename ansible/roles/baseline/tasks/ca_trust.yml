@@ -1,0 +1,67 @@
+---
+# roles/baseline/tasks/ca_trust.yml
+# Install our own trusted CA certificate(s) into the OS trust store
+# (distro-agnostic). Driven by baseline_trusted_cas: each entry is
+# { name: <basename>, src: <PEM on control node> } or { name, content: <PEM> }.
+# Idempotent; notifies the distro-appropriate trust-update handler.
+
+- name: CA trust | Install CA certificates (EL)
+  ansible.builtin.copy:
+    src: "{{ item.src | default(omit) }}"
+    content: "{{ item.content | default(omit) }}"
+    dest: "/etc/pki/ca-trust/source/anchors/{{ item.name }}.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ baseline_trusted_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_os_family == "RedHat"
+  notify: Update CA trust EL
+
+- name: CA trust | Install CA certificates (Debian)
+  ansible.builtin.copy:
+    src: "{{ item.src | default(omit) }}"
+    content: "{{ item.content | default(omit) }}"
+    dest: "/usr/local/share/ca-certificates/{{ item.name }}.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ baseline_trusted_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_os_family == "Debian"
+  notify: Update CA trust Debian
+
+# Download CAs from a URL (e.g. an internal PKI/Artifactory endpoint) so they
+# don't have to be committed to the repo. Each entry: {name, url} (+ optional
+# checksum, validate_certs).
+- name: CA trust | Download CA certificates from URLs (EL)
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "/etc/pki/ca-trust/source/anchors/{{ item.name }}.crt"
+    checksum: "{{ item.checksum | default(omit) }}"
+    validate_certs: "{{ item.validate_certs | default(true) }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ baseline_trusted_ca_urls }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_os_family == "RedHat"
+  notify: Update CA trust EL
+
+- name: CA trust | Download CA certificates from URLs (Debian)
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "/usr/local/share/ca-certificates/{{ item.name }}.crt"
+    checksum: "{{ item.checksum | default(omit) }}"
+    validate_certs: "{{ item.validate_certs | default(true) }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ baseline_trusted_ca_urls }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_os_family == "Debian"
+  notify: Update CA trust Debian

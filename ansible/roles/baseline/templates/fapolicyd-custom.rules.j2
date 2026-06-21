@@ -1,0 +1,10 @@
+{{ ansible_managed | comment }}
+# Custom fapolicyd rules — managed by the baseline role.
+# Compiled into /etc/fapolicyd/compiled.rules by `fagenrules --load`.
+# Ref: https://www.mankier.com/5/fapolicyd.rules
+# Each entry in baseline_fapolicyd_rules is a raw rule line, e.g.:
+#   "allow perm=execute exe=/usr/bin/ls : all"
+#   "allow perm=any all : dir=/opt/myapp/"
+{% for rule in baseline_fapolicyd_rules | default([]) %}
+{{ rule }}
+{% endfor %}

@@ -1,0 +1,55 @@
+---
+- name: Restart Fail2Ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
+
+- name: Reload firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: reloaded
+  become: true
+
+- name: Reboot System
+  ansible.builtin.reboot:
+    msg: "Rebooting the system to apply changes."
+    reboot_timeout: 300
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart logrotate timer
+  ansible.builtin.systemd:
+    name: logrotate.timer
+    state: restarted
+    enabled: true
+
+- name: Restart systemd-journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+
+- name: Restart auditd  # noqa: command-instead-of-module
+  ansible.builtin.command: /sbin/service auditd restart
+  changed_when: true
+
+- name: Reload sshd
+  ansible.builtin.service:
+    name: sshd
+    state: reloaded
+
+- name: Update CA trust EL  # noqa: no-changed-when
+  ansible.builtin.command: update-ca-trust extract
+
+- name: Update CA trust Debian  # noqa: no-changed-when
+  ansible.builtin.command: update-ca-certificates
+
+- name: Recompile fapolicyd rules  # noqa: no-changed-when
+  ansible.builtin.command: fagenrules --load
+  notify: Restart fapolicyd
+
+- name: Restart fapolicyd
+  ansible.builtin.service:
+    name: fapolicyd
+    state: restarted

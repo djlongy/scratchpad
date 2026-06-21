@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: baseline
+  author: lab
+  description: >-
+    Distro-agnostic SOE Linux baseline — hostname/timezone/packages, network
+    (IP/DNS, dynamic interface), firewall zones/services, logging & auditd
+    tuning, /opt data-disk mount, fail2ban (Ubuntu), breakglass local-admin,
+    SSH hardening, IPv6 toggle, SELinux, fapolicyd, and CIS-aligned hardening
+    (no FIPS) — overridable via host/group vars. Distro-aware
+    (AlmaLinux / RHEL / Ubuntu). openclaw lives in the `soe` role.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+  galaxy_tags:
+    - baseline
+    - hardening
+    - system
+dependencies: []

@@ -1,0 +1,147 @@
+---
+- name: Update hostname and timezone
+  ansible.builtin.include_tasks: ../common/tasks/update_hostname.yml
+  tags: [baseline, packages]
+
+- name: Update disk sizes
+  ansible.builtin.include_tasks: ../common/tasks/update_disks.yml
+  tags: [baseline, packages]
+
+- name: Ensure /opt fstab uses UUID
+  ansible.builtin.include_tasks: fstab_opt.yml
+  tags: [baseline, packages]
+
+- name: Check whether /opt is mounted
+  ansible.builtin.command: /usr/bin/mountpoint -q /opt
+  register: opt_mount_check
+  changed_when: false
+  failed_when: false
+  tags: [baseline, packages]
+
+- name: Provision and mount /opt from data disk (fallback)
+  ansible.builtin.include_tasks: ../common/tasks/mounts.yml
+  vars:
+    datavols:
+      - lv: "{{ baseline_opt_lv }}"
+        vg: "{{ baseline_opt_vg }}"
+        mount: /opt
+        size: "100%FREE"
+        sefcontext: usr_t
+    mount_opts: "defaults,noatime,nofail,x-systemd.device-timeout=30"
+  when:
+    - opt_mount_check.rc != 0
+    - ansible_os_family == "RedHat"
+  tags: [baseline, packages]
+
+- name: Ensure /opt is world-traversable
+  ansible.builtin.file:
+    path: /opt
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: opt_mount_check.rc == 0
+  tags: [baseline, packages]
+
+- name: "{{ base_task_name }}"
+  ansible.builtin.include_tasks: "{{ ansible_distribution | lower }}.yml"
+  when: ansible_distribution in ['Ubuntu', 'RedHat', 'AlmaLinux']
+  tags: [baseline, users, sudo, ssh_keys, ipv6]
+
+# ── SOE desktop: distro-agnostic, opt-in via override vars ───────────────────
+- name: Install trusted CA certificates
+  ansible.builtin.include_tasks:
+    file: ca_trust.yml
+    apply:
+      tags: [baseline, ca_trust]
+  when: (baseline_trusted_cas | length > 0) or (baseline_trusted_ca_urls | length > 0)
+  tags: [baseline, ca_trust]
+
+- name: Configure custom package repositories
+  ansible.builtin.include_tasks:
+    file: repos.yml
+    apply:
+      tags: [baseline, repos]
+  when: (baseline_dnf_repos | length > 0) or (baseline_apt_repos | length > 0) or (baseline_dnf_repos_disable | length > 0)
+  tags: [baseline, repos]
+
+- name: Configure pip index and packages
+  ansible.builtin.include_tasks:
+    file: pip.yml
+    apply:
+      tags: [baseline, pip]
+  when: (baseline_pip_index_url | default('') | length > 0) or (baseline_pip_packages | length > 0)
+  tags: [baseline, pip]
+
+- name: Configure network (IP/DNS, dynamic interface)
+  ansible.builtin.include_tasks:
+    file: network.yml
+    apply:
+      tags: [baseline, network]
+  when: baseline_network_manage | bool
+  tags: [baseline, network]
+
+- name: Configure firewall zones/services
+  ansible.builtin.include_tasks:
+    file: firewall.yml
+    apply:
+      tags: [baseline, firewall]
+  when: baseline_firewall_manage | bool
+  tags: [baseline, firewall]
+
+- name: Manage SELinux state (EL)
+  ansible.builtin.include_tasks:
+    file: selinux.yml
+    apply:
+      tags: [baseline, selinux]
+  when: baseline_selinux_state | default('') | length > 0
+  tags: [baseline, selinux]
+
+- name: Configure fapolicyd (EL)
+  ansible.builtin.include_tasks:
+    file: fapolicyd.yml
+    apply:
+      tags: [baseline, fapolicyd]
+  when:
+    - baseline_fapolicyd_enabled | bool
+    - ansible_os_family == "RedHat"
+  tags: [baseline, fapolicyd]
+
+- name: Apply CIS-aligned hardening (no FIPS)
+  ansible.builtin.include_tasks:
+    file: hardening_cis.yml
+    apply:
+      tags: [baseline, cis, hardening]
+  when: baseline_cis_hardening | bool
+  tags: [baseline, cis, hardening]
+
+- name: Apply logging baseline
+  ansible.builtin.include_tasks:
+    file: logging.yml
+    apply:
+      tags: [baseline, logging]
+  tags: [baseline, logging]
+
+- name: Configure breakglass admin account
+  ansible.builtin.include_tasks:
+    file: breakglass.yml
+    apply:
+      tags: [breakglass, baseline]
+  when: baseline_breakglass_vault_secret | length > 0
+  tags: [breakglass, baseline]
+
+# openclaw moved to the dedicated `soe` role (roles/soe) — apply it alongside
+# baseline in your site playbook for the relevant hosts.
+
+- name: Configure borg backup capabilities
+  ansible.builtin.include_tasks:
+    file: borg_backup.yml
+    apply:
+      tags: [baseline, backup]
+  tags: [baseline, backup]
+
+- name: Reboot System
+  ansible.builtin.reboot:
+    msg: "Rebooting the system to apply changes."
+    reboot_timeout: 300
+  tags: never, reboot

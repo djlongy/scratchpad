@@ -1,0 +1,219 @@
+---
+- when: ansible_os_family == "Debian"
+
+  block:
+    - name: Ensure parted is installed
+      ansible.builtin.apt:
+        name: parted
+        state: present
+        update_cache: true
+
+    - name: Get current partition layout
+      command: parted /dev/sda print
+      register: parted_result
+      changed_when: false
+
+    - name: Display current partition layout
+      debug:
+        var: parted_result.stdout_lines
+
+    - name: Rescan primary disk to detect vSphere resize
+      shell: echo 1 > /sys/class/block/sda/device/rescan
+      changed_when: false
+
+    - name: Resize sda3 partition to use all remaining space
+      command: parted /dev/sda resizepart 3 100%
+      register: resizepart_result
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display result of resizing partition
+      debug:
+        var: resizepart_result.stdout_lines
+
+    - name: Resize the physical volume
+      command: pvresize /dev/sda3
+      register: pvresize_result
+      changed_when: "'1 physical volume(s) resized' in pvresize_result.stdout"
+      ignore_errors: true
+
+    - name: Display the result of pvresize
+      debug:
+        var: pvresize_result.stdout_lines
+      when: pvresize_result is defined
+
+    - name: Extend the logical volume to use all available space
+      command: lvextend -l +100%FREE /dev/sysvg/lv_var
+      register: lvextend_result
+      changed_when: lvextend_result.rc == 0
+      failed_when: lvextend_result.rc not in [0, 5]
+      when: pvresize_result.changed | default(false)
+
+    - name: Display the result of lvextend
+      debug:
+        var: lvextend_result.stdout_lines
+      when: lvextend_result is defined
+
+    - name: Expand the XFS filesystem on /var
+      command: xfs_growfs /dev/mapper/sysvg-lv_var
+      register: xfs_growfs_result
+      changed_when: "'data blocks changed' in (xfs_growfs_result.stdout | default(''))"
+      when: (lvextend_result.rc | default(-1)) == 0
+
+    - name: Display the result of xfs_growfs
+      debug:
+        var: xfs_growfs_result.stdout_lines
+      when: xfs_growfs_result is defined and xfs_growfs_result.stdout_lines is defined
+
+    # === Second disk expansion (vg_data/lv_opt → /opt) ===
+
+    - name: Find PV backing vg_data
+      command: pvs --noheadings -o pv_name --select vg_name=vg_data
+      register: vg_data_pv
+      changed_when: false
+      failed_when: false
+
+    - name: Rescan data disk to detect vSphere resize
+      shell: "echo 1 > /sys/class/block/{{ (vg_data_pv.stdout_lines | first | default('') | trim | basename) }}/device/rescan"
+      changed_when: false
+      when:
+        - vg_data_pv.rc == 0
+        - vg_data_pv.stdout | trim != ''
+
+    - name: Resize PV on data disk
+      command: "pvresize {{ vg_data_pv.stdout_lines | first | default('') | trim }}"
+      register: data_pvresize_result
+      changed_when: "'1 physical volume(s) resized' in data_pvresize_result.stdout"
+      when:
+        - vg_data_pv.rc == 0
+        - vg_data_pv.stdout | trim != ''
+
+    - name: Extend lv_opt to use all free space in vg_data
+      command: lvextend -l +100%FREE /dev/vg_data/lv_opt
+      register: lv_opt_extend_result
+      changed_when: "'Size of logical volume' in (lv_opt_extend_result.stdout | default(''))"
+      failed_when: lv_opt_extend_result.rc not in [0, 5]
+      when: data_pvresize_result.changed | default(false)
+
+    - name: Grow XFS filesystem on /opt
+      command: xfs_growfs /opt
+      register: opt_xfs_result
+      changed_when: "'data blocks changed' in (opt_xfs_result.stdout | default(''))"
+      when: (lv_opt_extend_result.rc | default(-1)) == 0
+
+    - name: Check the size has updated
+      command: df -Th
+      register: df_result
+      changed_when: false
+
+    - name: Display the result of df
+      debug:
+        var: df_result.stdout_lines
+- when: ansible_os_family == "RedHat" or ansible_os_family == "Almalinux"
+  block:
+    - name: Ensure parted is installed
+      ansible.builtin.yum:
+        name: parted
+        state: present
+
+    - name: Get current partition layout
+      command: parted /dev/sda print
+      register: parted_result
+      changed_when: false
+
+    - name: Display current partition layout
+      debug:
+        var: parted_result.stdout_lines
+
+    - name: Rescan primary disk to detect vSphere resize
+      shell: echo 1 > /sys/class/block/sda/device/rescan
+      changed_when: false
+
+    - name: Resize sda3 partition to use all remaining space
+      command: parted /dev/sda resizepart 3 100%
+      register: resizepart_result
+      changed_when: false
+      ignore_errors: true
+
+    - name: Display result of resizing partition
+      debug:
+        var: resizepart_result.stdout_lines
+
+    - name: Resize the physical volume
+      command: pvresize /dev/sda3
+      register: pvresize_result
+      changed_when: "'1 physical volume(s) resized' in pvresize_result.stdout"
+      ignore_errors: true
+
+    - name: Display the result of pvresize
+      debug:
+        var: pvresize_result.stdout_lines
+      when: pvresize_result is defined
+
+    - name: Extend the logical volume to use all available space
+      command: lvextend -l +100%FREE /dev/sysvg/lv_var
+      register: lvextend_result
+      changed_when: lvextend_result.rc == 0
+      failed_when: lvextend_result.rc not in [0, 5]
+      when: pvresize_result.changed | default(false)
+
+    - name: Display the result of lvextend
+      debug:
+        var: lvextend_result.stdout_lines
+      when: lvextend_result is defined
+
+    - name: Expand the XFS filesystem on /var
+      command: xfs_growfs /dev/mapper/sysvg-lv_var
+      register: xfs_growfs_result
+      changed_when: "'data blocks changed' in (xfs_growfs_result.stdout | default(''))"
+      when: (lvextend_result.rc | default(-1)) == 0
+
+    - name: Display the result of xfs_growfs
+      debug:
+        var: xfs_growfs_result.stdout_lines
+      when: xfs_growfs_result is defined and xfs_growfs_result.stdout_lines is defined
+
+    # === Second disk expansion (vg_data/lv_opt → /opt) ===
+
+    - name: Find PV backing vg_data
+      command: pvs --noheadings -o pv_name --select vg_name=vg_data
+      register: vg_data_pv
+      changed_when: false
+      failed_when: false
+
+    - name: Rescan data disk to detect vSphere resize
+      shell: "echo 1 > /sys/class/block/{{ (vg_data_pv.stdout_lines | first | default('') | trim | basename) }}/device/rescan"
+      changed_when: false
+      when:
+        - vg_data_pv.rc == 0
+        - vg_data_pv.stdout | trim != ''
+
+    - name: Resize PV on data disk
+      command: "pvresize {{ vg_data_pv.stdout_lines | first | default('') | trim }}"
+      register: data_pvresize_result
+      changed_when: "'1 physical volume(s) resized' in data_pvresize_result.stdout"
+      when:
+        - vg_data_pv.rc == 0
+        - vg_data_pv.stdout | trim != ''
+
+    - name: Extend lv_opt to use all free space in vg_data
+      command: lvextend -l +100%FREE /dev/vg_data/lv_opt
+      register: lv_opt_extend_result
+      changed_when: "'Size of logical volume' in (lv_opt_extend_result.stdout | default(''))"
+      failed_when: lv_opt_extend_result.rc not in [0, 5]
+      when: data_pvresize_result.changed | default(false)
+
+    - name: Grow XFS filesystem on /opt
+      command: xfs_growfs /opt
+      register: opt_xfs_result
+      changed_when: "'data blocks changed' in (opt_xfs_result.stdout | default(''))"
+      when: (lv_opt_extend_result.rc | default(-1)) == 0
+
+    - name: Check the size has updated
+      command: df -Th
+      register: df_result
+      changed_when: false
+
+    - name: Display the result of df
+      debug:
+        var: df_result.stdout_lines

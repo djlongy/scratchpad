@@ -1,0 +1,41 @@
+---
+# roles/baseline/tasks/repos.yml
+# Custom package repositories — point air-gapped hosts at an internal mirror
+# (Artifactory / Nexus) instead of the public internet. Distro-agnostic.
+# Optionally disable named stock repos for a true air-gap.
+
+- name: Repos | Configure DNF repositories (EL)
+  ansible.builtin.yum_repository:
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(item.name) }}"
+    baseurl: "{{ item.baseurl }}"
+    enabled: "{{ item.enabled | default(true) }}"
+    gpgcheck: "{{ item.gpgcheck | default(true) }}"
+    gpgkey: "{{ item.gpgkey | default(omit) }}"
+    sslverify: "{{ item.sslverify | default(omit) }}"
+    module_hotfixes: "{{ item.module_hotfixes | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ baseline_dnf_repos }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: ansible_os_family == "RedHat"
+
+- name: Repos | Disable named stock DNF repos (air-gap)
+  ansible.builtin.command: "dnf config-manager --set-disabled {{ item }}"
+  loop: "{{ baseline_dnf_repos_disable }}"
+  register: _baseline_repo_disable
+  changed_when: "'No matching repo' not in _baseline_repo_disable.stderr"
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_dnf_repos_disable | length > 0
+
+- name: Repos | Configure APT repositories (Debian)
+  ansible.builtin.apt_repository:
+    repo: "{{ item.repo }}"
+    filename: "{{ item.filename | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+    update_cache: true
+  loop: "{{ baseline_apt_repos }}"
+  loop_control:
+    label: "{{ item.repo }}"
+  when: ansible_os_family == "Debian"

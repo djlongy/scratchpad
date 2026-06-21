@@ -1,0 +1,43 @@
+{# baseline — fail2ban jail.local (Ubuntu). Tunables from defaults/main.yml. #}
+[DEFAULT]
+# Email address to send ban notifications
+destemail = {{ baseline_fail2ban_destemail }}
+
+# Sender email address for Fail2Ban actions
+sender = {{ baseline_fail2ban_destemail }}
+
+# Use iptables for blocking
+banaction = iptables-multiport
+
+# Ban time in seconds (600s = 10 minutes)
+bantime = {{ baseline_fail2ban_bantime }}
+
+# Find time window in seconds for counting failures
+findtime = {{ baseline_fail2ban_findtime }}
+
+# Max failed login attempts before a ban
+maxretry = {{ baseline_fail2ban_maxretry }}
+
+# Enable email notifications
+action = %(action_mwl)s
+
+# Log level and target
+loglevel = INFO
+logtarget = /var/log/fail2ban.log
+
+# Specify the IPs that should not be banned
+ignoreip = {{ baseline_fail2ban_ignoreip }}
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = {{ baseline_fail2ban_maxretry }}
+
+[apache-auth]
+enabled = true
+port = http,https
+filter = apache-auth
+logpath = /var/log/apache*/*error.log
+maxretry = 3

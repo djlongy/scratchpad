@@ -1,0 +1,195 @@
+---
+- when:
+    - connection_name is defined
+    - dns_nameserver is defined
+    - search_domain is defined
+  tags: host
+
+  # - name: Install the EPEL release package
+  #   ansible.builtin.dnf:
+  #     name: https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+  #     state: present
+  block:
+    # gw4 must be the on-subnet router, NOT the DNS server. The previous
+    # `gw4: dns_nameserver` happened to work for its-VLAN hosts (DNS = FreeIPA
+    # also on its-VLAN → ARP resolves, traffic forwards) but silently broke any
+    # host on a different VLAN (workers on another-VLAN ARP-failed for 198.51.100.11
+    # and lost all off-subnet connectivity). Derive `.1` of the host's /24
+    # by default; allow inventory override via `network_gateway`.
+    - name: Set DNS and search domain using nmcli
+      community.general.nmcli:
+        type: ethernet
+        conn_name: "{{ connection_name }}"
+        ifname: "{{ connection_name }}"
+        ip4: "{{ ansible_host }}/24"
+        gw4: "{{ network_gateway | default((ansible_host.split('.')[:3] | join('.')) + '.1') }}"
+        dns4: "{{ dns_nameserver }}"
+        dns4_search: "{{ search_domain }}"
+        state: present
+      register: nmcli_result
+
+    - name: Ensure NetworkManager is using the configured resolv.conf
+      ansible.builtin.command: nmcli general reload
+      changed_when: false
+      ignore_errors: true
+      when: nmcli_result.changed
+
+    - name: Restart NetworkManager to apply DNS settings
+      ansible.builtin.systemd:
+        name: NetworkManager
+        state: restarted
+      when: nmcli_result.changed
+- when:
+    - '"RedHat" in ansible_distribution'
+    - rhsm_activationkey is defined          # skip RHSM unless an activation key is provided
+  block:
+    - name: Register the system with Red Hat Subscription Management
+      community.general.redhat_subscription:
+        state: present
+        activationkey: "{{ rhsm_activationkey }}"
+        org_id: "{{ rhsm_org_id }}"
+      register: subscription_result
+      when: '"RedHat" in ansible_distribution'
+
+    - name: Check if registration was successful
+      debug:
+        msg: "Subscription registration result: {{ subscription_result }}"
+      when: '"RedHat" in ansible_distribution'
+
+    - name: List enabled repositories
+      ansible.builtin.command: subscription-manager repos --list-enabled
+      register: enabled_repos
+      when: "(subscription_result.results is defined) and (subscription_result.msg not in ['System successfully registered', 'System already registered.'] or (subscription_result.failed | bool))"
+
+    - name: Enable the CodeReady Builder repository
+      ansible.builtin.command: >
+        subscription-manager repos --enable "codeready-builder-for-rhel-9-x86_64-rpms"
+      when: "enabled_repos.stdout is defined and 'codeready-builder-for-rhel-9-x86_64-rpms' not in enabled_repos.stdout"
+
+    - name: Read the redhat.repo file
+      ansible.builtin.slurp:
+        src: /etc/yum.repos.d/redhat.repo
+      register: repo_content
+
+    - name: Check if [crb] already exists in the file
+      ansible.builtin.set_fact:
+        crb_exists: "{{ '[crb]' in (repo_content['content'] | b64decode | string) }}"
+
+    - name: Duplicate the CRB block with refined awk if [crb] does not exist
+      ansible.builtin.shell: |
+        awk '
+        BEGIN {in_block=0}
+        /^\[codeready-builder-for-rhel-9-x86_64-rpms\]$/ {in_block=1; block=""; print; next}
+        in_block && /^$/ {in_block=0; print "[crb]"; print block; print ""; next}
+        in_block {block=block"\n"$0; next}
+        {print}
+        ' /etc/yum.repos.d/redhat.repo > /tmp/redhat.repo && mv /tmp/redhat.repo /etc/yum.repos.d/redhat.repo
+      args:
+        executable: /bin/bash
+      when: not crb_exists
+
+    - name: Ensure blank line before [crb]
+      ansible.builtin.shell: |
+        awk '/\[crb\]/{if (NR>1 && !/^$/) print ""; print} !/\[crb\]/{print}' /etc/yum.repos.d/redhat.repo > /tmp/redhat.repo && mv /tmp/redhat.repo /etc/yum.repos.d/redhat.repo
+      args:
+        executable: /bin/bash
+      when: not crb_exists
+- when: ansible_os_family == "RedHat"
+  tags: repo
+
+  # ── SSH keepalive (RHEL/AlmaLinux only — Ubuntu has sane defaults) ──────────
+  # AlmaLinux/RHEL ship with no ClientAliveInterval, and tcp_keepalive_time=7200s.
+  # SSH sessions traversing pfSense or any stateful firewall will silently freeze
+  # when the firewall drops the idle state before the host sends a keepalive.
+  # Ubuntu defaults to ClientAliveInterval=120 so this was never an issue there.
+  block:
+    - name: Import EPEL GPG key
+      ansible.builtin.rpm_key:
+        key: "https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}"
+        state: present
+
+    - name: Install EPEL release package
+      ansible.builtin.dnf:
+        name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-{{ ansible_distribution_major_version }}.noarch.rpm"
+        state: present
+
+    - name: Install DNF packages
+      ansible.builtin.dnf:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ dnf_packages }}"
+      notify: Reboot System
+
+    - name: Ensure baseline service tooling is installed
+      # Minimal GenericCloud images omit packages the kickstart-built lab
+      # template ships: firewalld (started below) and initscripts (provides
+      # /sbin/service, which the auditd restart handler requires — systemctl
+      # refuses manual auditd restart on EL9).
+      ansible.builtin.dnf:
+        name:
+          - firewalld
+          - initscripts
+        state: present
+
+    - name: Ensure firewalld is started and enabled
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Install Python3 and pip packages on AlmaLinux hosts
+      when: ansible_facts['os_family'] == 'RedHat' and ansible_facts['distribution'] == 'AlmaLinux'
+      block:
+        - name: Ensure Python3 and pip3 are installed on AlmaLinux
+          package:
+            name: python3-pip
+            state: present
+
+        - name: Install pip packages on AlmaLinux
+          pip:
+            name: "{{ item }}"
+            executable: pip3
+          loop: "{{ pip_packages }}"
+- name: Configure SSH server keepalive for RHEL-family hosts
+  ansible.builtin.copy:
+    content: |
+      ClientAliveInterval 60
+      ClientAliveCountMax 3
+    dest: /etc/ssh/sshd_config.d/99-keepalive.conf
+    mode: "0644"
+  notify: Reload sshd
+  when: ansible_os_family == "RedHat"
+  tags: [ssh, baseline]
+
+- name: Lower TCP keepalive time for RHEL-family hosts
+  ansible.posix.sysctl:
+    name: net.ipv4.tcp_keepalive_time
+    value: "300"
+    sysctl_file: /etc/sysctl.d/99-tcp-keepalive.conf
+    reload: true
+  when: ansible_os_family == "RedHat"
+  tags: [ssh, baseline]
+
+- name: Set vm.max_map_count
+  ansible.builtin.sysctl:
+    name: vm.max_map_count
+    value: "{{ baseline_vm_max_map_count | default('262144') }}"
+    state: present
+    reload: true
+  become: true
+
+# Manage IPv6 in either direction. Per-host opt-in via baseline_disable_ipv6.
+# Some services (e.g. FreeIPA) require ::1 on loopback — set to false on
+# those hosts to keep IPv6 alive without doing per-interface carve-outs.
+- name: Set IPv6 disable_ipv6 sysctls
+  ansible.builtin.sysctl:
+    name: "{{ item }}"
+    value: "{{ '1' if (baseline_disable_ipv6 | bool) else '0' }}"
+    state: present
+    sysctl_set: true
+    reload: true
+  loop:
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+    - net.ipv6.conf.lo.disable_ipv6
+  tags: [baseline, ipv6]

@@ -1,0 +1,147 @@
+---
+# baseline defaults
+# Override these in inventory group_vars or host_vars as needed.
+# Production values are in inventories/prod/group_vars/all.yml.
+
+# Task display name used in include_tasks banners
+base_task_name: "Configure OS"
+
+# System timezone (override per estate). The OS hostname uses canonical_hostname
+# when the canonical-name group_vars pattern is in play, else inventory_hostname.
+baseline_timezone: "Australia/Sydney"
+
+# Data-disk LVM names for the fallback /opt mount (EL). Override per estate.
+baseline_opt_vg: "vg_data"
+baseline_opt_lv: "lv_opt"
+
+# DNF packages installed on RedHat-family hosts (override in group_vars)
+dnf_packages: []
+# pip packages installed on AlmaLinux hosts (override in group_vars)
+pip_packages: []
+# Logging baseline defaults for 2G /var/log and /var/log/audit filesystems.
+baseline_logrotate_maxage_days: 7
+baseline_logrotate_syslog_maxsize: 10M
+baseline_logrotate_audit_maxsize: 32M
+baseline_logrotate_rotate_count: 7
+baseline_logrotate_compress: true
+baseline_journald_system_max_use: 256M
+baseline_journald_system_keep_free: 512M
+baseline_journald_system_max_file_size: 32M
+baseline_journald_max_file_sec: 1day
+baseline_journald_max_level_console: warning
+baseline_auditd_max_log_file_mb: 32
+baseline_auditd_num_logs: 16
+baseline_auditd_space_left_mb: 512
+baseline_auditd_admin_space_left_mb: 256
+baseline_kernel_console_loglevel: 4
+
+# Disable IPv6 via sysctl (reduces fe80:: noise in vSphere, especially on K3s nodes)
+baseline_disable_ipv6: false
+
+# Breakglass emergency local-admin account — Vault secret (mount/path:field)
+# holding its password. ENV-SPECIFIC: set in inventory. Empty = breakglass skipped.
+#   e.g. baseline_breakglass_vault_secret: "kv/data/ops/breakglass/runtime:password"
+baseline_breakglass_vault_secret: ""
+
+# Fail2ban (Ubuntu hosts). Append admin/jump IPs in inventory so they're never
+# banned, e.g. baseline_fail2ban_ignoreip: "127.0.0.1/8 ::1 198.51.100.10".
+baseline_fail2ban_ignoreip: "127.0.0.1/8 ::1"
+baseline_fail2ban_bantime: 600
+baseline_fail2ban_findtime: 600
+baseline_fail2ban_maxretry: 5
+baseline_fail2ban_destemail: "root@localhost"
+
+# ════════════════════════════════════════════════════════════════════════════
+# SOE desktop provisioning — distro-agnostic, opt-in via override host/group vars
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
+# Off by default; the lab's RedHat path (tasks/redhat.yml) still handles
+# network where used. Enable for the portable, distro-agnostic path.
+baseline_network_manage: false
+# baseline_network_interface: "ens192"      # default: host's primary interface
+# baseline_network_ip4: "192.0.2.50/24"     # default: {{ ansible_host }}/prefix
+baseline_network_prefix: 24
+# baseline_network_gateway: "192.0.2.1"     # default: .1 of the host's /24
+# baseline_network_dns: ["192.0.2.53"]      # default: [dns_nameserver]
+# baseline_network_search: ["example.com"]  # default: [search_domain]
+
+# ── Firewall (firewalld zones/services; opt-in) ──────────────────────────────
+baseline_firewall_manage: false
+baseline_firewall_zone: "public"
+baseline_firewall_bind_interface: false     # bind the primary iface to the zone
+# baseline_firewall_interface: "ens192"     # default: host's primary interface
+baseline_firewall_services: ["ssh"]
+baseline_firewall_ports: []                 # e.g. ["8080/tcp"]
+# Custom firewalld service/zone XML (same schema as the firewalld role's
+# firewalld_services / firewalld_zones — rendered from the shared templates).
+baseline_firewall_custom_services: []
+#  - name: myapp
+#    short: "My App"
+#    ports: [{port: "8080", protocol: tcp}]
+baseline_firewall_custom_zones: []
+#  - name: dmz-ingress
+#    target: default
+#    services: [ssh, https, myapp]
+
+# ── SELinux (EL; opt-in by setting a state) ──────────────────────────────────
+baseline_selinux_state: ""                  # "" = no change | enforcing | permissive | disabled
+baseline_selinux_policy: "targeted"
+
+# ── fapolicyd (EL; opt-in) ───────────────────────────────────────────────────
+baseline_fapolicyd_enabled: false
+baseline_fapolicyd_permissive: true         # start permissive; enforce after validation
+baseline_fapolicyd_rules_priority: 80       # rules.d filename prefix (lower = earlier)
+baseline_fapolicyd_rules: []                # raw fapolicyd.rules lines, e.g.:
+#  - "allow perm=any all : dir=/opt/myapp/"
+
+# ── CIS-aligned hardening (NO FIPS; opt-in) ──────────────────────────────────
+# Pragmatic CIS L1 subset (not a certifiable benchmark — use ansible-lockdown
+# for that). ip_forward is intentionally NOT forced off (routers/k8s need it).
+baseline_cis_hardening: false
+baseline_cis_sysctl:
+  - {name: net.ipv4.conf.all.rp_filter, value: "1"}
+  - {name: net.ipv4.conf.all.accept_source_route, value: "0"}
+  - {name: net.ipv4.conf.default.accept_source_route, value: "0"}
+  - {name: net.ipv4.conf.all.accept_redirects, value: "0"}
+  - {name: net.ipv4.conf.default.accept_redirects, value: "0"}
+  - {name: net.ipv4.conf.all.secure_redirects, value: "0"}
+  - {name: net.ipv4.conf.all.send_redirects, value: "0"}
+  - {name: net.ipv4.conf.all.log_martians, value: "1"}
+  - {name: net.ipv4.icmp_echo_ignore_broadcasts, value: "1"}
+  - {name: net.ipv4.icmp_ignore_bogus_error_responses, value: "1"}
+  - {name: net.ipv4.tcp_syncookies, value: "1"}
+  - {name: kernel.randomize_va_space, value: "2"}
+baseline_cis_blacklist_modules: [cramfs, freevxfs, jffs2, hfs, hfsplus, udf]
+baseline_cis_pwquality:
+  - {key: minlen, value: "14"}
+  - {key: dcredit, value: "-1"}
+  - {key: ucredit, value: "-1"}
+  - {key: ocredit, value: "-1"}
+  - {key: lcredit, value: "-1"}
+baseline_cis_login_defs:
+  - {key: PASS_MAX_DAYS, value: "365"}
+  - {key: PASS_MIN_DAYS, value: "1"}
+  - {key: PASS_WARN_AGE, value: "7"}
+
+# ── Trusted CAs (OS trust store; opt-in by listing) ──────────────────────────
+# Each entry: {name: <basename>, src: <PEM on control node>} or {name, content}.
+baseline_trusted_cas: []
+#  - {name: corp-root, src: files/corp-root.pem}
+# Or download CAs from a URL (no need to commit them to the repo):
+baseline_trusted_ca_urls: []
+#  - {name: corp-root, url: "https://pki.example.com/ca/root.pem"}
+#  - {name: nexus-ca, url: "https://nexus.example.com/ca.crt", checksum: "sha256:..."}
+
+# ── Custom package repositories (air-gap → internal Artifactory/Nexus) ───────
+baseline_dnf_repos: []
+#  - {name: corp-baseos, description: "Corp BaseOS", baseurl: "https://nexus.example.com/repository/baseos/", gpgcheck: true, gpgkey: "https://nexus.example.com/RPM-GPG-KEY"}
+baseline_dnf_repos_disable: []              # stock repo ids to disable for true air-gap, e.g. [baseos, appstream]
+baseline_apt_repos: []
+#  - {repo: "deb [trusted=yes] https://nexus.example.com/repository/apt jammy main", filename: corp}
+
+# ── pip index + packages (internal PyPI mirror) ──────────────────────────────
+baseline_pip_index_url: ""                  # e.g. "https://nexus.example.com/repository/pypi/simple"
+baseline_pip_extra_index_url: ""
+baseline_pip_trusted_host: ""               # e.g. "nexus.example.com"
+baseline_pip_packages: []

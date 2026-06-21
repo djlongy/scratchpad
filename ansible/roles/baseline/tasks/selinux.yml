@@ -1,0 +1,23 @@
+---
+# roles/baseline/tasks/selinux.yml
+# SELinux state management (EL only). Opt-in: only changes state when
+# baseline_selinux_state is set (enforcing | permissive | disabled). A change
+# to/from 'disabled' requires a reboot to fully apply.
+
+- name: SELinux | Manage SELinux state
+  ansible.posix.selinux:
+    policy: "{{ baseline_selinux_policy }}"
+    state: "{{ baseline_selinux_state }}"
+  register: _baseline_selinux
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_selinux_state | default('') | length > 0
+
+- name: SELinux | Flag reboot requirement
+  ansible.builtin.debug:
+    msg: >-
+      SELinux state set to {{ baseline_selinux_state }} — reboot required to
+      fully apply (especially when toggling 'disabled').
+  when:
+    - _baseline_selinux is changed
+    - _baseline_selinux.reboot_required | default(false)

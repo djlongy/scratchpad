@@ -1,0 +1,243 @@
+# mount.yml
+---
+- name: Install pre-req packages
+  ansible.builtin.package:
+    name:
+      - lvm2
+      - policycoreutils-python-utils
+    state: installed
+
+#### Identify all non-boot disks ####
+- name: Get root device
+  ansible.builtin.command: findmnt -n -o SOURCE /
+  register: root_device
+  changed_when: false
+
+- name: Extract root disk name
+  ansible.builtin.set_fact:
+    root_disk: "{{ root_device.stdout | regex_replace('(p)?[0-9]+$', '') }}"
+
+- name: Get all block devices
+  ansible.builtin.command: lsblk -ndo NAME,TYPE
+  register: block_devices
+  changed_when: false
+
+- name: Identify all data disks (filter root disk)
+  ansible.builtin.set_fact:
+    data_disks: "{{ block_devices.stdout_lines | select('search', 'disk$') | map('regex_replace', '\\s+disk$', '') | reject('search', root_disk | basename) | map('regex_replace',
+      '^', '/dev/') | list }}"
+
+- name: Get orphaned PVs (PVs with no VG)
+  ansible.builtin.shell: pvs --noheadings -o pv_name,vg_name | awk '$2 == "" {print $1}'
+  register: orphaned_pvs_output
+  changed_when: false
+  failed_when: false
+
+- name: Parse orphaned PVs list
+  ansible.builtin.set_fact:
+    orphaned_pvs: "{{ orphaned_pvs_output.stdout_lines | map('trim') | list }}"
+
+- name: Check for any filesystem signatures on data disks
+  ansible.builtin.command: blkid -o value -s TYPE {{ item }}
+  register: disk_types
+  loop: "{{ data_disks }}"
+  changed_when: false
+  failed_when: false
+
+- name: Identify blank or orphaned disks
+  ansible.builtin.set_fact:
+    blank_disks: "{{ data_disks | select('in', (disk_types.results | selectattr('rc', 'equalto', 2) | map(attribute='item') | list) + orphaned_pvs) | list }}"
+
+- name: Display disk status
+  ansible.builtin.debug:
+    msg:
+      - "Total data disks: {{ data_disks | length }}"
+      - "Blank or orphaned: {{ blank_disks | length }}"
+      - "Blank disk list: {{ blank_disks }}"
+
+#### Get existing VGs to pair with datavols ####
+- name: Get existing VGs
+  ansible.builtin.command: vgs --noheadings -o vg_name
+  register: existing_vgs
+  changed_when: false
+  failed_when: false
+
+- name: Parse existing VG list
+  ansible.builtin.set_fact:
+    existing_vg_list: "{{ existing_vgs.stdout_lines | map('trim') | list }}"
+
+- name: Debug existing_vg_list
+  ansible.builtin.debug:
+    var: existing_vg_list
+
+#### Filter datavols to only new VGs with blank disks ####
+- name: Filter datavols that need new VGs
+  ansible.builtin.set_fact:
+    datavols_needing_vg: "{{ datavols | rejectattr('vg', 'in', existing_vg_list) | list }}"
+
+- name: Pair blank disks with datavols needing provisioning in sequential order
+  ansible.builtin.set_fact:
+    new_provisions: "{{ blank_disks | zip(datavols_needing_vg) | list }}"
+  when:
+    - blank_disks | length > 0
+    - datavols_needing_vg | length > 0
+
+- name: Set empty provisions if nothing to provision
+  ansible.builtin.set_fact:
+    new_provisions: []
+  when: blank_disks | length == 0 or datavols_needing_vg | length == 0
+
+- name: Display provisioning plan
+  ansible.builtin.debug:
+    msg: "Will provision {{ new_provisions | length }} new disk(s)"
+
+#### Create PV & VG for each blank disk ####
+- name: Create PV & VG for blank disks
+  community.general.lvg:
+    vg: "{{ item.1.vg }}"
+    pvs: "{{ item.0 }}"
+    pesize: 4
+  loop: "{{ new_provisions }}"
+  loop_control:
+    label: "{{ item.1.vg }} on {{ item.0 }}"
+
+#### Refresh VG list after creating new VGs ####
+- name: Refresh existing VGs list
+  ansible.builtin.command: vgs --noheadings -o vg_name
+  register: existing_vgs_refresh
+  changed_when: false
+  failed_when: false
+  when: new_provisions | length > 0
+
+- name: Update existing VG list
+  ansible.builtin.set_fact:
+    existing_vg_list: "{{ existing_vgs_refresh.stdout_lines | map('trim') | list }}"
+  when: new_provisions | length > 0
+
+#### Get existing LVs ####
+- name: Get existing LVs
+  ansible.builtin.command: lvs --noheadings -o lv_name,vg_name
+  register: existing_lvs
+  changed_when: false
+  failed_when: false
+
+- name: Parse existing LVs
+  ansible.builtin.set_fact:
+    existing_lv_list: "{{ existing_lvs.stdout_lines | map('trim') | map('split') | map('reverse') | map('join', '/') | list }}"
+
+#### Filter datavols to only those with existing VGs ####
+- name: Filter datavols for existing VGs only
+  ansible.builtin.set_fact:
+    active_datavols: "{{ datavols | selectattr('vg', 'in', existing_vg_list) | list }}"
+
+#### Create LVs only for VGs that exist ####
+- name: Create LV with configured size
+  community.general.lvol:
+    vg: "{{ item.vg }}"
+    lv: "{{ item.lv }}"
+    size: "{{ item.size }}"
+    shrink: false
+  loop: "{{ active_datavols }}"
+  when:
+    - item.vg + '/' + item.lv not in existing_lv_list
+    - item.vg in existing_vg_list
+  loop_control:
+    label: "{{ item.vg }}/{{ item.lv }}"
+
+#### Resize existing LVs if size changed ####
+- name: Resize LVs if configured size differs
+  community.general.lvol:
+    vg: "{{ item.vg }}"
+    lv: "{{ item.lv }}"
+    size: "{{ item.size }}"
+    resizefs: true
+  loop: "{{ active_datavols }}"
+  when:
+    - item.vg + '/' + item.lv in existing_lv_list
+    - item.size is not search('%') # Skip percentage-based sizes (100%FREE, 50%VG, etc)
+  loop_control:
+    label: "{{ item.vg }}/{{ item.lv }}"
+
+#### Format and mount (idempotent) ####
+- name: Check if filesystems are already mounted
+  ansible.builtin.command: mountpoint -q {{ item.mount }}
+  register: check_mountpoints
+  loop: "{{ active_datavols }}"
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.mount }}"
+
+- name: Check if LVs have filesystems
+  ansible.builtin.command: blkid -o value -s TYPE /dev/mapper/{{ item.vg }}-{{ item.lv }}
+  register: check_fs
+  loop: "{{ active_datavols }}"
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item.vg }}/{{ item.lv }}"
+
+- name: Format LV (only if no filesystem)
+  community.general.filesystem:
+    fstype: xfs
+    dev: "/dev/mapper/{{ item.item.vg }}-{{ item.item.lv }}"
+  loop: "{{ check_fs.results }}"
+  when: item.stdout == ""
+  loop_control:
+    label: "{{ item.item.vg }}/{{ item.item.lv }}"
+
+- name: Create Mountpoints
+  ansible.builtin.file:
+    name: "{{ item.mount }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ active_datavols }}"
+  loop_control:
+    label: "{{ item.mount }}"
+
+- name: Systemctl daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+  changed_when: false
+
+- name: Mount data disks
+  ansible.posix.mount:
+    src: "/dev/mapper/{{ item.vg }}-{{ item.lv }}"
+    path: "{{ item.mount }}"
+    opts: "{{ mount_opts }}"
+    fstype: xfs
+    state: mounted
+  loop: "{{ active_datavols }}"
+  loop_control:
+    label: "{{ item.mount }}"
+
+# - name: Set SELinux Context
+#   community.general.sefcontext:
+#     target: '{{ item.mount }}(/.*)?'
+#     setype: '{{ item.sefcontext }}'
+#     state: present
+#   loop: "{{ active_datavols }}"
+#   when: '"elasticsearch" not in group_names'
+#   loop_control:
+#     label: "{{ item.mount }}"
+
+#### Set SELinux context using semanage ####
+- name: Set SELinux file context with semanage
+  ansible.builtin.shell: |
+    semanage fcontext -a -t {{ item.sefcontext }} '{{ item.mount }}(/.*)?'
+  loop: "{{ active_datavols }}"
+  register: semanage_result
+  changed_when: semanage_result.rc == 0
+  failed_when:
+    - semanage_result.rc != 0
+    - "'already defined' not in semanage_result.stderr"
+  when: '"elasticsearch" not in group_names'
+  loop_control:
+    label: "{{ item.mount }}"
+
+- name: Run restorecon on mountpoints
+  ansible.builtin.command: /usr/sbin/restorecon -Rv "{{ item.mount }}"
+  loop: "{{ active_datavols }}"
+  changed_when: false
+  loop_control:
+    label: "{{ item.mount }}"

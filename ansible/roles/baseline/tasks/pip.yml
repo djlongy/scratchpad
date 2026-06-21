@@ -1,0 +1,25 @@
+---
+# roles/baseline/tasks/pip.yml
+# Point pip at an internal index (Artifactory/Nexus PyPI) and install pip
+# packages. Distro-agnostic. /etc/pip.conf is written only when an index URL is
+# set; packages install through whatever index is configured.
+
+- name: pip | Ensure pip is installed
+  ansible.builtin.package:
+    name: python3-pip
+    state: present
+
+- name: pip | Configure the global pip index (/etc/pip.conf)
+  ansible.builtin.template:
+    src: pip.conf.j2
+    dest: /etc/pip.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: baseline_pip_index_url | default('') | length > 0
+
+- name: pip | Install pip packages
+  ansible.builtin.pip:
+    name: "{{ baseline_pip_packages }}"
+    extra_args: "{{ ('--index-url ' ~ baseline_pip_index_url) if (baseline_pip_index_url | default('') | length > 0) else omit }}"
+  when: baseline_pip_packages | length > 0

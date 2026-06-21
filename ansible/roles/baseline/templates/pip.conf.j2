@@ -1,0 +1,10 @@
+{{ ansible_managed | comment }}
+# /etc/pip.conf — managed by the baseline role (internal PyPI mirror).
+[global]
+index-url = {{ baseline_pip_index_url }}
+{% if baseline_pip_extra_index_url | default('') | length > 0 %}
+extra-index-url = {{ baseline_pip_extra_index_url }}
+{% endif %}
+{% if baseline_pip_trusted_host | default('') | length > 0 %}
+trusted-host = {{ baseline_pip_trusted_host }}
+{% endif %}

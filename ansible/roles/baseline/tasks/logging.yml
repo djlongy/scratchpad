@@ -1,0 +1,172 @@
+---
+- name: Gather minimal facts for logging baseline
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+  when: ansible_os_family is not defined or ansible_service_mgr is not defined
+
+- name: Install log management packages
+  ansible.builtin.package:
+    name:
+      - logrotate
+      - audit
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Ensure logrotate timer override directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/logrotate.timer.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: ansible_service_mgr == "systemd"
+
+- name: Run logrotate hourly
+  ansible.builtin.template:
+    src: logrotate.timer.override.conf.j2
+    dest: /etc/systemd/system/logrotate.timer.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_service_mgr == "systemd"
+  notify:
+    - Reload systemd
+    - Restart logrotate timer
+
+- name: Ensure journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: ansible_service_mgr == "systemd"
+
+- name: Cap persistent journald usage
+  ansible.builtin.template:
+    src: journald-baseline.conf.j2
+    dest: /etc/systemd/journald.conf.d/99-baseline-logging.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_service_mgr == "systemd"
+  notify: Restart systemd-journald
+
+- name: Reduce noisy kernel messages on console
+  ansible.builtin.sysctl:
+    name: kernel.printk
+    value: "{{ baseline_kernel_console_loglevel }} 4 1 7"
+    state: present
+    reload: true
+  when: ansible_os_family == "RedHat"
+
+- name: Enable global logrotate compression
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.conf
+    regexp: "^#?compress"
+    line: "compress"
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_logrotate_compress | default(true)
+  tags: [logging]
+
+- name: Manage syslog logrotate policy
+  ansible.builtin.template:
+    src: logrotate-syslog.j2
+    dest: /etc/logrotate.d/syslog
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_os_family == "RedHat"
+
+- name: Manage audit logrotate policy
+  ansible.builtin.template:
+    src: logrotate-audit.j2
+    dest: /etc/logrotate.d/audit
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_os_family == "RedHat"
+
+- name: Set auditd max log file size
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^max_log_file\\s*="
+    line: "max_log_file = {{ baseline_auditd_max_log_file_mb }}"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd max log file action
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^max_log_file_action\\s*="
+    line: "max_log_file_action = ROTATE"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd retained rotation count
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^num_logs\\s*="
+    line: "num_logs = {{ baseline_auditd_num_logs }}"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd low space warning threshold
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^space_left\\s*="
+    line: "space_left = {{ baseline_auditd_space_left_mb }}"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd low space action
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^space_left_action\\s*="
+    line: "space_left_action = SYSLOG"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd critical space threshold
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^admin_space_left\\s*="
+    line: "admin_space_left = {{ baseline_auditd_admin_space_left_mb }}"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd critical space action
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^admin_space_left_action\\s*="
+    line: "admin_space_left_action = SYSLOG"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd full disk action
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^disk_full_action\\s*="
+    line: "disk_full_action = SUSPEND"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd
+
+- name: Set auditd disk error action
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^disk_error_action\\s*="
+    line: "disk_error_action = SYSLOG"
+    backrefs: false
+  when: ansible_os_family == "RedHat"
+  notify: Restart auditd

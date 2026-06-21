@@ -1,0 +1,93 @@
+---
+- name: Find UUID /opt fstab entry
+  ansible.builtin.shell: "awk '$1 ~ /^UUID=/ && $2 == \"/opt\" {print $1; exit}' /etc/fstab"
+  register: opt_fstab_uuid
+  changed_when: false
+
+- name: Find non-root data disk candidate
+  ansible.builtin.shell: |
+    set -o pipefail
+    root_parent="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -1)"
+    lsblk -dpno NAME,TYPE | awk -v root="/dev/${root_parent}" '
+      $2 == "disk" && $1 != root && $1 !~ /^\/dev\/(sda|vda|nvme0n1)$/ { print $1; exit }
+    '
+  register: opt_data_disk
+  changed_when: false
+  failed_when: false
+
+- name: Resolve UUID for data disk candidate
+  ansible.builtin.shell: "blkid -s UUID -o value {{ opt_data_disk.stdout | trim }} || true"
+  register: opt_uuid_disk
+  changed_when: false
+  when: opt_data_disk.stdout | default('') | trim != ''
+
+# Two separate set_facts avoid accessing .stdout on a skipped task result.
+# Skipped tasks in Ansible have no .stdout attribute; accessing it with a
+# ternary like "x.stdout if x.stdout != ''" crashes even on the false branch.
+- name: Set opt_uuid_final from /dev/sdb UUID
+  ansible.builtin.set_fact:
+    opt_uuid_final: "{{ opt_uuid_disk.stdout | trim }}"
+  when:
+    - not (opt_uuid_disk.skipped | default(true))
+    - opt_uuid_disk.stdout | default('') | trim != ''
+
+- name: Set opt_uuid_final from existing fstab UUID (fallback)
+  ansible.builtin.set_fact:
+    opt_uuid_final: "{{ opt_fstab_uuid.stdout | trim | regex_replace('^UUID=', '') }}"
+  when:
+    - opt_uuid_final is not defined
+    - opt_fstab_uuid.stdout | default('') | trim != ''
+
+# Remove only device-name based /opt entries (the legacy /dev/sdX lines from
+# Terraform-cloned templates). UUID entries are handled by the fix step below.
+# NOTE: [[:space:]] is a POSIX class unsupported by Python's re module (used by
+# lineinfile and Jinja2 match/search). Always use \s in these contexts.
+- name: Remove device-name based /opt fstab entries
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: "^/dev/\\S+\\s+/opt\\s+"
+    state: absent
+  when:
+    - opt_uuid_final is defined
+    - opt_uuid_final | length > 0
+
+# Use ^\S+\s+/opt\s+ so this replaces any remaining /opt entry in-place
+# (idempotent: if the line is already canonical lineinfile reports no change).
+- name: Fix fstab to use UUID + nofail
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: "^\\S+\\s+/opt\\s+"
+    line: "UUID={{ opt_uuid_final }} /opt xfs defaults,noatime,nofail,x-systemd.device-timeout=30 0 0"
+  register: opt_fstab_fix
+  when:
+    - opt_uuid_final is defined
+    - opt_uuid_final | length > 0
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+  changed_when: false
+  when: opt_fstab_fix is defined and opt_fstab_fix.changed
+
+- name: Mount all filesystems  # noqa: command-instead-of-module
+  ansible.builtin.command: mount -a
+  changed_when: false
+  when: opt_fstab_fix is defined and opt_fstab_fix.changed
+
+- name: Read /opt fstab entries
+  ansible.builtin.shell: "grep -E '^\\S+\\s+/opt\\s' /etc/fstab || true"
+  register: opt_fstab_lines
+  changed_when: false
+
+- name: Validate /opt fstab entry is single UUID + nofail
+  ansible.builtin.assert:
+    that:
+      - opt_fstab_lines.stdout_lines | length == 1
+      - opt_fstab_lines.stdout is match('^UUID=[0-9a-fA-F-]+\s+/opt\s+xfs\s+.*nofail')
+      - opt_fstab_lines.stdout is not search('/dev/sd')
+    fail_msg: >-
+      /etc/fstab must contain exactly one /opt entry using UUID with nofail.
+      Found: {{ opt_fstab_lines.stdout | default('') }}
+  when:
+    - opt_uuid_final is defined
+    - opt_uuid_final | length > 0

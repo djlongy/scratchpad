@@ -1,0 +1,77 @@
+---
+# roles/baseline/tasks/firewall.yml
+# Distro-agnostic firewall via firewalld (available on EL + Debian/Ubuntu).
+# Binds the host's primary interface (dynamic ens*/eth*/eno*) to a zone, then
+# opens the declared services and ports. Opt-in via baseline_firewall_manage.
+
+- name: Firewall | Ensure firewalld is installed
+  ansible.builtin.package:
+    name: firewalld
+    state: present
+
+- name: Firewall | Ensure firewalld is running and enabled
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+# Custom service/zone definitions rendered from the firewalld role's XML
+# templates (reused here). Schema matches roles/firewalld firewalld_services /
+# firewalld_zones. Changes notify a firewalld reload (flushed before bindings).
+- name: Firewall | Render custom firewalld service definitions
+  ansible.builtin.template:
+    src: firewalld-service.xml.j2
+    dest: "/etc/firewalld/services/{{ item.name }}.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ baseline_firewall_custom_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload firewalld
+
+- name: Firewall | Render custom firewalld zone definitions
+  ansible.builtin.template:
+    src: firewalld-zone.xml.j2
+    dest: "/etc/firewalld/zones/{{ item.name }}.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ baseline_firewall_custom_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload firewalld
+
+- name: Firewall | Reload firewalld so custom services/zones are available
+  ansible.builtin.meta: flush_handlers
+
+- name: Firewall | Resolve the interface to bind
+  ansible.builtin.set_fact:
+    _baseline_fw_iface: "{{ baseline_firewall_interface | default(ansible_default_ipv4.interface, true) }}"
+
+- name: Firewall | Assign the primary interface to its zone
+  ansible.posix.firewalld:
+    zone: "{{ baseline_firewall_zone }}"
+    interface: "{{ _baseline_fw_iface }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  when: baseline_firewall_interface | default('') | length > 0 or baseline_firewall_bind_interface | bool
+
+- name: Firewall | Allow services in the zone
+  ansible.posix.firewalld:
+    zone: "{{ baseline_firewall_zone }}"
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ baseline_firewall_services }}"
+
+- name: Firewall | Allow ports in the zone
+  ansible.posix.firewalld:
+    zone: "{{ baseline_firewall_zone }}"
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ baseline_firewall_ports }}"

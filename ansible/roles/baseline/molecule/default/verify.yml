@@ -1,0 +1,89 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Check breakglass user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: breakglass
+      register: breakglass_user
+
+    - name: Assert breakglass user is present
+      ansible.builtin.assert:
+        that:
+          - breakglass_user is not failed
+        fail_msg: "breakglass user does not exist"
+
+    - name: Check breakglass sudoers file exists
+      ansible.builtin.stat:
+        path: /etc/sudoers.d/breakglass
+      register: breakglass_sudoers
+
+    - name: Assert breakglass sudoers file is present
+      ansible.builtin.assert:
+        that:
+          - breakglass_sudoers.stat.exists
+          - breakglass_sudoers.stat.mode == '0440'
+        fail_msg: "breakglass sudoers file missing or wrong permissions"
+
+    - name: Check timezone symlink target
+      ansible.builtin.stat:
+        path: /etc/localtime
+      register: tz_link
+
+    - name: Assert timezone is set to Australia/Sydney
+      ansible.builtin.assert:
+        that:
+          - tz_link.stat.islnk
+          - tz_link.stat.lnk_target == '/usr/share/zoneinfo/Australia/Sydney'
+        fail_msg: "/etc/localtime is not symlinked to Australia/Sydney"
+
+    - name: Verify packages via rpm command  # noqa: command-instead-of-module
+      ansible.builtin.command: "rpm -q {{ item }}"
+      loop:
+        - htop
+        - nano
+        - git
+        - wget
+        - vim-enhanced
+        - ncdu
+        - rsync
+        - bind-utils
+      register: rpm_check
+      changed_when: false
+
+    - name: Assert all required packages are installed
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+        fail_msg: "Package {{ item.item }} is not installed"
+      loop: "{{ rpm_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Check vm.max_map_count sysctl value (skip in containers)
+      ansible.builtin.command: sysctl -n vm.max_map_count
+      register: sysctl_result
+      changed_when: false
+      failed_when: false
+
+    - name: Assert vm.max_map_count is 262144 (skip in containers)
+      ansible.builtin.assert:
+        that:
+          - sysctl_result.stdout == '262144'
+        fail_msg: "vm.max_map_count is {{ sysctl_result.stdout }}, expected 262144"
+      when: sysctl_result.rc == 0
+
+    - name: Check pip package requests is installed
+      ansible.builtin.command: pip3 show requests
+      register: pip_check
+      changed_when: false
+
+    - name: Assert pip requests package is installed
+      ansible.builtin.assert:
+        that:
+          - pip_check.rc == 0
+        fail_msg: "pip package 'requests' is not installed"

@@ -1,0 +1,20 @@
+{{ ansible_managed | comment }}
+# /etc/fapolicyd/fapolicyd.conf — managed by the baseline role.
+# Ref: https://www.mankier.com/5/fapolicyd.conf
+permissive = {{ '1' if (baseline_fapolicyd_permissive | bool) else '0' }}
+nice_val = {{ baseline_fapolicyd_nice_val | default(14) }}
+q_size = {{ baseline_fapolicyd_q_size | default(800) }}
+uid = fapolicyd
+gid = fapolicyd
+do_stat_report = 1
+detailed_report = 1
+db_max_size = {{ baseline_fapolicyd_db_max_size | default(50) }}
+subj_cache_size = {{ baseline_fapolicyd_subj_cache_size | default(1549) }}
+obj_cache_size = {{ baseline_fapolicyd_obj_cache_size | default(8191) }}
+watch_fs = {{ baseline_fapolicyd_watch_fs | default('ext2,ext3,ext4,tmpfs,xfs,vfat,iso9660,btrfs') }}
+trust = {{ baseline_fapolicyd_trust | default('rpmdb,file') }}
+integrity = {{ baseline_fapolicyd_integrity | default('none') }}
+syslog_format = rule,dec,perm,auid,pid,exe,:,path,ftype,trust
+rpm_sha256_only = 0
+allow_filesystem_mark = 0
+report_interval = 0

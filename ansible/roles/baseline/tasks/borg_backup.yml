@@ -1,0 +1,10 @@
+---
+# borg_backup.yml — placeholder (no tasks currently)
+#
+# CAP_DAC_READ_SEARCH was evaluated but reverted: borg-ui runs borg locally on
+# the backup server and reads remote files over SSH/SFTP as the ansible user,
+# so setting a capability on the remote borg binary has no effect.
+#
+# Access to backup directories is instead granted per-service:
+#   - Vault snapshots:  /opt/backups/vault  owned root:ansible mode 0750 (hashicorp_vault role)
+#   - GitLab DR:        /var/backups/gitlab-dr  owned root:ansible mode 0750 (gitlab role)

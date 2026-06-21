@@ -1,0 +1,17 @@
+/var/log/audit/audit.log {
+    hourly
+    rotate {{ baseline_logrotate_rotate_count }}
+    maxage {{ baseline_logrotate_maxage_days }}
+    maxsize {{ baseline_logrotate_audit_maxsize }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    dateext
+    dateformat -%Y%m%d%H
+    sharedscripts
+    su root root
+    postrotate
+        /usr/sbin/service auditd rotate >/dev/null 2>&1 || true
+    endscript
+}
