@@ -1,0 +1,32 @@
+---
+# roles/vsphere_vm/tasks/preflight.yml
+# Validate the connection inputs and resolve the vCenter password (Vault unless
+# vsphere_vm_password was supplied directly). Runs once on the controller.
+
+- name: Preflight | Assert required connection + placement inputs are set
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_server | default('') | length > 0
+      - vsphere_vm_datacenter | default('') | length > 0
+      - (vsphere_vm_password | default('') | length > 0) or
+        (vsphere_vm_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      Set vsphere_vm_server, vsphere_vm_datacenter, and either vsphere_vm_password
+      or vsphere_vm_vault_secret in inventory.
+    quiet: true
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Preflight | Resolve vCenter password from Vault
+  ansible.builtin.set_fact:
+    vsphere_vm_password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + vsphere_vm_vault_secret + ':' + vsphere_vm_password_field) }}
+  no_log: true
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - vsphere_vm_password | default('') | length == 0
+    - vsphere_vm_vault_secret | default('') | length > 0

@@ -1,0 +1,118 @@
+---
+argument_specs:
+  main:
+    short_description: Create and destroy vCenter VMs from templates.
+    options:
+      vsphere_vm_server:
+        type: str
+        required: true
+        description: vCenter hostname/FQDN.
+      vsphere_vm_username:
+        type: str
+        required: false
+        description: vCenter username.
+      vsphere_vm_vault_secret:
+        type: str
+        required: false
+        description: Vault path holding the vCenter password (unless vsphere_vm_password is set).
+      vsphere_vm_password_field:
+        type: str
+        required: false
+        description: Field within vsphere_vm_vault_secret holding the password.
+      vsphere_vm_password:
+        type: str
+        required: false
+        description: vCenter password (bypasses the Vault lookup when set).
+      vsphere_vm_validate_certs:
+        type: bool
+        required: false
+        description: Validate the vCenter TLS certificate.
+      vsphere_vm_datacenter:
+        type: str
+        required: true
+        description: Target datacenter.
+      vsphere_vm_cluster:
+        type: str
+        required: false
+        description: Target DRS cluster (use this OR vsphere_vm_esxi_host).
+      vsphere_vm_esxi_host:
+        type: str
+        required: false
+        description: Target standalone ESXi host (no DRS cluster).
+      vsphere_vm_resource_pool:
+        type: str
+        required: false
+        description: Resource pool path.
+      vsphere_vm_folder:
+        type: str
+        required: false
+        description: Inventory folder for new VMs.
+      vsphere_vm_datastore:
+        type: str
+        required: false
+        description: Default datastore for clones.
+      vsphere_vm_cpus:
+        type: int
+        required: false
+        description: Default vCPU count.
+      vsphere_vm_memory_mb:
+        type: int
+        required: false
+        description: Default memory (MB).
+      vsphere_vm_disk_gb:
+        type: int
+        required: false
+        description: Default primary disk size (GB).
+      vsphere_vm_disk_type:
+        type: str
+        required: false
+        choices: [thin, thick, eagerzeroedthick]
+        description: Default disk provisioning type.
+      vsphere_vm_firmware:
+        type: str
+        required: false
+        choices: [efi, bios]
+        description: Default VM firmware.
+      vsphere_vm_state:
+        type: str
+        required: false
+        choices: [poweredon, present, poweredoff, absent]
+        description: Default state for created guests.
+      vsphere_vm_wait_for_ip:
+        type: bool
+        required: false
+        description: Wait for the guest to report an IP after power-on.
+      vsphere_vm_guests:
+        type: list
+        elements: dict
+        required: false
+        description: VMs to manage. Each item needs name + template (other fields fall back to defaults).
+      vsphere_vm_allow_destroy:
+        type: bool
+        required: false
+        description: Safety guard — destroy (state absent) is refused unless true.
+      vsphere_vm_from_inventory:
+        type: bool
+        required: false
+        description: Derive guests from inventory hosts instead of vsphere_vm_guests.
+      vsphere_vm_hostname:
+        type: str
+        required: false
+        description: Guest OS hostname (decoupled from the vCenter VM name; default canonical/inventory hostname).
+      vsphere_vm_inventory_group:
+        type: str
+        required: false
+        description: Inventory group whose hosts are VMs to manage (when from_inventory).
+      vsphere_vm_network:
+        type: str
+        required: false
+        description: Default dvPortGroup/network for the auto-derived static NIC.
+      vsphere_vm_netmask:
+        type: str
+        required: false
+        description: Default netmask for the auto-derived static NIC.
+      vsphere_vm_dns:
+        type: list
+        elements: str
+        required: false
+        description: Default DNS servers for auto-derived guest customization.

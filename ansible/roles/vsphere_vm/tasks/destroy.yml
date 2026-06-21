@@ -1,0 +1,36 @@
+---
+# roles/vsphere_vm/tasks/destroy.yml
+# DESTRUCTIVE: remove only the guests the plan (state.yml) found that are marked
+# state: absent AND currently exist. Gated behind the `never` tag (runs only with
+# `--tags destroy`) AND vsphere_vm_allow_destroy=true.
+
+- name: Destroy | Refuse unless vsphere_vm_allow_destroy is true
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_allow_destroy | bool
+    fail_msg: >-
+      Refusing to destroy VMs. Set vsphere_vm_allow_destroy=true (and run with
+      --tags destroy) to remove guests marked state: absent.
+    quiet: true
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: _vsphere_to_destroy | length > 0
+
+- name: Destroy | Remove planned VMs ({{ _vsphere_to_destroy | map(attribute='name') | list }})
+  community.vmware.vmware_guest:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ item.name }}"
+    folder: "{{ item.folder | default(vsphere_vm_folder) }}"
+    state: absent
+    force: true
+  loop: "{{ _vsphere_to_destroy }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: vsphere_vm_allow_destroy | bool
+  delegate_to: localhost
+  become: false

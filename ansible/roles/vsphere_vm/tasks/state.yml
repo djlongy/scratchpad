@@ -1,0 +1,55 @@
+---
+# roles/vsphere_vm/tasks/state.yml
+# Terraform-style reconcile: read current vCenter state, diff against the desired
+# vsphere_vm_guests, and compute the plan (to-create / present / to-destroy).
+# Read-only — runs for both create and destroy so the plan is always available.
+
+- name: State | Gather current VM inventory from vCenter
+  community.vmware.vmware_vm_info:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+  register: _vsphere_vm_info
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: State | Index existing VM names
+  ansible.builtin.set_fact:
+    _vsphere_existing: "{{ _vsphere_vm_info.virtual_machines | map(attribute='guest_name') | list }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: State | Compute the plan (desired vs current)
+  ansible.builtin.set_fact:
+    _vsphere_desired_present: >-
+      {{ (vsphere_vm_guests | rejectattr('state', 'defined') | list)
+         + (vsphere_vm_guests | selectattr('state', 'defined')
+            | rejectattr('state', 'equalto', 'absent') | list) }}
+    _vsphere_desired_absent: >-
+      {{ vsphere_vm_guests | selectattr('state', 'defined')
+         | selectattr('state', 'equalto', 'absent') | list }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: State | Classify into create / present / destroy
+  ansible.builtin.set_fact:
+    _vsphere_to_create: "{{ _vsphere_desired_present | rejectattr('name', 'in', _vsphere_existing) | list }}"
+    _vsphere_present: "{{ _vsphere_desired_present | selectattr('name', 'in', _vsphere_existing) | list }}"
+    _vsphere_to_destroy: "{{ _vsphere_desired_absent | selectattr('name', 'in', _vsphere_existing) | list }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: State | Plan
+  ansible.builtin.debug:
+    msg:
+      - "to create : {{ _vsphere_to_create | map(attribute='name') | list }}"
+      - "present   : {{ _vsphere_present | map(attribute='name') | list }}"
+      - "to destroy: {{ _vsphere_to_destroy | map(attribute='name') | list }}"
+  run_once: true
+  delegate_to: localhost
+  become: false

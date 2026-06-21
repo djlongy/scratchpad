@@ -1,0 +1,33 @@
+---
+# roles/vsphere_vm/tasks/main.yml
+#
+# Phase order (Terraform-style: read state → plan → apply):
+#   preflight → assert connection inputs + resolve the vCenter password
+#   state     → read current vCenter inventory + compute the plan (always)
+#   create    → build the guests the plan found MISSING
+#   destroy   → remove planned state:absent guests (never tag + allow_destroy)
+
+- name: Run vSphere VM preflight (inputs + credentials)
+  ansible.builtin.import_tasks: preflight.yml
+  # `always` so the vCenter password is resolved for create AND destroy
+  # (destroy runs under the `never`+`destroy` tags, which would skip preflight).
+  tags: [vsphere_vm, preflight, always]
+
+- name: Derive guests from inventory hosts
+  ansible.builtin.import_tasks: derive.yml
+  when: vsphere_vm_from_inventory | bool
+  # `always` so the guest list exists for both create and destroy.
+  tags: [vsphere_vm, always]
+
+- name: Read current state and compute the plan
+  ansible.builtin.import_tasks: state.yml
+  # `always` so the plan exists for both create and destroy phases.
+  tags: [vsphere_vm, state, always]
+
+- name: Build missing VMs
+  ansible.builtin.import_tasks: create.yml
+  tags: [vsphere_vm, create]
+
+- name: Destroy VMs marked absent (opt-in)
+  ansible.builtin.import_tasks: destroy.yml
+  tags: [never, destroy]

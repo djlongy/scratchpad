@@ -1,0 +1,92 @@
+---
+# roles/vsphere_vm/defaults/main.yml
+#
+# Portable vCenter VM lifecycle role: create (clone from template) and destroy
+# VMs via community.vmware.vmware_guest. All modules run on the control node
+# (delegate_to: localhost). Driven by the vsphere_vm_guests list. Idempotent —
+# vmware_guest reconciles to the declared state.
+#
+# Behavioural defaults live here; env-specific values (vCenter address, Vault
+# path, datacenter/cluster/datastore) are commented out for discoverability and
+# MUST be set in inventory.
+
+# ── vCenter connection ───────────────────────────────────────────────────────
+# ENV-SPECIFIC — set in inventory:
+# vsphere_vm_server: "vcenter.example.com"
+# vsphere_vm_vault_secret: "kv-<env>/data/platform/vsphere/vcenter/runtime"
+vsphere_vm_username: "administrator@vsphere.local"
+vsphere_vm_password_field: "admin_password"   # field within vsphere_vm_vault_secret
+vsphere_vm_password: ""                        # set directly to bypass the Vault lookup
+vsphere_vm_validate_certs: false               # labs use self-signed vCenter certs
+
+# ── Placement (ENV-SPECIFIC — set in inventory) ──────────────────────────────
+# vsphere_vm_datacenter: "Datacenter"
+# vsphere_vm_cluster: "Cluster"               # OR vsphere_vm_esxi_host for standalone
+# vsphere_vm_esxi_host: "192.0.2.11"          # standalone host (no DRS cluster)
+# vsphere_vm_resource_pool: "Resources"       # pool NAME (not a path); standalone host default is "Resources"
+vsphere_vm_folder: "/vm"                       # inventory folder for new VMs
+vsphere_vm_datastore: ""                       # default datastore for clones
+
+# ── Per-VM hardware defaults (overridable per guest) ─────────────────────────
+vsphere_vm_cpus: 2
+vsphere_vm_memory_mb: 4096
+vsphere_vm_disk_gb: 40
+vsphere_vm_disk_type: thin                      # thin | thick | eagerzeroedthick
+vsphere_vm_firmware: efi                         # efi | bios
+vsphere_vm_scsi: paravirtual
+vsphere_vm_wait_for_ip: true
+vsphere_vm_state: poweredon                      # default state for created guests
+
+# ── Guests to manage ─────────────────────────────────────────────────────────
+# Each item (only name + template are required; the rest fall back to the
+# hardware defaults above):
+#   - name: web01
+#     template: linux-almalinux-9-main          # source template to clone
+#     cpus: 2
+#     memory_mb: 4096
+#     disk_gb: 40
+#     networks:                                 # vmware_guest-native network dicts
+#       - name: "VLAN10-SVC"                     # dvPortGroup / network name
+#         type: static
+#         ip: 192.0.2.50
+#         netmask: 255.255.255.0
+#         gateway: 192.0.2.1
+#     customization:                            # vmware_guest-native customization
+#       hostname: web01
+#       domain: example.com
+#       dns_servers: [192.0.2.53]
+#     state: poweredon                          # poweredon | present | poweredoff | absent
+vsphere_vm_guests: []
+
+# ── Inventory-derived guests (the preferred model) ───────────────────────────
+# Instead of curating vsphere_vm_guests by hand, derive one guest per host in an
+# inventory group — each host IS a VM, its spec lives in host_vars. Set
+# vsphere_vm_from_inventory: true and point at the group. Per-host vars (all
+# optional except the template; they fall back to the role defaults above):
+#   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
+#   vsphere_vm_cpus/_memory_mb/_disk_gb/_state/_folder/_datastore,
+#   vsphere_vm_networks (else derived from ansible_host + the vars below),
+#   vsphere_vm_customization (else derived from hostname/domain/dns).
+#
+# The vCenter VM NAME and the guest OS HOSTNAME are decoupled (important for a
+# shared/multi-tenant vCenter — see README "Multi-tenant vCenter naming"):
+#   vsphere_vm_name     → vCenter object name. Default: canonical_hostname, else
+#                         inventory_hostname. Override (usually in group_vars) to a
+#                         globally-unique, tenant-scoped name, e.g.
+#                         "{{ tenant }}-{{ env }}-{{ canonical_hostname }}".
+#   vsphere_vm_hostname → guest OS hostname. Default: canonical_hostname, else
+#                         inventory_hostname. Stays clean/canonical regardless of
+#                         the vCenter name.
+# Both are intentionally NOT defaulted here (their default is computed per host).
+vsphere_vm_from_inventory: false
+vsphere_vm_inventory_group: ""               # e.g. "vmware_vms"
+# Defaults for the auto-derived static NIC (override per host/group as needed):
+vsphere_vm_network: ""                        # dvPortGroup / network name
+vsphere_vm_netmask: "255.255.255.0"
+# vsphere_vm_gateway: ""                       # default: .1 of the host's /24
+vsphere_vm_dns: []                            # DNS servers for guest customization
+
+# ── Destroy safety ───────────────────────────────────────────────────────────
+# Destroying (state: absent) is refused unless this is true — a guard against
+# accidental mass-deletion. Combine with the `destroy` tag (see tasks/main.yml).
+vsphere_vm_allow_destroy: false
