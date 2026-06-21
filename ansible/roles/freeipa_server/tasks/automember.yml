@@ -1,0 +1,30 @@
+---
+# roles/freeipa_server/tasks/automember.yml
+# Declarative automember rules: auto-assign users/hosts to a group or hostgroup
+# by attribute regex, via the upstream ipaautomember module. Primary only
+# (replicates). Idempotent. The target group/hostgroup must already exist (manage
+# it via IDAM). Admin password from Vault.
+
+- name: Automember | Fetch admin password
+  ansible.builtin.set_fact:
+    _freeipa_automember_admin_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Automember | Reconcile rules
+  freeipa.ansible_freeipa.ipaautomember:
+    ipaadmin_password: "{{ _freeipa_automember_admin_pw }}"
+    name: "{{ item.name }}"
+    automember_type: "{{ item.automember_type }}"
+    description: "{{ item.description | default(omit) }}"
+    inclusive: "{{ item.inclusive | default(omit) }}"
+    exclusive: "{{ item.exclusive | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_server_automember_rules }}"
+  loop_control:
+    label: "{{ item.automember_type }}:{{ item.name }}"
+  no_log: true

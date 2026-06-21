@@ -1,0 +1,57 @@
+---
+# roles/freeipa_server/tasks/dns_records.yml
+# Declarative DNS for IPA's integrated DNS: manage hosted zones, conditional
+# forward zones, and records via the upstream ipadnszone / ipadnsforwardzone /
+# ipadnsrecord modules. Primary only (replicates to the cluster). Idempotent —
+# the modules reconcile to the declared state. Admin password from Vault.
+#
+# Only meaningful when IPA runs integrated DNS (freeipa_server_setup_dns: true).
+
+- name: DNS | Fetch admin password
+  ansible.builtin.set_fact:
+    _freeipa_dns_admin_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: DNS | Manage hosted zones
+  freeipa.ansible_freeipa.ipadnszone:
+    ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
+    name: "{{ item.name }}"
+    dynamic_update: "{{ item.dynamic_update | default(omit) }}"
+    allow_sync_ptr: "{{ item.allow_sync_ptr | default(omit) }}"
+    allow_transfer: "{{ item.allow_transfer | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_server_dns_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: DNS | Manage conditional forward zones
+  freeipa.ansible_freeipa.ipadnsforwardzone:
+    ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
+    name: "{{ item.name }}"
+    forwarders: "{{ item.forwarders | default(omit) }}"
+    forwardpolicy: "{{ item.forwardpolicy | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_server_dns_forward_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: DNS | Manage records
+  freeipa.ansible_freeipa.ipadnsrecord:
+    ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
+    zone_name: "{{ item.zone_name }}"
+    name: "{{ item.name }}"
+    record_type: "{{ item.record_type }}"
+    record_value: "{{ item.record_value }}"
+    record_ttl: "{{ item.record_ttl | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_server_dns_records }}"
+  loop_control:
+    label: "{{ item.zone_name }}/{{ item.name }} {{ item.record_type | default('') }}"
+  no_log: true

@@ -1,0 +1,35 @@
+---
+# roles/freeipa_server/tasks/adtrust.yml
+# Establish cross-forest trust(s) with Active Directory via the upstream ipatrust
+# module. Requires the AD trust controller (freeipa_server_setup_adtrust -> the
+# install runs with --setup-adtrust) and reachable AD DCs + two-way DNS. Primary
+# only. The IPA admin password and each AD admin password come from Vault.
+# Idempotent (ipatrust reconciles).
+#
+# NOTE: not live-tested in this estate (no AD); shipped as a capability.
+
+- name: AD trust | Fetch IPA admin password
+  ansible.builtin.set_fact:
+    _freeipa_adtrust_admin_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: AD trust | Establish trust(s) with Active Directory
+  freeipa.ansible_freeipa.ipatrust:
+    ipaadmin_password: "{{ _freeipa_adtrust_admin_pw }}"
+    realm: "{{ item.realm }}"
+    trust_type: "{{ item.trust_type | default('ad') }}"
+    admin: "{{ item.admin }}"
+    password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret + ':' + item.password_field) }}
+    two_way: "{{ item.two_way | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_server_ad_trusts }}"
+  loop_control:
+    label: "{{ item.realm }}"
+  no_log: true

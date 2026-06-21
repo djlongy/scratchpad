@@ -55,6 +55,47 @@ argument_specs:
         type: str
         required: false
         description: Temp directory on the primary for staging CA certs before import.
+      freeipa_server_restore_name:
+        type: str
+        required: false
+        description: Backup name to restore (break-glass, `never` tag; wraps upstream ipabackup state=restored).
+      freeipa_server_backup_fetch_name:
+        type: str
+        required: false
+        description: Backup name (or "all") to copy to the Ansible controller during a backup run.
+      freeipa_server_backup_controller_path:
+        type: str
+        required: false
+        description: Controller-side directory for offloaded backups.
+      freeipa_server_dns_zones:
+        type: list
+        elements: dict
+        required: false
+        description: IPA-hosted DNS zones to manage (ipadnszone). Each item needs name.
+      freeipa_server_dns_forward_zones:
+        type: list
+        elements: dict
+        required: false
+        description: Conditional forward zones to manage (ipadnsforwardzone). Each item needs name.
+      freeipa_server_dns_records:
+        type: list
+        elements: dict
+        required: false
+        description: DNS records to manage (ipadnsrecord). Each item needs zone_name, name, record_type, record_value.
+      freeipa_server_automember_rules:
+        type: list
+        elements: dict
+        required: false
+        description: Automember rules (ipaautomember). Each item needs name + automember_type (group|hostgroup).
+      freeipa_server_setup_adtrust:
+        type: bool
+        required: false
+        description: Enable the AD trust controller at install (ipa-server-install --setup-adtrust).
+      freeipa_server_ad_trusts:
+        type: list
+        elements: dict
+        required: false
+        description: Active Directory trusts to establish (ipatrust). Each item needs realm, admin, password_field.
       freeipa_server_forward_policy:
         type: str
         required: false

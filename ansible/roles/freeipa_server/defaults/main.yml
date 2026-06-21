@@ -74,9 +74,36 @@ freeipa_server_external_cert_files: []
 freeipa_server_trusted_external_cas: []
 freeipa_server_trusted_ca_staging_dir: "/root/.freeipa-trusted-cas"
 
+# ── Backup restore / offload (wraps upstream freeipa.ansible_freeipa.ipabackup) ─
+# Our scheduled backup.yml runs `ipa-backup` on a timer; these add the missing
+# restore + controller-offload paths by delegating to the upstream ipabackup role.
+#
+# RESTORE is DESTRUCTIVE and break-glass: gated behind the `never` tag (runs ONLY
+# with `--tags restore`) AND requires this to name a backup present on the server
+# (e.g. "ipa-data-2026-06-22-12-00-00" or "ipa-full-..."). DM password from Vault.
+freeipa_server_restore_name: ""
+# OFFLOAD (non-destructive): copy server backups to the Ansible controller during
+# a normal backup run. Set to a backup name, or "all" for every backup.
+freeipa_server_backup_fetch_name: ""
+freeipa_server_backup_controller_path: "./freeipa-backups"
+
 # ── KRA / PKINIT ────────────────────────────────────────────────────────────
 freeipa_server_setup_kra: false
 freeipa_server_no_pkinit: false
+
+# ── Active Directory trust (cross-forest identity) ───────────────────────────
+# Trust an AD forest so AD users authenticate against IPA-managed resources.
+# Requires the AD trust controller (set freeipa_server_setup_adtrust: true so the
+# install passes --setup-adtrust) PLUS reachable AD DCs + working DNS both ways.
+# Each trust is established via the upstream ipatrust module; the IPA admin and
+# each AD admin password come from Vault. Opt-in, default off.
+freeipa_server_setup_adtrust: false
+freeipa_server_ad_trusts: []
+#  - realm: "AD.EXAMPLE.COM"
+#    admin: "Administrator"               # AD admin user authorizing the trust
+#    password_field: "ad_trust_password"  # field in freeipa_server_vault_secret
+#    two_way: true                        # bidirectional trust
+#    trust_type: "ad"
 
 # ── DNS ─────────────────────────────────────────────────────────────────────
 freeipa_server_setup_dns: true
@@ -87,6 +114,29 @@ freeipa_server_auto_reverse: true
 freeipa_server_reverse_zones: []
 freeipa_server_no_dnssec_validation: true
 freeipa_server_allow_zone_overlap: true
+
+# Declarative DNS (primary only; needs integrated DNS). Manages IPA-hosted zones,
+# conditional forward zones, and records via the upstream ipadns* modules.
+# Idempotent. Records use the generic record_type/record_value form.
+freeipa_server_dns_zones: []
+#  - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
+freeipa_server_dns_forward_zones: []
+#  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
+freeipa_server_dns_records: []
+#  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
+
+# ── Automember (auto group/hostgroup membership rules) ───────────────────────
+# Primary only. Each rule auto-assigns users/hosts to a group by attribute regex
+# via the upstream ipaautomember module. Idempotent.
+freeipa_server_automember_rules: []
+#  - name: linux-hosts            # the target group/hostgroup (must already exist)
+#    automember_type: hostgroup   # group | hostgroup
+#    inclusive:
+#      - { key: "fqdn", expression: ".*\\.example\\.com$" }
+#  - name: contractors
+#    automember_type: group
+#    inclusive:
+#      - { key: "title", expression: "Contractor" }
 
 # ── POSIX ID range / HBAC / homedirs ────────────────────────────────────────
 freeipa_server_idstart: 0                 # 0 → upstream/random default

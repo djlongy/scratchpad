@@ -43,8 +43,12 @@ ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags r
 | `configure` / `resilience` | Cold-start timeout override + recovery timer |
 | `certs` (`ca`) | Import trusted external CAs into the IPA trust store (primary only, opt-in) |
 | `hardening` | Opt-in post-install hardening (primary only) |
-| `backup` | Borg-readable backup timer (primary only) |
+| `backup` | Borg-readable backup timer + opt-in controller offload (primary only) |
 | `idam` (`users`/`groups`/`hbac`/`sudo`) | Declarative IDAM reconciliation (primary only) |
+| `dns` | Declarative DNS zones / forward-zones / records (primary only, opt-in) |
+| `automember` | Auto group/hostgroup membership rules (primary only, opt-in) |
+| `adtrust` (`trust`) | Active Directory trust(s) (primary only, opt-in) |
+| `restore` | Break-glass restore from a backup (`never` tag — explicit opt-in) |
 
 A no-tag run runs everything. Migration is **not** in the default flow — run it
 explicitly via `playbooks/freeipa_migrate.yml`.
@@ -117,6 +121,60 @@ Provide the full chain (root, and intermediates if any). Run the `certs` tag to
 apply just this step. Auth uses the **Directory Manager** password from
 `freeipa_server_vault_secret` (`ipa-cacert-manage`, fed on stdin);
 `ipa-certupdate` runs as root via the host keytab.
+
+## Backup restore / offload
+
+`backup.yml` runs `ipa-backup` on a timer; these add the missing paths by
+wrapping the upstream `ipabackup` role:
+
+- **Restore (break-glass, DESTRUCTIVE)** — `--tags restore` +
+  `-e freeipa_server_restore_name=<backup-name>` (e.g. `ipa-data-2026-06-22-…`).
+  Gated behind the `never` tag so it can't run by accident. DM password from Vault.
+- **Offload to controller** — set `freeipa_server_backup_fetch_name` (a backup
+  name, or `all`); copies to `freeipa_server_backup_controller_path` on the next
+  backup run.
+
+## Declarative DNS
+
+When IPA runs integrated DNS, manage zones/records declaratively (primary only,
+idempotent):
+
+```yaml
+freeipa_server_dns_zones:
+  - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
+freeipa_server_dns_forward_zones:
+  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
+freeipa_server_dns_records:
+  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
+```
+
+## Automember
+
+Auto-assign users/hosts to a group/hostgroup by attribute regex (the target
+group must already exist via IDAM):
+
+```yaml
+freeipa_server_automember_rules:
+  - name: linux-hosts
+    automember_type: hostgroup
+    inclusive:
+      - { key: "fqdn", expression: ".*\\.example\\.com$" }
+```
+
+## Active Directory trust
+
+Trust an AD forest so AD users authenticate against IPA resources. Needs the AD
+trust controller and reachable AD DCs + two-way DNS. Opt-in; **shipped as a
+capability, not exercised here (no AD).**
+
+```yaml
+freeipa_server_setup_adtrust: true          # enables --setup-adtrust at install
+freeipa_server_ad_trusts:
+  - realm: "AD.EXAMPLE.COM"
+    admin: "Administrator"
+    password_field: "ad_trust_password"      # field in freeipa_server_vault_secret
+    two_way: true
+```
 
 ## Hardening (opt-in, default off)
 

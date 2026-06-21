@@ -1,0 +1,29 @@
+---
+# roles/freeipa_server/tasks/restore.yml
+# BREAK-GLASS restore from an ipa-backup. DESTRUCTIVE: main.yml gates this behind
+# the `never` tag (so it runs ONLY with `--tags restore`) AND a non-empty
+# freeipa_server_restore_name. It delegates to the upstream
+# freeipa.ansible_freeipa.ipabackup role (state=restored) — which stops services,
+# runs ipa-restore, and brings IPA back up. The DM password comes from Vault.
+#
+# Usage:
+#   ansible-playbook ... --tags restore \
+#     -e freeipa_server_restore_name=ipa-data-2026-06-22-12-00-00
+
+- name: Restore | Fetch Directory Manager password
+  ansible.builtin.set_fact:
+    _freeipa_restore_dm_pw: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + freeipa_server_vault_secret
+         + ':' + freeipa_server_dm_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: "Restore | Restore IPA from backup '{{ freeipa_server_restore_name }}' (DESTRUCTIVE)"
+  ansible.builtin.include_role:
+    name: freeipa.ansible_freeipa.ipabackup
+  vars:
+    ipabackup_name: "{{ freeipa_server_restore_name }}"
+    ipabackup_password: "{{ _freeipa_restore_dm_pw }}"
+    state: restored

@@ -20,6 +20,7 @@
     ipaserver_install_packages: "{{ freeipa_server_install_packages }}"
     ipaserver_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
     ipaserver_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
+    ipaserver_setup_adtrust: "{{ freeipa_server_setup_adtrust }}"
     ipaserver_external_ca: "{{ freeipa_server_ca_mode == 'external-ca' }}"
     ipaserver_external_cert_files: "{{ freeipa_server_external_cert_files }}"
     ipaserver_random_serial_numbers: "{{ freeipa_server_random_serial_numbers }}"

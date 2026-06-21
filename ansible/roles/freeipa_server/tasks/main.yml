@@ -7,8 +7,12 @@
 #   resilience → cold-start timeout override + recovery timer
 #   certs      → import trusted external CAs (primary only; opt-in)
 #   hardening  → opt-in post-install hardening
-#   backup     → Borg-readable backup timer (primary only)
+#   backup     → Borg-readable backup timer + opt-in controller offload (primary)
 #   idam       → declarative IDAM reconciliation (primary only)
+#   dns        → declarative DNS zones/forward-zones/records (primary; opt-in)
+#   automember → auto group/hostgroup membership rules (primary; opt-in)
+#   adtrust    → Active Directory trust(s) (primary; opt-in)
+#   restore    → break-glass restore from backup (never tag; opt-in)
 
 - name: Run FreeIPA dependency-ordering preflight guards
   ansible.builtin.import_tasks: preflight.yml
@@ -44,3 +48,33 @@
   ansible.builtin.import_tasks: idam.yml
   when: freeipa_server_is_primary | bool
   tags: [idam, users, groups, hbac, sudo]
+
+- name: Manage declarative DNS zones/records (primary only)
+  ansible.builtin.import_tasks: dns_records.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - (freeipa_server_dns_zones | length > 0) or
+      (freeipa_server_dns_forward_zones | length > 0) or
+      (freeipa_server_dns_records | length > 0)
+  tags: [dns]
+
+- name: Reconcile automember rules (primary only)
+  ansible.builtin.import_tasks: automember.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_server_automember_rules | length > 0
+  tags: [idam, automember]
+
+- name: Establish Active Directory trust(s) (primary only)
+  ansible.builtin.import_tasks: adtrust.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_server_ad_trusts | length > 0
+  tags: [adtrust, trust]
+
+- name: Restore FreeIPA from a backup (break-glass; primary only)
+  ansible.builtin.import_tasks: restore.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_server_restore_name | length > 0
+  tags: [never, restore]

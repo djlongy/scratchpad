@@ -62,3 +62,16 @@
     state: started
     enabled: true
     daemon_reload: true
+
+# Optional offload: copy server backups to the Ansible controller (non-destructive).
+# Wraps the upstream ipabackup role (state=copied). Our Borg setup already offloads
+# off-box; this is for an extra controller-side copy when freeipa_server_backup_fetch_name is set.
+- name: Offload FreeIPA backups to the controller (opt-in)
+  ansible.builtin.include_role:
+    name: freeipa.ansible_freeipa.ipabackup
+  vars:
+    ipabackup_name: "{{ freeipa_server_backup_fetch_name }}"
+    ipabackup_to_controller: true
+    ipabackup_controller_path: "{{ freeipa_server_backup_controller_path }}"
+    state: copied
+  when: freeipa_server_backup_fetch_name | length > 0
