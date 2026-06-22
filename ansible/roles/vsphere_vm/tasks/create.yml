@@ -50,6 +50,12 @@
     label: "{{ item.name }}"
   delegate_to: localhost
   become: false
+  # run_once: the guest list is global (one create pass for the whole inventory).
+  # Without it, a play that targets a HOST GROUP (the from_inventory model) runs
+  # this once PER HOST, so every host delegates to localhost and races to clone
+  # the SAME VMs — vCenter then rejects the duplicates with "name already exists"
+  # and the task burns its retries. One pass total is correct and race-free.
+  run_once: true
 
 # The clone+customize NIC-disconnect bug + bounded IP wait are handled here so a
 # disconnected NIC can never hang the play.

@@ -90,6 +90,66 @@
     mode: "0710"
   when: docker_swarm_use_data_disk | bool
 
+# SELinux: a relocated data-root (e.g. /opt/docker on a data disk) is NOT labelled
+# container_var_lib_t by default — only /var/lib/docker is. Under enforcing,
+# dockerd then can't manage its own image/volume/overlay tree. Register an
+# fcontext EQUIVALENCY so the new data-root inherits every /var/lib/docker
+# labelling rule, then relabel it. Only needed when the data-root is relocated
+# AND SELinux is active; a no-op otherwise.
+#
+# We read SELinux state LIVE via getenforce rather than the ansible_selinux fact:
+# this role often runs right after a baseline reboot that enables SELinux, and
+# under `gathering = smart` + fact caching the cached ansible_selinux can still
+# read the stale pre-reboot 'disabled' — which would wrongly skip the relabel.
+- name: Detect live SELinux state for the data-root relabel
+  ansible.builtin.command: getenforce
+  register: _docker_swarm_getenforce
+  changed_when: false
+  failed_when: false
+  when:
+    - docker_swarm_use_data_disk | bool
+    - docker_swarm_data_root != '/var/lib/docker'
+
+- name: Set whether SELinux is active (Enforcing/Permissive)
+  ansible.builtin.set_fact:
+    _docker_swarm_selinux_active: "{{ (_docker_swarm_getenforce.stdout | default('Disabled')) != 'Disabled' }}"
+  when:
+    - docker_swarm_use_data_disk | bool
+    - docker_swarm_data_root != '/var/lib/docker'
+
+- name: Ensure semanage is available for the data-root relabel (EL + SELinux)
+  ansible.builtin.dnf:
+    name: policycoreutils-python-utils
+    state: present
+  when:
+    - docker_swarm_use_data_disk | bool
+    - docker_swarm_data_root != '/var/lib/docker'
+    - _docker_swarm_selinux_active | default(false) | bool
+
+- name: Register SELinux equivalency for the relocated data-root
+  # `-e /var/lib/docker` makes <data_root> inherit all of /var/lib/docker's
+  # fcontext rules (container_var_lib_t and its sub-paths). Idempotent: a repeat
+  # add returns "already exists", which we treat as unchanged.
+  ansible.builtin.command:
+    cmd: "semanage fcontext -a -e /var/lib/docker {{ docker_swarm_data_root }}"
+  register: _docker_swarm_se_equiv
+  changed_when: _docker_swarm_se_equiv.rc == 0
+  failed_when:
+    - _docker_swarm_se_equiv.rc != 0
+    - "'already exists' not in (_docker_swarm_se_equiv.stderr | default(''))"
+  when:
+    - docker_swarm_use_data_disk | bool
+    - docker_swarm_data_root != '/var/lib/docker'
+    - _docker_swarm_selinux_active | default(false) | bool
+
+- name: Relabel the relocated data-root to apply the equivalency
+  ansible.builtin.command:
+    cmd: "restorecon -R {{ docker_swarm_data_root }}"
+  changed_when: true
+  when:
+    - _docker_swarm_se_equiv is changed
+    - _docker_swarm_selinux_active | default(false) | bool
+
 - name: Render /etc/docker/daemon.json
   ansible.builtin.template:
     src: daemon.json.j2

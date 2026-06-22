@@ -13,6 +13,10 @@
 
 - name: Connect | Reconnect NICs on newly built VMs
   when: vsphere_vm_connect_nics | bool
+  # run_once: like create, this operates on the global guest list and delegates
+  # to localhost — without it a group-targeted play runs the whole NIC reconnect
+  # once per host, racing N identical vCenter calls. One pass total is correct.
+  run_once: true
   block:
     - name: Connect | Gather network adapters on newly built VMs
       community.vmware.vmware_guest_network:
@@ -82,6 +86,7 @@
   when: vsphere_vm_wait_for_ip | bool
   delegate_to: localhost
   become: false
+  run_once: true
 
 - name: Connect | Report any VM that never reported an IP
   ansible.builtin.debug:
@@ -98,3 +103,4 @@
     - (item.instance.ipv4 | default('', true)) | length == 0
   delegate_to: localhost
   become: false
+  run_once: true

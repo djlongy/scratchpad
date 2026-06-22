@@ -44,12 +44,34 @@
     name: "{{ _baseline_chrony_service }}"
     state: restarted
 
-# Only reboots when explicitly allowed; otherwise crypto.yml logs that a reboot
-# is pending and leaves it to the operator.
-- name: Reboot for crypto change
+# ONE deferred reboot for every change that needs one — a FIPS/crypto-policy
+# toggle AND a SELinux state change + filesystem relabel. Both phases notify
+# THIS single handler, so a full hardening pass reboots exactly once, at the end
+# of the play, applying FIPS mode and the SELinux relabel together (one pass, one
+# reboot). Handlers de-duplicate by name, so multiple notifies collapse to a
+# single reboot. Gated by baseline_allow_reboot; otherwise the phases log that a
+# reboot is pending and leave it to the operator.
+- name: Reboot to apply baseline changes
   ansible.builtin.reboot:
-    msg: "Rebooting to apply a FIPS/crypto-policy change."
-    reboot_timeout: 300
+    msg: "Rebooting once to apply FIPS and/or the SELinux state change + relabel."
+    # autorelabel of a freshly-enabled (was-disabled) host can take minutes, and
+    # the relabel may trigger one automatic follow-up reboot — wait generously
+    # and re-test the connection so we land on the final, stable enforcing boot.
+    reboot_timeout: 900
+    post_reboot_delay: 30
+  when: baseline_allow_reboot | bool
+  # Chain a fact refresh: the reboot just changed SELinux (and FIPS) state, so any
+  # cached facts (this repo runs `gathering = smart` + jsonfile caching) are now
+  # stale — e.g. ansible_selinux.status would still read 'disabled'. Refreshing
+  # updates the cache so LATER plays (docker_swarm, etc.) see the real enforcing
+  # state instead of the pre-reboot value.
+  notify: Refresh facts after the baseline reboot
+
+# Re-gather after the reboot above so the (smart-cached) facts reflect the new
+# post-reboot reality. Defined immediately after the reboot handler so it runs
+# straight after it (handlers fire in definition order).
+- name: Refresh facts after the baseline reboot
+  ansible.builtin.setup:
   when: baseline_allow_reboot | bool
 
 - name: Update CA trust EL  # noqa: no-changed-when

@@ -46,7 +46,7 @@
   when:
     - fips_enabled | bool
     - "'FIPS mode is enabled' not in _baseline_fips_check.stdout"
-  notify: Reboot for crypto change
+  notify: Reboot to apply baseline changes
 
 - name: Crypto | Disable FIPS mode
   ansible.builtin.command: fips-mode-setup --disable
@@ -55,7 +55,7 @@
   when:
     - not (fips_enabled | bool)
     - "'FIPS mode is enabled' in _baseline_fips_check.stdout"
-  notify: Reboot for crypto change
+  notify: Reboot to apply baseline changes
 
 # Re-assert the FIPS crypto-policy even when FIPS is already kernel-enabled.
 # OpenSCAP/CIS rewrites the system crypto-policy, and the enable task above is
@@ -76,7 +76,7 @@
   when:
     - fips_enabled | bool
     - (_baseline_crypto_now.stdout | default('') | trim) != 'FIPS'
-  notify: Reboot for crypto change
+  notify: Reboot to apply baseline changes
 
 - name: Crypto | Warn that a reboot is required to finish the FIPS change
   ansible.builtin.debug:

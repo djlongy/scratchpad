@@ -5,9 +5,6 @@ consistent, hardened foundation before app roles run. Everything beyond the core
 OS setup is **opt-in via override host/group vars**, so enabling a capability
 never surprises an existing fleet.
 
-> **openclaw moved out** — the bot account now lives in the dedicated
-> [`openclaw`](../openclaw/) role. Apply `openclaw` alongside `baseline` where needed.
-
 ## Execution order
 
 Phases run in a deliberate dependency order, each idempotent and individually
@@ -63,7 +60,6 @@ Opt-in (distro-agnostic — enabling a capability never surprises an existing fl
 - hosts: linux_hosts
   roles:
     - baseline
-    - openclaw   # the openclaw bot account
 ```
 
 ## Network

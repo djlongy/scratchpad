@@ -45,9 +45,12 @@ baseline_storage_volumes:
     grow: true
 
 # ── Reboot control ────────────────────────────────────────────────────────
-# When a change genuinely requires a reboot (FIPS toggle, crypto policy), the
-# role only reboots automatically if this is true. Otherwise it logs that a
-# reboot is pending and leaves it to the operator (run with --tags reboot).
+# Some changes need a reboot to apply: a FIPS/crypto-policy toggle, and a
+# SELinux state change (esp. disabled→enforcing, which also relabels the disk).
+# When true, the role applies ALL of these in a single pass and reboots EXACTLY
+# ONCE at the end of the play — both phases notify one shared handler, so FIPS
+# and the SELinux relabel land on the same boot. When false, the phases log that
+# a reboot is pending and leave it to the operator (run with --tags reboot).
 baseline_allow_reboot: false
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -243,6 +246,11 @@ baseline_firewall_custom_zones: []
 
 # ── SELinux (EL; opt-in by setting a state) ──────────────────────────────────
 baseline_selinux_state: ""                  # "" = no change | enforcing | permissive | disabled
+# disabled→enforcing is applied in ONE pass: the phase sets the state, writes any
+# fcontexts below into the policy store (semanage works while SELinux is off),
+# schedules a relabel (/.autorelabel), and defers to the single end-of-play
+# reboot. The disk is relabelled before services start, so it is safe to go
+# straight to enforcing — no permissive-staging detour, no second run.
 baseline_selinux_policy: "targeted"
 # SELinux file contexts (fcontext) — applied even when state is unchanged. Use a
 # dedicated subtree for container storage rather than relabelling all of /opt.
