@@ -1,0 +1,65 @@
+---
+# velociraptor/tasks/configure.yml — tagged [configure]
+#
+# Deploys the Velociraptor client configuration.
+#
+# SOURCE PRECEDENCE
+#   1. velociraptor_client_config     — inline YAML string (vault it)
+#   2. velociraptor_client_config_src — path to file on the Ansible controller
+#
+# If neither is set the configure phase emits a warning and exits cleanly.
+# The service phase will still install the unit, but the service will not
+# start successfully until a config is placed manually.
+
+# ── Preflight — warn if no config source is provided ─────────────────────
+
+- name: Warn that no client configuration is provided
+  ansible.builtin.debug:
+    msg: >-
+      Neither 'velociraptor_client_config' nor 'velociraptor_client_config_src'
+      is set.  The Velociraptor client configuration will NOT be deployed.
+      The service unit will be installed but the service will fail to start
+      until a config is present at {{ velociraptor_config_dir }}/client.config.yaml.
+  when:
+    - velociraptor_client_config | length == 0
+    - velociraptor_client_config_src | length == 0
+
+# ── Config directory ──────────────────────────────────────────────────────
+
+- name: Create Velociraptor config directory
+  ansible.builtin.file:
+    path: "{{ velociraptor_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  when:
+    - (velociraptor_client_config | length > 0) or (velociraptor_client_config_src | length > 0)
+
+# ── Deploy config from inline content ─────────────────────────────────────
+
+- name: Deploy client config from inline variable
+  ansible.builtin.copy:
+    content: "{{ velociraptor_client_config }}"
+    dest: "{{ velociraptor_config_dir }}/client.config.yaml"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  notify: Restart velociraptor
+  when: velociraptor_client_config | length > 0
+
+# ── Deploy config from controller-side file ───────────────────────────────
+
+- name: Deploy client config from controller file
+  ansible.builtin.copy:
+    src: "{{ velociraptor_client_config_src }}"
+    dest: "{{ velociraptor_config_dir }}/client.config.yaml"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  notify: Restart velociraptor
+  when:
+    - velociraptor_client_config | length == 0
+    - velociraptor_client_config_src | length > 0

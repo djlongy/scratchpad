@@ -1,0 +1,48 @@
+---
+# roles/baseline/tasks/agents.yml
+# Observability / security agents. Each is its own bare-noun role; baseline only
+# decides whether to apply it. Configure each agent through its own role vars
+# (set them in inventory group_vars/host_vars). All gated off by default.
+#
+# include_role uses apply: so the agent's own tasks inherit our run tags even
+# though the include itself is runtime-evaluated.
+
+- name: Agents | Prometheus node_exporter
+  ansible.builtin.include_role:
+    name: node_exporter
+    apply:
+      tags: [baseline, agents, node_exporter]
+  when: baseline_enable_node_exporter | bool
+  tags: [baseline, agents, node_exporter]
+
+- name: Agents | Velociraptor DFIR client
+  ansible.builtin.include_role:
+    name: velociraptor
+    apply:
+      tags: [baseline, agents, velociraptor]
+  when: baseline_enable_velociraptor | bool
+  tags: [baseline, agents, velociraptor]
+
+- name: Agents | Splunk Universal Forwarder
+  ansible.builtin.include_role:
+    name: splunk_forwarder
+    apply:
+      tags: [baseline, agents, splunk_forwarder]
+  when: baseline_enable_splunk_forwarder | bool
+  tags: [baseline, agents, splunk_forwarder]
+
+- name: Agents | Stroom log forwarder
+  ansible.builtin.include_role:
+    name: stroom_agent
+    apply:
+      tags: [baseline, agents, stroom_agent]
+  when: baseline_enable_stroom_agent | bool
+  tags: [baseline, agents, stroom_agent]
+
+- name: Agents | ClamAV antivirus
+  ansible.builtin.include_role:
+    name: clamav
+    apply:
+      tags: [baseline, agents, clamav]
+  when: baseline_enable_clamav | bool
+  tags: [baseline, agents, clamav]

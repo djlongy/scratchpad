@@ -1,0 +1,78 @@
+---
+# velociraptor/tasks/install.yml — tagged [install]
+#
+# Downloads and installs the Velociraptor binary.
+#
+# SOURCE PRECEDENCE
+#   1. velociraptor_binary_url  (explicit, air-gap / mirror friendly)
+#   2. Constructed URL from velociraptor_version + velociraptor_download_base
+#
+# Both paths embed the version string in the destination filename so
+# get_url's idempotency (dest exists → skip) doubles as the upgrade trigger:
+# bump velociraptor_version → new filename → role re-downloads automatically.
+
+# ── Preflight assertions ──────────────────────────────────────────────────
+
+- name: Assert that a binary source is configured
+  ansible.builtin.assert:
+    that:
+      - (velociraptor_binary_url | length > 0) or (velociraptor_version | length > 0)
+    fail_msg: >-
+      velociraptor role requires either 'velociraptor_binary_url' (explicit URL)
+      or 'velociraptor_version' (e.g. "0.72.4") to be set.  Set one in
+      group_vars or host_vars for the target hosts.
+    success_msg: "Binary source is configured."
+
+# ── Resolve effective URL and versioned filename ──────────────────────────
+
+- name: Resolve architecture fact
+  ansible.builtin.set_fact:
+    _velociraptor_arch: "{{ velociraptor_arch_map[ansible_architecture] | default('amd64') }}"
+
+- name: Resolve effective binary URL and versioned dest filename (explicit URL)
+  ansible.builtin.set_fact:
+    _velociraptor_url: "{{ velociraptor_binary_url }}"
+    _velociraptor_bin_dest: "{{ velociraptor_install_dir }}/velociraptor-{{ velociraptor_version }}"
+  when: velociraptor_binary_url | length > 0
+
+- name: Resolve effective binary URL and versioned dest filename (constructed URL)
+  ansible.builtin.set_fact:
+    _velociraptor_url: >-
+      {{ velociraptor_download_base }}/v{{ velociraptor_version }}/velociraptor-v{{ velociraptor_version }}-linux-{{ _velociraptor_arch }}
+    _velociraptor_bin_dest: "{{ velociraptor_install_dir }}/velociraptor-{{ velociraptor_version }}"
+  when: velociraptor_binary_url | length == 0
+
+# ── Directories ───────────────────────────────────────────────────────────
+
+- name: Create Velociraptor install directory
+  ansible.builtin.file:
+    path: "{{ velociraptor_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# ── Download binary ───────────────────────────────────────────────────────
+# get_url is idempotent by dest: it skips the download if the destination file
+# already exists, so version-embedded dest path = natural upgrade trigger.
+
+- name: Download Velociraptor binary
+  ansible.builtin.get_url:
+    url: "{{ _velociraptor_url }}"
+    dest: "{{ _velociraptor_bin_dest }}"
+    checksum: "{{ velociraptor_binary_checksum if velociraptor_binary_checksum | length > 0 else omit }}"
+    owner: root
+    group: root
+    mode: '0755'
+  notify: Restart velociraptor
+
+# ── Stable symlink ────────────────────────────────────────────────────────
+
+- name: Create stable velociraptor symlink
+  ansible.builtin.file:
+    src: "{{ _velociraptor_bin_dest }}"
+    dest: "{{ velociraptor_install_dir }}/velociraptor"
+    state: link
+    owner: root
+    group: root
+  notify: Restart velociraptor

@@ -1,0 +1,56 @@
+---
+# roles/baseline/tasks/cis_openscap.yml
+# OpenSCAP / SCAP Security Guide remediation — the "harden via openscap" path.
+# Installs the scanner + content, resolves the per-distro datastream, then runs
+# oscap against the CIS profile (remediating by default). EL only.
+
+- name: CIS openscap | Install OpenSCAP scanner and SCAP Security Guide
+  ansible.builtin.dnf:
+    name:
+      - openscap-scanner
+      - scap-security-guide
+    state: present
+
+- name: CIS openscap | Resolve the SSG datastream path
+  ansible.builtin.set_fact:
+    _baseline_ssg_datastream: >-
+      {{ baseline_cis_openscap_datastream
+         if (baseline_cis_openscap_datastream | length > 0)
+         else '/usr/share/xml/scap/ssg/content/ssg-'
+              + ('almalinux' if ansible_distribution == 'AlmaLinux' else 'rhel')
+              + ansible_distribution_major_version + '-ds.xml' }}
+
+- name: CIS openscap | Verify the datastream exists
+  ansible.builtin.stat:
+    path: "{{ _baseline_ssg_datastream }}"
+  register: _baseline_ssg_stat
+
+- name: CIS openscap | Fail when the datastream is missing
+  ansible.builtin.fail:
+    msg: >-
+      SCAP datastream {{ _baseline_ssg_datastream }} not found — set
+      baseline_cis_openscap_datastream to the correct ssg-*-ds.xml path.
+  when: not _baseline_ssg_stat.stat.exists
+
+- name: CIS openscap | Ensure the report directory exists
+  ansible.builtin.file:
+    path: "{{ baseline_cis_openscap_report_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# oscap exit codes: 0 = all rules pass, 1 = error, 2 = one or more rules failed
+# (expected even after remediation for non-remediable rules). Treat 0/2 as ok.
+- name: CIS openscap | Evaluate and remediate against the CIS profile
+  ansible.builtin.command:
+    cmd: >-
+      oscap xccdf eval
+      {{ '--remediate' if (baseline_cis_openscap_remediate | bool) else '' }}
+      --profile {{ baseline_cis_openscap_profile }}
+      --results-arf {{ baseline_cis_openscap_report_dir }}/cis-arf.xml
+      --report {{ baseline_cis_openscap_report_dir }}/cis-report.html
+      {{ _baseline_ssg_datastream }}
+  register: _baseline_oscap
+  changed_when: baseline_cis_openscap_remediate | bool
+  failed_when: _baseline_oscap.rc not in [0, 2]

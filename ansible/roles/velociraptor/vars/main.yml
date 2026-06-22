@@ -1,0 +1,9 @@
+---
+# velociraptor/vars/main.yml — non-overridable constants.
+
+# Architecture map: ansible_architecture -> Velociraptor release filename suffix.
+# Velociraptor publishes single-file binaries named:
+#   velociraptor-v<version>-linux-<arch>
+velociraptor_arch_map:
+  x86_64: amd64
+  aarch64: arm64

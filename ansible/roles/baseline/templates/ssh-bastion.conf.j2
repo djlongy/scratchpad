@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Bastion / jump-host egress, managed by the baseline role.
+# Reach matched targets through the configured bastion via ProxyJump.
+# The bastion itself is negated so we never try to reach it through itself.
+Host {{ baseline_ssh_bastion_match_hosts }} !{{ baseline_ssh_bastion_host }}
+    ProxyJump {{ (baseline_ssh_bastion_user + '@') if baseline_ssh_bastion_user | length > 0 else '' }}{{ baseline_ssh_bastion_host }}

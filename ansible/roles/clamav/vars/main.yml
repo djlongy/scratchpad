@@ -1,0 +1,53 @@
+---
+# vars/main.yml — clamav
+# Non-overridable constants: OS-family-keyed package names, config paths,
+# service names, and DB directory.  These track distro conventions and should
+# not be set by callers; use defaults/main.yml for behavioural tuning.
+
+# ── OS-family map ─────────────────────────────────────────────────────────
+# RedHat: packages from EPEL (see README — EPEL must be enabled before this
+#         role runs; baseline/EPEL role is a prerequisite).
+# Debian: packages from the main archive (no extra repo required).
+
+clamav_os_map:
+  RedHat:
+    # Base install — scanner + freshclam config lives in clamav-update
+    packages_base:
+      - clamav
+      - clamav-update
+    # Daemon packages (installed only when clamav_enable_daemon: true)
+    packages_daemon:
+      - clamd
+      - clamav-server
+      - clamav-server-systemd
+    # Absolute path to freshclam.conf
+    freshclam_conf: /etc/freshclam.conf
+    # Absolute path to clamd.conf (resident daemon)
+    clamd_conf: /etc/clamd.d/scan.conf
+    # ClamAV signature database directory
+    db_dir: /var/lib/clamav
+    # Systemd service name for freshclam
+    freshclam_service: clamav-freshclam
+    # Systemd service name for the resident daemon
+    clamd_service: clamd@scan
+    # User freshclam/clamd run as (for log dir ownership)
+    clamav_user: clamscan
+    clamav_group: clamscan
+
+  Debian:
+    packages_base:
+      - clamav
+      - clamav-freshclam
+    packages_daemon:
+      - clamav-daemon
+    freshclam_conf: /etc/clamav/freshclam.conf
+    clamd_conf: /etc/clamav/clamd.conf
+    db_dir: /var/lib/clamav
+    freshclam_service: clamav-freshclam
+    clamd_service: clamav-daemon
+    clamav_user: clamav
+    clamav_group: clamav
+
+# ── Convenience aliases (resolved at role runtime) ────────────────────────
+# Tasks reference these shorter names rather than repeating the map lookup.
+_clamav: "{{ clamav_os_map[ansible_os_family] }}"

@@ -37,6 +37,17 @@ vsphere_vm_scsi: paravirtual
 vsphere_vm_wait_for_ip: true
 vsphere_vm_state: poweredon                      # default state for created guests
 
+# ── Robust spin-up (NIC reconnect + bounded waits) ───────────────────────────
+# After a clone+customize, vSphere often leaves the NIC disconnected (a known
+# bug), so the guest never gets an IP. The role reconnects every NIC after build,
+# then waits for the IP with a BOUNDED retry — so a misconfigured NIC reports a
+# clear error instead of hanging the play for 20+ minutes.
+vsphere_vm_connect_nics: true                    # force NICs connected post-build
+vsphere_vm_create_retries: 3                     # retry transient vCenter create/gather errors
+vsphere_vm_create_delay: 15
+vsphere_vm_ip_wait_retries: 30                   # bounded IP wait: retries x delay = max seconds
+vsphere_vm_ip_wait_delay: 10
+
 # ── Guests to manage ─────────────────────────────────────────────────────────
 # Each item (only name + template are required; the rest fall back to the
 # hardware defaults above):
@@ -45,6 +56,9 @@ vsphere_vm_state: poweredon                      # default state for created gue
 #     cpus: 2
 #     memory_mb: 4096
 #     disk_gb: 40
+#     extra_disks:                              # optional secondary disks (e.g. /opt)
+#       - size_gb: 50                            # native vmware_guest disk dicts
+#         type: thin
 #     networks:                                 # vmware_guest-native network dicts
 #       - name: "VLAN10-SVC"                     # dvPortGroup / network name
 #         type: static

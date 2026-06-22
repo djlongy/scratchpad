@@ -1,9 +1,74 @@
 ---
 # roles/baseline/tasks/repos.yml
-# Custom package repositories — point air-gapped hosts at an internal mirror
-# (Artifactory / Nexus) instead of the public internet. Distro-agnostic.
-# Optionally disable named stock repos for a true air-gap.
+# All package-repository setup, ordered so it runs BEFORE the package baseline:
+#   1. RHSM registration (RHEL, when an activation key is provided)
+#   2. EPEL + CodeReady Builder / crb enablement (EL)
+#   3. Custom internal mirrors (Artifactory / Nexus) + air-gap stock disables
+# Each block is a no-op when its inputs are empty, so this file is safe to run
+# on every host.
 
+# ── 1. RHSM registration (RHEL only; AlmaLinux/Rocky skip) ───────────────────
+- name: Repos | Register with Red Hat Subscription Management
+  community.general.redhat_subscription:
+    state: present
+    activationkey: "{{ rhsm_activationkey }}"
+    org_id: "{{ rhsm_org_id | default(omit) }}"
+  register: _baseline_rhsm
+  when:
+    - ansible_distribution == "RedHat"
+    - rhsm_activationkey is defined
+
+- name: Repos | Enable the CodeReady Builder repository (RHEL)
+  ansible.builtin.command: >-
+    subscription-manager repos
+    --enable codeready-builder-for-rhel-{{ ansible_distribution_major_version }}-x86_64-rpms
+  register: _baseline_crb_rhel
+  changed_when: "'enabled for this system' in _baseline_crb_rhel.stdout"
+  failed_when: _baseline_crb_rhel.rc != 0
+  when:
+    - ansible_distribution == "RedHat"
+    - rhsm_activationkey is defined
+    - baseline_crb_enabled | bool
+
+# ── 2. EPEL + CRB on AlmaLinux/Rocky (no subscription) ───────────────────────
+- name: Repos | Check whether crb is already enabled (AlmaLinux/Rocky)
+  ansible.builtin.command: dnf repolist --enabled
+  register: _baseline_repolist
+  changed_when: false
+  when:
+    - ansible_os_family == "RedHat"
+    - ansible_distribution != "RedHat"
+    - baseline_crb_enabled | bool
+
+- name: Repos | Enable the crb repository (AlmaLinux/Rocky)
+  # config-manager ships in dnf-plugins-core (present on EL9) and is portable
+  # across minimal GenericCloud images, unlike the `crb` helper.
+  ansible.builtin.command: dnf config-manager --set-enabled crb
+  register: _baseline_crb_alma
+  changed_when: _baseline_crb_alma.rc == 0
+  when:
+    - ansible_os_family == "RedHat"
+    - ansible_distribution != "RedHat"
+    - baseline_crb_enabled | bool
+    - "'crb' not in (_baseline_repolist.stdout | default(''))"
+
+- name: Repos | Import the EPEL GPG key (EL)
+  ansible.builtin.rpm_key:
+    key: "https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}"
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_epel_enabled | bool
+
+- name: Repos | Install the EPEL release package (EL)
+  ansible.builtin.dnf:
+    name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-{{ ansible_distribution_major_version }}.noarch.rpm"
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_epel_enabled | bool
+
+# ── 3. Custom internal mirrors (air-gap → Artifactory / Nexus) ───────────────
 - name: Repos | Configure DNF repositories (EL)
   ansible.builtin.yum_repository:
     name: "{{ item.name }}"

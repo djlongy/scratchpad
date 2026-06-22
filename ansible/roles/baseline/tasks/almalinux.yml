@@ -1,20 +1,7 @@
 ---
-- name: Check if CRB repository is already enabled
-  ansible.builtin.shell: dnf repolist --enabled | grep -q crb
-  register: _crb_check
-  changed_when: false
-  failed_when: false
-  when: ansible_distribution == 'AlmaLinux'
-
-- name: Enable Code Ready Builder repository
-  # Use the portable dnf plugin rather than the `crb` helper, which is absent on
-  # minimal GenericCloud images. config-manager ships in dnf-plugins-core (present
-  # on EL9) and is idempotent.
-  ansible.builtin.command: dnf config-manager --set-enabled crb
-  register: _crb_enable
-  changed_when: _crb_enable.rc == 0
-  when: ansible_distribution == 'AlmaLinux' and _crb_check.rc != 0
-
+# roles/baseline/tasks/almalinux.yml
+# AlmaLinux dispatches to the shared EL distro specifics. CRB/EPEL enablement
+# now lives in repos.yml (runs earlier), so there is nothing AlmaLinux-only to
+# do before the common EL path.
 - name: "{{ base_task_name }}"
-  ansible.builtin.include_tasks: "{{ ansible_os_family | lower }}.yml"
-  when: ansible_os_family in ['Ubuntu', 'RedHat', 'AlmaLinux']
+  ansible.builtin.include_tasks: redhat.yml

@@ -1,0 +1,7 @@
+---
+- name: Restart splunk forwarder
+  ansible.builtin.systemd:
+    name: "{{ splunk_forwarder_service_name }}"
+    state: restarted
+    daemon_reload: true
+  become: true

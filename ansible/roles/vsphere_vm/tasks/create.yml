@@ -24,18 +24,35 @@
       memory_mb: "{{ item.memory_mb | default(vsphere_vm_memory_mb) }}"
       boot_firmware: "{{ item.firmware | default(vsphere_vm_firmware) }}"
       scsi: "{{ item.scsi | default(vsphere_vm_scsi) }}"
-    disk:
-      - size_gb: "{{ item.disk_gb | default(vsphere_vm_disk_gb) }}"
-        type: "{{ item.disk_type | default(vsphere_vm_disk_type) }}"
+    # Primary disk first, then any per-guest extra_disks (native vmware_guest
+    # disk dicts, e.g. {size_gb: 50, type: thin}) for secondary data volumes.
+    disk: >-
+      {{ [{'size_gb': item.disk_gb | default(vsphere_vm_disk_gb),
+           'type': item.disk_type | default(vsphere_vm_disk_type)}]
+         + (item.extra_disks | default([])) }}
     # Force NICs connected + start-connected: clone+customize otherwise leaves
     # the NIC disconnected (known vSphere bug), so the guest never gets an IP.
     networks: >-
       {{ (item.networks | map('combine', {'connected': true, 'start_connected': true}) | list)
          if (item.networks is defined) else omit }}
     customization: "{{ item.customization | default(omit) }}"
-    wait_for_ip_address: "{{ item.wait_for_ip | default(vsphere_vm_wait_for_ip) }}"
+    # IP waiting is DEFERRED to connect.yml (which runs after the NIC reconnect).
+    # Waiting here would block for 20+ minutes whenever clone+customize leaves the
+    # NIC disconnected (a known vSphere bug) — the IP would never arrive. Clone
+    # returns as soon as the guest is built; the bounded wait happens next.
+    wait_for_ip_address: false
+  register: _vsphere_created
+  retries: "{{ vsphere_vm_create_retries }}"
+  delay: "{{ vsphere_vm_create_delay }}"
+  until: _vsphere_created is succeeded
   loop: "{{ _vsphere_to_create }}"
   loop_control:
     label: "{{ item.name }}"
   delegate_to: localhost
   become: false
+
+# The clone+customize NIC-disconnect bug + bounded IP wait are handled here so a
+# disconnected NIC can never hang the play.
+- name: Create | Reconnect NICs and wait for IP
+  ansible.builtin.import_tasks: connect.yml
+  when: (_vsphere_to_create | length > 0)

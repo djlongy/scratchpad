@@ -1,0 +1,25 @@
+---
+# roles/baseline/tasks/banner.yml
+# Interactive login banner (all hosts) — tells whoever logs in which environment
+# they've landed in (so nobody fat-fingers prod thinking it's dev), the host, and
+# who they're logged in as. A profile.d script keeps it dynamic ($USER/hostname
+# resolve at login); /etc/issue covers the pre-auth console/SSH banner.
+
+- name: Banner | Deploy the interactive login banner
+  ansible.builtin.template:
+    src: login-banner.sh.j2
+    dest: /etc/profile.d/00-baseline-banner.sh
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Banner | Set the pre-auth issue banner
+  ansible.builtin.template:
+    src: issue-banner.j2
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net

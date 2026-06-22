@@ -1,0 +1,22 @@
+---
+# velociraptor/tasks/service.yml — tagged [service]
+#
+# Installs the systemd unit, reloads the daemon, and ensures the service is
+# enabled and started.  Changes to the binary or config notify the
+# 'Restart velociraptor' handler, which fires once at the end of the play.
+
+- name: Install Velociraptor systemd unit
+  ansible.builtin.template:
+    src: velociraptor.service.j2
+    dest: "/etc/systemd/system/{{ velociraptor_service_name }}.service"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart velociraptor
+
+- name: Enable and start Velociraptor service
+  ansible.builtin.systemd:
+    name: "{{ velociraptor_service_name }}"
+    state: started
+    enabled: true
+    daemon_reload: true

@@ -1,0 +1,41 @@
+---
+# clamav/tasks/install.yml — package installation (tagged: install)
+#
+# Base packages (clamav + freshclam) are always installed.
+# Daemon packages are installed only when clamav_enable_daemon is true.
+# On RedHat/EL, EPEL must be enabled before this role runs (see README).
+
+# ── Custom repo (air-gap / ClamAV >= 1.5 for FIPS) — EL only ─────────────────
+- name: Import the custom ClamAV repo GPG key (EL)
+  ansible.builtin.rpm_key:
+    key: "{{ clamav_repo_gpgkey }}"
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - clamav_repo_baseurl | length > 0
+    - clamav_repo_gpgkey | length > 0
+
+- name: Configure the custom ClamAV repo (EL)
+  ansible.builtin.yum_repository:
+    name: clamav-custom
+    description: Custom ClamAV repository
+    baseurl: "{{ clamav_repo_baseurl }}"
+    gpgcheck: "{{ (clamav_repo_gpgcheck | bool) and (clamav_repo_gpgkey | length > 0) }}"
+    gpgkey: "{{ clamav_repo_gpgkey | default(omit, true) }}"
+    sslverify: "{{ clamav_repo_sslverify }}"
+    enabled: true
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - clamav_repo_baseurl | length > 0
+
+- name: Install ClamAV base packages
+  ansible.builtin.package:
+    name: "{{ _clamav.packages_base }}"
+    state: present
+
+- name: Install ClamAV daemon packages
+  ansible.builtin.package:
+    name: "{{ _clamav.packages_daemon }}"
+    state: present
+  when: clamav_enable_daemon | bool

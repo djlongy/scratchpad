@@ -1,0 +1,128 @@
+---
+# roles/docker/defaults/main.yml
+#
+# Install and configure Docker CE on EL (RHEL/AlmaLinux) and Debian/Ubuntu.
+# Every value is overridable from inventory (group_vars / host_vars).
+# No environment label, IP, domain, or hostname is hardcoded in tasks or templates.
+#
+# USAGE QUICK-REFERENCE
+#   Normal internet-connected install:  defaults work as-is.
+#   Air-gapped Artifactory mirror:       set docker_repo_baseurl + docker_repo_gpgkey
+#                                        + docker_insecure_registries (if HTTP).
+#   Customise container subnets:         set docker_bip + docker_default_address_pools.
+
+# ── Install source ──────────────────────────────────────────────────────────
+#
+# By default the role configures Docker's official upstream repo.
+# To use an Artifactory (or other) mirror, set docker_repo_baseurl.
+# If left empty the upstream defaults below are used per OS family.
+#
+# Example (air-gap via Artifactory):
+#   docker_repo_baseurl: "https://artifactory.example.com/artifactory/docker-ce-remote/linux/centos/{{ ansible_distribution_major_version }}/$basearch/stable"
+#   docker_repo_gpgkey: "https://artifactory.example.com/artifactory/docker-ce-remote/linux/centos/gpg"
+#   docker_repo_sslverify: false    # when Artifactory uses a self-signed cert
+docker_repo_baseurl: ""
+
+# GPG key URL or inline armored key content.
+# For EL: imported via ansible.builtin.rpm_key.
+# For Debian: saved as /etc/apt/keyrings/docker.asc and referenced in signed-by.
+# When empty, the role uses the official Docker upstream key URL.
+docker_repo_gpgkey: ""
+
+# Whether to verify the GPG signature on packages from the repo.
+# Set false only when using an internal mirror that does not re-sign packages.
+docker_repo_gpgcheck: true
+
+# Whether to verify the TLS certificate of the repo URL (EL: sslverify in yum_repository;
+# Debian: download via get_url with validate_certs). Set false for self-signed Artifactory.
+docker_repo_sslverify: true
+
+# Packages to install. Override for air-gap environments where the package
+# names differ (e.g. when packages are re-published under different names).
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+
+# Pin a specific Docker CE version (empty = latest from repo).
+# Example: "26.1.4" — appended as docker-ce-26.1.4 on EL, docker-ce=26.1.4~3-0~ubuntu on Debian.
+docker_version: ""
+
+# ── daemon.json ─────────────────────────────────────────────────────────────
+#
+# All keys are composed into daemon.json via the template; keys whose variable
+# is empty/false/[] are OMITTED from the rendered file (stays clean).
+# Use docker_extra_daemon_options to merge arbitrary extra keys last.
+
+# Docker data directory. Relocate to a data-disk mount for volume-heavy hosts.
+docker_data_root: "/opt/docker"
+
+# Default bridge IP and netmask for the docker0 interface.
+# Set this to avoid subnet collisions with your LAN or other services.
+# Example: "172.17.0.1/24"
+docker_bip: ""
+
+# Bridge IPAM address pools for user-created bridge networks.
+# List of dicts with `base` (CIDR) and `size` (prefix length of each subnet).
+# Example:
+#   docker_default_address_pools:
+#     - base: "172.18.0.0/16"
+#       size: 24
+docker_default_address_pools: []
+
+# Registries reachable over plain HTTP or with a self-signed TLS certificate.
+# Docker will skip TLS verification for these registries.
+# Example (air-gap Artifactory Docker registry):
+#   docker_insecure_registries:
+#     - "artifactory.example.com:5000"
+docker_insecure_registries: []
+
+# Pull-through registry mirrors. Docker tries mirrors before going to Docker Hub.
+# Example:
+#   docker_registry_mirrors:
+#     - "https://artifactory.example.com/artifactory/docker-hub-remote"
+docker_registry_mirrors: []
+
+# Log driver for all containers.
+docker_log_driver: "json-file"
+
+# Log opts merged into daemon.json log-opts.
+# max-size / max-file are populated from the two convenience vars below when
+# the driver is json-file or local; anything in docker_log_opts wins over them.
+docker_log_max_size: "50m"
+docker_log_max_file: "5"
+docker_log_opts: {}
+
+# Storage driver (overlay2 is the Linux default and recommended choice).
+docker_storage_driver: "overlay2"
+
+# Keep containers running while the daemon restarts (e.g. for config changes).
+# Set false in swarm mode — dockerd refuses `swarm init` while it is enabled.
+docker_live_restore: true
+
+# Default ulimits applied to all containers (optional).
+# Example:
+#   docker_default_ulimits:
+#     nofile:
+#       soft: 65536
+#       hard: 65536
+docker_default_ulimits: {}
+
+# Arbitrary extra keys merged into daemon.json last (highest precedence).
+# Use this for any daemon option not explicitly modelled above.
+# Example:
+#   docker_extra_daemon_options:
+#     max-concurrent-downloads: 10
+#     debug: true
+docker_extra_daemon_options: {}
+
+# ── Service & users ──────────────────────────────────────────────────────────
+
+# Users to add to the `docker` group (grants unprivileged docker socket access).
+# Example:
+#   docker_users:
+#     - deploy
+#     - ansible
+docker_users: []

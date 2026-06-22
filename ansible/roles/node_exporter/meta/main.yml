@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: node_exporter
+  author: longy
+  description: >-
+    Install Prometheus node_exporter as a systemd service — download the pinned
+    binary, create the service user, and manage the unit + listen address.
+    Version, listen address, and enabled collectors are role-variable overrides.
+  license: MIT
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - prometheus
+    - node_exporter
+    - monitoring
+    - metrics
+dependencies: []

@@ -1,0 +1,28 @@
+---
+# stroom_agent/tasks/main.yml
+#
+# A no-tags run is a full idempotent converge:
+#   install -> configure -> service
+# Refinement tags narrow it for fast iteration.
+
+- name: Assert required variables are set
+  ansible.builtin.assert:
+    that:
+      - stroom_datafeed_url | length > 0
+      - stroom_feed_name | length > 0
+    fail_msg: >-
+      stroom_datafeed_url and stroom_feed_name must both be non-empty.
+      Set them in inventory group_vars or host_vars.
+  tags: [install, configure, service]
+
+- name: Install sender script and optional binary
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Write configuration env-file
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure]
+
+- name: Manage systemd service and timer
+  ansible.builtin.import_tasks: service.yml
+  tags: [service]

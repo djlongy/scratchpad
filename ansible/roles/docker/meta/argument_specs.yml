@@ -1,0 +1,174 @@
+---
+argument_specs:
+  main:
+    short_description: "Install and configure Docker CE (EL + Debian/Ubuntu, internet or air-gap)"
+    description:
+      - >-
+        Installs Docker CE from the official upstream repo or from a custom
+        mirror (e.g. Artifactory), renders a fully-variable daemon.json, enables
+        the service, and optionally adds users to the docker group.
+      - >-
+        Portable across EL (RHEL/AlmaLinux 8/9) and Debian/Ubuntu with no OS
+        conditionals in the caller. No environment labels, IPs, or domains are
+        hardcoded — all runtime values come from inventory.
+      - >-
+        Air-gap: set docker_repo_baseurl + docker_repo_gpgkey (+ docker_repo_sslverify
+        false for self-signed Artifactory). docker_insecure_registries adds the
+        registry to daemon.json so Docker skips TLS verification at pull time.
+
+    options:
+      # ── Install source ─────────────────────────────────────────────────
+      docker_repo_baseurl:
+        type: str
+        default: ""
+        description: >-
+          Custom Docker CE repo base URL. When empty the official
+          download.docker.com repo is used. Set to an Artifactory-hosted
+          mirror for air-gapped deployments.
+
+      docker_repo_gpgkey:
+        type: str
+        default: ""
+        description: >-
+          GPG key URL (or inline armored content) for the repo. When empty
+          the official Docker upstream key URL is used. For EL this is
+          imported via rpm_key; for Debian it is saved as
+          /etc/apt/keyrings/docker.asc.
+
+      docker_repo_gpgcheck:
+        type: bool
+        default: true
+        description: >-
+          Verify GPG signatures on packages from the repo. Set false only
+          when using an internal mirror that does not re-sign packages.
+
+      docker_repo_sslverify:
+        type: bool
+        default: true
+        description: >-
+          Verify the TLS certificate of the repo URL. Set false when
+          Artifactory (or another internal mirror) uses a self-signed
+          certificate.
+
+      docker_packages:
+        type: list
+        elements: str
+        description: >-
+          Package list to install. Override when the air-gap mirror
+          publishes packages under different names.
+
+      docker_version:
+        type: str
+        default: ""
+        description: >-
+          Pin a specific Docker CE version (e.g. "26.1.4"). When empty,
+          the latest version available in the repo is installed. Applied
+          to docker-ce, docker-ce-cli, and containerd.io only.
+
+      # ── daemon.json ────────────────────────────────────────────────────
+      docker_data_root:
+        type: str
+        default: "/opt/docker"
+        description: >-
+          Docker data directory (daemon.json data-root). Relocate to a
+          data-disk mount for volume-heavy hosts (e.g. /opt/docker on a
+          second disk provisioned by the storage role).
+
+      docker_bip:
+        type: str
+        default: ""
+        description: >-
+          Bridge IP and prefix for the docker0 interface (daemon.json bip).
+          Example: "172.17.0.1/24". When empty the key is omitted and
+          Docker uses its default (172.17.0.1/16).
+
+      docker_default_address_pools:
+        type: list
+        elements: dict
+        default: []
+        description: >-
+          Bridge IPAM pools for user-created bridge networks
+          (daemon.json default-address-pools). Each entry has keys
+          `base` (CIDR) and `size` (prefix length of each subnet).
+          Example: [{base: "172.18.0.0/16", size: 24}].
+
+      docker_insecure_registries:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Registries reachable over plain HTTP or with a self-signed TLS
+          certificate. Docker skips TLS verification for these.
+          Example for an Artifactory Docker registry: ["artifactory.example.com:5000"].
+
+      docker_registry_mirrors:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Pull-through registry mirrors consulted before Docker Hub.
+          Example: ["https://artifactory.example.com/artifactory/docker-hub-remote"].
+
+      docker_log_driver:
+        type: str
+        default: "json-file"
+        description: "Default log driver for all containers (daemon.json log-driver)."
+
+      docker_log_max_size:
+        type: str
+        default: "50m"
+        description: >-
+          Per-container log file size limit (daemon.json log-opts max-size).
+          Applied only when docker_log_driver is json-file or local.
+
+      docker_log_max_file:
+        type: str
+        default: "5"
+        description: >-
+          Number of rotated log files per container (daemon.json log-opts max-file).
+          Applied only when docker_log_driver is json-file or local.
+
+      docker_log_opts:
+        type: dict
+        default: {}
+        description: >-
+          Free-form log-opts merged over max-size/max-file (highest precedence
+          within log-opts). Use this to add driver-specific options such as
+          syslog-address or gelf-address.
+
+      docker_storage_driver:
+        type: str
+        default: "overlay2"
+        description: "Storage driver (daemon.json storage-driver). overlay2 is recommended."
+
+      docker_live_restore:
+        type: bool
+        default: true
+        description: >-
+          Keep containers running when the daemon restarts (daemon.json live-restore).
+          Must be false in swarm mode — dockerd refuses `swarm init` when enabled.
+
+      docker_default_ulimits:
+        type: dict
+        default: {}
+        description: >-
+          Default ulimits applied to all containers (daemon.json default-ulimits).
+          When empty the key is omitted.
+          Example: {nofile: {soft: 65536, hard: 65536}}.
+
+      docker_extra_daemon_options:
+        type: dict
+        default: {}
+        description: >-
+          Arbitrary extra keys merged into daemon.json last (highest precedence —
+          wins over all role-managed keys). Use for any daemon option not
+          explicitly modelled by this role.
+
+      # ── Service & users ────────────────────────────────────────────────
+      docker_users:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Users to add to the docker group (grants unprivileged socket access).
+          The users phase is skipped entirely when this list is empty.

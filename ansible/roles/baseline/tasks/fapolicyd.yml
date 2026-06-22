@@ -30,6 +30,18 @@
   when: baseline_fapolicyd_rules | default([]) | length > 0
   notify: Recompile fapolicyd rules
 
+- name: fapolicyd | Add paths to the trust database
+  # Stronger than an allow-rule — fapolicyd records each file's hash, so trusted
+  # binaries (VS Code, downloaded agents) execute even under enforcing. Adding a
+  # directory trusts its files recursively.
+  ansible.builtin.command: "fapolicyd-cli --file add {{ item }}"
+  loop: "{{ baseline_fapolicyd_trust_paths }}"
+  register: _baseline_fapolicyd_trust
+  changed_when: "'added' in (_baseline_fapolicyd_trust.stdout | default('') | lower) or 'added' in (_baseline_fapolicyd_trust.stderr | default('') | lower)"
+  failed_when: false
+  when: baseline_fapolicyd_trust_paths | length > 0
+  notify: Restart fapolicyd
+
 - name: fapolicyd | Enable and start
   ansible.builtin.service:
     name: fapolicyd

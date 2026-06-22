@@ -1,54 +1,66 @@
 ---
-- name: Update hostname and timezone
-  ansible.builtin.include_tasks: ../common/tasks/update_hostname.yml
-  tags: [baseline, packages]
+# roles/baseline/tasks/main.yml
+# Distro-agnostic SOE Linux baseline. Phases run in a deliberate dependency
+# order so the playbook is fast and idempotent:
+#
+#   identity (hostname/tz)
+#     -> storage (disks/mounts)
+#       -> CA trust            (trust corp PKI before talking to mirrors)
+#         -> repos             (RHSM/EPEL/CRB + internal mirrors)
+#           -> crypto/FIPS     (uses tooling from the repos above)
+#             -> packages      (update -> required/optional -> versionlock)
+#               -> OS tuning   (sysctls: map_count, keepalive, ipv6)
+#                 -> distro specifics (users/sudo/keys, fail2ban, pip)
+#                   -> ssh -> network -> firewall -> chrony
+#                     -> selinux -> fapolicyd -> CIS -> logging
+#                       -> breakglass -> agents -> backup
+#
+# Each phase is import_tasks (compile-time, so --tags propagate into the
+# included tasks). No-tags runs everything; tags only *narrow* the run.
 
-- name: Update disk sizes
-  ansible.builtin.include_tasks: ../common/tasks/update_disks.yml
-  tags: [baseline, packages]
+# ── Identity ────────────────────────────────────────────────────────────────
+- name: Set hostname and timezone
+  ansible.builtin.include_tasks:
+    file: ../common/tasks/update_hostname.yml
+    apply:
+      tags: [baseline, hostname]
+  tags: [baseline, hostname]
 
-- name: Ensure /opt fstab uses UUID
-  ansible.builtin.include_tasks: fstab_opt.yml
-  tags: [baseline, packages]
-
-- name: Check whether /opt is mounted
-  ansible.builtin.command: /usr/bin/mountpoint -q /opt
-  register: opt_mount_check
-  changed_when: false
-  failed_when: false
-  tags: [baseline, packages]
-
-- name: Provision and mount /opt from data disk (fallback)
-  ansible.builtin.include_tasks: ../common/tasks/mounts.yml
+# ── Storage: disks + mounts via the universal `storage` role ─────────────────
+- name: Manage disks and mounts via the storage role
+  ansible.builtin.include_role:
+    name: storage
+    apply:
+      tags: [baseline, storage]
   vars:
-    datavols:
-      - lv: "{{ baseline_opt_lv }}"
-        vg: "{{ baseline_opt_vg }}"
-        mount: /opt
-        size: "100%FREE"
-        sefcontext: usr_t
-    mount_opts: "defaults,noatime,nofail,x-systemd.device-timeout=30"
-  when:
-    - opt_mount_check.rc != 0
-    - ansible_os_family == "RedHat"
-  tags: [baseline, packages]
+    storage_volumes: "{{ baseline_storage_volumes }}"
+    storage_provision: true
+  tags: [baseline, storage]
 
-- name: Ensure /opt is world-traversable
+- name: Ensure /opt is traversable
+  # 0755 (root:root) is the distro default and CIS-compliant — CIS only flags
+  # world-WRITABLE dirs (group/other +w), which this is not. Override via
+  # baseline_opt_mode if your benchmark mandates something tighter.
   ansible.builtin.file:
     path: /opt
     state: directory
     owner: root
     group: root
-    mode: "0755"
-  when: opt_mount_check.rc == 0
-  tags: [baseline, packages]
+    mode: "{{ baseline_opt_mode }}"
+  tags: [baseline, storage]
 
-- name: "{{ base_task_name }}"
-  ansible.builtin.include_tasks: "{{ ansible_distribution | lower }}.yml"
-  when: ansible_distribution in ['Ubuntu', 'RedHat', 'AlmaLinux']
-  tags: [baseline, users, sudo, ssh_keys, ipv6]
+# ── Authorized keys (EARLY — before any hardening can restrict key algorithms) ─
+# Guarantees a FIPS-approved automation key is authorised before crypto/FIPS and
+# CIS/OpenSCAP land, so hardening can't lock automation out.
+- name: Ensure automation/operator SSH keys are authorised
+  ansible.builtin.include_tasks:
+    file: authorized_keys.yml
+    apply:
+      tags: [baseline, authorized_keys, ssh]
+  when: baseline_authorized_keys | length > 0
+  tags: [baseline, authorized_keys, ssh]
 
-# ── SOE desktop: distro-agnostic, opt-in via override vars ───────────────────
+# ── CA trust (before repos: internal mirrors are often corp-CA-signed) ───────
 - name: Install trusted CA certificates
   ansible.builtin.include_tasks:
     file: ca_trust.yml
@@ -57,14 +69,63 @@
   when: (baseline_trusted_cas | length > 0) or (baseline_trusted_ca_urls | length > 0)
   tags: [baseline, ca_trust]
 
-- name: Configure custom package repositories
+# ── Outbound proxy (Squid client) — before repos so package ops can reach it ─
+- name: Configure the outbound HTTP(S) proxy
+  ansible.builtin.include_tasks:
+    file: proxy.yml
+    apply:
+      tags: [baseline, proxy]
+  when: baseline_proxy_url | length > 0
+  tags: [baseline, proxy]
+
+# ── Repositories (RHSM / EPEL / CRB + custom mirrors, air-gap disables) ──────
+- name: Configure package repositories
   ansible.builtin.include_tasks:
     file: repos.yml
     apply:
       tags: [baseline, repos]
-  when: (baseline_dnf_repos | length > 0) or (baseline_apt_repos | length > 0) or (baseline_dnf_repos_disable | length > 0)
+  when: ansible_os_family in ['RedHat', 'Debian']
   tags: [baseline, repos]
 
+# NOTE: crypto policy & FIPS runs LATE (after CIS) — see below. OpenSCAP/CIS
+# rewrites the crypto-policy, and FIPS initramfs must regenerate after the kernel
+# upgrade, so crypto has to be the LAST word.
+
+# ── Package baseline (update -> required/optional -> versionlock -> tools) ────
+- name: Install the package baseline
+  ansible.builtin.include_tasks:
+    file: packages.yml
+    apply:
+      tags: [baseline, packages]
+  tags: [baseline, packages]
+
+# ── OS tuning (sysctls) ──────────────────────────────────────────────────────
+- name: Apply OS tuning sysctls
+  ansible.builtin.include_tasks:
+    file: os_tuning.yml
+    apply:
+      tags: [baseline, tuning, sysctl, ipv6]
+  tags: [baseline, tuning, sysctl, ipv6]
+
+# ── Distro specifics (users/sudo/keys, fail2ban, pip mirror) ─────────────────
+- name: "{{ base_task_name }}"
+  ansible.builtin.include_tasks:
+    file: "{{ ansible_distribution | lower }}.yml"
+    apply:
+      tags: [baseline, users, sudo, ssh_keys]
+  when: ansible_distribution in ['Ubuntu', 'RedHat', 'AlmaLinux']
+  tags: [baseline, users, sudo, ssh_keys]
+
+# ── SSH server engine ────────────────────────────────────────────────────────
+- name: Configure the SSH server
+  ansible.builtin.include_tasks:
+    file: ssh.yml
+    apply:
+      tags: [baseline, ssh]
+  when: baseline_ssh_manage | bool
+  tags: [baseline, ssh]
+
+# ── pip index + packages (internal PyPI mirror) ──────────────────────────────
 - name: Configure pip index and packages
   ansible.builtin.include_tasks:
     file: pip.yml
@@ -73,6 +134,7 @@
   when: (baseline_pip_index_url | default('') | length > 0) or (baseline_pip_packages | length > 0)
   tags: [baseline, pip]
 
+# ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
 - name: Configure network (IP/DNS, dynamic interface)
   ansible.builtin.include_tasks:
     file: network.yml
@@ -81,6 +143,7 @@
   when: baseline_network_manage | bool
   tags: [baseline, network]
 
+# ── Firewall (firewalld zones/services; opt-in) ──────────────────────────────
 - name: Configure firewall zones/services
   ansible.builtin.include_tasks:
     file: firewall.yml
@@ -89,14 +152,36 @@
   when: baseline_firewall_manage | bool
   tags: [baseline, firewall]
 
-- name: Manage SELinux state (EL)
+# ── Bastion conduit (router for SSH jump + monitoring; opt-in per group) ─────
+- name: Configure bastion routing and monitoring conduit
+  ansible.builtin.include_tasks:
+    file: bastion.yml
+    apply:
+      tags: [baseline, bastion]
+  when: baseline_bastion_enabled | bool
+  tags: [baseline, bastion]
+
+# ── Time sync (chrony) ───────────────────────────────────────────────────────
+- name: Configure chrony time sync
+  ansible.builtin.include_tasks:
+    file: chrony.yml
+    apply:
+      tags: [baseline, chrony, ntp]
+  when: baseline_ntp_manage | bool
+  tags: [baseline, chrony, ntp]
+
+# ── SELinux (EL; opt-in by setting a state) ──────────────────────────────────
+- name: Manage SELinux state and file contexts (EL)
   ansible.builtin.include_tasks:
     file: selinux.yml
     apply:
       tags: [baseline, selinux]
-  when: baseline_selinux_state | default('') | length > 0
+  when:
+    - ansible_os_family == "RedHat"
+    - (baseline_selinux_state | default('') | length > 0) or (baseline_selinux_fcontexts | length > 0)
   tags: [baseline, selinux]
 
+# ── fapolicyd (EL; opt-in) ───────────────────────────────────────────────────
 - name: Configure fapolicyd (EL)
   ansible.builtin.include_tasks:
     file: fapolicyd.yml
@@ -107,14 +192,41 @@
     - ansible_os_family == "RedHat"
   tags: [baseline, fapolicyd]
 
-- name: Apply CIS-aligned hardening (no FIPS)
+# ── CIS hardening (upstream role hook + custom org controls) ─────────────────
+- name: Apply CIS hardening
   ansible.builtin.include_tasks:
-    file: hardening_cis.yml
+    file: cis.yml
     apply:
       tags: [baseline, cis, hardening]
-  when: baseline_cis_hardening | bool
+  when: (baseline_cis_upstream_enabled | bool) or (baseline_cis_custom_enabled | bool)
   tags: [baseline, cis, hardening]
 
+# ── Crypto policy & FIPS (EL) — LAST hardening word, reconciles over OpenSCAP ─
+# Deliberately AFTER CIS: OpenSCAP/CIS rewrites the system crypto-policy, so FIPS
+# must run last to win. crypto.yml is idempotent (checks state before acting).
+# Tagged with cis + hardening as well as crypto/fips, so ANY hardening-scoped run
+# (--tags cis | fips | crypto | hardening, or a full run) re-asserts the policy
+# and can't leave the host in a half-FIPS state.
+- name: Configure crypto policy and FIPS mode
+  ansible.builtin.include_tasks:
+    file: crypto.yml
+    apply:
+      tags: [baseline, crypto, fips, cis, hardening]
+  when:
+    - ansible_os_family == "RedHat"
+    - fips_enabled | bool or (baseline_crypto_policy | length > 0)
+  tags: [baseline, crypto, fips, cis, hardening]
+
+# ── Login banner (all hosts) ─────────────────────────────────────────────────
+- name: Configure login banner
+  ansible.builtin.include_tasks:
+    file: banner.yml
+    apply:
+      tags: [baseline, banner]
+  when: baseline_banner_enabled | bool
+  tags: [baseline, banner]
+
+# ── Logging baseline (journald / logrotate / auditd) ─────────────────────────
 - name: Apply logging baseline
   ansible.builtin.include_tasks:
     file: logging.yml
@@ -122,17 +234,24 @@
       tags: [baseline, logging]
   tags: [baseline, logging]
 
+# ── Breakglass emergency local-admin (opt-in) ────────────────────────────────
 - name: Configure breakglass admin account
   ansible.builtin.include_tasks:
     file: breakglass.yml
     apply:
-      tags: [breakglass, baseline]
+      tags: [baseline, breakglass]
   when: baseline_breakglass_vault_secret | length > 0
-  tags: [breakglass, baseline]
+  tags: [baseline, breakglass]
 
-# openclaw moved to the dedicated `soe` role (roles/soe) — apply it alongside
-# baseline in your site playbook for the relevant hosts.
+# ── Observability / security agents (separate roles, gated by enable_*) ──────
+- name: Manage observability and security agents
+  ansible.builtin.include_tasks:
+    file: agents.yml
+    apply:
+      tags: [baseline, agents]
+  tags: [baseline, agents]
 
+# ── Backup capability ────────────────────────────────────────────────────────
 - name: Configure borg backup capabilities
   ansible.builtin.include_tasks:
     file: borg_backup.yml
@@ -140,8 +259,9 @@
       tags: [baseline, backup]
   tags: [baseline, backup]
 
-- name: Reboot System
+# ── Explicit reboot (opt-in only) ────────────────────────────────────────────
+- name: Reboot system
   ansible.builtin.reboot:
     msg: "Rebooting the system to apply changes."
     reboot_timeout: 300
-  tags: never, reboot
+  tags: [never, reboot]

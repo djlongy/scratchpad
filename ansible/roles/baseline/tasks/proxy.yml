@@ -1,0 +1,48 @@
+---
+# roles/baseline/tasks/proxy.yml
+# Outbound HTTP(S) proxy CLIENT config (e.g. a Squid proxy for general internet
+# egress). Applied early — before repos/packages — so upstream fetches succeed.
+# Internal destinations (Artifactory, the estate domain) must be listed in
+# baseline_proxy_no_proxy so they bypass the proxy.
+#
+# This configures the host to USE a proxy. The Squid SERVER itself is a separate
+# concern (see the `squid` role).
+
+- name: Proxy | Configure the system-wide proxy environment
+  ansible.builtin.blockinfile:
+    path: /etc/environment
+    marker: "# {mark} ANSIBLE MANAGED BASELINE PROXY"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+    block: |
+      http_proxy={{ baseline_proxy_url }}
+      https_proxy={{ baseline_proxy_url }}
+      HTTP_PROXY={{ baseline_proxy_url }}
+      HTTPS_PROXY={{ baseline_proxy_url }}
+      no_proxy={{ baseline_proxy_no_proxy }}
+      NO_PROXY={{ baseline_proxy_no_proxy }}
+
+- name: Proxy | Configure the dnf proxy (EL)
+  community.general.ini_file:
+    path: /etc/dnf/dnf.conf
+    section: main
+    option: proxy
+    value: "{{ baseline_proxy_url }}"
+    owner: root
+    group: root
+    mode: "0644"
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Proxy | Configure the APT proxy (Debian)
+  ansible.builtin.copy:
+    content: |
+      Acquire::http::Proxy "{{ baseline_proxy_url }}";
+      Acquire::https::Proxy "{{ baseline_proxy_url }}";
+    dest: /etc/apt/apt.conf.d/95baseline-proxy
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_os_family == "Debian"

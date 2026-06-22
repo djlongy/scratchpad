@@ -1,0 +1,18 @@
+---
+# velociraptor/tasks/main.yml
+#
+# A no-tags run is a full idempotent reconcile:
+#   install -> configure -> service
+# Refinement tags narrow it (--tags install / configure / service).
+
+- name: Install Velociraptor binary
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Deploy Velociraptor client configuration
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure]
+
+- name: Manage Velociraptor systemd service
+  ansible.builtin.import_tasks: service.yml
+  tags: [service]

@@ -1,0 +1,64 @@
+---
+argument_specs:
+  main:
+    short_description: Install and configure ClamAV antivirus.
+    description:
+      - Installs ClamAV packages appropriate for the OS family (RedHat/EL or
+        Debian/Ubuntu), manages the freshclam signature-update service, and
+        optionally enables the resident clamd daemon and a systemd-scheduled scan.
+      - On RedHat/EL hosts EPEL must be enabled before this role runs — the role
+        does not install EPEL itself.
+    options:
+      clamav_enable_freshclam:
+        type: bool
+        default: true
+        description: >-
+          Enable and start the freshclam systemd service for periodic signature
+          database updates.
+      clamav_database_mirror:
+        type: str
+        default: ""
+        description: >-
+          Override the DatabaseMirror in freshclam.conf with a private or
+          air-gap mirror URL.  Empty string leaves the distro default
+          (db.local.clamav.net) untouched.
+      clamav_enable_daemon:
+        type: bool
+        default: false
+        description: >-
+          Install and start the resident clamd daemon (on-access scanning,
+          faster scan client).  Requires extra daemon packages (~700 MB RAM).
+      clamav_scan_enabled:
+        type: bool
+        default: false
+        description: >-
+          Deploy and enable the clamav-scan.timer + clamav-scan.service systemd
+          units for a scheduled recursive scan.
+      clamav_scan_paths:
+        type: list
+        elements: str
+        default:
+          - /home
+          - /tmp
+          - /var/tmp
+        description: >-
+          List of directories to scan recursively.  Passed as positional
+          arguments to clamscan (or clamdscan when clamav_enable_daemon is
+          true).
+      clamav_scan_schedule:
+        type: str
+        default: "Sun *-*-* 02:00:00"
+        description: >-
+          systemd OnCalendar expression controlling when the scan timer fires.
+      clamav_remove_infected:
+        type: bool
+        default: false
+        description: >-
+          Pass --remove to clamscan/clamdscan to delete infected files.
+          Use with caution — removal is irreversible.
+      clamav_scan_log:
+        type: str
+        default: /var/log/clamav/scan.log
+        description: >-
+          Absolute path for the scan output log written by the scheduled scan
+          service.

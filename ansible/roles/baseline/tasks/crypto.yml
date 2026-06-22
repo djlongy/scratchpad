@@ -1,0 +1,89 @@
+---
+# roles/baseline/tasks/crypto.yml
+# Crypto policy + FIPS enablement (EL only). Driven by two inputs:
+#   fips_enabled            (bool)  -> fips-mode-setup --enable/--disable
+#   baseline_crypto_policy  (str)   -> update-crypto-policies --set <policy>
+# Both are idempotent (state is checked before acting). FIPS toggling requires
+# a reboot to take effect; the role flags this and only reboots itself when
+# baseline_allow_reboot is true.
+
+- name: Crypto | Ensure crypto-policies tooling is present
+  ansible.builtin.dnf:
+    name:
+      - crypto-policies
+      - crypto-policies-scripts
+    state: present
+
+# ── System-wide crypto policy (skipped under FIPS — FIPS sets its own) ────────
+- name: Crypto | Read the current crypto policy
+  ansible.builtin.command: update-crypto-policies --show
+  register: _baseline_crypto_show
+  changed_when: false
+  when:
+    - baseline_crypto_policy | length > 0
+    - not (fips_enabled | bool)
+
+- name: Crypto | Set the system-wide crypto policy
+  ansible.builtin.command: "update-crypto-policies --set {{ baseline_crypto_policy }}"
+  register: _baseline_crypto_set
+  changed_when: _baseline_crypto_set.rc == 0
+  when:
+    - baseline_crypto_policy | length > 0
+    - not (fips_enabled | bool)
+    - (_baseline_crypto_show.stdout | default('') | trim) != baseline_crypto_policy
+
+# ── FIPS mode ────────────────────────────────────────────────────────────────
+- name: Crypto | Check current FIPS mode
+  ansible.builtin.command: fips-mode-setup --check
+  register: _baseline_fips_check
+  changed_when: false
+  failed_when: false
+
+- name: Crypto | Enable FIPS mode
+  ansible.builtin.command: fips-mode-setup --enable
+  register: _baseline_fips_enable
+  changed_when: _baseline_fips_enable.rc == 0
+  when:
+    - fips_enabled | bool
+    - "'FIPS mode is enabled' not in _baseline_fips_check.stdout"
+  notify: Reboot for crypto change
+
+- name: Crypto | Disable FIPS mode
+  ansible.builtin.command: fips-mode-setup --disable
+  register: _baseline_fips_disable
+  changed_when: _baseline_fips_disable.rc == 0
+  when:
+    - not (fips_enabled | bool)
+    - "'FIPS mode is enabled' in _baseline_fips_check.stdout"
+  notify: Reboot for crypto change
+
+# Re-assert the FIPS crypto-policy even when FIPS is already kernel-enabled.
+# OpenSCAP/CIS rewrites the system crypto-policy, and the enable task above is
+# skipped on a re-run (idempotent) — so without this an already-FIPS host would
+# keep OpenSCAP's non-FIPS policy and sit in a half-FIPS state. This is what
+# makes the phase safe under --tags cis / a re-run. Idempotent: only sets when
+# the policy is not already FIPS.
+- name: Crypto | Read the current crypto policy (FIPS reconcile)
+  ansible.builtin.command: update-crypto-policies --show
+  register: _baseline_crypto_now
+  changed_when: false
+  when: fips_enabled | bool
+
+- name: Crypto | Re-assert the FIPS crypto policy (reconcile over CIS/OpenSCAP)
+  ansible.builtin.command: update-crypto-policies --set FIPS
+  register: _baseline_fips_reassert
+  changed_when: _baseline_fips_reassert.rc == 0
+  when:
+    - fips_enabled | bool
+    - (_baseline_crypto_now.stdout | default('') | trim) != 'FIPS'
+  notify: Reboot for crypto change
+
+- name: Crypto | Warn that a reboot is required to finish the FIPS change
+  ansible.builtin.debug:
+    msg: >-
+      FIPS/crypto-policy changed but baseline_allow_reboot is false — this host
+      must be rebooted (or at least sshd restarted) before the change fully takes
+      effect. Reboot manually or re-run with --tags reboot.
+  when:
+    - (_baseline_fips_enable is changed) or (_baseline_fips_disable is changed) or (_baseline_fips_reassert is changed)
+    - not (baseline_allow_reboot | bool)

@@ -1,0 +1,46 @@
+---
+# roles/baseline/tasks/ssh.yml
+# Dynamic SSH server config via a sshd_config.d drop-in (EL & Ubuntu both
+# Include that directory by default), plus an optional ssh_config.d ProxyJump
+# drop-in for bastion/jump-host egress. Replaces the old per-distro keepalive
+# copy and the monolithic sshd template.
+
+- name: SSH | Remove the legacy keepalive drop-in
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/99-keepalive.conf
+    state: absent
+
+- name: SSH | Deploy the managed sshd drop-in
+  ansible.builtin.template:
+    src: sshd-baseline.conf.j2
+    dest: /etc/ssh/sshd_config.d/60-baseline.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "sshd -t -f %s"
+  notify: Reload sshd
+
+# ── Bastion / jump-host client config (opt-in) ───────────────────────────────
+- name: SSH | Ensure ssh_config.d exists
+  ansible.builtin.file:
+    path: /etc/ssh/ssh_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: baseline_ssh_bastion_host | length > 0
+
+- name: SSH | Deploy the bastion ProxyJump drop-in
+  ansible.builtin.template:
+    src: ssh-bastion.conf.j2
+    dest: /etc/ssh/ssh_config.d/60-bastion.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: baseline_ssh_bastion_host | length > 0
+
+- name: SSH | Remove the bastion drop-in when disabled
+  ansible.builtin.file:
+    path: /etc/ssh/ssh_config.d/60-bastion.conf
+    state: absent
+  when: baseline_ssh_bastion_host | length == 0

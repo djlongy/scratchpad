@@ -1,0 +1,56 @@
+---
+# stroom_agent/tasks/install.yml — deploy directories + sender script + optional binary.
+
+# ── Directories ───────────────────────────────────────────────────────────────
+
+- name: Create stroom install directory
+  ansible.builtin.file:
+    path: "{{ stroom_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Create stroom config directory
+  ansible.builtin.file:
+    path: "{{ stroom_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+# ── Built-in shell sender script ──────────────────────────────────────────────
+
+- name: Deploy stroom send-to-stroom.sh sender script
+  ansible.builtin.template:
+    src: send-to-stroom.sh.j2
+    dest: "{{ stroom_install_dir }}/send-to-stroom.sh"
+    owner: root
+    group: root
+    mode: '0750'
+  notify: Reload systemd
+
+# ── Optional org-supplied binary ─────────────────────────────────────────────
+
+- name: Fetch org-supplied stroom-log-sender binary
+  ansible.builtin.get_url:
+    url: "{{ stroom_log_sender_url }}"
+    dest: "{{ stroom_install_dir }}/stroom-log-sender-{{ stroom_log_sender_version }}"
+    owner: root
+    group: root
+    mode: '0750'
+    # Skip download if the versioned binary already exists on the target.
+    creates: "{{ stroom_install_dir }}/stroom-log-sender-{{ stroom_log_sender_version }}"
+  when:
+    - stroom_log_sender_url | length > 0
+    - stroom_log_sender_version | length > 0
+
+- name: Symlink stroom-log-sender to versioned binary
+  ansible.builtin.file:
+    src: "{{ stroom_install_dir }}/stroom-log-sender-{{ stroom_log_sender_version }}"
+    dest: "{{ stroom_install_dir }}/stroom-log-sender"
+    state: link
+    force: true
+  when:
+    - stroom_log_sender_url | length > 0
+    - stroom_log_sender_version | length > 0

@@ -1,0 +1,13 @@
+# Managed by Ansible — clamav role.  Do not edit by hand.
+[Unit]
+Description=ClamAV scheduled scan timer
+Documentation=man:systemd.timer(5)
+
+[Timer]
+OnCalendar={{ clamav_scan_schedule }}
+# Spread the start by up to 10 minutes to avoid thundering-herd on fleet runs.
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

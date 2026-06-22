@@ -1,0 +1,6 @@
+{# {{ ansible_managed }} — pre-auth console/SSH banner #}
+{{ baseline_banner_env_label }} environment — {{ inventory_hostname }}
+{% if baseline_banner_message | length > 0 %}
+{{ baseline_banner_message }}
+{% endif %}
+Authorised access only. Activity may be monitored and logged.

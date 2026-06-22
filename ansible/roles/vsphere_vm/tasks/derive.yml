@@ -35,6 +35,7 @@
       cpus: "{{ _hv.vsphere_vm_cpus | default(vsphere_vm_cpus) }}"
       memory_mb: "{{ _hv.vsphere_vm_memory_mb | default(vsphere_vm_memory_mb) }}"
       disk_gb: "{{ _hv.vsphere_vm_disk_gb | default(vsphere_vm_disk_gb) }}"
+      extra_disks: "{{ _hv.vsphere_vm_extra_disks | default([]) }}"
       folder: "{{ _hv.vsphere_vm_folder | default(vsphere_vm_folder) }}"
       datastore: "{{ _hv.vsphere_vm_datastore | default(vsphere_vm_datastore) }}"
       state: "{{ _hv.vsphere_vm_state | default(vsphere_vm_state) }}"

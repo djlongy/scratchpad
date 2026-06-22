@@ -1,44 +1,29 @@
 ---
-- when: ansible_os_family == "Debian"
+# roles/baseline/tasks/ubuntu.yml
+# Debian/Ubuntu distro specifics not covered by the generic baseline phases.
+- name: Ubuntu distro specifics
+  when: ansible_os_family == "Debian"
   block:
     - name: Install CIFS utils on Debian
       ansible.builtin.apt:
         name: cifs-utils
         state: present
-      when: ansible_os_family == "Debian"
-
-    - name: List exposed Docker ports
-      shell: docker ps --format {%raw%}"{{.Ports}}"{%endraw%} | grep -oP '\d{1,5}/\w+' | sort -n | uniq
-      register: docker_ports
-      changed_when: false
 
     - name: Install ufw on Ubuntu
       ansible.builtin.apt:
         name: ufw
         state: present
 
-    - name: Ensure ufw is started and enabled
+    - name: Ensure ufw is in the configured default state
       community.general.ufw:
         state: disabled
         policy: allow
-
-    - name: Set fact
-      ansible.builtin.set_fact:
-        docker_ports_stdout: "{{ docker_ports.stdout_lines + firewall_rules }}"
-
-    # - name: Add Docker ports to UFW
-    #   ansible.builtin.ufw:
-    #     rule: allow
-    #     port: "{{ item.split('/')[0] }}"
-    #     proto: "{{ item.split('/')[1] }}"
-    #     comment: "{{ item.split('/')[2] | default([omit])}}"
-    #   loop: "{{ docker_ports_stdout + firewall_rules }}"
-    #   when: docker_ports is defined
 
     - name: Install Fail2Ban
       ansible.builtin.apt:
         name: fail2ban
         state: present
+
     - name: Ensure the Fail2Ban service is enabled and started
       ansible.builtin.service:
         name: fail2ban
@@ -53,11 +38,3 @@
         group: root
         mode: "0644"
       notify: Restart Fail2Ban
-
-    - name: Set vm.max_map_count to 262144
-      ansible.builtin.sysctl:
-        name: vm.max_map_count
-        value: 262144
-        state: present
-        reload: true
-      become: true

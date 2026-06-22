@@ -1,0 +1,98 @@
+---
+# clamav/tasks/configure.yml — freshclam config + initial DB seed (tagged: configure)
+
+# ── Ensure DatabaseDirectory is set correctly ─────────────────────────────
+# The distro default usually matches db_dir; enforce it so we can rely on
+# the path in the DB-seed guard below.
+
+- name: Set DatabaseDirectory in freshclam.conf
+  ansible.builtin.lineinfile:
+    path: "{{ _clamav.freshclam_conf }}"
+    regexp: '^#?\s*DatabaseDirectory\s'
+    line: "DatabaseDirectory {{ _clamav.db_dir }}"
+    state: present
+    mode: '0644'
+  notify: Restart freshclam
+
+# ── Private/air-gap mirror ────────────────────────────────────────────────
+# Only touch DatabaseMirror when an override is explicitly set.
+# Empty string = leave distro default (db.local.clamav.net) in place.
+
+- name: Set DatabaseMirror in freshclam.conf
+  ansible.builtin.lineinfile:
+    path: "{{ _clamav.freshclam_conf }}"
+    regexp: '^#?\s*DatabaseMirror\s'
+    line: "DatabaseMirror {{ clamav_database_mirror }}"
+    state: present
+    mode: '0644'
+  when: clamav_database_mirror | length > 0
+  notify: Restart freshclam
+
+# ── FIPS compatibility (ClamAV >= 1.5 only) ──────────────────────────────────
+# FIPSCryptoHashLimits enforces FIPS-approved hashing so freshclam/clamd work
+# under FIPS. The option is unknown to ClamAV < 1.5 and will error there, so it
+# is only written when clamav_fips_compatible is set (operator's assertion that
+# ClamAV >= 1.5 is installed — see clamav_repo_* / the README).
+- name: Enable FIPSCryptoHashLimits in freshclam.conf
+  ansible.builtin.lineinfile:
+    path: "{{ _clamav.freshclam_conf }}"
+    regexp: '^#?\s*FIPSCryptoHashLimits\s'
+    line: "FIPSCryptoHashLimits yes"
+    state: present
+    mode: '0644'
+  when: clamav_fips_compatible | bool
+  notify: Restart freshclam
+
+- name: Enable FIPSCryptoHashLimits in clamd.conf
+  ansible.builtin.lineinfile:
+    path: "{{ _clamav.clamd_conf }}"
+    regexp: '^#?\s*FIPSCryptoHashLimits\s'
+    line: "FIPSCryptoHashLimits yes"
+    state: present
+    mode: '0644'
+  when:
+    - clamav_fips_compatible | bool
+    - clamav_enable_daemon | bool
+  notify: Restart clamd
+
+# ── Ensure scan log directory exists ─────────────────────────────────────
+
+- name: Create ClamAV log directory
+  ansible.builtin.file:
+    path: "{{ clamav_scan_log | dirname }}"
+    state: directory
+    owner: "{{ _clamav.clamav_user }}"
+    group: "{{ _clamav.clamav_group }}"
+    mode: '0750'
+
+# ── Initial DB seed ───────────────────────────────────────────────────────
+# Run freshclam once to download the database if it has not been seeded yet.
+# The guard checks for EITHER main.cvd (official build) OR main.cld (diff
+# patch).  On Debian the packaged clamav-freshclam service may auto-seed on
+# first install; the creates: guard prevents a double-download in that case.
+# The stop-before/start-after dance is required on Debian where the freshclam
+# service holds an exclusive lock on the DB directory.
+
+- name: Stop freshclam service before initial seed (prevents DB lock conflict)
+  ansible.builtin.systemd:
+    name: "{{ _clamav.freshclam_service }}"
+    state: stopped
+  failed_when: false
+  # Service may not be started yet on a first-run; ignore non-zero RC.
+
+- name: Check whether the ClamAV main database already exists
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: _clamav_db_stat
+  loop:
+    - "{{ _clamav.db_dir }}/main.cvd"
+    - "{{ _clamav.db_dir }}/main.cld"
+
+- name: Seed ClamAV signature database (initial download)
+  ansible.builtin.command:
+    cmd: freshclam
+  register: _clamav_freshclam_seed
+  changed_when: "'Database updated' in _clamav_freshclam_seed.stdout or
+                 'Downloading' in _clamav_freshclam_seed.stdout"
+  failed_when: _clamav_freshclam_seed.rc != 0
+  when: _clamav_db_stat.results | selectattr('stat.exists', 'equalto', true) | list | length == 0

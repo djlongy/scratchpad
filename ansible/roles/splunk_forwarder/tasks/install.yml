@@ -1,0 +1,84 @@
+---
+# splunk_forwarder/tasks/install.yml — [install]
+#
+# Downloads and extracts the Universal Forwarder tarball, creates the system
+# user, and seeds admin credentials on first run.
+
+# ── Pre-flight assertion ──────────────────────────────────────────────────────
+
+- name: Assert that splunk_forwarder_package_url is set
+  ansible.builtin.assert:
+    that:
+      - splunk_forwarder_package_url | length > 0
+    fail_msg: >-
+      splunk_forwarder_package_url must be set to the full URL of the Universal
+      Forwarder .tgz package (org mirror or Splunk download page).
+      Example: "https://mirror.example.com/splunkforwarder-9.3.0-linux-x86_64.tgz"
+    success_msg: "splunk_forwarder_package_url is set — proceeding with installation"
+
+# ── System user and group ─────────────────────────────────────────────────────
+
+- name: Create splunk system group
+  ansible.builtin.group:
+    name: "{{ splunk_forwarder_group }}"
+    system: true
+    state: present
+
+- name: Create splunk system user
+  ansible.builtin.user:
+    name: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+    home: "{{ splunk_forwarder_home }}"
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+    state: present
+
+# ── Download and extract ──────────────────────────────────────────────────────
+
+- name: Extract Splunk Universal Forwarder tarball
+  ansible.builtin.unarchive:
+    src: "{{ splunk_forwarder_package_url }}"
+    dest: /opt
+    remote_src: true
+    creates: "{{ splunk_forwarder_home }}/bin/splunk"
+    owner: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+
+- name: Ensure splunk_forwarder_home ownership is correct
+  ansible.builtin.file:
+    path: "{{ splunk_forwarder_home }}"
+    state: directory
+    owner: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+    mode: '0750'
+    recurse: true
+
+# ── First-run credential seed ─────────────────────────────────────────────────
+# user-seed.conf is read by Splunk on first start to set the admin password.
+# It must be written before the first `splunk start` (service.yml).
+# Guard: only when etc/passwd is absent (i.e. Splunk has never started here).
+
+- name: Check whether Splunk has been started before (etc/passwd sentinel)
+  ansible.builtin.stat:
+    path: "{{ splunk_forwarder_passwd_file }}"
+  register: _splunk_passwd_stat
+
+- name: Ensure etc/system/local directory exists for seed config
+  ansible.builtin.file:
+    path: "{{ splunk_forwarder_home }}/etc/system/local"
+    state: directory
+    owner: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+    mode: '0750'
+  when: not _splunk_passwd_stat.stat.exists
+
+- name: Seed admin credentials via user-seed.conf (first run only)
+  ansible.builtin.template:
+    src: user-seed.conf.j2
+    dest: "{{ splunk_forwarder_home }}/etc/system/local/user-seed.conf"
+    owner: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+    mode: '0600'
+  no_log: true
+  when: not _splunk_passwd_stat.stat.exists

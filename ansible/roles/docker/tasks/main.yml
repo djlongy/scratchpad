@@ -1,0 +1,17 @@
+---
+# roles/docker/tasks/main.yml
+# Phase orchestrator — imports each phase file and applies its tag.
+# A no-tag run executes all phases in order (refinement model, not enablement).
+
+- name: Import install phase
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Import configure phase
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure]
+
+- name: Import users phase
+  ansible.builtin.import_tasks: users.yml
+  tags: [users]
+  when: docker_users | length > 0

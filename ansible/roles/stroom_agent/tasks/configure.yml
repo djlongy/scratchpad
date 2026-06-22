@@ -1,0 +1,13 @@
+---
+# stroom_agent/tasks/configure.yml — write the env-file consumed by the sender.
+
+- name: Write stroom log-sender.conf env-file
+  ansible.builtin.template:
+    src: log-sender.conf.j2
+    dest: "{{ stroom_config_dir }}/log-sender.conf"
+    owner: root
+    group: root
+    mode: '0640'
+  # stroom_client_key may be sensitive; suppress task output.
+  no_log: "{{ stroom_client_key | length > 0 }}"
+  notify: Reload systemd

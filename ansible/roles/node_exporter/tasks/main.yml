@@ -1,0 +1,163 @@
+---
+# ============================================================================
+# RESOLVE VERSION
+# ============================================================================
+# Pin version in vars/main.yml (node_exporter_version) to avoid GitHub API.
+# If not pinned, fetch latest from GitHub once on the controller.
+
+- name: Get latest node_exporter release from GitHub
+  ansible.builtin.uri:
+    url: https://api.github.com/repos/prometheus/node_exporter/releases/latest
+    return_content: true
+    headers:
+      Accept: application/vnd.github+json
+  register: node_exporter_release
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  when: node_exporter_version is not defined
+
+- name: Set node_exporter version from GitHub response
+  ansible.builtin.set_fact:
+    node_exporter_version: "{{ node_exporter_release.json.tag_name | regex_replace('^v', '') }}"
+  run_once: true
+  when: node_exporter_version is not defined
+
+- name: Set node_exporter architecture fact
+  ansible.builtin.set_fact:
+    node_exporter_arch: "{{ node_exporter_arch_map[ansible_architecture] | default('amd64') }}"
+
+- name: Set node_exporter tarball filename
+  ansible.builtin.set_fact:
+    _ne_tarball: "node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}.tar.gz"
+    _ne_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}.tar.gz"
+
+# ============================================================================
+# USER AND DIRECTORIES
+# ============================================================================
+
+- name: Create node_exporter system group
+  ansible.builtin.group:
+    name: "{{ node_exporter_group }}"
+    system: true
+    state: present
+
+- name: Create node_exporter system user
+  ansible.builtin.user:
+    name: "{{ node_exporter_user }}"
+    group: "{{ node_exporter_group }}"
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+    state: present
+
+- name: Create textfile collector directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    owner: "{{ node_exporter_user }}"
+    group: "{{ node_exporter_group }}"
+    mode: '0755'
+
+# ============================================================================
+# DOWNLOAD ONCE ON CONTROLLER, PUSH BINARY TO HOSTS
+# ============================================================================
+
+- name: Check installed node_exporter version
+  ansible.builtin.command: "{{ node_exporter_install_dir }}/node_exporter --version"
+  register: node_exporter_installed_version
+  changed_when: false
+  failed_when: false
+
+- name: Set upgrade needed fact
+  ansible.builtin.set_fact:
+    node_exporter_needs_install: >-
+      {{ node_exporter_installed_version.rc != 0 or
+         node_exporter_version not in (node_exporter_installed_version.stdout | default('')) }}
+
+- name: Download node_exporter tarball to controller
+  ansible.builtin.get_url:
+    url: "{{ _ne_url }}"
+    dest: "/tmp/{{ _ne_tarball }}"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: node_exporter_needs_install
+
+- name: Extract node_exporter binary on controller
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ _ne_tarball }}"
+    dest: /tmp
+    creates: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}/node_exporter"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: node_exporter_needs_install
+
+- name: Push node_exporter binary to host
+  ansible.builtin.copy:
+    src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}/node_exporter"
+    dest: "{{ node_exporter_install_dir }}/node_exporter"
+    owner: root
+    group: root
+    mode: '0755'
+  when: node_exporter_needs_install
+  notify: Restart node_exporter
+
+- name: Clean up controller download artifacts
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/{{ _ne_tarball }}"
+    - "/tmp/node_exporter-{{ node_exporter_version }}.linux-{{ node_exporter_arch }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: node_exporter_needs_install
+
+# ============================================================================
+# SYSTEMD SERVICE
+# ============================================================================
+
+- name: Install node_exporter systemd service
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart node_exporter
+
+- name: Enable and start node_exporter service
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# ============================================================================
+# FIREWALL — RHEL/ALMA (firewalld)
+# ============================================================================
+
+- name: Open node_exporter port in firewalld
+  ansible.posix.firewalld:
+    port: "{{ node_exporter_port }}/tcp"
+    permanent: true
+    state: enabled
+    immediate: true
+  when: ansible_os_family == "RedHat"
+
+# ============================================================================
+# FIREWALL — DEBIAN/UBUNTU (ufw)
+# ============================================================================
+
+- name: Open node_exporter port in ufw
+  community.general.ufw:
+    rule: allow
+    port: "{{ node_exporter_port | string }}"
+    proto: tcp
+    comment: node_exporter
+  when: ansible_os_family == "Debian"

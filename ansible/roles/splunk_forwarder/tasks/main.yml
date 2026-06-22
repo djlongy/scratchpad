@@ -1,0 +1,18 @@
+---
+# splunk_forwarder/tasks/main.yml
+#
+# A no-tags run is a full idempotent reconcile:
+#   install -> configure -> service
+# Refinement tags narrow it for fast iteration.
+
+- name: Install Splunk Universal Forwarder
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Configure Splunk Universal Forwarder
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure]
+
+- name: Register and start Splunk Universal Forwarder service
+  ansible.builtin.import_tasks: service.yml
+  tags: [service]

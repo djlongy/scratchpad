@@ -1,0 +1,34 @@
+# log-sender.conf — managed by Ansible (stroom_agent role); do not edit by hand.
+# Sourced by {{ stroom_install_dir }}/send-to-stroom.sh at runtime.
+
+DATAFEED_URL="{{ stroom_datafeed_url }}"
+FEED="{{ stroom_feed_name }}"
+SYSTEM="{{ stroom_system_name }}"
+ENVIRONMENT="{{ stroom_environment }}"
+
+# Comma-separated list of log file paths to ship on each timer firing.
+LOG_PATHS="{{ stroom_log_paths | join(',') }}"
+
+# TLS verification: "true" (default) or "false" (skip verification — insecure).
+TLS_VERIFY="{{ stroom_tls_verify | lower }}"
+
+{% if stroom_ca_cert | length > 0 %}
+# Custom CA bundle for TLS verification.
+CA_CERT="{{ stroom_ca_cert }}"
+{% else %}
+CA_CERT=""
+{% endif %}
+
+{% if stroom_client_cert | length > 0 %}
+# mTLS client certificate.
+CLIENT_CERT="{{ stroom_client_cert }}"
+{% else %}
+CLIENT_CERT=""
+{% endif %}
+
+{% if stroom_client_key | length > 0 %}
+# mTLS client private key — keep this file permission 0600 or tighter.
+CLIENT_KEY="{{ stroom_client_key }}"
+{% else %}
+CLIENT_KEY=""
+{% endif %}

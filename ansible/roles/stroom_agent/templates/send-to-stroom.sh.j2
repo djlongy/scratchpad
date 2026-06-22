@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# send-to-stroom.sh — managed by Ansible (stroom_agent role); do not edit by hand.
+#
+# POSTs each log file listed in LOG_PATHS to the Stroom datafeed endpoint using
+# gzip Content-Encoding.  Sources {{ stroom_config_dir }}/log-sender.conf for
+# all runtime parameters.
+
+set -euo pipefail
+
+CONFIG_FILE="{{ stroom_config_dir }}/log-sender.conf"
+
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "ERROR: config file not found: ${CONFIG_FILE}" >&2
+  exit 1
+fi
+
+# shellcheck source=/dev/null
+source "${CONFIG_FILE}"
+
+: "${DATAFEED_URL:?DATAFEED_URL must be set in ${CONFIG_FILE}}"
+: "${FEED:?FEED must be set in ${CONFIG_FILE}}"
+: "${SYSTEM:?SYSTEM must be set in ${CONFIG_FILE}}"
+: "${ENVIRONMENT:?ENVIRONMENT must be set in ${CONFIG_FILE}}"
+: "${LOG_PATHS:?LOG_PATHS must be set in ${CONFIG_FILE}}"
+
+# ── Build curl TLS flags ──────────────────────────────────────────────────────
+TLS_FLAGS=()
+if [[ "${TLS_VERIFY:-true}" == "false" ]]; then
+  TLS_FLAGS+=("--insecure")
+else
+  if [[ -n "${CA_CERT:-}" ]]; then
+    TLS_FLAGS+=("--cacert" "${CA_CERT}")
+  fi
+fi
+
+# ── Build curl mTLS flags ─────────────────────────────────────────────────────
+MTLS_FLAGS=()
+if [[ -n "${CLIENT_CERT:-}" ]]; then
+  MTLS_FLAGS+=("--cert" "${CLIENT_CERT}")
+fi
+if [[ -n "${CLIENT_KEY:-}" ]]; then
+  MTLS_FLAGS+=("--key" "${CLIENT_KEY}")
+fi
+
+# ── Ship each log file ────────────────────────────────────────────────────────
+OVERALL_RC=0
+
+IFS=',' read -ra _paths <<< "${LOG_PATHS}"
+for log_path in "${_paths[@]}"; do
+  log_path="${log_path## }"   # trim leading space
+  log_path="${log_path%% }"   # trim trailing space
+
+  if [[ ! -f "${log_path}" ]]; then
+    echo "WARN: log file not found, skipping: ${log_path}" >&2
+    continue
+  fi
+
+  echo "INFO: shipping ${log_path} -> ${DATAFEED_URL}"
+
+  if ! gzip --to-stdout "${log_path}" | curl \
+      --silent \
+      --show-error \
+      --fail \
+      --request POST \
+      --header "Feed: ${FEED}" \
+      --header "System: ${SYSTEM}" \
+      --header "Environment: ${ENVIRONMENT}" \
+      --header "Content-Type: application/octet-stream" \
+      --header "Content-Encoding: gzip" \
+      "${TLS_FLAGS[@]+"${TLS_FLAGS[@]}"}" \
+      "${MTLS_FLAGS[@]+"${MTLS_FLAGS[@]}"}" \
+      --data-binary @- \
+      "${DATAFEED_URL}"; then
+    echo "ERROR: failed to POST ${log_path}" >&2
+    OVERALL_RC=1
+  fi
+done
+
+exit "${OVERALL_RC}"

@@ -1,0 +1,26 @@
+---
+galaxy_info:
+  role_name: stroom_agent
+  author: longy
+  description: >-
+    Generic, defaults-driven log forwarder that ships local log files to a
+    Stroom datafeed HTTP endpoint via curl + a systemd timer.  Supports
+    gzip compression, mTLS, custom CA bundles, and an optional org-supplied
+    sender binary.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - logging
+    - security
+    - stroom
+
+dependencies: []

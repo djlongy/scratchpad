@@ -1,0 +1,31 @@
+---
+galaxy_info:
+  role_name: velociraptor
+  author: longy
+  description: >-
+    Install the Velociraptor DFIR endpoint client as a systemd service on
+    Linux hosts.  Generic, defaults-driven engine — the operator supplies
+    the binary source and client config; the role handles idempotent install,
+    systemd management, and config deployment.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - security
+    - dfir
+    - edr
+    - velociraptor
+    - endpoint
+
+dependencies: []

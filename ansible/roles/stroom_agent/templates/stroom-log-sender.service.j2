@@ -1,0 +1,27 @@
+[Unit]
+Description=Stroom log sender — POST log files to Stroom datafeed
+Documentation=https://gchq.github.io/stroom-docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile={{ stroom_config_dir }}/log-sender.conf
+ExecStart={{ stroom_install_dir }}/send-to-stroom.sh
+
+# Keep the service from being killed partway through a large file POST.
+TimeoutStartSec=300
+
+# Restrict surface area — root is required for reading /var/log/*.
+User=root
+Group=root
+
+# Harden the service unit where possible.
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/tmp
+ReadOnlyPaths={{ stroom_log_paths | join(' ') }}
+
+[Install]
+WantedBy=multi-user.target

@@ -24,6 +24,32 @@ modules run on the control node against vCenter, driven by the
 
 A no-tag run creates/ensures; destroy is opt-in only.
 
+## Robust spin-up (NIC reconnect + bounded waits)
+
+After a clone+customize, vSphere frequently clears the new NIC's "connect at
+power on" (a long-standing bug), so the guest boots with a dead NIC and never
+gets an IP — a naive `wait_for_ip` then hangs for 20+ minutes. The `create`
+phase handles this automatically:
+
+1. the clone itself does **not** wait for an IP (`wait_for_ip_address: false`),
+   so a disconnected NIC can't block it;
+2. every NIC on each newly built VM is force-reconnected by MAC
+   (`vsphere_vm_connect_nics`, multi-NIC safe), wrapped in a rescue;
+3. the IP wait is **bounded** — `vsphere_vm_ip_wait_retries × vsphere_vm_ip_wait_delay`
+   seconds (default 30 × 10 = 5 min) — and reports a clear message instead of
+   hanging if a NIC is genuinely misconfigured.
+
+| Var | Default | Purpose |
+|---|---|---|
+| `vsphere_vm_connect_nics` | `true` | reconnect NICs after build |
+| `vsphere_vm_ip_wait_retries` | `30` | bounded IP-wait attempts |
+| `vsphere_vm_ip_wait_delay` | `10` | seconds between attempts |
+| `vsphere_vm_create_retries` | `3` | retry transient vCenter errors |
+| `vsphere_vm_create_delay` | `15` | seconds between create retries |
+
+> Needs `community.vmware` ≥ 4 with a matching `pyVmomi` (≤ 8.0.2.x — newer
+> pyVmomi removed `VmomiSupport.VmomiJSONEncoder` that the modules still call).
+
 ## Usage
 
 ```yaml

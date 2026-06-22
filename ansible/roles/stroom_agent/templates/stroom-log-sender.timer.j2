@@ -1,0 +1,21 @@
+[Unit]
+Description=Stroom log sender timer — ship logs every {{ stroom_send_interval }}
+Requires=stroom-log-sender.service
+
+[Timer]
+# stroom_send_interval can be either:
+#   a bare duration  (e.g. "5min", "1h")  → OnUnitActiveSec
+#   a calendar expr  (e.g. "*:0/5")       → OnCalendar
+#
+# The value below is set by the role variable; adjust the key if you switch
+# between calendar and duration styles.
+OnUnitActiveSec={{ stroom_send_interval }}
+
+# Fire once shortly after boot so there is no gap on fresh deploys.
+OnBootSec=2min
+
+# Persist the timer across reboots so missed fires are recovered.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

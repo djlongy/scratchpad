@@ -1,0 +1,41 @@
+---
+# stroom_agent — defaults/main.yml
+#
+# All variables are prefixed `stroom_` (ansible-lint var-naming[no-role-prefix]).
+# Env-specific values (URLs, feed names, TLS material) are left blank here;
+# set them in inventory group_vars or host_vars — never hardcode them in this role.
+
+# ── Required (no working default; assert fires if empty) ─────────────────────
+stroom_datafeed_url: ""   # e.g. "https://stroom.example.com/stroom/datafeed"
+stroom_feed_name: ""      # e.g. "LINUX-AUDIT-EVENTS"
+
+# ── Feed metadata ─────────────────────────────────────────────────────────────
+stroom_system_name: "{{ inventory_hostname }}"
+stroom_environment: "{{ env | default('prod') }}"
+
+# ── Log sources to ship ───────────────────────────────────────────────────────
+stroom_log_paths:
+  - /var/log/messages
+  - /var/log/secure
+  - /var/log/audit/audit.log
+
+# ── Scheduling ────────────────────────────────────────────────────────────────
+# Passed as OnCalendar (e.g. "*:0/5" for every 5 min) or as a bare interval
+# consumed via OnUnitActiveSec when the value is a simple duration (e.g. "5min").
+stroom_send_interval: "5min"
+
+# ── Filesystem layout ─────────────────────────────────────────────────────────
+stroom_install_dir: /opt/stroom
+stroom_config_dir: /etc/stroom
+
+# ── TLS / mTLS ───────────────────────────────────────────────────────────────
+stroom_tls_verify: true     # false disables certificate verification (-k / --insecure)
+stroom_ca_cert: ""          # optional: path to a custom CA bundle on the managed host
+stroom_client_cert: ""      # optional: path to the client certificate for mTLS
+stroom_client_key: ""       # optional: path to the client key for mTLS (no_log)
+
+# ── Optional org-supplied sender binary ───────────────────────────────────────
+# When set, a pre-built binary is fetched from this URL and placed in
+# stroom_install_dir.  Leave blank to use only the built-in shell script.
+stroom_log_sender_url: ""   # e.g. "https://artifacts.example.com/stroom-log-sender-1.2.0"
+stroom_log_sender_version: ""  # used for the versioned dest path (e.g. "1.2.0")

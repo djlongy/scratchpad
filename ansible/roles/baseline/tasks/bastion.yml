@@ -1,0 +1,67 @@
+---
+# roles/baseline/tasks/bastion.yml
+# Bastion / jump-host conduit. A bastion is the only host bridging the
+# management/monitoring network and the private environment behind it, so it is
+# deliberately turned into a controlled router for two planes:
+#   - operators: SSH ProxyJump in (handled by the SSH engine — bastions set
+#     baseline_ssh_allow_tcp_forwarding: true).
+#   - monitoring: Prometheus on the management VLAN must scrape exporters on the
+#     backend nodes, which have no direct route from the monitoring net. The
+#     bastion forwards that traffic, allow-listed to the monitoring source IPs
+#     and the exporter ports only (least privilege).
+#
+# Everything here is gated by baseline_bastion_enabled (set it on the bastion
+# inventory group). EL/firewalld-focused.
+
+- name: Bastion | Enable IPv4 forwarding (router role)
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    state: present
+    sysctl_file: /etc/sysctl.d/60-baseline-bastion.conf
+    reload: true
+  when: baseline_bastion_ip_forward | bool
+
+- name: Bastion | Masquerade forwarded traffic out the backend interface
+  # SNAT so backend nodes can route replies back without a static route to the
+  # monitoring VLAN. Optional — skip if you run symmetric static routes instead.
+  ansible.posix.firewalld:
+    zone: "{{ baseline_firewall_zone }}"
+    masquerade: true
+    permanent: true
+    immediate: true
+    state: enabled
+  when: baseline_bastion_masquerade | bool
+
+- name: Bastion | Allow the monitoring source IPs to the exporter ports
+  # One rich rule per (monitoring IP × exporter port). Permits Prometheus to
+  # reach exporters via the bastion; nothing else is opened.
+  ansible.posix.firewalld:
+    zone: "{{ baseline_firewall_zone }}"
+    rich_rule: >-
+      rule family=ipv4
+      source address="{{ item.0 }}"
+      port port="{{ item.1.split('/')[0] }}" protocol="{{ item.1.split('/')[1] }}"
+      accept
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ baseline_bastion_monitoring_ips | product(baseline_bastion_exporter_ports) | list }}"
+  loop_control:
+    label: "{{ item.0 }} -> {{ item.1 }}"
+  when:
+    - baseline_bastion_monitoring_ips | length > 0
+    - baseline_bastion_exporter_ports | length > 0
+
+- name: Bastion | Set static routes to the backend subnets
+  # Optional: only needed when the bastion isn't already on-link to the backend
+  # subnets. Declarative + idempotent via NetworkManager. Each entry is a
+  # "<dest/prefix> <gateway>" string, e.g. "198.51.100.0/24 198.51.100.1".
+  community.general.nmcli:
+    conn_name: "{{ baseline_bastion_route_conn }}"
+    type: ethernet
+    routes4: "{{ baseline_bastion_backend_subnets }}"
+    state: present
+  when:
+    - baseline_bastion_backend_subnets | length > 0
+    - baseline_bastion_route_conn | length > 0

@@ -4,20 +4,142 @@
 # baseline_selinux_state is set (enforcing | permissive | disabled). A change
 # to/from 'disabled' requires a reboot to fully apply.
 
+# SAFETY: going straight from 'disabled' to 'enforcing' + autorelabel on a
+# running host risks an unbootable/networkless box (a service mislabelled by the
+# relabel gets denied on the first enforcing boot). So when SELinux is currently
+# disabled and enforcing is requested, STAGE to 'permissive' first (relabel
+# safely, host stays reachable); a later run escalates to enforcing once SELinux
+# is already active. Best of all: ship the template SELinux-enforcing.
+- name: SELinux | Compute the safe target state
+  ansible.builtin.set_fact:
+    _baseline_selinux_target: >-
+      {{ 'permissive'
+         if (baseline_selinux_state == 'enforcing'
+             and (ansible_selinux.status | default('disabled')) == 'disabled')
+         else baseline_selinux_state }}
+  when: baseline_selinux_state | length > 0
+
+- name: SELinux | Note enforcing is staged through permissive (disabled host)
+  ansible.builtin.debug:
+    msg: >-
+      SELinux is disabled — staging to PERMISSIVE first for a safe relabel.
+      Re-run after verifying the host is healthy to escalate to enforcing.
+  when:
+    - baseline_selinux_state == 'enforcing'
+    - (ansible_selinux.status | default('disabled')) == 'disabled'
+
 - name: SELinux | Manage SELinux state
   ansible.posix.selinux:
     policy: "{{ baseline_selinux_policy }}"
-    state: "{{ baseline_selinux_state }}"
+    state: "{{ _baseline_selinux_target }}"
   register: _baseline_selinux
   when:
     - ansible_os_family == "RedHat"
     - baseline_selinux_state | default('') | length > 0
 
-- name: SELinux | Flag reboot requirement
-  ansible.builtin.debug:
-    msg: >-
-      SELinux state set to {{ baseline_selinux_state }} — reboot required to
-      fully apply (especially when toggling 'disabled').
+- name: SELinux | Schedule a filesystem relabel when enabling from disabled
+  ansible.builtin.file:
+    path: /.autorelabel
+    state: touch
+    mode: "0644"
+  when:
+    - _baseline_selinux is changed
+    - (ansible_selinux.status | default('disabled')) == 'disabled'
+    - baseline_selinux_state in ['enforcing', 'permissive']
+
+- name: SELinux | Reboot to apply the SELinux state + relabel
+  ansible.builtin.reboot:
+    msg: "Rebooting to apply the SELinux state change and relabel the filesystem."
+    reboot_timeout: 900      # autorelabel of a fresh host can take a few minutes
   when:
     - _baseline_selinux is changed
     - _baseline_selinux.reboot_required | default(false)
+    - baseline_allow_reboot | bool
+
+- name: SELinux | Re-gather facts after the SELinux reboot
+  ansible.builtin.setup:
+    gather_subset: ["!all", "min", "selinux"]
+  when:
+    - _baseline_selinux is changed
+    - _baseline_selinux.reboot_required | default(false)
+    - baseline_allow_reboot | bool
+
+- name: SELinux | Warn that a reboot is required (not auto-rebooting)
+  ansible.builtin.debug:
+    msg: >-
+      SELinux state set to {{ baseline_selinux_state }} — reboot + autorelabel
+      required to fully apply. baseline_allow_reboot is false, so reboot manually,
+      then re-run to apply fcontexts/booleans.
+  when:
+    - _baseline_selinux is changed
+    - _baseline_selinux.reboot_required | default(false)
+    - not (baseline_allow_reboot | bool)
+
+# ── File contexts (fcontext) — e.g. prepare a path for running containers ────
+# Each entry: {path: <fcontext target/regex>, setype: <type>, restore: <dir>}.
+# To let containers use storage under /opt, label a dedicated subtree as
+# container_file_t (NOT all of /opt — that would mislabel unrelated apps):
+#   baseline_selinux_fcontexts:
+#     - {path: "/opt/containers(/.*)?", setype: container_file_t, restore: /opt/containers}
+- name: SELinux | Warn that fcontexts/booleans need SELinux enabled
+  ansible.builtin.debug:
+    msg: >-
+      SELinux is disabled on this host — skipping fcontexts/booleans. Set
+      baseline_selinux_state: enforcing (a reboot + autorelabel) to enable it,
+      then re-run to apply the contexts.
+  when:
+    - (baseline_selinux_fcontexts | length > 0) or (baseline_selinux_booleans | length > 0)
+    - (ansible_selinux.status | default('disabled')) != 'enabled'
+
+- name: SELinux | Apply SELinux file contexts
+  community.general.sefcontext:
+    target: "{{ item.path }}"
+    setype: "{{ item.setype }}"
+    ftype: "{{ item.ftype | default('a') }}"
+    state: present
+  loop: "{{ baseline_selinux_fcontexts }}"
+  loop_control:
+    label: "{{ item.path }} -> {{ item.setype }}"
+  register: _baseline_fcontext
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_selinux_fcontexts | length > 0
+    - (ansible_selinux.status | default('disabled')) == 'enabled'
+  # Tolerate a setype that isn't defined yet — container types (container_var_lib_t,
+  # container_file_t) only exist once container-selinux is installed (it ships with
+  # the container runtime). The valid fcontexts still apply; re-run after the
+  # runtime lands to pick up the container ones.
+  failed_when:
+    - _baseline_fcontext is failed
+    - "'must be a file or device type' not in (_baseline_fcontext.msg | default(''))"
+
+- name: SELinux | Restore contexts where the fcontext changed
+  # -i ignores paths that don't exist yet (e.g. labelling /opt/docker before the
+  # docker role creates it — new files still inherit the recorded fcontext).
+  ansible.builtin.command: "restorecon -R -i {{ item.item.restore | default(item.item.path) }}"
+  loop: "{{ _baseline_fcontext.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.path | default('') }}"
+  when: item.changed | default(false)
+  changed_when: true
+
+# ── SELinux booleans (persistent) — e.g. container_manage_cgroup for Docker ───
+- name: SELinux | Set SELinux booleans
+  ansible.posix.seboolean:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+    persistent: true
+  loop: "{{ baseline_selinux_booleans }}"
+  loop_control:
+    label: "{{ item.name }}={{ item.state }}"
+  register: _baseline_seboolean
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_selinux_booleans | length > 0
+    - (ansible_selinux.status | default('disabled')) == 'enabled'
+  # Tolerate a boolean that isn't defined yet (e.g. container_manage_cgroup needs
+  # container-selinux, installed with the runtime) — re-run afterwards.
+  failed_when:
+    - _baseline_seboolean is failed
+    - "'not defined' not in (_baseline_seboolean.msg | default('') | lower)"
+    - "'failed to find' not in (_baseline_seboolean.msg | default('') | lower)"

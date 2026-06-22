@@ -1,0 +1,61 @@
+---
+argument_specs:
+  main:
+    short_description: Splunk Universal Forwarder host installation role.
+    description:
+      - Installs the Splunk Universal Forwarder from a .tgz tarball, seeds the
+        admin credential on first run, optionally configures a deployment client
+        and/or direct TCP forwarding, and registers the service with systemd.
+      - All environment-specific values (package URL, indexer addresses,
+        deployment server, admin password) must be supplied via inventory or a
+        Vault lookup — the role provides no hardcoded defaults for those fields.
+    options:
+      splunk_forwarder_package_url:
+        type: str
+        required: true
+        description: >-
+          Full URL of the Universal Forwarder .tgz tarball (org mirror or
+          official Splunk download page).  The role asserts this is non-empty
+          before attempting installation.
+      splunk_forwarder_home:
+        type: str
+        default: /opt/splunkforwarder
+        description: Directory into which the tarball is extracted.
+      splunk_forwarder_user:
+        type: str
+        default: splunk
+        description: System user that owns and runs the forwarder process.
+      splunk_forwarder_group:
+        type: str
+        default: splunk
+        description: Primary group for the forwarder user.
+      splunk_forwarder_admin_user:
+        type: str
+        default: admin
+        description: Splunk admin username written to user-seed.conf on first run.
+      splunk_forwarder_admin_password:
+        type: str
+        default: ""
+        no_log: true
+        description: >-
+          Splunk admin password written to user-seed.conf on first run.
+          Supply via Vault lookup.  Never store in plaintext.
+      splunk_forwarder_accept_license:
+        type: bool
+        default: true
+        description: >-
+          Pass --accept-license to boot-start and first-start commands.
+          Set to false only when licence acceptance is managed out-of-band.
+      splunk_forwarder_deployment_server:
+        type: str
+        default: ""
+        description: >-
+          Deployment server address ("hostname:8089").  When non-empty, writes
+          etc/system/local/deploymentclient.conf.  Leave blank to skip.
+      splunk_forwarder_forward_servers:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          List of indexer TCP targets ("hostname:9997").  When non-empty,
+          writes etc/system/local/outputs.conf.  Leave empty to skip.

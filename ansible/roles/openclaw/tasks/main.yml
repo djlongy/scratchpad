@@ -1,0 +1,45 @@
+---
+# roles/openclaw/tasks/main.yml
+# openclaw bot local-admin account, layered on top of the generic `baseline` OS
+# setup (moved out of baseline so baseline stays a pure OS baseline). Portable:
+# user, shell, and public-key path are variables; sudo is optional. Distro-aware
+# admin group (wheel on EL, sudo on Debian/Ubuntu).
+
+- name: Manage the openclaw bot admin account
+  when: openclaw_enabled | bool
+  tags: [openclaw]
+  block:
+    - name: openclaw | Ensure the bot local-admin account exists
+      ansible.builtin.user:
+        name: "{{ openclaw_user }}"
+        comment: "{{ openclaw_comment }}"
+        groups: "{{ 'wheel' if ansible_os_family == 'RedHat' else 'sudo' }}"
+        append: true
+        shell: "{{ openclaw_shell }}"
+        create_home: true
+        password: "*"
+
+    - name: openclaw | Ensure the bot .ssh directory exists
+      ansible.builtin.file:
+        path: "/home/{{ openclaw_user }}/.ssh"
+        state: directory
+        owner: "{{ openclaw_user }}"
+        group: "{{ openclaw_user }}"
+        mode: "0700"
+
+    - name: openclaw | Authorize the bot SSH key
+      ansible.posix.authorized_key:
+        user: "{{ openclaw_user }}"
+        state: present
+        key: "{{ lookup('file', openclaw_pubkey_file) }}"
+      when: openclaw_pubkey_file | default('') | length > 0
+
+    - name: openclaw | Grant passwordless sudo
+      ansible.builtin.copy:
+        content: "{{ openclaw_user }} ALL=(ALL) NOPASSWD: ALL\n"
+        dest: "/etc/sudoers.d/{{ openclaw_user }}"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+      when: openclaw_sudo | bool

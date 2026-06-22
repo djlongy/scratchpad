@@ -1,0 +1,46 @@
+---
+# defaults/main.yml — splunk_forwarder
+#
+# All variables are prefixed splunk_forwarder_ so they are unambiguous when
+# this role runs alongside other Splunk-related roles (e.g. splunk_swarm).
+#
+# Env-specific values (indexer addresses, deployment server, credentials) are
+# intentionally left blank here.  Supply them via inventory group_vars or a
+# Vault lookup — never hardcode them in a role file.
+
+# ── Package source ──────────────────────────────────────────────────────────
+# URL of the .tgz Universal Forwarder package (org mirror or Splunk download).
+# Leave blank to fail fast with a clear message rather than silently skip.
+# Example: "https://mirror.example.com/splunkforwarder-9.3.0-linux-x86_64.tgz"
+splunk_forwarder_package_url: ""
+
+# ── Installation paths / identity ───────────────────────────────────────────
+splunk_forwarder_home: /opt/splunkforwarder
+splunk_forwarder_user: splunk
+splunk_forwarder_group: splunk
+
+# ── Bootstrap admin credentials ─────────────────────────────────────────────
+# Used only during first-run seed (user-seed.conf).
+# Supply via Vault lookup — never store plaintext in vars files or inventory.
+splunk_forwarder_admin_user: admin
+splunk_forwarder_admin_password: ""    # set via Vault lookup; no_log: true
+
+# ── License acceptance ───────────────────────────────────────────────────────
+# Splunk requires explicit licence acceptance before first start.
+# Set to false only if your organisation manages this out-of-band.
+splunk_forwarder_accept_license: true
+
+# ── Deployment server (optional) ─────────────────────────────────────────────
+# When set, writes etc/system/local/deploymentclient.conf.
+# Format: "hostname:8089"
+# Example: "deploy.example.com:8089"
+splunk_forwarder_deployment_server: ""
+
+# ── Forwarding targets (optional) ────────────────────────────────────────────
+# When non-empty, writes etc/system/local/outputs.conf.
+# Format: list of "hostname:9997" strings.
+# Example:
+#   splunk_forwarder_forward_servers:
+#     - "idx1.example.com:9997"
+#     - "idx2.example.com:9997"
+splunk_forwarder_forward_servers: []

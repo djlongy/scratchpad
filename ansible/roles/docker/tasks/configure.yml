@@ -1,0 +1,36 @@
+---
+# roles/docker/tasks/configure.yml
+# Render daemon.json, ensure /etc/docker and data-root exist, enable service.
+
+- name: Ensure /etc/docker directory exists
+  ansible.builtin.file:
+    path: /etc/docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure Docker data-root directory exists
+  ansible.builtin.file:
+    path: "{{ docker_data_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0710"
+
+- name: Render /etc/docker/daemon.json
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0600"
+    validate: "python3 -m json.tool %s"
+  notify: Restart docker
+
+- name: Enable and start docker service
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+    daemon_reload: true

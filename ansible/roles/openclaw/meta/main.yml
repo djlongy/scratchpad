@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: openclaw
+  author: longy
+  description: >-
+    openclaw bot local-admin account — a portable, distro-aware site role layered
+    on top of the generic baseline OS setup (user + SSH key + optional sudo).
+  license: MIT
+  min_ansible_version: "2.14"
+  galaxy_tags:
+    - openclaw
+dependencies: []

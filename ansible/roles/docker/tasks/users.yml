@@ -1,0 +1,12 @@
+---
+# roles/docker/tasks/users.yml
+# Add users to the docker group (grants unprivileged Docker socket access).
+# Gated by `docker_users | length > 0` in main.yml — no-ops when the list is empty.
+
+- name: Add users to docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+    state: present
+  loop: "{{ docker_users }}"

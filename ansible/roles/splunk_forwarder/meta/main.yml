@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: splunk_forwarder
+  author: longy
+  description: >-
+    Install the Splunk Universal Forwarder on Linux hosts as a defaults-driven,
+    env-agnostic engine.  Handles package installation from a .tgz tarball,
+    first-run credential seeding, deployment-client and outputs configuration,
+    and systemd boot-start registration.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - monitoring
+    - logging
+    - splunk
+
+dependencies: []

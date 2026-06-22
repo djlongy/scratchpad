@@ -1,0 +1,24 @@
+---
+# clamav/tasks/main.yml
+#
+# A no-tags run is a full idempotent reconcile:
+#   install -> configure -> service -> scan
+# Refinement tags narrow it for fast iteration (--tags configure, --tags service).
+# scan tasks are skipped unless clamav_scan_enabled is true.
+
+- name: Install ClamAV packages
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Configure freshclam and seed the signature database
+  ansible.builtin.import_tasks: configure.yml
+  tags: [configure]
+
+- name: Manage ClamAV services
+  ansible.builtin.import_tasks: service.yml
+  tags: [service]
+
+- name: Deploy scheduled scan units
+  ansible.builtin.import_tasks: scan.yml
+  when: clamav_scan_enabled | bool
+  tags: [scan]

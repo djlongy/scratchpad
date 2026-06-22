@@ -1,0 +1,47 @@
+---
+# velociraptor/defaults/main.yml
+# Role defaults (lowest precedence — override via inventory or group_vars).
+#
+# This role is a generic engine; it does NOT ship a server URL or org config.
+# The operator MUST supply at minimum one of:
+#   velociraptor_binary_url   — explicit download URL (air-gap / mirror friendly)
+#   velociraptor_version      — semver tag; role builds URL from velociraptor_download_base
+# AND optionally one of:
+#   velociraptor_client_config     — inline YAML (vaulted string, no_log)
+#   velociraptor_client_config_src — absolute path to a file on the Ansible controller
+
+# ── Binary source ──────────────────────────────────────────────────────────
+# Explicit URL wins over the constructed one.
+# Example: "https://mirror.example.com/velociraptor/velociraptor-0.72.4-linux-amd64"
+velociraptor_binary_url: ""
+
+# Semver without the leading 'v'.  Example: "0.72.4"
+velociraptor_version: ""
+
+# Base for the constructed download URL when velociraptor_binary_url is empty.
+velociraptor_download_base: "https://github.com/Velocidex/velociraptor/releases/download"
+
+# Optional checksum for ansible.builtin.get_url.  Example: "sha256:abc123..."
+velociraptor_binary_checksum: ""
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+velociraptor_install_dir: /opt/velociraptor
+velociraptor_config_dir: /etc/velociraptor
+
+# ── Service ────────────────────────────────────────────────────────────────
+velociraptor_service_name: velociraptor_client
+
+# ── Client configuration ────────────────────────────────────────────────────
+# Provide EITHER an inline YAML string (preferred — vault it) OR a path on
+# the controller.  If both are set, velociraptor_client_config takes precedence.
+# If neither is set the configure phase is skipped and the service will not start
+# successfully until a config is deployed out-of-band.
+#
+# Example (group_vars, vaulted):
+#   velociraptor_client_config: !vault |
+#     $ANSIBLE_VAULT;1.1;AES256
+#     ...
+velociraptor_client_config: ""
+
+# Example: velociraptor_client_config_src: "files/velociraptor/client.config.yaml"
+velociraptor_client_config_src: ""

@@ -1,5 +1,6 @@
 [Journal]
-Compress=yes
+Storage={{ baseline_journald_storage }}
+Compress={{ 'yes' if baseline_journald_compress else 'no' }}
 ForwardToConsole=no
 MaxLevelConsole={{ baseline_journald_max_level_console }}
 SystemMaxUse={{ baseline_journald_system_max_use }}

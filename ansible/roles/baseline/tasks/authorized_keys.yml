@@ -1,0 +1,19 @@
+---
+# roles/baseline/tasks/authorized_keys.yml
+# Ensure automation/operator SSH authorized keys are present EARLY — before any
+# hardening phase (crypto/FIPS, CIS/OpenSCAP) can restrict
+# PubkeyAcceptedAlgorithms. FIPS/CIS reject non-FIPS key types (notably
+# Ed25519), so an Ed25519-only automation key gets locked out the moment a host
+# is hardened. Authorising a FIPS-approved key (ECDSA P-256/384 or RSA-SHA2)
+# here — before hardening — keeps automation able to log back in afterwards.
+
+- name: Authorized keys | Ensure SSH authorized keys are present
+  ansible.posix.authorized_key:
+    user: "{{ item.user }}"
+    key: "{{ item.key }}"
+    state: "{{ item.state | default('present') }}"
+    exclusive: "{{ item.exclusive | default(false) }}"
+    key_options: "{{ item.key_options | default(omit) }}"
+  loop: "{{ baseline_authorized_keys }}"
+  loop_control:
+    label: "{{ item.user }} <- {{ item.comment | default(item.key.split(' ')[-1] | default('key')) }}"

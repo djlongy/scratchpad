@@ -1,0 +1,23 @@
+---
+# clamav/handlers/main.yml
+
+- name: Restart freshclam
+  ansible.builtin.systemd:
+    name: "{{ _clamav.freshclam_service }}"
+    state: restarted
+    daemon_reload: true
+  become: true
+  when: clamav_enable_freshclam | bool
+
+- name: Restart clamd
+  ansible.builtin.systemd:
+    name: "{{ _clamav.clamd_service }}"
+    state: restarted
+    daemon_reload: true
+  become: true
+  when: clamav_enable_daemon | bool
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true

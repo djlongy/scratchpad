@@ -1,0 +1,16 @@
+---
+# vars/main.yml — splunk_forwarder
+#
+# Non-overridable internal constants.  These are implementation details, not
+# public interface; change them here if the Splunk directory layout changes.
+
+# Systemd service unit name created by `splunk enable boot-start`.
+splunk_forwarder_service_name: SplunkForwarder
+
+# Path to the systemd unit that boot-start creates; used as the `creates:`
+# guard so the expensive enable-boot-start command only runs once.
+splunk_forwarder_service_unit: /etc/systemd/system/SplunkForwarder.service
+
+# Path to the Splunk passwd file; its absence is the sentinel for a
+# first-run seed (user-seed.conf written only when this file is missing).
+splunk_forwarder_passwd_file: "{{ splunk_forwarder_home }}/etc/passwd"

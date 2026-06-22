@@ -1,0 +1,3 @@
+---
+# defaults/main.yml
+# Role defaults (lowest precedence — override via inventory or vars/main.yml)

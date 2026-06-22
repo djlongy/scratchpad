@@ -1,0 +1,68 @@
+---
+argument_specs:
+  main:
+    short_description: Install and configure the Velociraptor DFIR endpoint client.
+    description:
+      - Downloads the Velociraptor binary from an explicit URL or constructs
+        the URL from C(velociraptor_version) and C(velociraptor_download_base).
+      - Installs the versioned binary to C(velociraptor_install_dir) and
+        creates a stable C(velociraptor) symlink alongside it.
+      - Deploys a client config from an inline variable or a controller-side
+        file to C(velociraptor_config_dir)/client.config.yaml (mode 0600).
+      - Manages a systemd unit that runs the Velociraptor client process.
+    options:
+      velociraptor_binary_url:
+        type: str
+        default: ""
+        description: >-
+          Explicit download URL for the Velociraptor binary.  Takes priority
+          over the constructed URL.  Useful for air-gapped environments or
+          internal mirrors.  When empty, the role builds the URL from
+          C(velociraptor_version) and C(velociraptor_download_base).
+      velociraptor_version:
+        type: str
+        default: ""
+        description: >-
+          Velociraptor semantic version without the leading 'v' (e.g. "0.72.4").
+          Used to construct the download URL and version-stamp the binary filename.
+          Required when C(velociraptor_binary_url) is empty.
+      velociraptor_download_base:
+        type: str
+        default: "https://github.com/Velocidex/velociraptor/releases/download"
+        description: >-
+          Base URL for constructed downloads.  Override to point at an internal
+          proxy or artifact repository.
+      velociraptor_binary_checksum:
+        type: str
+        default: ""
+        description: >-
+          Optional checksum passed to ansible.builtin.get_url (e.g.
+          "sha256:abc123...").  When empty the checksum is not verified.
+      velociraptor_install_dir:
+        type: str
+        default: /opt/velociraptor
+        description: Directory where the versioned binary and symlink are installed.
+      velociraptor_config_dir:
+        type: str
+        default: /etc/velociraptor
+        description: Directory for the client configuration file.
+      velociraptor_service_name:
+        type: str
+        default: velociraptor_client
+        description: >-
+          Name of the systemd service unit (without .service suffix).
+          Also used as the service account username.
+      velociraptor_client_config:
+        type: str
+        default: ""
+        description: >-
+          Inline YAML content for the Velociraptor client config file
+          (client.config.yaml).  Should be stored as an Ansible Vault secret.
+          Takes priority over C(velociraptor_client_config_src).
+          When both are empty the configure phase is skipped.
+      velociraptor_client_config_src:
+        type: str
+        default: ""
+        description: >-
+          Absolute path to the client.config.yaml on the Ansible controller.
+          Used when C(velociraptor_client_config) is empty.

@@ -1,0 +1,100 @@
+---
+# roles/vsphere_vm/tasks/connect.yml
+# PERMANENT FIX for the clone+customize NIC-disconnect bug. After a VM is built,
+# vSphere frequently clears the NIC's "connect at power on", so the guest boots
+# with a dead NIC and never receives an IP — which is what makes a naive
+# wait_for_ip hang for 20+ minutes. Here we:
+#   1. gather every adapter on each newly built VM,
+#   2. force each one connected + start_connected (by MAC, so multi-NIC works),
+#   3. wait for the IP with a BOUNDED retry that never exceeds
+#      vsphere_vm_ip_wait_retries * vsphere_vm_ip_wait_delay seconds, and reports
+#      clearly instead of hanging if a NIC is genuinely misconfigured.
+# Everything is wrapped so a transient vCenter hiccup degrades gracefully.
+
+- name: Connect | Reconnect NICs on newly built VMs
+  when: vsphere_vm_connect_nics | bool
+  block:
+    - name: Connect | Gather network adapters on newly built VMs
+      community.vmware.vmware_guest_network:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ item.name }}"
+        gather_network_info: true
+      register: _vsphere_nics
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_nics is succeeded
+      loop: "{{ _vsphere_to_create }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Connect | Force every NIC connected + start-connected
+      community.vmware.vmware_guest_network:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ item.0.item.name }}"
+        mac_address: "{{ item.1.mac_address }}"
+        connected: true
+        start_connected: true
+        state: present
+      loop: "{{ _vsphere_nics.results | subelements('network_info', skip_missing=true) }}"
+      loop_control:
+        label: "{{ item.0.item.name }} / {{ item.1.mac_address }}"
+      delegate_to: localhost
+      become: false
+  rescue:
+    - name: Connect | Warn that NIC reconnect raised an error (continuing)
+      ansible.builtin.debug:
+        msg: >-
+          NIC reconnect raised an error on the new VM(s). Continuing — the bounded
+          IP wait below will surface any real connectivity problem rather than
+          hanging the play.
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+- name: Connect | Wait for the guest IP (bounded — never hangs)
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ item.name }}"
+  register: _vsphere_ipwait
+  retries: "{{ vsphere_vm_ip_wait_retries }}"
+  delay: "{{ vsphere_vm_ip_wait_delay }}"
+  # default('', true) coerces a None ipv4 (not-yet-assigned) to '' — a bare
+  # default() leaves None in place and `None | length` then errors.
+  until: (_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0
+  failed_when: false
+  loop: "{{ _vsphere_to_create }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: vsphere_vm_wait_for_ip | bool
+  delegate_to: localhost
+  become: false
+
+- name: Connect | Report any VM that never reported an IP
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }} did not report an IPv4 within
+      {{ vsphere_vm_ip_wait_retries * vsphere_vm_ip_wait_delay }}s. The VM is
+      built; check the NIC portgroup + guest customization (it may just need a
+      moment, or the NIC is on the wrong network).
+  loop: "{{ _vsphere_ipwait.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('') }}"
+  when:
+    - vsphere_vm_wait_for_ip | bool
+    - (item.instance.ipv4 | default('', true)) | length == 0
+  delegate_to: localhost
+  become: false

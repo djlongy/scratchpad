@@ -1,0 +1,44 @@
+---
+# clamav/tasks/service.yml — systemd service lifecycle (tagged: service)
+
+# ── Freshclam service ─────────────────────────────────────────────────────
+
+- name: Enable and start freshclam service
+  ansible.builtin.systemd:
+    name: "{{ _clamav.freshclam_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: clamav_enable_freshclam | bool
+
+- name: Disable and stop freshclam service
+  ansible.builtin.systemd:
+    name: "{{ _clamav.freshclam_service }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when: not (clamav_enable_freshclam | bool)
+
+# ── Clamd daemon ──────────────────────────────────────────────────────────
+
+- name: Enable and start clamd daemon service
+  ansible.builtin.systemd:
+    name: "{{ _clamav.clamd_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: clamav_enable_daemon | bool
+
+- name: Disable and stop clamd daemon service
+  ansible.builtin.systemd:
+    name: "{{ _clamav.clamd_service }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - not (clamav_enable_daemon | bool)
+    # Only attempt to disable the daemon service if the daemon packages were
+    # actually installed (package existence determined by the install phase).
+    - _clamav.packages_daemon | length > 0
+  failed_when: false
+  # If the daemon was never installed the unit does not exist; ignore the error.

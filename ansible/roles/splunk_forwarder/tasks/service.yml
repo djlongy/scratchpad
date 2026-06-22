@@ -1,0 +1,36 @@
+---
+# splunk_forwarder/tasks/service.yml — [service]
+#
+# Registers the Universal Forwarder as a managed systemd service and ensures
+# it is running.  The boot-start command is expensive and interactive-looking;
+# guard it with `creates:` so it runs exactly once per host.
+
+# ── Systemd boot-start registration ──────────────────────────────────────────
+
+- name: Register splunk forwarder with systemd (boot-start, runs once)
+  ansible.builtin.command:
+    cmd: >-
+      {{ splunk_forwarder_home }}/bin/splunk enable boot-start
+      -systemd-managed 1
+      -user {{ splunk_forwarder_user }}
+      --accept-license
+      --answer-yes
+      --no-prompt
+    creates: "{{ splunk_forwarder_service_unit }}"
+  become: true
+  notify: Restart splunk forwarder
+
+# ── Reload daemon so the new unit is visible ──────────────────────────────────
+
+- name: Reload systemd daemon to pick up SplunkForwarder unit
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: not (ansible_check_mode | bool)
+
+# ── Ensure service is enabled and running ─────────────────────────────────────
+
+- name: Enable and start SplunkForwarder service
+  ansible.builtin.systemd:
+    name: "{{ splunk_forwarder_service_name }}"
+    state: started
+    enabled: true

@@ -1,0 +1,28 @@
+---
+galaxy_info:
+  role_name: clamav
+  author: longy
+  description: >-
+    Install and configure ClamAV antivirus on Linux hosts — freshclam signature
+    updates, optional resident clamd daemon, and optional systemd-scheduled scan.
+    Distro-agnostic (RedHat/EL and Debian/Ubuntu); all behaviour is defaults-driven.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+  galaxy_tags:
+    - security
+    - antivirus
+    - clamav
+
+dependencies: []

@@ -1,0 +1,27 @@
+---
+# stroom_agent/tasks/service.yml — systemd oneshot service + timer.
+
+- name: Deploy stroom-log-sender systemd service unit
+  ansible.builtin.template:
+    src: stroom-log-sender.service.j2
+    dest: /etc/systemd/system/stroom-log-sender.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Deploy stroom-log-sender systemd timer unit
+  ansible.builtin.template:
+    src: stroom-log-sender.timer.j2
+    dest: /etc/systemd/system/stroom-log-sender.timer
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Enable and start stroom-log-sender timer
+  ansible.builtin.systemd:
+    name: stroom-log-sender.timer
+    state: started
+    enabled: true
+    daemon_reload: true

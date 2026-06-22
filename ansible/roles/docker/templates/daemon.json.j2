@@ -1,0 +1,61 @@
+{# roles/docker/templates/daemon.json.j2
+   Composed from role variables. Keys are only emitted when the
+   corresponding variable is set (non-empty / non-false / non-[]).
+   docker_extra_daemon_options is merged last and wins over all
+   role-managed keys.
+
+   Rendering order (low → high precedence):
+     1. log-driver / log-opts / storage-driver / live-restore / data-root
+     2. network keys (bip, default-address-pools)
+     3. registry keys (insecure-registries, registry-mirrors)
+     4. optional keys (default-ulimits)
+     5. docker_extra_daemon_options (merged last — wins over everything)
+#}
+{%- set _d = {} -%}
+
+{# ── Core ─────────────────────────────────────────────────────────────── #}
+{%- set _ = _d.update({"log-driver": docker_log_driver}) -%}
+{%- set _ = _d.update({"storage-driver": docker_storage_driver}) -%}
+{%- set _ = _d.update({"live-restore": docker_live_restore | bool}) -%}
+
+{# ── data-root (emit only when non-default or explicitly set) ─────────── #}
+{%- if docker_data_root -%}
+{%-   set _ = _d.update({"data-root": docker_data_root}) -%}
+{%- endif -%}
+
+{# ── Log opts ──────────────────────────────────────────────────────────── #}
+{%- set _log_opts = {} -%}
+{%- if docker_log_driver in ['json-file', 'local'] -%}
+{%-   set _ = _log_opts.update({
+        "max-size": docker_log_max_size,
+        "max-file": docker_log_max_file | string,
+      }) -%}
+{%- endif -%}
+{%- set _ = _log_opts.update(docker_log_opts) -%}
+{%- if _log_opts | length > 0 -%}
+{%-   set _ = _d.update({"log-opts": _log_opts}) -%}
+{%- endif -%}
+
+{# ── Bridge / address pools ────────────────────────────────────────────── #}
+{%- if docker_bip -%}
+{%-   set _ = _d.update({"bip": docker_bip}) -%}
+{%- endif -%}
+{%- if docker_default_address_pools | length > 0 -%}
+{%-   set _ = _d.update({"default-address-pools": docker_default_address_pools}) -%}
+{%- endif -%}
+
+{# ── Registries ────────────────────────────────────────────────────────── #}
+{%- if docker_insecure_registries | length > 0 -%}
+{%-   set _ = _d.update({"insecure-registries": docker_insecure_registries}) -%}
+{%- endif -%}
+{%- if docker_registry_mirrors | length > 0 -%}
+{%-   set _ = _d.update({"registry-mirrors": docker_registry_mirrors}) -%}
+{%- endif -%}
+
+{# ── Default ulimits (omit when empty) ────────────────────────────────── #}
+{%- if docker_default_ulimits | length > 0 -%}
+{%-   set _ = _d.update({"default-ulimits": docker_default_ulimits}) -%}
+{%- endif -%}
+
+{# ── Merge extras last (highest precedence) ───────────────────────────── #}
+{{ _d | combine(docker_extra_daemon_options, recursive=True) | to_nice_json(indent=2) }}

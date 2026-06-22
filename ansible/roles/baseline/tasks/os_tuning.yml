@@ -1,0 +1,39 @@
+---
+# roles/baseline/tasks/os_tuning.yml
+# Kernel/sysctl tuning common to all baselined hosts. Extracted from the old
+# per-distro task files so it runs once, in one place, on every distro.
+
+- name: Tuning | Set vm.max_map_count
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: "{{ baseline_vm_max_map_count | default('262144') }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/60-baseline-tuning.conf
+    reload: true
+
+# AlmaLinux/RHEL ship no ClientAliveInterval and tcp_keepalive_time=7200s, so
+# SSH sessions through a stateful firewall freeze when the idle state is dropped
+# before a keepalive. Lower it (Ubuntu already defaults sanely).
+- name: Tuning | Lower TCP keepalive time (EL)
+  ansible.posix.sysctl:
+    name: net.ipv4.tcp_keepalive_time
+    value: "300"
+    state: present
+    sysctl_file: /etc/sysctl.d/60-baseline-tuning.conf
+    reload: true
+  when: ansible_os_family == "RedHat"
+
+# Manage IPv6 in either direction. Per-host opt-in via baseline_disable_ipv6.
+# Some services (e.g. FreeIPA) require ::1 on loopback — keep it false there.
+- name: Tuning | Set IPv6 disable_ipv6 sysctls
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "{{ '1' if (baseline_disable_ipv6 | bool) else '0' }}"
+    state: present
+    sysctl_set: true
+    sysctl_file: /etc/sysctl.d/60-baseline-tuning.conf
+    reload: true
+  loop:
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+    - net.ipv6.conf.lo.disable_ipv6

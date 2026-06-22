@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: vsphere_vm
-  author: lab
+  author: longy
   description: Create and destroy vCenter VMs (clone from template) via community.vmware.
   license: MIT
   min_ansible_version: "2.15"

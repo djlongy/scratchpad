@@ -1,0 +1,22 @@
+[Unit]
+Description=Velociraptor DFIR Endpoint Client
+Documentation=https://docs.velociraptor.app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=10s
+ExecStart={{ velociraptor_install_dir }}/velociraptor \
+  --config {{ velociraptor_config_dir }}/client.config.yaml \
+  client
+
+# Harden the service process
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths={{ velociraptor_config_dir }} /tmp
+
+[Install]
+WantedBy=multi-user.target

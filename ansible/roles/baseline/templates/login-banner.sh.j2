@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# Interactive login banner. Sourced by /etc/profile for login shells.
+# Dynamic: hostname and the logging-in user resolve at login time.
+printf '\n'
+printf '============================================================\n'
+printf '  Environment : %s\n' "{{ baseline_banner_env_label }}"
+printf '  Host        : %s\n' "$(hostname -f 2>/dev/null || hostname)"
+printf '  User        : %s\n' "${USER:-$(id -un)}"
+{% if baseline_banner_message | length > 0 %}
+printf '  Notice      : %s\n' "{{ baseline_banner_message }}"
+{% endif %}
+printf '============================================================\n'
+printf '\n'

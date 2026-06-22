@@ -1,0 +1,31 @@
+---
+# splunk_forwarder/tasks/configure.yml — [configure]
+#
+# Deploys optional Splunk configuration files.
+# Each file is only written when the corresponding variable is set, so the
+# role is safe to run with zero configuration (deployment server managed
+# centrally, or outputs configured by a deployment app).
+
+# ── Deployment client ─────────────────────────────────────────────────────────
+
+- name: Configure deployment client (deploymentclient.conf)
+  ansible.builtin.template:
+    src: deploymentclient.conf.j2
+    dest: "{{ splunk_forwarder_home }}/etc/system/local/deploymentclient.conf"
+    owner: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+    mode: '0600'
+  when: splunk_forwarder_deployment_server | length > 0
+  notify: Restart splunk forwarder
+
+# ── TCP outputs ───────────────────────────────────────────────────────────────
+
+- name: Configure TCP outputs (outputs.conf)
+  ansible.builtin.template:
+    src: outputs.conf.j2
+    dest: "{{ splunk_forwarder_home }}/etc/system/local/outputs.conf"
+    owner: "{{ splunk_forwarder_user }}"
+    group: "{{ splunk_forwarder_group }}"
+    mode: '0600'
+  when: splunk_forwarder_forward_servers | length > 0
+  notify: Restart splunk forwarder

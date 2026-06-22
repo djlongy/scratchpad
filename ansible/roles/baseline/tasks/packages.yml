@@ -1,0 +1,91 @@
+---
+# roles/baseline/tasks/packages.yml
+# Distro-agnostic package baseline, in dependency order:
+#   update cache -> (optional) full upgrade -> required+optional install
+#   -> version-lock pinned packages -> on-demand troubleshooting tools
+# Installs happen in a single transaction per phase for speed.
+
+# ── Effective install set (new model + legacy dnf_packages alias) ────────────
+- name: Packages | Compute the effective install set
+  ansible.builtin.set_fact:
+    _baseline_install_set: >-
+      {{ (baseline_packages_required
+          + baseline_packages_optional
+          + dnf_packages) | unique }}
+
+# ── Cache + optional full upgrade ────────────────────────────────────────────
+- name: Packages | Update the APT cache (Debian)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+
+- name: Packages | Upgrade all OS packages (EL)
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest      # noqa: package-latest  (deliberate, gated by a flag)
+  when:
+    - baseline_packages_update | bool
+    - ansible_os_family == "RedHat"
+
+- name: Packages | Upgrade all OS packages (Debian)
+  ansible.builtin.apt:
+    upgrade: dist
+  when:
+    - baseline_packages_update | bool
+    - ansible_os_family == "Debian"
+
+# ── Required + optional packages (one transaction) ───────────────────────────
+- name: Packages | Install the required and optional packages
+  ansible.builtin.package:
+    name: "{{ _baseline_install_set }}"
+    state: present
+  when: _baseline_install_set | length > 0
+
+# ── Version-locked packages: install, then pin ───────────────────────────────
+- name: Packages | Install packages that will be version-locked
+  ansible.builtin.package:
+    name: "{{ baseline_packages_version_locked }}"
+    state: present
+  when: baseline_packages_version_locked | length > 0
+
+- name: Packages | Ensure the dnf versionlock plugin is present (EL)
+  ansible.builtin.dnf:
+    name: python3-dnf-plugin-versionlock
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_packages_version_locked | length > 0
+
+- name: Packages | Apply dnf version locks (EL)
+  community.general.dnf_versionlock:
+    name: "{{ baseline_packages_version_locked }}"
+    state: present
+  when:
+    - ansible_os_family == "RedHat"
+    - baseline_packages_version_locked | length > 0
+
+- name: Packages | Apply apt holds (Debian)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ baseline_packages_version_locked }}"
+  when:
+    - ansible_os_family == "Debian"
+    - baseline_packages_version_locked | length > 0
+
+# ── Troubleshooting tools (lean by default; install on demand) ───────────────
+- name: Packages | Install troubleshooting tools (on demand)
+  ansible.builtin.package:
+    name: "{{ baseline_troubleshooting_packages[ansible_os_family] | default([]) }}"
+    state: present
+  when:
+    - install_troubleshooting_tools | bool
+    - (baseline_troubleshooting_packages[ansible_os_family] | default([])) | length > 0
+
+# ── Enforce absent packages (e.g. setroubleshoot — SOE policy no-go) ─────────
+- name: Packages | Ensure policy-prohibited packages are absent
+  ansible.builtin.package:
+    name: "{{ baseline_packages_absent }}"
+    state: absent
+  when: baseline_packages_absent | length > 0

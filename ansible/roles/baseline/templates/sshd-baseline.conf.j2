@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# Managed by the baseline role (roles/baseline/templates/sshd-baseline.conf.j2).
+# Loaded via the default `Include /etc/ssh/sshd_config.d/*.conf` directive.
+
+# Keepalive — stop sessions freezing behind stateful firewalls.
+ClientAliveInterval {{ baseline_ssh_client_alive_interval }}
+ClientAliveCountMax {{ baseline_ssh_client_alive_count_max }}
+
+PermitRootLogin {{ baseline_ssh_permit_root_login }}
+PasswordAuthentication {{ 'yes' if baseline_ssh_password_authentication else 'no' }}
+
+# Forwarding — bastions/jump hosts enable TCP forwarding; leaf hosts stay closed.
+AllowTcpForwarding {{ 'yes' if baseline_ssh_allow_tcp_forwarding else 'no' }}
+AllowAgentForwarding {{ 'yes' if baseline_ssh_allow_agent_forwarding else 'no' }}
+X11Forwarding {{ 'yes' if baseline_ssh_x11_forwarding else 'no' }}
+{% for opt in baseline_ssh_extra_options %}
+{{ opt }}
+{% endfor %}

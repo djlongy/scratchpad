@@ -1,0 +1,62 @@
+---
+# defaults/main.yml — clamav
+# Behavioural defaults (lowest precedence — override via inventory or group_vars).
+# Environment-specific values (mirror URLs, custom scan paths) belong in
+# inventory/<env>/group_vars/ rather than here.
+
+# ── FIPS compatibility (EL9) ─────────────────────────────────────────────────
+# ClamAV < 1.5 uses MD5 internally (signatures + clean-file caching), which FIPS
+# disables — so the EL9 default ClamAV is UNUSABLE under FIPS ("Can't allocate
+# memory in FIPS mode"). ClamAV >= 1.5 fixes this (SHA2-256 caching +
+# the FIPSCryptoHashLimits option). Set this true ONLY when ClamAV >= 1.5 is
+# installed (supply it via clamav_repo_* below for air-gap) — otherwise
+# freshclam/clamd error on the unknown option.
+clamav_fips_compatible: false
+
+# ── Custom package repo (air-gap / to obtain ClamAV >= 1.5) ──────────────────
+# Point at an internal Artifactory mirror or the Cisco-Talos repo. Empty = use
+# the distro/EPEL packages (older ClamAV, NOT FIPS-capable).
+clamav_repo_baseurl: ""       # e.g. "https://artifactory.example.com/artifactory/clamav-rpm/el9/"
+clamav_repo_gpgkey: ""        # GPG key URL; empty disables gpgcheck
+clamav_repo_gpgcheck: true
+clamav_repo_sslverify: true   # set false for a self-signed internal mirror
+
+# ── Freshclam (DB updater) ────────────────────────────────────────────────
+# Enable and start the freshclam service (periodic signature updates).
+clamav_enable_freshclam: true
+
+# Private or air-gap mirror URL.  Empty string means "use the distro default"
+# (db.local.clamav.net) and leaves the DatabaseMirror line untouched.
+# Example: "https://mirror.corp.example.com/clamav"
+clamav_database_mirror: ""
+
+# ── Resident daemon (clamd) ───────────────────────────────────────────────
+# Install and start the clamd on-access/scanning daemon.
+# Requires additional packages (see vars/main.yml) and more memory (~700 MB).
+# Leave false on resource-constrained hosts — clamscan still works without it.
+clamav_enable_daemon: false
+
+# ── Scheduled scan ───────────────────────────────────────────────────────
+# Deploy and enable the clamav-scan systemd timer + service unit.
+clamav_scan_enabled: false
+
+# Directories to scan (passed to clamscan/clamdscan -r).
+clamav_scan_paths:
+  - /home
+  - /tmp
+  - /var/tmp
+
+# OnCalendar expression for the systemd timer.
+clamav_scan_schedule: "Sun *-*-* 02:00:00"
+
+# Remove infected files automatically.  Keep false in most environments and
+# alert/quarantine instead; destructive removal is hard to undo.
+clamav_remove_infected: false
+
+# Path for the scan log written by clamscan/clamdscan.
+clamav_scan_log: /var/log/clamav/scan.log
+
+# ── Firewall ──────────────────────────────────────────────────────────────
+# ClamAV does not expose a network listener by default.
+# If you configure clamd to listen on a TCP socket (clamd.conf LocalSocket off +
+# TCPSocket N), open the port via your firewall role rather than here.

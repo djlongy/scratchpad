@@ -39,6 +39,19 @@
     name: sshd
     state: reloaded
 
+- name: Restart chrony
+  ansible.builtin.service:
+    name: "{{ _baseline_chrony_service }}"
+    state: restarted
+
+# Only reboots when explicitly allowed; otherwise crypto.yml logs that a reboot
+# is pending and leaves it to the operator.
+- name: Reboot for crypto change
+  ansible.builtin.reboot:
+    msg: "Rebooting to apply a FIPS/crypto-policy change."
+    reboot_timeout: 300
+  when: baseline_allow_reboot | bool
+
 - name: Update CA trust EL  # noqa: no-changed-when
   ansible.builtin.command: update-ca-trust extract
 

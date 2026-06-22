@@ -10,20 +10,177 @@ base_task_name: "Configure OS"
 # when the canonical-name group_vars pattern is in play, else inventory_hostname.
 baseline_timezone: "Australia/Sydney"
 
-# Data-disk LVM names for the fallback /opt mount (EL). Override per estate.
+# Data-disk LVM names for the /opt mount (EL). Override per estate.
 baseline_opt_vg: "vg_data"
 baseline_opt_lv: "lv_opt"
+# /opt directory mode. 0755 root:root is the distro default and CIS-compliant
+# (CIS flags world-WRITABLE dirs, not world-readable/traversable ones).
+baseline_opt_mode: "0755"
+
+# Disk/mount management is always delegated to the universal `storage` role,
+# driven by baseline_storage_volumes below.
+#
+# Volumes managed on baselined hosts. The /var entry is grow-only (never
+# created — only resized when the root disk grows); /opt is provisioned from
+# the first blank data disk and grown thereafter. Override per estate.
+baseline_storage_volumes:
+  - name: var
+    lvm: true
+    vg: sysvg
+    lv: lv_var
+    mount: /var
+    partition_number: 3
+    provision: false
+    grow: true
+  - name: opt
+    lvm: true
+    vg: "{{ baseline_opt_vg }}"
+    lv: "{{ baseline_opt_lv }}"
+    size: "100%FREE"
+    fstype: xfs
+    mount: /opt
+    sefcontext: usr_t
+    disk: auto
+    provision: true
+    grow: true
+
+# ── Reboot control ────────────────────────────────────────────────────────
+# When a change genuinely requires a reboot (FIPS toggle, crypto policy), the
+# role only reboots automatically if this is true. Otherwise it logs that a
+# reboot is pending and leaves it to the operator (run with --tags reboot).
+baseline_allow_reboot: false
+
+# ════════════════════════════════════════════════════════════════════════════
+# Repository enablement (stock EL repos). Custom mirrors are further below.
+# ════════════════════════════════════════════════════════════════════════════
+baseline_epel_enabled: true            # import EPEL on EL hosts
+baseline_crb_enabled: true             # enable CodeReady Builder / crb on EL
+
+# ── Outbound proxy (Squid client) — configured before repos/packages ────────
+# Point the host's package managers + environment at a Squid proxy for general
+# internet egress. Internal mirrors (Artifactory) + the estate domain should be
+# in no_proxy so they bypass it. Empty url = proxy step skipped.
+baseline_proxy_url: ""                  # e.g. "http://squid.mgt.example.com:3128"
+baseline_proxy_no_proxy: "localhost,127.0.0.1,::1"   # add Artifactory host + ".{{ domain }}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# Crypto policy & FIPS (EL only). FIPS enablement is a single boolean; the role
+# runs fips-mode-setup + update-crypto-policies idempotently and flags the
+# reboot it requires (honouring baseline_allow_reboot).
+# ════════════════════════════════════════════════════════════════════════════
+fips_enabled: false
+# System-wide crypto policy applied via update-crypto-policies. Empty = leave
+# as-is. Ignored when fips_enabled (FIPS sets its own policy). e.g. DEFAULT,
+# FUTURE, FIPS, "DEFAULT:SHA1".
+baseline_crypto_policy: ""
+
+# ════════════════════════════════════════════════════════════════════════════
+# Package baseline (generic, distro-agnostic). Ordered run: optional full
+# upgrade -> required+optional install -> version-lock -> troubleshooting gate.
+# cloud-utils-growpart is installed by the `storage` role, not here.
+# ════════════════════════════════════════════════════════════════════════════
+baseline_packages_update: false        # run a full OS package upgrade first
+baseline_packages_required: []         # always present
+baseline_packages_optional: []         # present (split out for clarity/override)
+baseline_packages_version_locked: []   # installed, then pinned (dnf versionlock / apt hold)
+#  - docker-ce
+#  - containerd.io
+install_troubleshooting_tools: false   # keep production hosts lean; install on demand
+baseline_troubleshooting_packages:     # installed only when the flag above is true
+  RedHat: [sos, strace, tcpdump, lsof, bind-utils]
+  Debian: [sosreport, strace, tcpdump, lsof, dnsutils]
+# Packages that must NOT be present (enforced absent on every run). setroubleshoot
+# is excluded from production hosts by policy — it pulls a desktop GUI stack and
+# is an SOE no-go.
+baseline_packages_absent: [setroubleshoot, setroubleshoot-server]
 
 # DNF packages installed on RedHat-family hosts (override in group_vars)
+# DEPRECATED alias — folded into baseline_packages_required at install time.
 dnf_packages: []
 # pip packages installed on AlmaLinux hosts (override in group_vars)
 pip_packages: []
+
+# ════════════════════════════════════════════════════════════════════════════
+# Time sync (chrony) — small enough to live in baseline. Empty server/pool
+# lists leave the distro default chrony.conf untouched (chrony still ensured
+# installed + running).
+# ════════════════════════════════════════════════════════════════════════════
+baseline_ntp_manage: true
+baseline_ntp_servers: []               # e.g. ["192.0.2.1"] — replaces default sources
+baseline_ntp_pools: []                 # e.g. ["pool.ntp.org"]
+baseline_ntp_allow: []                 # subnets this host serves time to (NTP server role)
+
+# ════════════════════════════════════════════════════════════════════════════
+# SSH server engine — dynamic sshd drop-in (replaces the old monolithic config)
+# plus optional bastion/jump-host client config. EL & Ubuntu both Include
+# sshd_config.d / ssh_config.d by default.
+# ════════════════════════════════════════════════════════════════════════════
+# Authorized keys ensured EARLY (before any hardening can restrict key algos).
+# Add a FIPS-approved key (ECDSA P-256/384 or RSA-SHA2) so FIPS/CIS hardening
+# can't lock automation out — Ed25519 keys are rejected once a host is hardened.
+baseline_authorized_keys: []
+#  - user: ansible
+#    key: "{{ lookup('file', '~/.ssh/ansible-esxi.pem.pub') }}"   # ECDSA P-384
+#    comment: ecdsa-fallback
+
+baseline_ssh_manage: true
+baseline_ssh_client_alive_interval: 60
+baseline_ssh_client_alive_count_max: 3
+baseline_ssh_permit_root_login: "prohibit-password"   # yes | no | prohibit-password
+baseline_ssh_password_authentication: true
+baseline_ssh_allow_tcp_forwarding: false              # bastions set true
+baseline_ssh_allow_agent_forwarding: false
+baseline_ssh_x11_forwarding: false
+baseline_ssh_extra_options: []         # raw "Keyword value" sshd lines appended verbatim
+# Bastion/jump-host: when set, writes an ssh_config.d ProxyJump drop-in so this
+# host reaches matched targets through the bastion.
+baseline_ssh_bastion_host: ""          # e.g. "bastion.mgt.example.com"
+baseline_ssh_bastion_user: ""          # default: current user
+baseline_ssh_bastion_match_hosts: "*"  # host glob the ProxyJump applies to
+
+# ════════════════════════════════════════════════════════════════════════════
+# Login banner (all hosts) — shows environment, host, and the logging-in user
+# so nobody mistakes prod for dev. env-derived label, overridable.
+# ════════════════════════════════════════════════════════════════════════════
+baseline_banner_enabled: true
+baseline_banner_env_label: "{{ env | default('UNKNOWN') | upper }}"
+baseline_banner_message: ""            # optional extra notice line
+
+# ════════════════════════════════════════════════════════════════════════════
+# Bastion / jump-host conduit (opt-in; set on the bastion inventory group). A
+# bastion bridges the monitoring network and the private environment behind it:
+# operators SSH-ProxyJump in (set baseline_ssh_allow_tcp_forwarding: true too),
+# and Prometheus scrapes backend exporters *through* the bastion. All routing is
+# allow-listed to the monitoring source IPs + exporter ports (least privilege).
+# ════════════════════════════════════════════════════════════════════════════
+baseline_bastion_enabled: false
+baseline_bastion_ip_forward: true      # turn the bastion into a router
+baseline_bastion_masquerade: false     # SNAT forwarded traffic out the backend NIC
+baseline_bastion_monitoring_ips: []    # Prometheus/monitoring source IPs allowed through
+#  - 192.0.2.74
+baseline_bastion_exporter_ports: ["9100/tcp"]   # exporter ports the monitoring plane scrapes
+baseline_bastion_backend_subnets: []   # optional "<dest/prefix> <gateway>" static routes
+#  - "198.51.100.0/24 198.51.100.1"
+baseline_bastion_route_conn: ""        # NetworkManager connection to attach routes to
+
+# ════════════════════════════════════════════════════════════════════════════
+# Observability / security agents — each is its own bare-noun role; baseline
+# orchestrates them via these toggles. Configure each agent through its own
+# role vars (see roles/<agent>/defaults). All off by default.
+# ════════════════════════════════════════════════════════════════════════════
+baseline_enable_node_exporter: false
+baseline_enable_velociraptor: false
+baseline_enable_splunk_forwarder: false
+baseline_enable_stroom_agent: false
+baseline_enable_clamav: false
 # Logging baseline defaults for 2G /var/log and /var/log/audit filesystems.
 baseline_logrotate_maxage_days: 7
 baseline_logrotate_syslog_maxsize: 10M
 baseline_logrotate_audit_maxsize: 32M
 baseline_logrotate_rotate_count: 7
 baseline_logrotate_compress: true
+baseline_journald_storage: persistent      # persistent | volatile | auto | none
+baseline_journald_compress: true
 baseline_journald_system_max_use: 256M
 baseline_journald_system_keep_free: 512M
 baseline_journald_system_max_file_size: 32M
@@ -56,7 +213,7 @@ baseline_fail2ban_destemail: "root@localhost"
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
-# Off by default; the lab's RedHat path (tasks/redhat.yml) still handles
+# Off by default; the default RedHat path (tasks/redhat.yml) still handles
 # network where used. Enable for the portable, distro-agnostic path.
 baseline_network_manage: false
 # baseline_network_interface: "ens192"      # default: host's primary interface
@@ -87,18 +244,89 @@ baseline_firewall_custom_zones: []
 # ── SELinux (EL; opt-in by setting a state) ──────────────────────────────────
 baseline_selinux_state: ""                  # "" = no change | enforcing | permissive | disabled
 baseline_selinux_policy: "targeted"
+# SELinux file contexts (fcontext) — applied even when state is unchanged. Use a
+# dedicated subtree for container storage rather than relabelling all of /opt.
+# Relocated Docker data-root example (container_var_lib_t):
+#   - {path: "/opt/docker(/.*)?", setype: container_var_lib_t, restore: /opt/docker}
+baseline_selinux_fcontexts: []
+# SELinux booleans (persistent). e.g. let containers manage cgroups, use NFS, etc.
+#   - {name: container_manage_cgroup, state: true}
+#   - {name: virt_use_nfs, state: true}
+baseline_selinux_booleans: []
 
 # ── fapolicyd (EL; opt-in) ───────────────────────────────────────────────────
 baseline_fapolicyd_enabled: false
 baseline_fapolicyd_permissive: true         # start permissive; enforce after validation
-baseline_fapolicyd_rules_priority: 80       # rules.d filename prefix (lower = earlier)
-baseline_fapolicyd_rules: []                # raw fapolicyd.rules lines, e.g.:
-#  - "allow perm=any all : dir=/opt/myapp/"
+# rules.d filename prefix — LOWER = evaluated earlier = wins (first match). The
+# built-in deny rules sit at 30-patterns.rules (pattern=ld_so etc.) and
+# 90-deny-execute.rules. 80 only beats the 90 catch-all — NOT the 30 pattern
+# denies — so to allow CONTAINERS / VS Code (which trip pattern=ld_so) custom
+# rules MUST land before 30. Default 25 does that (after the 10/20 language +
+# updater rules, before the 30 pattern denies).
+baseline_fapolicyd_rules_priority: 25
+# Raw allow-rules. fapolicyd blocks executing files not in the trust db (anything
+# not rpm-installed) AND denies the ld_so exec pattern — so containers (their own
+# binaries + the container ld.so under the data-root), VS Code, and downloaded
+# agents get denied until allow-listed. The pattern=ld_so allow is what unblocks
+# Docker/Podman (validated). Examples (uncomment + adjust per host):
+baseline_fapolicyd_rules: []
+# Containers (Docker/Podman) — VALIDATED. The ld_so pattern allow is what
+# actually unblocks them; the dir= allow covers non-ld_so container execs. The
+# ld_so allow is necessarily broad (its object is the host linker, so it can't
+# be scoped to the data-root) — on a container host you accept relaxing that one
+# pattern check. Without it: "runc create failed ... write init-p: broken pipe".
+#  - "allow perm=any pattern=ld_so : all"
+#  - "allow perm=any all : dir=/opt/docker/"
+# Python venvs / running Ansible from a venv — VALIDATED. The venv python is a
+# symlink to trusted system python, but its site-packages (.py) are untrusted and
+# blocked until the venv tree is allow-listed.
+#  - "allow perm=any all : dir=/home/<user>/venvs/"
+#  - "allow perm=any all : dir=/opt/venvs/"
+# VS Code (Electron app + downloaded extensions + remote server):
+#  - "allow perm=any all : dir=/usr/share/code/"
+#  - "allow perm=any all : dir=/home/<user>/.vscode/"
+#  - "allow perm=any all : dir=/home/<user>/.vscode-server/"
+# Firefox (the rpm app is trusted; its downloaded GMP/DRM plugins + profile are not):
+#  - "allow perm=any all : dir=/usr/lib64/firefox/"
+#  - "allow perm=any all : dir=/home/<user>/.mozilla/"
+# ClamAV (clamscan/clamd are rpm-trusted; allow the DB/bytecode dir to be safe):
+#  - "allow perm=any all : dir=/var/lib/clamav/"
+# Downloaded agents not from rpm (node_exporter, velociraptor):
+#  - "allow perm=any all : dir=/usr/local/bin/"
+# Paths added to the fapolicyd TRUST db (fapolicyd-cli --file add) — stronger
+# than an allow-rule (integrity-checked). Good for VS Code + agent binaries:
+baseline_fapolicyd_trust_paths: []
+#  - /usr/share/code
+#  - /home/<user>/.vscode-server
+#  - /usr/local/bin/node_exporter
 
 # ── CIS-aligned hardening (NO FIPS; opt-in) ──────────────────────────────────
 # Pragmatic CIS L1 subset (not a certifiable benchmark — use ansible-lockdown
 # for that). ip_forward is intentionally NOT forced off (routers/k8s need it).
 baseline_cis_hardening: false
+# CIS is layered so the vendor remediation is never patched in place:
+#   1. OpenSCAP / SSG remediation (the "harden via openscap" path)
+#   2. an optional upstream benchmark role (e.g. ansible-role-8-cis), applied verbatim
+#   3. this repo's custom org controls (cis_custom.yml)
+#   4. any extra custom patch task files (baseline_cis_custom_task_files)
+# Custom controls follow the legacy baseline_cis_hardening flag for back-compat.
+baseline_cis_upstream_enabled: false
+baseline_cis_upstream_role: ""           # e.g. "ansible-role-8-cis" / "RHEL9-CIS" — install via requirements.yml, NOT vendored
+baseline_cis_custom_enabled: "{{ baseline_cis_hardening }}"
+baseline_cis_disable_usb_storage: true   # merged into the module blacklist below
+baseline_cis_fix_world_writable: false   # audit + strip world-write bit when true (excludes below)
+# Paths excluded from the world-writable / perm-0002 sweep. Docker's data root
+# legitimately holds 0002 paths (container overlays), so it is excluded here.
+baseline_cis_world_writable_excludes: ["/var/lib/docker"]
+# Extra org "custom patch" task files applied after the built-in custom controls.
+baseline_cis_custom_task_files: []       # e.g. ["/etc/ansible/cis-patches/site.yml"]
+
+# ── OpenSCAP / SCAP Security Guide remediation (EL only) ─────────────────────
+baseline_cis_openscap_enabled: false
+baseline_cis_openscap_profile: "xccdf_org.ssgproject.content_profile_cis"
+baseline_cis_openscap_remediate: true    # false = scan/report only, no changes
+baseline_cis_openscap_datastream: ""     # "" = auto (/usr/share/xml/scap/ssg/content/ssg-<distro><ver>-ds.xml)
+baseline_cis_openscap_report_dir: /var/log/openscap
 baseline_cis_sysctl:
   - {name: net.ipv4.conf.all.rp_filter, value: "1"}
   - {name: net.ipv4.conf.all.accept_source_route, value: "0"}

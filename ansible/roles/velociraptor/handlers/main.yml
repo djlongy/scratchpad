@@ -1,0 +1,7 @@
+---
+- name: Restart velociraptor
+  ansible.builtin.systemd:
+    name: "{{ velociraptor_service_name }}"
+    state: restarted
+    daemon_reload: true
+  become: true

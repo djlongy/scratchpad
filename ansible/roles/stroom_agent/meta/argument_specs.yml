@@ -1,0 +1,97 @@
+---
+argument_specs:
+  main:
+    short_description: Generic Stroom datafeed log forwarder.
+    description:
+      - Ships rotated local log files to a Stroom datafeed HTTP endpoint
+        via a shell script driven by a systemd oneshot service and timer.
+      - Supports gzip Content-Encoding, mTLS, custom CA bundles, and an
+        optional org-supplied sender binary fetched from a URL.
+      - C(stroom_datafeed_url) and C(stroom_feed_name) are mandatory; the
+        role asserts on them rather than defaulting to empty strings.
+    options:
+      stroom_datafeed_url:
+        type: str
+        required: false
+        default: ""
+        description: >-
+          Full URL of the Stroom datafeed endpoint, e.g.
+          "https://stroom.example.com/stroom/datafeed".
+          Must be non-empty when the role is applied (asserted).
+      stroom_feed_name:
+        type: str
+        required: false
+        default: ""
+        description: >-
+          Stroom Feed name sent in the C(Feed:) HTTP header, e.g.
+          "LINUX-AUDIT-EVENTS".  Must be non-empty when the role is applied.
+      stroom_system_name:
+        type: str
+        default: "{{ inventory_hostname }}"
+        description: Value sent in the C(System:) HTTP header.
+      stroom_environment:
+        type: str
+        default: "{{ env | default('prod') }}"
+        description: Value sent in the C(Environment:) HTTP header.
+      stroom_log_paths:
+        type: list
+        elements: str
+        default:
+          - /var/log/messages
+          - /var/log/secure
+          - /var/log/audit/audit.log
+        description: List of log file paths to POST on each timer firing.
+      stroom_send_interval:
+        type: str
+        default: "5min"
+        description: >-
+          Systemd timer interval — a bare duration (e.g. "5min", "1h") is
+          passed to C(OnUnitActiveSec); a calendar expression (e.g. "*:0/5")
+          is passed to C(OnCalendar).
+      stroom_install_dir:
+        type: str
+        default: /opt/stroom
+        description: Directory where the sender script (and optional binary) are installed.
+      stroom_config_dir:
+        type: str
+        default: /etc/stroom
+        description: Directory for the env-file config (C(log-sender.conf)).
+      stroom_tls_verify:
+        type: bool
+        default: true
+        description: >-
+          Verify TLS certificates.  Set false to pass C(-k) to curl (insecure,
+          for self-signed CA environments that do not use C(stroom_ca_cert)).
+      stroom_ca_cert:
+        type: str
+        default: ""
+        description: >-
+          Absolute path (on the managed host) to a custom CA bundle.
+          Passed as C(--cacert) to curl when non-empty and C(stroom_tls_verify)
+          is true.
+      stroom_client_cert:
+        type: str
+        default: ""
+        description: >-
+          Absolute path (on the managed host) to a client certificate for mTLS.
+          Passed as C(--cert) to curl.
+      stroom_client_key:
+        type: str
+        default: ""
+        description: >-
+          Absolute path (on the managed host) to the mTLS client private key.
+          Passed as C(--key) to curl.  Treat as a secret.
+      stroom_log_sender_url:
+        type: str
+        default: ""
+        description: >-
+          Optional URL of an org-supplied sender binary.  When non-empty the
+          binary is fetched with C(ansible.builtin.get_url) and placed in
+          C(stroom_install_dir).
+      stroom_log_sender_version:
+        type: str
+        default: ""
+        description: >-
+          Version string for the org-supplied binary.  Used to construct a
+          versioned destination path (for idempotent C(creates:) guards).
+          Required when C(stroom_log_sender_url) is set.

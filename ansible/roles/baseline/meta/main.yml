@@ -1,14 +1,21 @@
 ---
 galaxy_info:
   role_name: baseline
-  author: lab
+  author: longy
   description: >-
-    Distro-agnostic SOE Linux baseline — hostname/timezone/packages, network
-    (IP/DNS, dynamic interface), firewall zones/services, logging & auditd
-    tuning, /opt data-disk mount, fail2ban (Ubuntu), breakglass local-admin,
-    SSH hardening, IPv6 toggle, SELinux, fapolicyd, and CIS-aligned hardening
-    (no FIPS) — overridable via host/group vars. Distro-aware
-    (AlmaLinux / RHEL / Ubuntu). openclaw lives in the `soe` role.
+    Distro-agnostic SOE Linux baseline, ordered for speed and idempotence:
+    identity, storage (via the storage role), CA trust, outbound proxy (Squid
+    client), repos (RHSM/EPEL/CRB + Artifactory/internal mirrors), crypto policy
+    & FIPS, package baseline (required/optional/version-locked + on-demand
+    troubleshooting tools + enforced-absent), OS tuning sysctls, SSH server
+    engine (keepalive/forwarding/bastion), network, firewall, bastion conduit
+    (SSH jump + Prometheus scrape-through routing), chrony, SELinux state +
+    fcontexts, fapolicyd, CIS hardening (OpenSCAP/SSG + upstream role hook +
+    custom org controls + patch files), login banner, logging & auditd,
+    breakglass local-admin, and optional observability/security agents
+    (node_exporter, velociraptor, splunk_forwarder, stroom_agent, clamav) each
+    gated by an enable_* toggle. Distro-aware (AlmaLinux / RHEL / Ubuntu).
+    openclaw lives in the `openclaw` role.
   license: MIT
   min_ansible_version: "2.14"
   platforms:

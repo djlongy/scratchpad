@@ -1,0 +1,43 @@
+---
+# roles/baseline/tasks/cis.yml
+# CIS hardening, layered so we never patch a vendor remediation in place:
+#   1. OpenSCAP / SSG remediation        (cis_openscap.yml — "harden via openscap")
+#   2. upstream benchmark role           (e.g. ansible-role-8-cis, applied verbatim)
+#   3. this repo's custom org controls   (cis_custom.yml — usb-storage, modules,
+#                                         world-writable sweep excluding docker)
+#   4. extra org "custom patch" files    (baseline_cis_custom_task_files)
+
+- name: CIS | Apply OpenSCAP (SCAP Security Guide) remediation
+  ansible.builtin.include_tasks:
+    file: cis_openscap.yml
+    apply:
+      tags: [baseline, cis, hardening, openscap]
+  when:
+    - baseline_cis_openscap_enabled | bool
+    - ansible_os_family == "RedHat"
+
+- name: CIS | Apply the upstream benchmark role
+  ansible.builtin.include_role:
+    name: "{{ baseline_cis_upstream_role }}"
+    apply:
+      tags: [baseline, cis, hardening]
+  when:
+    - baseline_cis_upstream_enabled | bool
+    - baseline_cis_upstream_role | length > 0
+
+- name: CIS | Apply custom organisation controls
+  ansible.builtin.include_tasks:
+    file: cis_custom.yml
+    apply:
+      tags: [baseline, cis, hardening]
+  when: baseline_cis_custom_enabled | bool
+
+- name: CIS | Apply additional custom patch task files
+  ansible.builtin.include_tasks:
+    file: "{{ item }}"
+    apply:
+      tags: [baseline, cis, hardening]
+  loop: "{{ baseline_cis_custom_task_files }}"
+  loop_control:
+    label: "{{ item }}"
+  when: baseline_cis_custom_task_files | length > 0

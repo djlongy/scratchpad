@@ -1,0 +1,31 @@
+# Managed by Ansible — clamav role.  Do not edit by hand.
+[Unit]
+Description=ClamAV scheduled scan
+Documentation=man:clamscan(1)
+# Wait for the DB to be available and (if enabled) for clamd to be running.
+After=network-online.target{% if clamav_enable_daemon %} {{ _clamav.clamd_service }}{% endif %}
+
+[Service]
+Type=oneshot
+User=root
+# Redirect stdout (clean files) to /dev/null; capture only infected + errors.
+ExecStart=/bin/bash -euo pipefail -c '\
+  mkdir -p {{ clamav_scan_log | dirname }} ; \
+{% if clamav_enable_daemon %}
+  clamdscan --multiscan \
+    --infected \
+    {% if clamav_remove_infected %}--remove {% endif %}\
+    --log={{ clamav_scan_log }} \
+    {% for p in clamav_scan_paths %}{{ p }}{% if not loop.last %} {% endif %}{% endfor %} \
+{% else %}
+  clamscan --recursive \
+    --infected \
+    {% if clamav_remove_infected %}--remove {% endif %}\
+    --log={{ clamav_scan_log }} \
+    {% for p in clamav_scan_paths %}{{ p }}{% if not loop.last %} {% endif %}{% endfor %} \
+{% endif %}
+    ; RC=$$? ; [ $$RC -eq 1 ] && exit 0 ; exit $$RC'
+# clamscan exits 1 when infected files are found (not an error); treat as success.
+
+[Install]
+WantedBy=multi-user.target

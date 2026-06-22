@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Managed by the baseline role. Replaces the distro default sources with the
+# configured NTP servers/pools.
+{% for server in baseline_ntp_servers %}
+server {{ server }} iburst
+{% endfor %}
+{% for pool in baseline_ntp_pools %}
+pool {{ pool }} iburst
+{% endfor %}
+
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony
+{% for net in baseline_ntp_allow %}
+allow {{ net }}
+{% endfor %}
