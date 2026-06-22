@@ -1,0 +1,10 @@
+---
+# storage/tasks/mount.yml — UUID + nofail fstab management.
+# Only volumes with a non-empty mount point are mounted.
+
+- name: Mount volumes
+  ansible.builtin.include_tasks: mount_one.yml
+  loop: "{{ _storage_resolved | selectattr('mount', 'ne', '') | list }}"
+  loop_control:
+    loop_var: vol
+    label: "{{ vol.name }} -> {{ vol.mount }}"

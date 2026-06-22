@@ -1,0 +1,7 @@
+---
+# storage/tasks/packages.yml — distro-agnostic prerequisites.
+
+- name: Install storage prerequisite packages
+  ansible.builtin.package:
+    name: "{{ storage_packages[ansible_os_family] | default(storage_packages['RedHat']) }}"
+    state: present

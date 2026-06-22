@@ -1,0 +1,48 @@
+---
+# Provisions two LVM volumes on loopback disks — one xfs, one ext4 — to
+# exercise discover -> provision -> mount and (via the idempotence step)
+# the grow no-op path. Whole-disk PVs avoid partition-probe flakiness in
+# containers; partitioned + plain layouts are validated on real hosts.
+- name: Converge
+  hosts: all
+  become: false
+  vars:
+    storage_manage_packages: false
+    storage_manage_selinux: false
+    storage_provision: true
+    storage_volumes:
+      - name: data1
+        lvm: true
+        partition: false
+        vg: vg_test
+        lv: lv_data1
+        size: "200M"
+        fstype: xfs
+        mount: /mnt/data1
+        disk: "{{ _storage_test_loops.stdout_lines[0] }}"
+      - name: data2
+        lvm: true
+        partition: false
+        vg: vg_test2
+        lv: lv_data2
+        size: "200M"
+        fstype: ext4
+        mount: /mnt/data2
+        disk: "{{ _storage_test_loops.stdout_lines[1] }}"
+  pre_tasks:
+    - name: Create + attach two loopback disks
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          for i in 0 1; do
+            f="/var/lib/storage-loop$i.img"
+            [ -f "$f" ] || fallocate -l 512M "$f"
+            dev="$(losetup -j "$f" | cut -d: -f1)"
+            [ -n "$dev" ] || dev="$(losetup -fP --show "$f")"
+            echo "$dev"
+          done
+        executable: /bin/bash
+      register: _storage_test_loops
+      changed_when: false
+  roles:
+    - role: storage

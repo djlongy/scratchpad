@@ -1,0 +1,111 @@
+---
+argument_specs:
+  main:
+    short_description: Universal hardware/name-agnostic disk role.
+    description:
+      - Provisions, grows, formats, and mounts LVM or plain storage on any
+        Linux host regardless of disk size or device naming.
+      - Driven by a single declarative C(storage_volumes) list (or a named
+        preset from C(storage_profiles) selected via C(storage_profile)).
+      - Growing is automatic and non-destructive; provisioning (create and
+        format) is opt-in via C(storage_provision) and refuses any disk
+        carrying an existing filesystem or partition signature.
+    options:
+      storage_volumes:
+        type: list
+        elements: dict
+        default: []
+        description: Volumes to manage end-to-end (one dict per volume).
+        options:
+          name:
+            type: str
+            required: true
+            description: Logical handle for the volume.
+          disk:
+            type: str
+            description: >-
+              Disk selector — auto, an explicit path (/dev/sdb), or
+              by-size:/by-serial:/by-id:/by-wwn: matchers. Optional for
+              grow-only LVM volumes located via their VG.
+          lvm:
+            type: bool
+            description: Build an LVM stack (true) or a plain partition (false).
+          partition:
+            type: bool
+            description: LVM only — partition the disk (true) or use the whole disk as a PV (false).
+          partition_number:
+            type: int
+            description: Partition number to create or grow (default 1).
+          vg:
+            type: str
+            description: LVM volume group name.
+          lv:
+            type: str
+            description: LVM logical volume name.
+          size:
+            type: str
+            description: Size — absolute (40G) or relative (100%FREE, 50%VG).
+          fstype:
+            type: str
+            choices: [xfs, ext4]
+            description: Filesystem type.
+          mount:
+            type: str
+            description: Mount point ('' manages the block stack without mounting).
+          opts:
+            type: str
+            description: fstab mount options (nofail is enforced).
+          sefcontext:
+            type: str
+            description: Optional SELinux fcontext type (EL only).
+          provision:
+            type: bool
+            description: Allow creating/formatting this volume if absent.
+          grow:
+            type: bool
+            description: Participate in the grow pass.
+          owner:
+            type: str
+            description: Mountpoint owner.
+          group:
+            type: str
+            description: Mountpoint group.
+          mode:
+            type: str
+            description: Mountpoint mode.
+      storage_profile:
+        type: str
+        default: ""
+        description: Key into storage_profiles; empty uses storage_volumes verbatim.
+      storage_profiles:
+        type: dict
+        default: {}
+        description: Named presets resolving to a storage_volumes list.
+      storage_manage_packages:
+        type: bool
+        default: true
+        description: Install prerequisite packages before acting.
+      storage_grow:
+        type: bool
+        default: true
+        description: Run the automatic, non-destructive grow pass.
+      storage_provision:
+        type: bool
+        default: false
+        description: Allow opt-in provisioning (create/format).
+      storage_require_fresh:
+        type: bool
+        default: true
+        description: Provisioning refuses disks with an existing signature.
+      storage_manage_fstab:
+        type: bool
+        default: true
+        description: Manage UUID + nofail fstab entries and mounts.
+      storage_manage_selinux:
+        type: bool
+        default: true
+        description: Apply SELinux fcontext + restorecon on EL.
+      storage_debug:
+        type: bool
+        default: false
+        description: Emit discovery and provisioning-plan debug output.

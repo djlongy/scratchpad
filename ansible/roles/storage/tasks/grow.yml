@@ -1,0 +1,11 @@
+---
+# storage/tasks/grow.yml — auto, non-destructive resize.
+# Loops every existing volume marked grow:true through the per-volume
+# sequence (rescan -> grow partition -> pvresize -> lvextend -> grow fs).
+
+- name: Grow existing volumes
+  ansible.builtin.include_tasks: grow_one.yml
+  loop: "{{ _storage_resolved | selectattr('grow', 'equalto', true) | selectattr('_exists', 'equalto', true) | list }}"
+  loop_control:
+    loop_var: vol
+    label: "{{ vol.name }} ({{ vol.vg | default('') }}/{{ vol.lv | default('') }})"

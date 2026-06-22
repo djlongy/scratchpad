@@ -1,0 +1,92 @@
+---
+# storage — universal, hardware/name-agnostic disk role.
+#
+# Provisions, grows, formats, and mounts Linux storage on any machine — VM,
+# bare metal, or cloud image — regardless of disk size, device naming
+# (sda / nvme0n1 / vda / mmcblk0), or whether the layout uses LVM.
+#
+# The role is driven by ONE declarative list (storage_volumes); each entry
+# describes a volume end-to-end and drives all phases:
+#   packages -> discover -> grow -> provision -> mount -> selinux
+#
+# SAFETY MODEL
+# ────────────────────────────────────────────────────────────────────────
+#   grow       runs automatically; it is non-destructive (only enlarges).
+#   provision  CREATES/formats and is OPT-IN (storage_provision: true or
+#              --tags provision) AND refuses any disk with an existing
+#              filesystem/partition signature (storage_require_fresh).
+# The disk backing / is always discovered at runtime and excluded from
+# both `auto` selection and provisioning.
+
+# ── Master volume list ──────────────────────────────────────────────────
+# Each entry (all fields except `name` optional — defaults below fill them):
+#   name:             logical handle (labels, selection, fstab comment)   [required]
+#   disk:             auto | /dev/sdb | by-size:50G | by-serial:X
+#                     | by-id:X | by-wwn:X     (ignored for grow-only LVM
+#                     volumes, which are located via their VG)
+#   lvm:              true  -> parted/whole-disk PV -> VG -> LV
+#                     false -> partition + filesystem directly
+#   partition:        LVM only. true -> parted GPT + lvm flag, PV on the
+#                     partition; false -> whole disk as PV. (plain volumes
+#                     are always partitioned)
+#   partition_number: which partition to create/grow (e.g. 3 for an
+#                     existing sda3 root). Default 1.
+#   vg, lv:           LVM volume group / logical volume names
+#   size:             40G | 512M | 100%FREE | 50%VG (LVM); 100% | 50% (plain)
+#   fstype:           xfs | ext4
+#   mount:            mount point ('' -> manage the block stack, do not mount)
+#   opts:             fstab mount options (nofail is enforced in mount.yml)
+#   sefcontext:       optional SELinux fcontext type (EL only)
+#   provision:        may CREATE/format if absent (still gated globally +
+#                     FRESH-guarded)
+#   grow:             participate in the grow pass
+#   owner/group/mode: mountpoint ownership/permissions
+storage_volumes: []
+
+# ── Named presets (optional sugar) ──────────────────────────────────────
+# Select one per host with storage_profile; resolves to storage_volumes.
+storage_profile: ""
+storage_profiles: {}
+
+# ── Behaviour flags ─────────────────────────────────────────────────────
+storage_manage_packages: true      # install parted/lvm2/xfsprogs/... first
+storage_grow: true                 # run the (auto, non-destructive) grow pass
+storage_provision: false           # allow CREATE/format (opt-in)
+storage_require_fresh: true        # provision refuses non-empty disks
+storage_manage_fstab: true         # write UUID + nofail fstab entries + mount
+storage_manage_selinux: true       # semanage/restorecon on EL
+storage_debug: false               # emit discovery/plan debug output
+
+# ── Per-volume defaults (applied to any field an entry omits) ────────────
+storage_default_lvm: true
+storage_default_partition: true
+storage_default_partition_number: 1
+storage_default_fstype: xfs
+storage_default_size: "100%FREE"
+storage_default_opts: "defaults,noatime,nofail,x-systemd.device-timeout=30"
+storage_default_owner: root
+storage_default_group: root
+storage_default_mode: "0755"
+
+# ── Distro-agnostic prerequisite packages (keyed by ansible_os_family) ───
+# growpart ships in cloud-utils-growpart (EL) / cloud-guest-utils (Debian).
+storage_packages:
+  RedHat:
+    - parted
+    - lvm2
+    - xfsprogs
+    - e2fsprogs
+    - cloud-utils-growpart
+    - policycoreutils-python-utils   # semanage, for the SELinux fcontext phase
+  Debian:
+    - parted
+    - lvm2
+    - xfsprogs
+    - e2fsprogs
+    - cloud-guest-utils
+  Suse:
+    - parted
+    - lvm2
+    - xfsprogs
+    - e2fsprogs
+    - growpart

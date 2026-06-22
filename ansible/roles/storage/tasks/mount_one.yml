@@ -1,0 +1,64 @@
+---
+# storage/tasks/mount_one.yml — mount one volume by UUID with nofail.
+# `vol` is the resolved volume entry.
+
+- name: "{{ vol.name }} | select filesystem device"
+  ansible.builtin.set_fact:
+    _m_dev: "{{ vol._dm_dev if vol.lvm | bool else vol._part_dev }}"
+    _m_opts: "{{ vol.opts if 'nofail' in (vol.opts | split(',')) else vol.opts ~ ',nofail' }}"
+
+- name: "{{ vol.name }} | ensure mount point {{ vol.mount }} exists"
+  ansible.builtin.file:
+    path: "{{ vol.mount }}"
+    state: directory
+    owner: "{{ vol.owner }}"
+    group: "{{ vol.group }}"
+    mode: "{{ vol.mode }}"
+
+- name: "{{ vol.name }} | resolve filesystem UUID"
+  ansible.builtin.command: "blkid -s UUID -o value {{ _m_dev }}"
+  register: _m_uuid
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "{{ vol.name }} | skip mount (no filesystem yet)"
+  ansible.builtin.debug:
+    msg: "{{ _m_dev }} has no UUID yet (not formatted) — skipping mount of {{ vol.mount }}."
+  when: _m_uuid.stdout | trim | length == 0
+
+- name: "{{ vol.name }} | manage mount + fstab"
+  when: _m_uuid.stdout | trim | length > 0
+  block:
+    - name: "{{ vol.name }} | remove legacy device-name fstab entries for {{ vol.mount }}"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "^/dev/\\S+\\s+{{ vol.mount | regex_escape }}\\s+"
+        state: absent
+
+    - name: "{{ vol.name }} | mount {{ vol.mount }} by UUID (nofail)"
+      ansible.posix.mount:
+        path: "{{ vol.mount }}"
+        src: "UUID={{ _m_uuid.stdout | trim }}"
+        fstype: "{{ vol.fstype }}"
+        opts: "{{ _m_opts }}"
+        state: mounted
+
+    - name: "{{ vol.name }} | read fstab entries for {{ vol.mount }}"
+      ansible.builtin.shell:
+        cmd: "grep -E '^\\S+\\s+{{ vol.mount | regex_escape }}\\s' /etc/fstab || true"
+        executable: /bin/bash
+      register: _m_fstab
+      changed_when: false
+      check_mode: false
+
+    - name: "{{ vol.name }} | assert single canonical UUID + nofail entry"
+      ansible.builtin.assert:
+        that:
+          - _m_fstab.stdout_lines | length == 1
+          - _m_fstab.stdout is match('^UUID=[0-9a-fA-F-]+\s')
+          - "'nofail' in _m_fstab.stdout"
+          - _m_fstab.stdout is not search('/dev/')
+        fail_msg: >-
+          {{ vol.mount }} must have exactly one UUID-based fstab entry with
+          nofail. Found: {{ _m_fstab.stdout | default('') }}

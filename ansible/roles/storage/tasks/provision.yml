@@ -1,0 +1,11 @@
+---
+# storage/tasks/provision.yml — opt-in create/format (FRESH-guarded).
+# Only volumes that are marked provision:true, do not yet exist, and have a
+# resolved target disk are considered.
+
+- name: Provision new volumes
+  ansible.builtin.include_tasks: provision_one.yml
+  loop: "{{ _storage_resolved | selectattr('provision', 'equalto', true) | rejectattr('_exists', 'equalto', true) | selectattr('_disk', 'ne', '') | list }}"
+  loop_control:
+    loop_var: vol
+    label: "{{ vol.name }} on {{ vol._disk }}"

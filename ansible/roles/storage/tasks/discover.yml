@@ -1,0 +1,175 @@
+---
+# storage/tasks/discover.yml
+#
+# Read-only discovery. Resolves each volume's disk selector to a concrete
+# device and derives partition/dm names without assuming any layout, then
+# records whether the volume's stack already exists. Output: _storage_resolved
+# (each input volume + _disk, _part_dev, _pv, _dm_dev, _exists, _vg_exists).
+
+# ── Root disk(s) — always excluded from auto-selection / provisioning ────
+- name: Identify the physical disk(s) backing /
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      src="$(findmnt -n -o SOURCE /)"
+      lsblk -rsno NAME,TYPE "$src" 2>/dev/null | awk '$2=="disk"{print "/dev/"$1}' | sort -u
+    executable: /bin/bash
+  register: _storage_root_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Record root disks
+  ansible.builtin.set_fact:
+    _storage_root_disks: "{{ _storage_root_raw.stdout_lines | map('trim') | list }}"
+
+# ── Block-device inventory (JSON, sizes in bytes) ────────────────────────
+- name: Gather block-device inventory
+  ansible.builtin.command: lsblk -pbJ -o NAME,TYPE,SIZE,SERIAL,WWN,FSTYPE,MOUNTPOINT
+  register: _storage_lsblk_raw
+  changed_when: false
+  check_mode: false
+
+- name: Parse block-device inventory
+  ansible.builtin.set_fact:
+    _storage_lsblk: "{{ _storage_lsblk_raw.stdout | from_json }}"
+
+- name: Build non-root disk catalogue (for selectors)
+  ansible.builtin.set_fact:
+    _storage_disks: "{{ _storage_disks | default([]) + [_d] }}"
+  vars:
+    _d:
+      name: "{{ item.name }}"
+      size_bytes: "{{ item.size | int }}"
+      size_gib: "{{ ((item.size | int) / 1073741824) | round(0, 'common') | int }}"
+      serial: "{{ item.serial | default('') | default('', true) }}"
+      wwn: "{{ item.wwn | default('') | default('', true) }}"
+  loop: "{{ _storage_lsblk.blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('name', 'in', _storage_root_disks) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# A disk is blank when it has no filesystem signature, no child partitions,
+# and is not mounted (null fstype/mountpoint, no 'children' key in lsblk).
+- name: Identify candidate blank disks (lsblk view)
+  ansible.builtin.set_fact:
+    _storage_blank_candidates: >-
+      {{ _storage_lsblk.blockdevices
+         | selectattr('type', 'equalto', 'disk')
+         | rejectattr('name', 'in', _storage_root_disks)
+         | rejectattr('children', 'defined')
+         | selectattr('fstype', 'none')
+         | selectattr('mountpoint', 'none')
+         | map(attribute='name') | list }}
+
+# lsblk's FSTYPE comes from the udev/blkid cache and can miss a deep
+# whole-disk signature (e.g. iso9660) that `blkid -p` finds. Probe each
+# candidate directly so `auto` never selects a disk that would later fail the
+# FRESH guard — a disk counts as blank only if blkid -p reports nothing (rc 2).
+- name: Probe candidate disks for hidden signatures
+  ansible.builtin.command: "blkid -p -o value -s TYPE {{ item }}"
+  loop: "{{ _storage_blank_candidates }}"
+  register: _storage_blank_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Keep only genuinely empty disks as blank
+  ansible.builtin.set_fact:
+    _storage_blank_disks: "{{ _storage_blank_probe.results | selectattr('rc', 'equalto', 2) | map(attribute='item') | list }}"
+
+# Flat list of devices that already carry a real filesystem (for plain
+# volume existence checks). LVM2_member PVs are not filesystems.
+- name: Build filesystem-bearing device list
+  ansible.builtin.set_fact:
+    _storage_fs_devices: >-
+      {{ (_disks + _parts)
+         | selectattr('fstype', 'defined') | selectattr('fstype')
+         | rejectattr('fstype', 'equalto', 'LVM2_member')
+         | map(attribute='name') | list }}
+  vars:
+    _disks: "{{ _storage_lsblk.blockdevices | selectattr('type', 'equalto', 'disk') | list }}"
+    _parts: "{{ _storage_lsblk.blockdevices | selectattr('type', 'equalto', 'disk') | map(attribute='children') | select('defined') | flatten(levels=1) | list }}"
+
+# ── Existing LVM state ───────────────────────────────────────────────────
+- name: Get existing volume groups
+  ansible.builtin.command: vgs --noheadings -o vg_name
+  register: _storage_vgs_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Get existing logical volumes
+  ansible.builtin.command: lvs --noheadings -o vg_name,lv_name
+  register: _storage_lvs_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Get physical-volume to volume-group mapping
+  ansible.builtin.command: pvs --noheadings -o pv_name,vg_name
+  register: _storage_pvs_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Parse LVM volume-group / logical-volume state
+  ansible.builtin.set_fact:
+    _storage_existing_vgs: "{{ _storage_vgs_raw.stdout_lines | map('trim') | select | list }}"
+    _storage_existing_lvs: "{{ _storage_lvs_raw.stdout_lines | map('trim') | map('split') | map('join', '/') | list }}"
+
+- name: Build physical-volume to volume-group mapping
+  ansible.builtin.set_fact:
+    _storage_pv_map: "{{ (_storage_pv_map | default([])) + [{'pv': (item.split() | first), 'vg': (item.split() | last)}] }}"
+  loop: "{{ _storage_pvs_raw.stdout_lines | map('trim') | select | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ── Resolve each volume ──────────────────────────────────────────────────
+- name: Resolve volume selectors and derive device names
+  ansible.builtin.set_fact:
+    _storage_resolved: "{{ (_storage_resolved | default([])) + [_entry] }}"
+  vars:
+    _consumed: "{{ (_storage_resolved | default([])) | map(attribute='_disk') | reject('equalto', '') | list }}"
+    _vg_exists: "{{ (item.lvm | bool) and (item.vg in _storage_existing_vgs) }}"
+    _lv_exists: "{{ (item.lvm | bool) and ((item.vg ~ '/' ~ item.lv) in _storage_existing_lvs) }}"
+    _existing_pv: "{{ (_storage_pv_map | selectattr('vg', 'equalto', item.vg) | map(attribute='pv') | list | first) | default('') }}"
+    _sel: "{{ item.disk | default('') }}"
+    _free_blank: "{{ _storage_blank_disks | difference(_consumed) }}"
+    # by-size matches on rounded GiB so a VMDK/cloud disk whose reported
+    # capacity differs from human_to_bytes() by a rounding margin still pins.
+    _size_gib: "{{ (((_sel | regex_replace('^by-size:', '') | human_to_bytes) / 1073741824) | round(0, 'common') | int) if _sel.startswith('by-size:') else 0 }}"
+    _match_size: "{{ ((_storage_disks | selectattr('size_gib', 'equalto', _size_gib | int) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-size:') else '' }}"
+    _match_serial: "{{ ((_storage_disks | selectattr('serial', 'equalto', _sel | regex_replace('^by-serial:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-serial:') else '' }}"
+    _match_wwn: "{{ ((_storage_disks | selectattr('wwn', 'equalto', _sel | regex_replace('^by-wwn:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-wwn:') else '' }}"
+    _resolved_disk: >-
+      {{ '' if (_vg_exists | bool)
+         else _sel if _sel.startswith('/dev/')
+         else _match_size if _sel.startswith('by-size:')
+         else _match_serial if _sel.startswith('by-serial:')
+         else _match_wwn if _sel.startswith('by-wwn:')
+         else (_free_blank | first | default('')) if (_sel == 'auto' or _sel == '')
+         else '' }}
+    _part_dev: >-
+      {{ '' if (_resolved_disk | length == 0)
+         else (_resolved_disk ~ 'p' ~ (item.partition_number | string))
+              if (_resolved_disk | basename is match('(nvme|mmcblk|loop|nbd)'))
+         else (_resolved_disk ~ (item.partition_number | string)) }}
+    _pv: >-
+      {{ _existing_pv if ((_vg_exists | bool) and (_existing_pv | length > 0))
+         else _part_dev if (item.partition | bool)
+         else _resolved_disk }}
+    _dm_dev: "{{ ('/dev/mapper/' ~ item.vg ~ '-' ~ item.lv) if (item.lvm | bool) else _part_dev }}"
+    _exists: "{{ (_lv_exists | bool) if (item.lvm | bool) else (_part_dev in _storage_fs_devices) }}"
+    _entry: "{{ item | combine({'_disk': _resolved_disk, '_part_dev': _part_dev, '_pv': _pv, '_dm_dev': _dm_dev, '_exists': _exists | bool, '_vg_exists': _vg_exists | bool}) }}"
+  loop: "{{ _storage_volumes }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Show discovery results
+  ansible.builtin.debug:
+    msg:
+      - "Root disks: {{ _storage_root_disks }}"
+      - "Blank disks: {{ _storage_blank_disks }}"
+      - "Existing VGs: {{ _storage_existing_vgs }}"
+      - "Resolved: {{ _storage_resolved | map(attribute='name') | zip(_storage_resolved | map(attribute='_disk'), _storage_resolved | map(attribute='_exists')) | list }}"
+  when: storage_debug | bool

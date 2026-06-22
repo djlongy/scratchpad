@@ -1,0 +1,29 @@
+---
+galaxy_info:
+  role_name: storage
+  author: lab
+  description: >-
+    Universal, hardware/name-agnostic disk role — provisions, grows,
+    formats, and mounts LVM or plain storage on any Linux host.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+    - name: Debian
+      versions:
+        - bookworm
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+  galaxy_tags:
+    - storage
+    - lvm
+    - disk
+    - filesystem
+    - mount
+
+dependencies: []

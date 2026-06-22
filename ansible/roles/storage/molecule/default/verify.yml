@@ -1,0 +1,43 @@
+---
+- name: Verify
+  hosts: all
+  become: false
+  tasks:
+    - name: Gather volume groups
+      ansible.builtin.command: vgs --noheadings -o vg_name
+      register: _v_vgs
+      changed_when: false
+
+    - name: Both test VGs exist
+      ansible.builtin.assert:
+        that:
+          - "'vg_test' in _v_vgs.stdout"
+          - "'vg_test2' in _v_vgs.stdout"
+        fail_msg: "Expected vg_test and vg_test2. Got: {{ _v_vgs.stdout }}"
+
+    - name: Mount points are active
+      ansible.builtin.command: "findmnt -no FSTYPE {{ item.path }}"
+      register: _v_mnt
+      changed_when: false
+      failed_when: _v_mnt.stdout | trim != item.fstype
+      loop:
+        - {path: /mnt/data1, fstype: xfs}
+        - {path: /mnt/data2, fstype: ext4}
+      loop_control:
+        label: "{{ item.path }} ({{ item.fstype }})"
+
+    - name: Read fstab entries for the test mounts
+      ansible.builtin.shell:
+        cmd: "grep -E '\\s/mnt/data[12]\\s' /etc/fstab || true"
+        executable: /bin/bash
+      register: _v_fstab
+      changed_when: false
+
+    - name: fstab uses UUID + nofail and no device names
+      ansible.builtin.assert:
+        that:
+          - _v_fstab.stdout_lines | length == 2
+          - _v_fstab.stdout_lines | select('match', '^UUID=') | list | length == 2
+          - _v_fstab.stdout_lines | select('search', 'nofail') | list | length == 2
+          - _v_fstab.stdout is not search('/dev/')
+        fail_msg: "fstab entries not canonical: {{ _v_fstab.stdout }}"

@@ -1,0 +1,19 @@
+---
+# storage — non-overridable constants.
+
+# Disk basenames whose partitions take a 'p' separator before the number
+# (nvme0n1 -> nvme0n1p1) versus the bare form (sda -> sda1). Used by
+# discover.yml to derive partition device names without assuming a layout.
+storage_part_suffix_devices: "nvme|mmcblk|loop|nbd"
+
+# Filesystem grow commands by fstype. {dev} / {mount} are substituted in
+# grow.yml. xfs grows by mountpoint and is grow-only; ext4 grows by device.
+storage_fs_grow:
+  xfs: "xfs_growfs {mount}"
+  ext4: "resize2fs {dev}"
+
+# Output token each grow command prints when it actually changed something,
+# used for changed_when detection.
+storage_fs_grow_changed_token:
+  xfs: "data blocks changed"
+  ext4: "blocks long"

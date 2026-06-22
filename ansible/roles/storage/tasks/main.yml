@@ -1,0 +1,123 @@
+---
+# storage/tasks/main.yml
+#
+# A no-tags run is a full idempotent reconcile:
+#   packages -> discover -> grow -> provision -> mount -> selinux
+# Refinement tags narrow it (--tags grow / provision / mount / selinux);
+# discover always runs first because the acting phases depend on its facts.
+
+# ── Resolve the effective volume list ────────────────────────────────────
+# Precedence: storage_profile  >  storage_volumes  >  legacy `datavols`.
+- name: Resolve effective volume list
+  ansible.builtin.set_fact:
+    _storage_input: >-
+      {{ storage_profiles[storage_profile]
+         if (storage_profile | length > 0)
+         else storage_volumes }}
+  tags: [storage, always]
+
+- name: Map legacy datavols (deprecated alias) when no volumes/profile given
+  ansible.builtin.set_fact:
+    _storage_input: "{{ _storage_input + [_dv] }}"
+  vars:
+    _dv:
+      name: "{{ item.lv }}"
+      disk: auto
+      lvm: true
+      vg: "{{ item.vg }}"
+      lv: "{{ item.lv }}"
+      size: "{{ item.size | default(storage_default_size) }}"
+      mount: "{{ item.mount }}"
+      sefcontext: "{{ item.sefcontext | default('') }}"
+      provision: true
+      grow: true
+  loop: "{{ datavols | default([]) }}"
+  loop_control:
+    label: "{{ item.lv }}"
+  when:
+    - storage_profile | length == 0
+    - storage_volumes | length == 0
+    - datavols | default([]) | length > 0
+  tags: [storage, always]
+
+- name: Warn on deprecated datavols usage
+  ansible.builtin.debug:
+    msg: >-
+      'datavols' is a deprecated alias for 'storage_volumes' and will be
+      removed. Migrate {{ datavols | map(attribute='lv') | list }} to
+      storage_volumes.
+  when:
+    - storage_volumes | length == 0
+    - datavols | default([]) | length > 0
+  tags: [storage, always]
+
+# ── Apply per-volume defaults so every entry is fully populated ───────────
+- name: Build per-volume default template
+  ansible.builtin.set_fact:
+    _storage_volume_defaults:
+      disk: ""
+      lvm: "{{ storage_default_lvm }}"
+      partition: "{{ storage_default_partition }}"
+      partition_number: "{{ storage_default_partition_number }}"
+      vg: ""
+      lv: ""
+      size: "{{ storage_default_size }}"
+      fstype: "{{ storage_default_fstype }}"
+      mount: ""
+      opts: "{{ storage_default_opts }}"
+      sefcontext: ""
+      provision: true
+      grow: true
+      owner: "{{ storage_default_owner }}"
+      group: "{{ storage_default_group }}"
+      mode: "{{ storage_default_mode }}"
+  tags: [storage, always]
+
+- name: Normalise volumes (defaults overridden by each entry)
+  ansible.builtin.set_fact:
+    _storage_volumes: "{{ (_storage_volumes | default([])) + [_storage_volume_defaults | combine(item)] }}"
+  loop: "{{ _storage_input }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [storage, always]
+
+- name: Show normalised volumes
+  ansible.builtin.debug:
+    var: _storage_volumes
+  when: storage_debug | bool
+  tags: [storage, always]
+
+# ── Phases ───────────────────────────────────────────────────────────────
+- name: Install prerequisite packages
+  ansible.builtin.import_tasks: packages.yml
+  when: storage_manage_packages | bool
+  tags: [storage, packages]
+
+- name: Discover devices and resolve selectors
+  ansible.builtin.import_tasks: discover.yml
+  tags: [storage, discover, grow, provision, mount, selinux]
+
+- name: Grow existing volumes (auto, non-destructive)
+  ansible.builtin.import_tasks: grow.yml
+  when: storage_grow | bool
+  tags: [storage, grow]
+
+- name: Provision new volumes (opt-in, FRESH-guarded)
+  ansible.builtin.import_tasks: provision.yml
+  when: storage_provision | bool
+  tags: [storage, provision]
+
+- name: Mount volumes (UUID + nofail)
+  ansible.builtin.import_tasks: mount.yml
+  when: storage_manage_fstab | bool
+  tags: [storage, mount]
+
+- name: Apply SELinux file contexts (EL)
+  ansible.builtin.import_tasks: selinux.yml
+  when:
+    - storage_manage_selinux | bool
+    - ansible_os_family == "RedHat"
+    # Skip when SELinux is disabled — managing fcontext there is a no-op the
+    # sefcontext module refuses anyway. Runs under enforcing OR permissive.
+    - (ansible_selinux.status | default('disabled')) != 'disabled'
+  tags: [storage, selinux]

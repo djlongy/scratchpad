@@ -1,0 +1,65 @@
+---
+# storage/tasks/provision_one.yml — create one volume's stack on a FRESH
+# disk. `vol` is the resolved volume entry.
+
+- name: "{{ vol.name }} | decide whether to partition"
+  ansible.builtin.set_fact:
+    _p_do_partition: "{{ (not vol.lvm | bool) or (vol.lvm | bool and vol.partition | bool) }}"
+
+# ── FRESH preflight — refuse any disk that is not empty ───────────────────
+- name: "{{ vol.name }} | probe {{ vol._disk }} for an existing signature"
+  ansible.builtin.command: "blkid -p -o value -s TYPE {{ vol._disk }}"
+  register: _p_sig
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "{{ vol.name }} | count existing partitions on {{ vol._disk }}"
+  ansible.builtin.shell:
+    cmd: "set -o pipefail; lsblk -no NAME {{ vol._disk }} | tail -n +2 | wc -l"
+    executable: /bin/bash
+  register: _p_parts
+  changed_when: false
+  check_mode: false
+
+- name: "{{ vol.name }} | assert {{ vol._disk }} is fresh"
+  ansible.builtin.assert:
+    that:
+      - _p_sig.rc == 2
+      - (_p_parts.stdout | trim | int) == 0
+    fail_msg: >-
+      Refusing to provision {{ vol._disk }} on {{ inventory_hostname }} — it is
+      not empty (signature: '{{ _p_sig.stdout | default('') | trim }}',
+      partitions: {{ _p_parts.stdout | trim }}). Set storage_require_fresh:
+      false to override only after manual inspection.
+  when: storage_require_fresh | bool
+
+# ── Build the stack ──────────────────────────────────────────────────────
+- name: "{{ vol.name }} | partition {{ vol._disk }} (GPT)"
+  community.general.parted:
+    device: "{{ vol._disk }}"
+    number: "{{ vol.partition_number }}"
+    state: present
+    label: gpt
+    flags: "{{ ['lvm'] if vol.lvm | bool else [] }}"
+    part_end: "100%"
+  when: _p_do_partition | bool
+
+- name: "{{ vol.name }} | create volume group {{ vol.vg }}"
+  community.general.lvg:
+    vg: "{{ vol.vg }}"
+    pvs: "{{ vol._pv }}"
+  when: vol.lvm | bool
+
+- name: "{{ vol.name }} | create logical volume {{ vol.lv }} ({{ vol.size }})"
+  community.general.lvol:
+    vg: "{{ vol.vg }}"
+    lv: "{{ vol.lv }}"
+    size: "{{ vol.size }}"
+    shrink: false
+  when: vol.lvm | bool
+
+- name: "{{ vol.name }} | create {{ vol.fstype }} filesystem"
+  community.general.filesystem:
+    fstype: "{{ vol.fstype }}"
+    dev: "{{ vol._dm_dev if vol.lvm | bool else vol._part_dev }}"

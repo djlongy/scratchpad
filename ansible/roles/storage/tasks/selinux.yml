@@ -1,0 +1,25 @@
+---
+# storage/tasks/selinux.yml — set SELinux file contexts on EL hosts for any
+# volume that declares a sefcontext type. Uses community.general.sefcontext
+# (idempotent — it compares the current mapping and only changes on drift),
+# then restorecon only where the fcontext actually changed.
+
+- name: Set SELinux fcontext for mounted volumes
+  community.general.sefcontext:
+    target: "{{ vol.mount }}(/.*)?"
+    setype: "{{ vol.sefcontext }}"
+    state: present
+  loop: "{{ _storage_resolved | selectattr('sefcontext', 'ne', '') | selectattr('mount', 'ne', '') | list }}"
+  loop_control:
+    loop_var: vol
+    label: "{{ vol.mount }} -> {{ vol.sefcontext }}"
+  register: _se_fcontext
+
+- name: Restore SELinux context where the fcontext changed
+  ansible.builtin.command:
+    cmd: "restorecon -Rv {{ item.vol.mount }}"
+  loop: "{{ _se_fcontext.results }}"
+  loop_control:
+    label: "{{ item.vol.mount }}"
+  when: item.changed
+  changed_when: true

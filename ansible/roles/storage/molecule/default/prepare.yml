@@ -1,0 +1,47 @@
+---
+# Container test harness only. A privileged container shares the host
+# kernel's device-mapper + loop state, and `molecule destroy` does not clean
+# those up — so we must wipe stale test VGs/DM nodes and loop devices here
+# for deterministic runs. Also makes LVM work without udev (Docker has none).
+# Real hosts run udev and need none of this.
+- name: Prepare
+  hosts: all
+  become: false
+  tasks:
+    - name: Install LVM + filesystem tooling
+      ansible.builtin.package:
+        name:
+          - lvm2
+          - xfsprogs
+          - e2fsprogs
+          - util-linux
+        state: present
+
+    - name: Configure LVM for a udev-less container
+      ansible.builtin.replace:
+        path: /etc/lvm/lvm.conf
+        regexp: "{{ item.re }}"
+        replace: "{{ item.rep }}"
+      loop:
+        - {re: '^\s*#?\s*udev_sync = 1', rep: "\tudev_sync = 0"}
+        - {re: '^\s*#?\s*udev_rules = 1', rep: "\tudev_rules = 0"}
+      loop_control:
+        label: "{{ item.rep | trim }}"
+
+    - name: Wipe stale test LVM + loop state from the host kernel
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          for vg in vg_test vg_test2; do
+            vgchange -an "$vg" 2>/dev/null || true
+            vgremove -ff "$vg" 2>/dev/null || true
+          done
+          for dm in vg_test-lv_data1 vg_test2-lv_data2; do
+            dmsetup remove "$dm" 2>/dev/null || true
+          done
+          losetup -l -O NAME,BACK-FILE 2>/dev/null | awk '/storage-loop/{print $1}' \
+            | xargs -r -n1 losetup -d 2>/dev/null || true
+          rm -f /var/lib/storage-loop*.img
+          true
+        executable: /bin/bash
+      changed_when: false
