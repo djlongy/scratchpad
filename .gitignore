@@ -53,17 +53,16 @@ secring.*
 .env.*
 !.env.example
 !.env.sample
-# Ansible task files named after Docker secrets/configs are not secrets — allow them.
+# Ansible TASK files named after secrets/configs/tokens are NOT secrets — allow
+# them (they read values from Vault at runtime, set no_log, hold no hardcoded
+# credentials). Paths kept accurate to where the files actually live.
 !**/tasks/create_secrets.yml
 !**/tasks/create_configs.yml
-!**/generate-passphrase/ensure_secrets.yml
-!**/generate-passphrase/_ensure_one_secret.yml
-# The swarm_stack secret-management TASK files are not secrets (they read from
-# Vault at runtime, no_log, no hardcoded values).
+!**/tasks/ensure_secrets.yml
+!**/tasks/_ensure_one_secret.yml
 !**/roles/swarm_stack/tasks/bootstrap_secrets.yml
 !**/roles/swarm_stack/tasks/docker_secrets.yml
-# The artifactory role's token-management TASK file is not a secret either.
-!**/roles/artifactory/tasks/tokens.yml
+!**/roles/artifactory/tasks/security/tokens.yml
 
 # Vault / encrypted files
 *.vault
