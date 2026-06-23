@@ -1,0 +1,46 @@
+---
+- name: Verify
+  hosts: all
+  become: false
+  tasks:
+    - name: autofs is installed
+      ansible.builtin.command: rpm -q autofs
+      changed_when: false
+
+    - name: Read the autofs master drop-in
+      ansible.builtin.slurp:
+        path: /etc/auto.master.d/net.autofs
+      register: _v_master
+
+    - name: Assert master maps /net/users and /net/share
+      ansible.builtin.assert:
+        that:
+          - "'/net/users' in (_v_master.content | b64decode)"
+          - "'/net/share' in (_v_master.content | b64decode)"
+        fail_msg: "master wrong: {{ _v_master.content | b64decode }}"
+
+    - name: Read the users map
+      ansible.builtin.slurp:
+        path: /etc/auto.net.users
+      register: _v_users
+
+    - name: Assert users map points at the server with fail-fast sys opts
+      ansible.builtin.assert:
+        that:
+          - "'nfs-01.example.com:/srv/nfs/users/&' in (_v_users.content | b64decode)"
+          - "'soft' in (_v_users.content | b64decode)"
+          - "'nofail' in (_v_users.content | b64decode)"
+          - "'sec=sys' in (_v_users.content | b64decode)"
+        fail_msg: "users map wrong: {{ _v_users.content | b64decode }}"
+
+    - name: Read the profile.d discoverability script
+      ansible.builtin.slurp:
+        path: /etc/profile.d/net-drive.sh
+      register: _v_prof
+
+    - name: Assert profile.d creates ~/Network → /net/users/$USER
+      ansible.builtin.assert:
+        that:
+          - "'/net/users/${USER}' in (_v_prof.content | b64decode)"
+          - "'Network' in (_v_prof.content | b64decode)"
+        fail_msg: "profile.d wrong: {{ _v_prof.content | b64decode }}"

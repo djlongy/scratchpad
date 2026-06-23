@@ -1,0 +1,5 @@
+{{ ansible_managed | comment }}
+# Create the per-user network-drive symlink on login (home stays local).
+if [ -n "${HOME:-}" ] && [ ! -e "${HOME}/{{ nfs_client_network_symlink }}" ]; then
+    ln -s "{{ nfs_client_base }}/users/${USER}" "${HOME}/{{ nfs_client_network_symlink }}" 2>/dev/null || true
+fi

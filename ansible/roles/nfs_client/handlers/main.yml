@@ -1,0 +1,6 @@
+---
+- name: Restart autofs
+  ansible.builtin.service:
+    name: autofs
+    state: restarted
+  when: nfs_client_manage_service | bool

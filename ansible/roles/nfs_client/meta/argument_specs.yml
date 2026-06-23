@@ -1,0 +1,33 @@
+---
+argument_specs:
+  main:
+    short_description: Mount the nfs_server tree on demand at /net via fail-fast autofs.
+    options:
+      nfs_client_server:
+        type: str
+        required: true
+        description: NFS server FQDN.
+      nfs_client_base:
+        type: str
+        default: /net
+        description: Client mount root (custom; /mnt and /srv are FHS-incorrect for consumed data).
+      nfs_client_server_export_base:
+        type: str
+        default: /srv/nfs
+        description: Must match the server's nfs_server_base.
+      nfs_client_kerberos:
+        type: bool
+        default: true
+        description: sec=krb5p vs sec=sys — must match the server.
+      nfs_client_mount_options:
+        type: str
+        default: "soft,nofail,timeo=30,retrans=2"
+        description: Fail-fast mount options so a dead server never hangs a cd.
+      nfs_client_network_symlink:
+        type: str
+        default: "Network"
+        description: ~/<name> -> /net/users/<user> created at login; "" disables.
+      nfs_client_manage_service:
+        type: bool
+        default: true
+        description: Enable/start autofs. Disable in containers/CI.

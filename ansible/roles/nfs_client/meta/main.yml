@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: nfs_client
+  author: longy lab
+  description: Mounts the nfs_server tree on demand at /net via fail-fast autofs.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["9"]
+    - name: Ubuntu
+      versions: ["jammy", "noble"]
+  galaxy_tags: [nfs, autofs, storage]
+dependencies: []

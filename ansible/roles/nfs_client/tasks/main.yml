@@ -1,0 +1,17 @@
+---
+# roles/nfs_client/tasks/main.yml
+- name: Assert the NFS server is configured
+  ansible.builtin.assert:
+    that:
+      - nfs_client_server | length > 0
+    fail_msg: "Set nfs_client_server to the NFS server FQDN."
+  tags: [always]
+
+- name: Configure autofs maps for the network drive
+  ansible.builtin.import_tasks: autofs.yml
+  tags: [nfs_client, autofs]
+
+- name: Seed the per-user network-drive symlink
+  ansible.builtin.import_tasks: network_symlink.yml
+  when: nfs_client_network_symlink | length > 0
+  tags: [nfs_client, skel]

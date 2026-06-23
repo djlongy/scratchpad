@@ -1,0 +1,2 @@
+{{ ansible_managed | comment }}
+* -fstype=nfs4,{{ nfs_client_mount_options }},sec={{ 'krb5p' if nfs_client_kerberos | bool else 'sys' }} {{ nfs_client_server }}:{{ nfs_client_server_export_base }}/users/&

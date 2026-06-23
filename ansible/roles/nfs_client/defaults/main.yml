@@ -1,0 +1,17 @@
+---
+# roles/nfs_client/defaults/main.yml
+# Mounts the nfs_server /srv/nfs tree on demand at /net via fail-fast autofs.
+# Home stays local; this is a separate network drive. Discoverable via ~/Network.
+
+nfs_client_server: ""                      # NFS server FQDN (required)
+nfs_client_base: /net                      # client mount root (custom; /mnt and /srv are FHS-wrong here)
+nfs_client_server_export_base: /srv/nfs    # must match the server's nfs_server_base
+nfs_client_kerberos: true                  # must match the server's mode (sec=krb5p|sys)
+
+# soft+nofail+short timeout = a dead server fails fast, never hangs a cd.
+nfs_client_mount_options: "soft,nofail,timeo=30,retrans=2"
+
+# Per-user discoverability symlink ~/<name> -> /net/users/<user> ("" disables).
+nfs_client_network_symlink: "Network"
+
+nfs_client_manage_service: true            # enable/start autofs (disable in CI)

@@ -1,0 +1,11 @@
+---
+# roles/nfs_client/tasks/network_symlink.yml — per-user discoverability via a
+# login-time symlink. /etc/skel can't substitute the username, so a profile.d
+# snippet creates ~/<name> -> /net/users/$USER idempotently on each login.
+- name: Deploy the network-drive discoverability snippet
+  ansible.builtin.template:
+    src: net-drive.sh.j2
+    dest: /etc/profile.d/net-drive.sh
+    owner: root
+    group: root
+    mode: "0644"

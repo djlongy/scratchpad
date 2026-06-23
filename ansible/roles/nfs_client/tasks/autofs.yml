@@ -1,0 +1,40 @@
+---
+# roles/nfs_client/tasks/autofs.yml
+- name: Install autofs and NFSv4 client tooling
+  ansible.builtin.package:
+    name: "{{ ['autofs', 'nfs-utils'] if ansible_os_family == 'RedHat' else ['autofs', 'nfs-common'] }}"
+    state: present
+
+- name: Write the autofs master drop-in for the network drive
+  ansible.builtin.template:
+    src: auto.master.net.j2
+    dest: /etc/auto.master.d/net.autofs
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart autofs
+
+- name: Write the per-user autofs map
+  ansible.builtin.template:
+    src: auto.net.users.j2
+    dest: /etc/auto.net.users
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart autofs
+
+- name: Write the shared autofs map
+  ansible.builtin.template:
+    src: auto.net.share.j2
+    dest: /etc/auto.net.share
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart autofs
+
+- name: Enable and start autofs
+  ansible.builtin.service:
+    name: autofs
+    enabled: true
+    state: started
+  when: nfs_client_manage_service | bool
