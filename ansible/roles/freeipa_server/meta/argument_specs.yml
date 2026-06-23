@@ -87,6 +87,10 @@ argument_specs:
         elements: dict
         required: false
         description: Automember rules (ipaautomember). Each item needs name + automember_type (group|hostgroup).
+      freeipa_server_automember_rebuild:
+        type: bool
+        required: false
+        description: Force a one-off automember rebuild even when no rule changed (re-evaluates existing members; newly-enrolling hosts are placed automatically without it).
       freeipa_server_setup_adtrust:
         type: bool
         required: false

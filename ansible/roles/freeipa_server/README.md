@@ -161,6 +161,24 @@ freeipa_server_automember_rules:
       - { key: "fqdn", expression: ".*\\.example\\.com$" }
 ```
 
+**Solves the enrolment chicken-and-egg.** A workstation must land in the
+hostgroup that an HBAC rule grants SSH to, but enrolment is client-side
+(`freeipa_client`) and group/HBAC are server-side directory data. Automember
+closes the gap **without chaining the client and server plays**: a host's FQDN
+(or other attribute) auto-places it in its hostgroup when IPA creates the host
+record, so a freshly-enrolled box is immediately reachable by its team. You run
+only the client play for a new host.
+
+A newly-enrolling host is placed automatically at host-create — no rebuild
+needed. A rebuild only re-evaluates members that *already existed* when a rule
+was added or changed (e.g. hosts enrolled before the rule). The role runs that
+rebuild automatically when a rule changes this run; force a one-off rebuild
+with:
+
+```yaml
+freeipa_server_automember_rebuild: true   # default false
+```
+
 ## Active Directory trust
 
 Trust an AD forest so AD users authenticate against IPA resources. Needs the AD
