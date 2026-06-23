@@ -1,0 +1,66 @@
+---
+# roles/nfs_server/tasks/kerberos_principal.yml — wire sec=krb5p end to end.
+# Enrolment only creates the host/ principal; rpc.gssd needs nfs/<fqdn> in the
+# host keytab to accept krb5p mounts. This creates that service principal in
+# FreeIPA and fetches its key. Runs only when nfs_server_kerberos; the host must
+# already be FreeIPA-enrolled (freeipa_client) so /etc/ipa/default.conf exists.
+
+- name: Assert an IPA admin credential source for the NFS service principal
+  ansible.builtin.assert:
+    that:
+      - (nfs_server_ipa_admin_password | default('') | length > 0)
+        or (nfs_server_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      sec=krb5p needs the nfs/<fqdn> service principal created in FreeIPA. Provide
+      nfs_server_ipa_admin_password (e.g. from ansible-vault) or
+      nfs_server_vault_secret (HashiCorp Vault fallback).
+
+- name: Resolve IPA admin password (declared var first, HashiCorp Vault fallback)
+  ansible.builtin.set_fact:
+    _nfs_ipa_admin_pw: >-
+      {{ nfs_server_ipa_admin_password
+         if (nfs_server_ipa_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + nfs_server_vault_secret
+            + ':' + nfs_server_ipa_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Create the nfs/<fqdn> service principal in FreeIPA
+  freeipa.ansible_freeipa.ipaservice:
+    ipaadmin_password: "{{ _nfs_ipa_admin_pw }}"
+    name: "nfs/{{ nfs_server_fqdn }}"
+    force: true
+    state: present
+  no_log: true
+
+- name: Check whether the NFS key is already in the host keytab
+  ansible.builtin.command: klist -k /etc/krb5.keytab
+  register: _nfs_keytab_list
+  changed_when: false
+  failed_when: false
+
+- name: Fetch the nfs/<fqdn> keytab into the host keytab (idempotent)
+  when: ('nfs/' ~ nfs_server_fqdn) not in (_nfs_keytab_list.stdout | default(''))
+  block:
+    - name: Obtain an admin Kerberos ticket
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          echo '{{ _nfs_ipa_admin_pw }}' | kinit {{ nfs_server_ipa_admin_principal }}
+        executable: /bin/bash
+      no_log: true
+      changed_when: false
+
+    - name: Retrieve the nfs/<fqdn> keytab
+      ansible.builtin.command:
+        cmd: "ipa-getkeytab -p nfs/{{ nfs_server_fqdn }} -k /etc/krb5.keytab"
+      changed_when: true
+
+  always:
+    - name: Destroy the admin Kerberos ticket
+      ansible.builtin.command:
+        cmd: kdestroy
+      changed_when: false
+      failed_when: false

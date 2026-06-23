@@ -36,6 +36,27 @@ argument_specs:
         type: str
         required: false
         description: NFSv4 idmapd Domain (krb5p). Defaults to the global `domain`.
+      nfs_server_fqdn:
+        type: str
+        required: false
+        description: This host's FQDN; names the nfs/<fqdn> Kerberos service principal.
+      nfs_server_ipa_admin_principal:
+        type: str
+        default: admin
+        description: IPA principal used to create the nfs/<fqdn> service principal (krb5p).
+      nfs_server_ipa_admin_password:
+        type: str
+        required: false
+        no_log: true
+        description: IPA admin password (declared/ansible-vault). Wins over the Vault fallback; krb5p only.
+      nfs_server_ipa_admin_password_field:
+        type: str
+        default: admin_password
+        description: Field within nfs_server_vault_secret holding the admin password.
+      nfs_server_vault_secret:
+        type: str
+        required: false
+        description: HashiCorp Vault path for the IPA admin password — FALLBACK only (krb5p).
       nfs_server_v4_only:
         type: bool
         default: false

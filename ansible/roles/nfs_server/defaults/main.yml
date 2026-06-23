@@ -24,6 +24,15 @@ nfs_server_allowed_cidr: ""
 # Generic nfs_server_exports always use their own options string (unaffected).
 nfs_server_kerberos: false
 nfs_server_realm_domain: ""                   # NFSv4 idmapd Domain (krb5p); default: global `domain`
+# This host's FQDN, used to name the nfs/<fqdn> Kerberos service principal.
+nfs_server_fqdn: "{{ inventory_hostname }}.{{ domain | default(ansible_domain | default(''), true) }}"
+# IPA admin credential to create the nfs/<fqdn> service principal (krb5p only).
+# Declared-var-first: set nfs_server_ipa_admin_password (e.g. ansible-vault) for a
+# HashiCorp-free deploy; else nfs_server_vault_secret is the HashiCorp fallback.
+nfs_server_ipa_admin_principal: admin
+nfs_server_ipa_admin_password: ""             # declared/ansible-vault admin password (wins)
+nfs_server_ipa_admin_password_field: admin_password
+# nfs_server_vault_secret: "kv/data/platform/freeipa/runtime"   # HashiCorp fallback
 # NFSv4-only: disable v3/rpcbind and trim the firewall to just nfs (tcp/2049).
 # Default false preserves the v3-capable behaviour existing exports rely on.
 nfs_server_v4_only: false

@@ -7,6 +7,13 @@ never hangs login. Home directories stay local — this is a separate network dr
 A `/etc/profile.d` snippet creates `~/Network -> /net/users/$USER` on first login
 for discoverability.
 
+It also sets the NFSv4 idmapd `Domain` (`nfs_client_realm_domain`, default the
+realm) — this **must match the server** or files show as `nobody:nobody`.
+
+> **One home model per host.** This role keeps `/home` **local** and adds a
+> separate `/net` drive. Do **not** also apply `nfs_home_client` (which mounts
+> NFS *over* `/home`, the roaming model) to the same host — pick one per fleet.
+
 ## Minimal config
 
 ```yaml

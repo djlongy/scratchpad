@@ -33,6 +33,17 @@
           - "'sec=sys' in (_v_users.content | b64decode)"
         fail_msg: "users map wrong: {{ _v_users.content | b64decode }}"
 
+    - name: Read idmapd.conf
+      ansible.builtin.slurp:
+        path: /etc/idmapd.conf
+      register: _v_idmapd
+
+    - name: Assert idmapd Domain is set to the realm
+      ansible.builtin.assert:
+        that:
+          - "'Domain = example.com' in (_v_idmapd.content | b64decode)"
+        fail_msg: "idmapd Domain wrong: {{ _v_idmapd.content | b64decode }}"
+
     - name: Read the profile.d discoverability script
       ansible.builtin.slurp:
         path: /etc/profile.d/net-drive.sh

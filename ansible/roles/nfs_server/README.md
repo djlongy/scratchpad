@@ -39,7 +39,14 @@ nfs_server_shares:
 
 - `false` (default) → `sec=sys`, scoped by `nfs_server_allowed_cidr`.
 - `true` → `sec=krb5p` (per-user Kerberos, NFSv4); host must be FreeIPA-enrolled
-  (run `freeipa_client` first). Sets the idmapd `Domain`.
+  (run `freeipa_client` first). The role then **creates the `nfs/<fqdn>` service
+  principal in FreeIPA and fetches its keytab** (needs an IPA admin credential —
+  `nfs_server_ipa_admin_password` declared, or `nfs_server_vault_secret` fallback)
+  and sets the idmapd `Domain`. Without this, `rpc.gssd` rejects krb5p mounts.
+
+> **Per-user owners must exist in FreeIPA.** Each `nfs_server_users` entry is
+> chowned to that user, so the user must resolve on this host (created via
+> `freeipa_server` IDAM). The role asserts this with a clear message.
 
 Generic `nfs_server_exports` always use their own `options` string, so a single
 server can serve `sec=sys` app data **and** `sec=krb5p` user storage at once.

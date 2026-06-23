@@ -4,8 +4,31 @@
   ansible.builtin.assert:
     that:
       - nfs_client_server | length > 0
-    fail_msg: "Set nfs_client_server to the NFS server FQDN."
+    fail_msg: >-
+      Set nfs_client_server to the NFS server FQDN (or add a host to the
+      `nfs_servers` inventory group so it can be derived).
   tags: [always]
+
+- name: Check the NFS server hostname resolves (warn only)
+  ansible.builtin.command: "getent hosts {{ nfs_client_server }}"
+  register: _nfs_resolve
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [nfs_client, autofs]
+
+- name: Warn if the NFS server does not resolve
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ nfs_client_server }} does not resolve — autofs mounts will fail
+      until DNS has the record (seed it via freeipa_client_seed_dns_record on the
+      server, or add it to site DNS).
+  when: _nfs_resolve.rc != 0
+  tags: [nfs_client, autofs]
+
+- name: Configure NFSv4 idmapd domain
+  ansible.builtin.import_tasks: idmapd.yml
+  tags: [nfs_client, idmapd]
 
 - name: Configure autofs maps for the network drive
   ansible.builtin.import_tasks: autofs.yml

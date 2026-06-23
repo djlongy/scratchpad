@@ -5,6 +5,7 @@
   vars:
     nfs_client_server: nfs-01.example.com
     nfs_client_kerberos: false
+    nfs_client_realm_domain: example.com
     nfs_client_manage_service: false
   roles:
     - role: nfs_client

@@ -39,6 +39,11 @@
       ansible.builtin.import_tasks: install.yml
       tags: [install]
 
+    - name: Create the NFS Kerberos service principal + keytab
+      ansible.builtin.import_tasks: kerberos_principal.yml
+      when: nfs_server_kerberos | bool
+      tags: [install, kerberos]
+
     - name: Open NFS firewall ports
       ansible.builtin.import_tasks: firewall.yml
       when: nfs_server_manage_firewall | bool

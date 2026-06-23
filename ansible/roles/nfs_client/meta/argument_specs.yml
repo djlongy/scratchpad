@@ -19,6 +19,10 @@ argument_specs:
         type: bool
         default: true
         description: sec=krb5p vs sec=sys — must match the server.
+      nfs_client_realm_domain:
+        type: str
+        required: false
+        description: NFSv4 idmapd Domain — must match the server (else files show nobody:nobody).
       nfs_client_mount_options:
         type: str
         default: "soft,nofail,timeo=30,retrans=2"

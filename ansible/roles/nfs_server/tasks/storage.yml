@@ -47,6 +47,27 @@
     mode: "0755"
   loop: "{{ (['users'] if nfs_server_users | length > 0 else []) + (['share'] if nfs_server_shares | length > 0 else []) }}"
 
+- name: Check each per-user storage owner resolves (exists in FreeIPA/locally)
+  ansible.builtin.command: "getent passwd {{ item.name }}"
+  loop: "{{ nfs_server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _nfs_user_check
+  changed_when: false
+  failed_when: false
+
+- name: Fail clearly if a per-user storage owner is unknown
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      User '{{ item.item.name }}' does not resolve on this host — create it in
+      FreeIPA first (e.g. freeipa_server IDAM) so its per-user storage dir can be
+      owned correctly.
+  loop: "{{ _nfs_user_check.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
 - name: Ensure per-user export directories exist (private)
   ansible.builtin.file:
     path: "{{ nfs_server_export_base }}/users/{{ item.name }}"

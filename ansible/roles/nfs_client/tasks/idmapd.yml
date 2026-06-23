@@ -1,0 +1,13 @@
+---
+# roles/nfs_client/tasks/idmapd.yml — NFSv4 id mapping. The Domain MUST match the
+# server (and the realm), otherwise mounted files show as nobody:nobody.
+- name: Set the NFSv4 idmapd domain (must match the NFS server)
+  community.general.ini_file:
+    path: /etc/idmapd.conf
+    section: General
+    option: Domain
+    value: "{{ nfs_client_realm_domain }}"
+    owner: root
+    group: root
+    mode: "0644"
+    no_extra_spaces: false
