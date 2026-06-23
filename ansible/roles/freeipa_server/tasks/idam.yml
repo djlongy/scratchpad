@@ -27,10 +27,24 @@
               | zip(freeipa_idam_roles | map(attribute='groups'))) }}
   when: freeipa_idam_roles | length > 0
 
+# Referential integrity, both directions, BEFORE expansion — so typos surface
+# with a precise message (naming the offending role/user), and a bad group in a
+# role is caught even if no user references that role yet.
+- name: Validate every group referenced by a role is defined
+  ansible.builtin.assert:
+    that: item.1 in (freeipa_idam_groups | map(attribute='name') | list)
+    fail_msg: "Role '{{ item.0.name }}' references unknown group '{{ item.1 }}'. Define it in freeipa_idam_groups (or fix the typo)."
+    quiet: true
+  loop: "{{ freeipa_idam_roles | subelements('groups', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} -> {{ item.1 }}"
+  when: freeipa_idam_roles | length > 0
+  no_log: true
+
 - name: Validate every role referenced by a user is defined
   ansible.builtin.assert:
     that: item.1 in _freeipa_role_groups
-    fail_msg: "User '{{ item.0.name }}' references unknown role '{{ item.1 }}'. Define it in freeipa_idam_roles."
+    fail_msg: "User '{{ item.0.name }}' references unknown role '{{ item.1 }}'. Define it in freeipa_idam_roles (or fix the typo)."
     quiet: true
   loop: "{{ freeipa_idam_users | subelements('roles', skip_missing=True) }}"
   loop_control:
