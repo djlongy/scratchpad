@@ -239,7 +239,7 @@ freeipa_server_export_include_sshkeys: false
 freeipa_server_export_roles: true
 # Groups whose name matches ANY of these case-insensitive regexes are NOT mined
 # into roles — they belong to a layer that already owns them (your role-* groups,
-# or an external PAM such as elegrant that manages its own groups). They stay as
+# or an external PAM/JIT that manages its own groups). They stay as
 # direct group memberships. Add your own patterns; [] mines everything.
 freeipa_server_export_role_exclude:
   - role

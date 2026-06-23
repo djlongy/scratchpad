@@ -261,8 +261,8 @@ always held by the same users bundle into one role). Two knobs keep it honest:
 - `freeipa_server_export_role_exclude` (default `[role]`) — a list of
   case-insensitive regexes; groups matching any are kept as **direct** group
   memberships, not mined. Add patterns for layers that own their own groups —
-  e.g. your `role-*` groups, or a PAM like `elegrant`/`pam_*`:
-  `[role, elegrant, pam, approver, eligible]`.
+  e.g. your `role-*` groups, or a PAM/JIT like `pam_*`:
+  `[role, pam, approver, eligible]`.
 - `freeipa_server_export_role_min_groups` (default `2`) — a bundle becomes a role
   only with at least this many groups; smaller bundles stay direct (no 1-group
   "roles").
@@ -293,7 +293,7 @@ ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags e
 # into an inventory group_vars (rename to taste) to reapply.
 ```
 
-It captures the source realm/domain, users, groups (+ nesting), hostgroups,
+It captures the source realm/domain, users, groups (+ nesting + member-managers), hostgroups,
 custom HBAC services, HBAC rules, sudo commands & rules, password policies, and
 automember rules into `freeipa_idam_*` / `freeipa_server_*` — the same vars
 `default/main.yml` documents, so the output is drop-in and reapplies

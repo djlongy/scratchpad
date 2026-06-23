@@ -131,7 +131,7 @@ argument_specs:
         type: list
         elements: str
         required: false
-        description: Export task — case-insensitive regexes; groups matching any are kept as direct memberships, not mined into roles (default ['role']; e.g. add 'elegrant'/'pam' for PAM-owned groups).
+        description: Export task — case-insensitive regexes; groups matching any are kept as direct memberships, not mined into roles (default ['role']; e.g. add 'pam' for PAM-owned groups).
       freeipa_server_export_role_min_groups:
         type: int
         required: false

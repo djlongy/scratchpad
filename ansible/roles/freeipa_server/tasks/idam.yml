@@ -406,13 +406,17 @@
     user: "{{ item.user | default(omit) }}"
     group: "{{ item.group | default(omit) }}"
     service: "{{ item.service | default(omit) }}"
+    # Member managers (additive, like the other memberships) — e.g. a PAM/JIT
+    # toggler service allowed to manage this group's membership.
+    membermanager_user: "{{ item.membermanager_user | default(omit) }}"
+    membermanager_group: "{{ item.membermanager_group | default(omit) }}"
     state: present
   loop: "{{ freeipa_idam_groups_effective | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when:
     - (freeipa_idam_groups_effective | default([])) | length > 0
-    - (item.user is defined and (item.user | length > 0)) or (item.group is defined and (item.group | length > 0)) or (item.service is defined and (item.service | length > 0))
+    - (item.user is defined and (item.user | length > 0)) or (item.group is defined and (item.group | length > 0)) or (item.service is defined and (item.service | length > 0)) or (item.membermanager_user is defined and (item.membermanager_user | length > 0)) or (item.membermanager_group is defined and (item.membermanager_group | length > 0))
   no_log: true
 
 - name: Ensure managed users are members of marker group

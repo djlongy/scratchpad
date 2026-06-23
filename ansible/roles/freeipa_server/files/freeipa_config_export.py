@@ -121,6 +121,10 @@ def export_groups():
             "name": name,
             "description": _str(e, "description"),
             "group": nested,  # nested member groups only; user membership lives on users
+            # Member managers — users/groups allowed to manage THIS group's
+            # membership without being admins (e.g. a PAM/JIT toggler service).
+            "membermanager_user": _many(e, "membermanager_user"),
+            "membermanager_group": [g for g in _many(e, "membermanager_group") if g in names],
         }))
     return out, names
 
@@ -313,8 +317,8 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
 
       * Groups whose name matches ANY of `exclude_patterns` (a list of case-
         insensitive regexes, default ['role']) are NOT mined — they belong to a
-        layer that already owns them (your role-* groups, or an external PAM such
-        as elegrant that manages its own groups). Folding them into a synthetic
+        layer that already owns them (your role-* groups, or an external PAM/JIT
+        that manages its own groups). Folding them into a synthetic
         bundle just makes a "role made of roles", so they stay as direct `groups`
         on the user. Pass [] to mine everything.
       * A bundle becomes a role only when it has >= `min_groups` groups; smaller
