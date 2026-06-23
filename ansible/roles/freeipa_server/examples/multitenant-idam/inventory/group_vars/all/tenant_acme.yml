@@ -16,18 +16,19 @@ tenant_acme_spec:
   # LAYER 2 — personas: a role bundles several (app, tier) groups. Name becomes
   # "acme-<persona>"; users reference it instead of listing many groups.
   roles:
-    - name: developer            # -> acme-developer
+    - name: developer            # -> role-acme-developer
       grants:
         - {app: payments, tier: operator}
         - {app: ledger, tier: viewer}
-    - name: lead                 # -> acme-lead
+    - name: lead                 # -> role-acme-lead
       grants:
         - {app: payments, tier: admin}
         - {app: ledger, tier: admin}
 
   # LAYER 3 — members: assign roles (preferred) and/or a direct group.
-  #   ann.lee -> role acme-lead       (acme-payments-admin + acme-ledger-admin)
-  #   bo.ng   -> role acme-developer  (acme-payments-operator + acme-ledger-viewer)
+  # `roles:` here use the SHORT persona name; the generator adds the role- prefix.
+  #   ann.lee -> role-acme-lead       (acme-payments-admin + acme-ledger-admin)
+  #   bo.ng   -> role-acme-developer  (acme-payments-operator + acme-ledger-viewer)
   #   cj.park -> direct group only    (acme-payments-viewer) — no role
   members:
     - {name: ann.lee, first: Ann, last: Lee, roles: [lead]}

@@ -9,10 +9,10 @@ tenant_globex_spec:
   tiers: [admin, viewer]          # overrides identity_access_tiers for this tenant
 
   roles:
-    - name: analyst               # -> globex-analyst
+    - name: analyst               # -> role-globex-analyst
       grants:
         - {app: search, tier: viewer}
-    - name: owner                 # -> globex-owner
+    - name: owner                 # -> role-globex-owner
       grants:
         - {app: search, tier: admin}
 
