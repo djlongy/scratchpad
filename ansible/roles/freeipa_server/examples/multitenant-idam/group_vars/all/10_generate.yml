@@ -109,3 +109,13 @@ _gen_users_by_tenant: |-
   {% for t in _tenant_specs %}
   "{{ t.code }}": [{% for m in t.members %}"{{ m.name }}"{% if not loop.last %}, {% endif %}{% endfor %}]
   {% endfor %}
+
+# ── FLAT NAME LISTS — loop over these to act on EVERY object in scope ────────
+# "Every" = everything LOADED this run: one tenant if you ran `-i inventories/acme`,
+# all of them on a union run (`-i acme -i globex …`). There is intentionally no
+# realm-wide "all users" var — isolation means a run only sees the tenants you pass.
+# For the entire realm regardless of inventory, query FreeIPA (`ipa user-find`).
+freeipa_all_group_names: "{{ freeipa_idam_groups | map(attribute='name') | list }}"
+freeipa_all_role_names: "{{ freeipa_idam_roles | map(attribute='name') | list }}"
+freeipa_all_hostgroup_names: "{{ freeipa_idam_hostgroups | map(attribute='name') | list }}"
+freeipa_all_usernames: "{{ freeipa_idam_users | map(attribute='name') | list }}"
