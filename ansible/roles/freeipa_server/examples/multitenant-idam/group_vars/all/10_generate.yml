@@ -1,8 +1,10 @@
 ---
-# _common/.../10_generate.yml — turns whatever tenant specs are LOADED into the
-# role's flat IDAM lists. Shared by every tenant; never edited when adding a team.
+# group_vars/all/10_generate.yml — turns whatever tenant specs are LOADED into the
+# role's flat IDAM lists. Lives next to the playbook (always auto-loaded), so it is
+# never passed as an inventory and never edited when adding a team.
 #
-# Selection is by INVENTORY COMPOSITION, not a flag:
+# Selection is by INVENTORY COMPOSITION, not a flag (the host comes from _common,
+# which must be passed because a host cannot be defined in playbook group_vars):
 #   -i _common -i acme            → only tenant_acme_spec loaded  → ACME only
 #   -i _common -i acme -i globex  → both specs loaded             → union (audit)
 # Each tenant dir defines a DISTINCTLY-named tenant_<code>_spec, so passing several

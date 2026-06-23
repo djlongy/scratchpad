@@ -1,11 +1,16 @@
 ---
-# _common/.../00_naming.yml — the ONE source of truth for identity naming, shared
-# by every tenant. Tenant inventories carry DATA only; this file (+ 10_generate.yml)
-# owns the PATTERN, so naming can never drift between teams.
+# group_vars/all/00_naming.yml — the ONE source of truth for identity naming.
+#
+# This sits next to the PLAYBOOK (site.yml), so Ansible auto-loads it on every run
+# WITHOUT it being named as an inventory — group_vars/host_vars adjacent to a
+# playbook are always loaded. Tenant inventories carry DATA only; this file
+# (+ 10_generate.yml) owns the PATTERN, so naming can never drift between teams.
+# In a real repo this lives at playbooks/group_vars/all/ next to the idam playbook.
 #
 # ── env / domain scaling ─────────────────────────────────────────────────────
-# Scale environments by keeping one _common per env (_common.dev / _common.test /
-# _common.prod) that changes only `env` + the host, and REUSE the same tenant dirs.
+# Scale environments by keeping one host inventory per env (inventories/_common.dev
+# / .test / .prod) that changes only `env` + the host, and REUSE the same tenant
+# dirs. (env/domain could also move here if it's the same across environments.)
 env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
 domain: "example.com"
 

@@ -1,9 +1,10 @@
 # Multi-tenant IDAM for `freeipa_server` — a scalable reference template
 
-One FreeIPA realm, many teams. **Each team is its own inventory directory** holding
-only that team's data; a shared `_common/` holds the realm host and the naming
-convention. You change a team by running *that team's inventory* — nothing else is
-loaded, queried, or pruned.
+One FreeIPA realm, many teams. The **logic is global** (the naming convention +
+generators sit next to the playbook, auto-loaded every run), the **host** is one
+tiny shared inventory, and **each team is its own inventory directory** holding
+only that team's data. You change a team by running *that team's inventory* —
+nothing else is loaded, queried, or pruned.
 
 Groups, roles, and users are **generated from a single naming convention**, so every
 tenant is consistent by construction and you never hand-type a group or role name.
@@ -11,17 +12,25 @@ tenant is consistent by construction and you never hand-type a group or role nam
 ```
 multitenant-idam/
 ├── apply.sh                         # ./apply.sh acme [globex ...]  — runs the right -i set
-├── site.yml                         # the play (shared)
+├── site.yml                         # the play
+├── group_vars/all/                  # GLOBAL logic — adjacent to the playbook, ALWAYS loaded
+│   ├── 00_naming.yml                #   env, domain, name patterns, access tiers
+│   └── 10_generate.yml              #   tenant_*_spec → freeipa_idam_* + per-tenant marker
 ├── inventories/
-│   ├── _common/                     # SHARED: the realm host + convention + generators
-│   │   ├── hosts.yml                #   idm01 (the only place the host is defined)
-│   │   └── group_vars/all/
-│   │       ├── 00_naming.yml        #   env, domain, name patterns, access tiers
-│   │       └── 10_generate.yml      #   tenant_*_spec → freeipa_idam_* + per-tenant marker
+│   ├── _common/hosts.yml            # JUST the realm host (idm01) — the one thing that must be -i
 │   ├── acme/  group_vars/all/tenant.yml     # team ACME — data only (tenant_acme_spec)
 │   └── globex/group_vars/all/tenant.yml     # team GLOBEX — data only (tenant_globex_spec)
 └── alt-single-inventory/            # the same generators, one-inventory layout (comparison)
 ```
+
+**Why the split is host vs. logic:** Ansible auto-loads `group_vars`/`host_vars`
+that sit next to the *playbook*, on every run, with no `-i` — so the convention and
+generators live there and are truly global. But that auto-loading is for
+*variables*, **not host definitions** — a host can't be declared in playbook
+`group_vars`. So one minimal `inventories/_common/hosts.yml` still defines the realm
+host and is passed as `-i`. (To drop even that explicit `-i _common`: set it as the
+`ansible.cfg` default inventory, or duplicate the one host block into each tenant
+dir — trading a flag for repeating the host.)
 
 ## How you run it — selection is the inventory, not a flag
 
