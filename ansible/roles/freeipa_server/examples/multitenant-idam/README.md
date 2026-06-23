@@ -83,12 +83,59 @@ ansible-playbook -i inventory/hosts.yml site.yml --tags idam --check
 ansible-playbook -i inventory/hosts.yml site.yml --tags idam
 ```
 
+## Fast, isolated per-team runs (the selector)
+
+A monolithic users/groups list is slow because the role applies groups,
+hostgroups, and memberships **one item per API round-trip, every run** — so a
+full reconcile scales with the *whole estate* even when nothing changed. (Note
+`--limit` does NOT help: it limits hosts, and there is one FreeIPA host.)
+
+Scope a run to one team with `idam_tenants`, a vars-level filter:
+
+```bash
+# Someone joined team ACME — apply ONLY acme. Seconds, not minutes.
+ansible-playbook -i inventory/hosts.yml site.yml --tags idam -e idam_tenants=acme
+# A few teams at once (JSON list):
+ansible-playbook -i inventory/hosts.yml site.yml --tags idam -e '{"idam_tenants":["acme","globex"]}'
+# No selector → all tenants (the full reconcile).
+```
+
+The role then iterates only ACME's items; GLOBEX is never composed, queried, or
+pruned.
+
+**Why this is safe — per-tenant marker groups.** The role reconciles ONE marker
+group and deletes managed users not in the desired set. With a single global
+marker, running only ACME would see GLOBEX's users as "removed" and delete them.
+So `10_aggregate.yml` derives `freeipa_idam_managed_group` per selected tenant:
+
+| Run | Selected | Marker group | Touches |
+|-----|----------|--------------|---------|
+| `(* none *)` | acme, globex | `idam-managed-users` | everything (full reconcile) |
+| `-e idam_tenants=acme` | acme | `idam-managed-acme` | ACME only — GLOBEX untouched |
+| `-e idam_tenants=globex` | globex | `idam-managed-globex` | GLOBEX only |
+
+So an ACME run reconciles only `idam-managed-acme`; GLOBEX's marker is never read.
+
+**Full run over all tenants:** a single play carries one marker, so the global
+`idam-managed-users` reconcile is fine when the desired set IS everyone. If you
+want per-tenant marker isolation on the full run too, loop the role once per
+tenant (each iteration `-e idam_tenants=<code>`) instead of one big pass — e.g. a
+wrapper that runs the targeted command for each `tenant_*` file. Per-item API
+cost is inherent to ansible_freeipa; the win is not iterating teams that didn't
+change.
+
+> One-time migration note: moving an existing realm from a single
+> `idam-managed-users` marker to per-tenant markers is graceful — the first
+> targeted run finds an empty per-tenant marker (nothing to prune) and populates
+> it. Run each team once to seed its marker, then retire the global one.
+
 ## Scaling checklist
 
 - **Add a team** → drop `tenant_<code>.yml`, bump `identity_expected_tenant_count`.
 - **Add an app** → one line in the tenant's `apps:`; its groups/hostgroup appear.
 - **Add a persona** → one entry in the tenant's `roles:`.
-- **Add a person** → one `members:` line referencing a role.
+- **Add a person** → one `members:` line referencing a role, then apply just that
+  team: `-e idam_tenants=<code>` (seconds; other teams untouched).
 - **Add an environment** → a sibling inventory reusing the same `tenant_*.yml`,
   changing only `env` in `00_naming.yml`.
 - **Tighten tiers for a team** → set `tiers:` in that tenant's spec.

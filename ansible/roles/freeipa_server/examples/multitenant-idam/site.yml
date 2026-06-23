@@ -3,8 +3,11 @@
 #
 #   ansible-playbook -i inventory/hosts.yml site.yml --tags idam
 #
-# The assert is the safety net for the global prune: if a tenant_*_spec file fails
-# to load, the count won't match and the run aborts BEFORE idam could delete that
+# Scope to one team for a fast, isolated change (see README "the selector"):
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags idam -e idam_tenants=acme
+#
+# The assert is the safety net for the prune: if a tenant_*_spec file fails to
+# load, the count won't match and the run aborts BEFORE idam could delete that
 # tenant's users. Bump identity_expected_tenant_count when you add a tenant file.
 - name: FreeIPA multi-tenant IDAM
   hosts: freeipa
