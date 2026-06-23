@@ -30,7 +30,7 @@ freeipa_idam_managed_group: >-
      if (_tenant_specs | length == 1) else 'idam-managed-users' }}
 
 # ── LAYER 1 — groups: every tenant × app × tier ─────────────────────────────
-freeipa_idam_groups: "{{ _gen_groups | from_yaml }}"
+freeipa_idam_groups: "{{ (_gen_groups | from_yaml) or [] }}"
 _gen_groups: |-
   {% for t in _tenant_specs %}
   {% for app in t.apps %}
@@ -39,7 +39,7 @@ _gen_groups: |-
   {% endfor %}{% endfor %}{% endfor %}
 
 # ── LAYER 2 — roles: a persona bundling several (app,tier) groups ────────────
-freeipa_idam_roles: "{{ _gen_roles | from_yaml }}"
+freeipa_idam_roles: "{{ (_gen_roles | from_yaml) or [] }}"
 _gen_roles: |-
   {% for t in _tenant_specs %}
   {% for r in (t.roles | default([])) %}
@@ -47,7 +47,7 @@ _gen_roles: |-
   {% endfor %}{% endfor %}
 
 # ── hostgroups: every tenant × app ──────────────────────────────────────────
-freeipa_idam_hostgroups: "{{ _gen_hostgroups | from_yaml }}"
+freeipa_idam_hostgroups: "{{ (_gen_hostgroups | from_yaml) or [] }}"
 _gen_hostgroups: |-
   {% for t in _tenant_specs %}
   {% for app in t.apps %}
@@ -57,7 +57,7 @@ _gen_hostgroups: |-
 # ── LAYER 3 — users: assigned ROLES and/or direct GROUPS ────────────────────
 # A member lists `roles: [persona, ...]` (preferred, gets the role- prefix) and/or
 # a direct group via {app|apps, tier}. Names are generated, never hand-typed.
-freeipa_idam_users: "{{ _gen_users | from_yaml }}"
+freeipa_idam_users: "{{ (_gen_users | from_yaml) or [] }}"
 _gen_users: |-
   {% for t in _tenant_specs %}
   {% for m in t.members %}
@@ -70,9 +70,32 @@ _gen_users: |-
 #    realm-global service — custom HBAC *services* belong to the realm/auth tenant
 #    (freeipa_idam_hbacsvcs), not here. HBAC rules are additive (not pruned by the
 #    role); remove a tenant's access by setting state: absent or deleting the rule.
-freeipa_idam_hbac_rules: "{{ _gen_hbac | from_yaml }}"
+freeipa_idam_hbac_rules: "{{ (_gen_hbac | from_yaml) or [] }}"
 _gen_hbac: |-
   {% for t in _tenant_specs %}
   {% for app in t.apps %}
   - {name: "hbac-{{ t.code }}-{{ app }}", description: "{{ t.code }} {{ app }} SSH", group: [{% for tier in (t.tiers | default(identity_access_tiers)) %}"{{ t.code }}-{{ app }}-{{ tier }}"{% if not loop.last %}, {% endif %}{% endfor %}], hostgroup: ["{{ t.code }}-{{ app }}"], hbacsvc: ["sshd"]}
+  {% endfor %}{% endfor %}
+
+# ── REFERENCE INDEX — how OTHER Ansible refers to a generated group/role ─────
+# Generated names are never hand-written, so don't copy-paste them out of FreeIPA.
+# Reference by INTENT through this index — a firewall rule, an app's RBAC, another
+# playbook — and a typo'd key fails fast (undefined) instead of silently granting
+# nothing. The naming convention is the contract; if it ever changes, the VALUES
+# change and every reference follows — no estate-wide find/replace.
+#   freeipa_group_ref['acme.payments.admin']  -> "acme-payments-admin"
+#   freeipa_role_ref['acme.lead']             -> "role-acme-lead"
+# e.g. firewalld:  permitted_groups: "{{ [freeipa_group_ref['acme.payments.admin']] }}"
+freeipa_group_ref: "{{ (_gen_group_ref | from_yaml) or {} }}"
+_gen_group_ref: |-
+  {% for t in _tenant_specs %}
+  {% for app in t.apps %}
+  {% for tier in (t.tiers | default(identity_access_tiers)) %}
+  "{{ t.code }}.{{ app }}.{{ tier }}": "{{ t.code }}-{{ app }}-{{ tier }}"
+  {% endfor %}{% endfor %}{% endfor %}
+freeipa_role_ref: "{{ (_gen_role_ref | from_yaml) or {} }}"
+_gen_role_ref: |-
+  {% for t in _tenant_specs %}
+  {% for r in (t.roles | default([])) %}
+  "{{ t.code }}.{{ r.name }}": "role-{{ t.code }}-{{ r.name }}"
   {% endfor %}{% endfor %}

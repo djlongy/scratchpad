@@ -96,6 +96,25 @@ HBAC *services* (`sshd`, custom svcs — one per realm), automember, DNS. Rules 
 per-tenant; services are shared. HBAC rules are additive (not pruned) — remove
 access with `state: absent`.
 
+### Referencing a generated group/role from elsewhere
+
+The names are generated, never hand-written — so **don't copy-paste them out of
+FreeIPA**. The convention *is* the contract: a name is a pure function of
+`(tenant, app, tier)`. The generator exposes a semantic index so other Ansible (a
+firewall rule, an app's RBAC, another playbook) references by **intent**, and a
+typo fails fast instead of silently granting nothing:
+
+```yaml
+# in some other role/playbook that loads these group_vars:
+firewalld_allow_groups: "{{ [freeipa_group_ref['acme.payments.admin']] }}"   # -> acme-payments-admin
+app_admin_role:         "{{ freeipa_role_ref['acme.lead'] }}"                # -> role-acme-lead
+```
+
+If the naming convention ever changes, the index *values* change and every
+reference follows — no estate-wide find/replace, no looking names up by hand.
+(Prefer this over a one-off filter plugin unless you need the lookup outside a run
+where these group_vars aren't loaded.)
+
 **Type marker:** roles are prefixed `role-` so the FIRST token tells you the kind —
 `role-*` is a role, everything else is a plain permission group, no segment-parsing
 to guess whether `admin` is an app tier or a role. A role bundles groups; a user
