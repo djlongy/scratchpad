@@ -5,6 +5,16 @@
     name: "{{ ['autofs', 'nfs-utils'] if ansible_os_family == 'RedHat' else ['autofs', 'nfs-common'] }}"
     state: present
 
+# EL ships "/net -hosts" in /etc/auto.master; that indirect map owns the whole
+# /net namespace and shadows our /net/users + /net/share submounts (lookups of
+# /net/users get treated as a hostname). Comment out any -hosts entry at our base.
+- name: Disable any conflicting top-level autofs -hosts map at the mount base
+  ansible.builtin.replace:
+    path: /etc/auto.master
+    regexp: '^({{ nfs_client_base }}\s+-hosts.*)$'
+    replace: '#\1'
+  notify: Restart autofs
+
 - name: Write the autofs master drop-in for the network drive
   ansible.builtin.template:
     src: auto.master.net.j2
@@ -38,3 +48,14 @@
     enabled: true
     state: started
   when: nfs_client_manage_service | bool
+
+# Client-side krb5p needs the GSS daemon to obtain per-user credentials for the
+# mount; it is not started by enrolment alone.
+- name: Ensure rpc-gssd is running for client-side krb5p
+  ansible.builtin.service:
+    name: rpc-gssd
+    state: started
+    enabled: true
+  when:
+    - nfs_client_kerberos | bool
+    - nfs_client_manage_service | bool
