@@ -26,10 +26,14 @@
 # NOTE: one or more accounts (typically service users) had no group beyond the
 # default — 'ipausers' is declared below so their membership references resolve.
 {% endif %}
-{% for key in ['freeipa_idam_groups', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
+# Source realm/domain — set these on a fresh install to recreate the SAME realm.
+# Remove/change them if you are reapplying into a differently-named realm.
+freeipa_server_domain: {{ _freeipa_export.freeipa_server_domain }}
+freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
+{% for key in ['freeipa_idam_groups', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
 {% if _freeipa_export[key] | length > 0 %}
 {{ key }}:
-{{ _freeipa_export[key] | to_nice_yaml(indent=2, width=160) | indent(2, first=True) }}
+{{ _freeipa_export[key] | to_nice_yaml(indent=2, width=160, sort_keys=False) | indent(2, first=True) }}
 {% else %}
 {{ key }}: []
 {% endif %}

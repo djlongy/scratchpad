@@ -92,6 +92,11 @@ argument_specs:
         elements: dict
         required: false
         description: DNS records to manage (ipadnsrecord). Each item needs zone_name, name, record_type, record_value.
+      freeipa_idam_hbacsvcs:
+        type: list
+        elements: dict
+        required: false
+        description: Custom HBAC services to create (ipahbacsvc) before HBAC rule memberships reference them. Each item needs name. Stock services need not be listed.
       freeipa_server_automember_rules:
         type: list
         elements: dict

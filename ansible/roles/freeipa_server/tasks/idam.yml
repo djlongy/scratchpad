@@ -21,6 +21,7 @@
       - freeipa_idam_users is iterable
       - freeipa_idam_groups is iterable
       - freeipa_idam_hostgroups is iterable
+      - freeipa_idam_hbacsvcs is iterable
       - freeipa_idam_hbac_rules is iterable
       - freeipa_idam_sudo_commands is iterable
       - freeipa_idam_sudo_rules is iterable
@@ -129,6 +130,20 @@
   when: (freeipa_idam_groups_effective | default([])) | length > 0
   no_log: true
 
+# Users are created HERE — before any HBAC/sudo rule-membership task that
+# references them. On a fresh server they would otherwise not exist yet and the
+# membership tasks fail with "user ...: no such entry". Group memberships are
+# still applied later (once both users and groups exist).
+- name: Ensure declarative users are present
+  freeipa.ansible_freeipa.ipauser:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    users: "{{ freeipa_idam_users_effective | default([]) }}"
+    update_password: on_create
+    state: present
+  when: (freeipa_idam_users_effective | default([])) | length > 0
+  no_log: true
+
 - name: Ensure declarative FreeIPA password policies are present
   freeipa.ansible_freeipa.ipapwpolicy:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
@@ -164,6 +179,23 @@
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_hostgroups | length > 0
+  no_log: true
+
+# Seed CUSTOM HBAC services before any rule membership references them. Stock
+# services (sshd, sudo, …) already exist on every server; custom ones do not, so
+# on a fresh server the membership task would fail with "hbacsvc ...: no such
+# entry". Idempotent — re-declaring an existing service is a no-op.
+- name: Ensure custom HBAC services are present
+  freeipa.ansible_freeipa.ipahbacsvc:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_hbacsvcs }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_hbacsvcs | length > 0
   no_log: true
 
 - name: Ensure declarative HBAC rules are present
@@ -300,16 +332,6 @@
     name: "{{ freeipa_idam_managed_group }}"
     description: "Users managed declaratively from Git"
     state: present
-  no_log: true
-
-- name: Ensure declarative users are present
-  freeipa.ansible_freeipa.ipauser:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    users: "{{ freeipa_idam_users_effective | default([]) }}"
-    update_password: on_create
-    state: present
-  when: (freeipa_idam_users_effective | default([])) | length > 0
   no_log: true
 
 - name: Ensure declarative FreeIPA group memberships are present

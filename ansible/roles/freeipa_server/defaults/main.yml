@@ -208,6 +208,7 @@ freeipa_idam_managed_group: "idam-managed-users"
 freeipa_idam_groups: []
 freeipa_idam_users: []
 freeipa_idam_hostgroups: []
+freeipa_idam_hbacsvcs: []                  # custom HBAC services (seeded before HBAC rule members)
 freeipa_idam_hbac_rules: []
 freeipa_idam_sudo_commands: []
 freeipa_idam_sudo_rules: []

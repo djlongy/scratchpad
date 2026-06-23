@@ -31,6 +31,13 @@ GROUP_DENYLIST = {"ipausers", "idam-managed-users"}
 # pwpolicy owned by FreeIPA itself.
 PWPOLICY_DENYLIST = {"global_policy"}
 DEFAULT_FALLBACK_GROUP = "ipausers"  # only used if a user has no other group
+# Stock FreeIPA HBAC services — shipped on every server, so they are excluded
+# from the snapshot. Only CUSTOM services are captured (and later seeded on a
+# fresh server before HBAC rule memberships that reference them).
+DEFAULT_HBACSVCS = {
+    "crond", "ftp", "gdm", "gdm-password", "gssftp", "kdm", "login", "proftpd",
+    "pure-ftpd", "sshd", "su", "su-l", "sudo", "sudo-i", "systemd-user", "vsftpd",
+}
 
 
 def _one(entry, key):
@@ -185,6 +192,17 @@ def export_hbac_rules():
     return out
 
 
+def export_hbacsvcs():
+    """Custom HBAC services only — the stock services already exist everywhere."""
+    out = []
+    for e in _find("hbacsvc_find"):
+        name = _str(e, "cn")
+        if not name or name in DEFAULT_HBACSVCS:
+            continue
+        out.append(_prune({"name": name, "description": _str(e, "description")}))
+    return out
+
+
 def export_sudo_commands():
     out = []
     for e in _find("sudocmd_find"):
@@ -309,14 +327,18 @@ def main():
     doc = {
         "meta": {
             "source": api.env.host,
+            "domain": api.env.domain,
             "realm": api.env.realm,
             "captured_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "host_membership_included": args.include_host_membership,
             "fallback_group_used": used_fallback,
         },
+        "freeipa_server_domain": api.env.domain,
+        "freeipa_server_realm": api.env.realm,
         "freeipa_idam_groups": groups,
         "freeipa_idam_users": users,
         "freeipa_idam_hostgroups": export_hostgroups(args.include_host_membership),
+        "freeipa_idam_hbacsvcs": export_hbacsvcs(),
         "freeipa_idam_hbac_rules": export_hbac_rules(),
         "freeipa_idam_sudo_commands": export_sudo_commands(),
         "freeipa_idam_sudo_rules": export_sudo_rules(),

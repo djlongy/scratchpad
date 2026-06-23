@@ -255,10 +255,13 @@ ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags e
 # into an inventory group_vars (rename to taste) to reapply.
 ```
 
-It captures users, groups (+ nesting), hostgroups, HBAC rules, sudo commands &
-rules, password policies, and automember rules into `freeipa_idam_*` /
-`freeipa_server_automember_rules` — the same vars `default/main.yml` documents,
-so the output is drop-in and reapplies idempotently.
+It captures the source realm/domain, users, groups (+ nesting), hostgroups,
+custom HBAC services, HBAC rules, sudo commands & rules, password policies, and
+automember rules into `freeipa_idam_*` / `freeipa_server_*` — the same vars
+`default/main.yml` documents, so the output is drop-in and reapplies
+idempotently, **including onto a fresh, empty server**: users and custom HBAC
+services are created before the rule-membership tasks that reference them, so
+there is no first-run ordering race.
 
 Deliberately **not** captured: user passwords / Kerberos keys (unreadable),
 POSIX uid/gid numbers (IPA reassigns on a rebuild — avoids ID collisions),
