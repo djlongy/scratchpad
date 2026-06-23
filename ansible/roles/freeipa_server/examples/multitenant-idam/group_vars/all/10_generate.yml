@@ -99,3 +99,13 @@ _gen_role_ref: |-
   {% for r in (t.roles | default([])) %}
   "{{ t.code }}.{{ r.name }}": "role-{{ t.code }}-{{ r.name }}"
   {% endfor %}{% endfor %}
+
+# Usernames are EXPLICIT in each tenant spec (you typed them), so a single user is
+# referenced directly as a literal — there's no generated name to look up. For
+# "everyone on a team", this index gives tenant -> [usernames]:
+#   freeipa_users_by_tenant['acme']  -> ['ann.lee', 'bo.ng', 'cj.park']
+freeipa_users_by_tenant: "{{ (_gen_users_by_tenant | from_yaml) or {} }}"
+_gen_users_by_tenant: |-
+  {% for t in _tenant_specs %}
+  "{{ t.code }}": [{% for m in t.members %}"{{ m.name }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+  {% endfor %}
