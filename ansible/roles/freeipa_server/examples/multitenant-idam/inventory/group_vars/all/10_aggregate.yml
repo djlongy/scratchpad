@@ -1,0 +1,71 @@
+---
+# 10_aggregate.yml — composes every tenant_*_spec into the role's flat IDAM lists.
+#
+# THIS is what makes multi-inventory multitenancy work. Each tenant file sets a
+# `tenant_<code>_spec` dict (data only). Ansible would NOT merge three separate
+# `freeipa_idam_users` definitions — highest precedence simply wins, the rest are
+# silently lost — so every tenant uses a DISTINCT var name, and here we discover
+# them all with the `varnames` lookup and render the convention over them.
+#
+# Drop a new tenant_<code>.yml into group_vars/all/ → it is picked up
+# automatically. No edits here, ever. That is the scalability property.
+#
+# The freeipa_server role consumes freeipa_idam_groups / _roles / _users /
+# _hostgroups unchanged — so NO role change is required for this pattern.
+#
+# Three layers, smallest grain up:
+#   groups  = atomic permissions   <tenant>-<app>-<tier>      (tenant × app × tier)
+#   roles   = personas bundling groups   <tenant>-<persona>   (a role = many groups)
+#   users   = people assigned roles (and/or direct groups)
+
+# All tenant specs in scope, in stable (sorted) order for deterministic output.
+_tenant_specs: >-
+  {{ q('varnames', '^tenant_[a-z0-9]+_spec$') | sort
+     | map('extract', vars) | list }}
+
+# ── LAYER 1 — groups: every tenant × app × tier ─────────────────────────────
+# Flow-style YAML per line keeps from_yaml robust regardless of loop indentation.
+freeipa_idam_groups: "{{ _idam_groups_yaml | from_yaml }}"
+_idam_groups_yaml: |-
+  {% for t in _tenant_specs %}
+  {% for app in t.apps %}
+  {% for tier in (t.tiers | default(identity_access_tiers)) %}
+  - {name: "{{ t.code }}-{{ app }}-{{ tier }}", description: "{{ t.code }} {{ app }} {{ tier }} (managed)"}
+  {% endfor %}{% endfor %}{% endfor %}
+
+# ── LAYER 2 — roles: a persona that bundles several (app,tier) groups ────────
+# Each tenant role becomes "<code>-<persona>" whose groups are the rendered grants.
+# Users reference these instead of long flat group lists; the role expands them.
+freeipa_idam_roles: "{{ _idam_roles_yaml | from_yaml }}"
+_idam_roles_yaml: |-
+  {% for t in _tenant_specs %}
+  {% for r in (t.roles | default([])) %}
+  - {name: "{{ t.code }}-{{ r.name }}", groups: [{% for g in r.grants %}"{{ t.code }}-{{ g.app }}-{{ g.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]}
+  {% endfor %}{% endfor %}
+
+# ── hostgroups: every tenant × app ──────────────────────────────────────────
+freeipa_idam_hostgroups: "{{ _idam_hostgroups_yaml | from_yaml }}"
+_idam_hostgroups_yaml: |-
+  {% for t in _tenant_specs %}
+  {% for app in t.apps %}
+  - {name: "{{ t.code }}-{{ app }}", description: "{{ t.code }} {{ app }} hosts"}
+  {% endfor %}{% endfor %}
+
+# ── LAYER 3 — users: assigned ROLES and/or direct GROUPS ────────────────────
+# A member lists `roles: [persona, ...]` (preferred) and/or a direct group via
+# {app|apps, tier}. Names are generated, never hand-typed. The role requires each
+# user resolve to >=1 group (via roles or groups), so a roles-only user is valid.
+freeipa_idam_users: "{{ _idam_users_yaml | from_yaml }}"
+_idam_users_yaml: |-
+  {% for t in _tenant_specs %}
+  {% for m in t.members %}
+  - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
+  {% endfor %}{% endfor %}
+
+# ── safety: detect a tenant file that silently failed to load ───────────────
+# Because the role's prune step deletes managed users not in the desired union, a
+# tenant whose file is missing/broken would have its users REMOVED. Expose the live
+# count + a boolean so the play can assert BEFORE idam runs (see site.yml). Bump
+# the expected count whenever you add a tenant file.
+identity_expected_tenant_count: 2
+identity_tenant_count_ok: "{{ (_tenant_specs | length) == identity_expected_tenant_count }}"

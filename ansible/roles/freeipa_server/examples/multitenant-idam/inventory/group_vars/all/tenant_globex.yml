@@ -1,0 +1,21 @@
+---
+# tenant_globex.yml — Tenant GLOBEX. Same shape as ACME; different data.
+# GLOBEX narrows its own tiers (no `operator`) and has a single app — a per-tenant
+# override that still flows through the shared convention.
+tenant_globex_spec:
+  code: globex
+  apps:
+    - search
+  tiers: [admin, viewer]          # overrides identity_access_tiers for this tenant
+
+  roles:
+    - name: analyst               # -> globex-analyst
+      grants:
+        - {app: search, tier: viewer}
+    - name: owner                 # -> globex-owner
+      grants:
+        - {app: search, tier: admin}
+
+  members:
+    - {name: dee.fox, first: Dee, last: Fox, roles: [owner]}
+    - {name: eli.mak, first: Eli, last: Mak, roles: [analyst]}

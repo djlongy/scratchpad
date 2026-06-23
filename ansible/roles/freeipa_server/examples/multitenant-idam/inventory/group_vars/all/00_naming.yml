@@ -1,0 +1,40 @@
+---
+# 00_naming.yml — the ONE source of truth for identity naming conventions.
+#
+# Loaded for EVERY host in this inventory because it lives in `group_vars/all/`
+# (a directory — Ansible loads every file inside it for all hosts). Shared by all
+# tenants so naming can never drift between teams: tenant files carry DATA only,
+# this file (+ 10_aggregate.yml) owns the PATTERN.
+#
+# ── env / domain scaling ─────────────────────────────────────────────────────
+# Normally these live in the inventory ROOT all.yml (see the freeipa_server role
+# README + inventories/example/group_vars/all.yml). Repeated here so this example
+# is self-contained. To scale environments, keep one inventory per env
+# (inventory.dev / inventory.test / inventory.prod) that reuses the SAME
+# tenant_*.yml files and only changes `env` below.
+env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
+domain: "example.com"
+
+# ── Naming patterns (documented convention — generators in 10_aggregate.yml) ──
+# These string templates are the contract. The generators render them, so a team
+# never hand-types a group / role / host name and every tenant is consistent.
+#
+#   group       <tenant>-<app>-<tier>              acme-payments-admin
+#   role        <tenant>-<persona>                 acme-developer   (bundle of groups)
+#   hostgroup   <tenant>-<app>                      acme-payments
+#   host FQDN   <env>-<tenant>-<app>-<NN>.<domain>  prod-acme-payments-01.example.com
+#   service URL <app>.<tenant>.<env>.<domain>       payments.acme.prod.example.com
+#
+# host FQDN keeps the repo's "host = flat zone, no env subdomain" rule by putting
+# env in the NAME (not a DNS subdomain); the service URL keeps an env subdomain.
+identity_naming:
+  group: "{tenant}-{app}-{tier}"
+  role: "{tenant}-{persona}"
+  hostgroup: "{tenant}-{app}"
+  host_fqdn: "{env}-{tenant}-{app}-{nn}.{domain}"
+  service_url: "{app}.{tenant}.{env}.{domain}"
+
+# Access tiers each tenant gets per app unless it overrides `tiers:` in its spec.
+# These are the ATOMIC permission groups; roles (personas) bundle them. Extend per
+# your RBAC policy (e.g. add `auditor`) and every tenant inherits it.
+identity_access_tiers: [admin, operator, viewer]

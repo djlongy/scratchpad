@@ -1,0 +1,29 @@
+---
+# site.yml — apply the composed multi-tenant IDAM to the realm.
+#
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags idam
+#
+# The assert is the safety net for the global prune: if a tenant_*_spec file fails
+# to load, the count won't match and the run aborts BEFORE idam could delete that
+# tenant's users. Bump identity_expected_tenant_count when you add a tenant file.
+- name: FreeIPA multi-tenant IDAM
+  hosts: freeipa
+  become: true
+  tasks:
+    - name: Refuse to run if a tenant spec failed to load
+      ansible.builtin.assert:
+        that: identity_tenant_count_ok
+        fail_msg: >-
+          Expected {{ identity_expected_tenant_count }} tenants, found
+          {{ _tenant_specs | length }} — a tenant_*_spec file may have failed to
+          load. Refusing to run (the prune step could delete the missing
+          tenant's users).
+        success_msg: "{{ _tenant_specs | length }} tenant spec(s) loaded."
+
+    - name: Apply declarative identity (groups, roles, users, hostgroups)
+      ansible.builtin.import_role:
+        name: freeipa_server
+      # Provide the realm admin/DM passwords via group_vars + HashiCorp Vault
+      # (freeipa_idam_vault_secret / freeipa_server_vault_secret) — see the
+      # role README and inventories/example/group_vars/freeipa.yml.
+      tags: [idam]
