@@ -10,12 +10,14 @@
 #   ansible-playbook ... --tags restore \
 #     -e freeipa_server_restore_name=ipa-data-2026-06-22-12-00-00
 
-- name: Restore | Fetch Directory Manager password
+- name: Restore | Resolve Directory Manager password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
     _freeipa_restore_dm_pw: >-
-      {{ lookup('community.hashi_vault.hashi_vault',
-         'secret=' + freeipa_server_vault_secret
-         + ':' + freeipa_server_dm_password_field) }}
+      {{ freeipa_server_dm_password
+         if (freeipa_server_dm_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_server_vault_secret
+            + ':' + freeipa_server_dm_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false

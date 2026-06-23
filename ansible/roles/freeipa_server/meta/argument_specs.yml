@@ -11,10 +11,20 @@ argument_specs:
         type: str
         required: true
         description: Kerberos realm (uppercase domain).
+      freeipa_server_admin_password:
+        type: str
+        required: false
+        no_log: true
+        description: IPA admin password. Declared vars win over Vault; set this (or freeipa_server_vault_secret) — with it set, no HashiCorp Vault is needed.
+      freeipa_server_dm_password:
+        type: str
+        required: false
+        no_log: true
+        description: Directory Manager password. Declared vars win over Vault; set this (or freeipa_server_vault_secret).
       freeipa_server_vault_secret:
         type: str
-        required: true
-        description: HashiCorp Vault KV path holding admin_password + dm_password.
+        required: false
+        description: HashiCorp Vault KV path holding admin_password + dm_password. FALLBACK only — used when the password vars above are empty.
       freeipa_server_is_primary:
         type: bool
         required: false

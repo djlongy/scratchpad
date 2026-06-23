@@ -8,12 +8,14 @@
 #
 # NOTE: not live-tested in this estate (no AD); shipped as a capability.
 
-- name: AD trust | Fetch IPA admin password
+- name: AD trust | Resolve IPA admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
     _freeipa_adtrust_admin_pw: >-
-      {{ lookup('community.hashi_vault.hashi_vault',
-         'secret=' + freeipa_server_vault_secret
-         + ':' + freeipa_server_admin_password_field) }}
+      {{ freeipa_server_admin_password
+         if (freeipa_server_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_server_vault_secret
+            + ':' + freeipa_server_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false
@@ -25,8 +27,10 @@
     trust_type: "{{ item.trust_type | default('ad') }}"
     admin: "{{ item.admin }}"
     password: >-
-      {{ lookup('community.hashi_vault.hashi_vault',
-         'secret=' + freeipa_server_vault_secret + ':' + item.password_field) }}
+      {{ item.password
+         if (item.password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_server_vault_secret + ':' + item.password_field) }}
     two_way: "{{ item.two_way | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   loop: "{{ freeipa_server_ad_trusts }}"

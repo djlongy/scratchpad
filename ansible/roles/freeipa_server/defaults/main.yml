@@ -32,7 +32,19 @@ freeipa_server_has_replicas: "{{ (groups['freeipa'] | default([])) | length > 1 
 freeipa_server_ip_addresses:
   - "{{ ansible_host }}"
 
-# ── Vault credentials (ENV-SPECIFIC — set in inventory group_vars) ──────────
+# ── Credentials: declared Ansible vars FIRST, HashiCorp Vault as fallback ────
+# Resolution order for every secret this role needs:
+#   1. a declared Ansible var (these two below) — set via group_vars, an
+#      Ansible-Vault file, or -e. If non-empty it is used verbatim.
+#   2. otherwise a HashiCorp Vault lookup at freeipa_*_vault_secret : *_field.
+# Supplying the password(s) directly means NO HashiCorp Vault is required — e.g.
+# you can run `--tags export` with just freeipa_server_admin_password. The Vault
+# lookup is evaluated lazily, so it never fires when the password is provided.
+freeipa_server_admin_password: ""        # IPA admin password (used for kinit/admin ops)
+freeipa_server_dm_password: ""           # Directory Manager password
+
+# HashiCorp Vault fallback location (ENV-SPECIFIC — set in inventory group_vars).
+# Only needed when the passwords above are left empty.
 # freeipa_server_vault_secret: "kv/data/platform/freeipa/runtime"
 freeipa_server_admin_password_field: "admin_password"
 freeipa_server_dm_password_field: "dm_password"
@@ -220,6 +232,7 @@ freeipa_server_export_include_sshkeys: false
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write
 freeipa_migrate_mode: "prod-mode"               # prod-mode (preserve SIDs/DNA) | stage-mode
 freeipa_migrate_bind_dn: "cn=Directory Manager"
+freeipa_migrate_bind_pw: ""                      # declared var first; else Vault fallback below
 freeipa_migrate_bind_pw_field: "dm_password"
 freeipa_migrate_source_ca_path: "/etc/ipa/ca.crt"   # CA cert path on the source host
 freeipa_migrate_log: "/var/log/ipa-migrate.log"

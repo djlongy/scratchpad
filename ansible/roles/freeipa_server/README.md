@@ -53,14 +53,37 @@ ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags r
 A no-tag run runs everything. Migration is **not** in the default flow — run it
 explicitly via `playbooks/freeipa_migrate.yml`.
 
-## Required inventory variables
+## Credentials — declared vars first, HashiCorp Vault as fallback
+
+Every secret the role needs resolves in this order: **a declared Ansible var
+wins; HashiCorp Vault is only the fallback.** So you can run any part of the role
+with the password supplied directly (group_vars, an Ansible-Vault file, or `-e`)
+and **no HashiCorp Vault at all** — Vault is not every environment. The Vault
+lookup is evaluated lazily, so it never fires when the password is provided.
+
+| Secret | Declared var (wins) | Vault fallback |
+|---|---|---|
+| IPA admin password | `freeipa_server_admin_password` | `freeipa_server_vault_secret` : `admin_password` |
+| Directory Manager password | `freeipa_server_dm_password` | `freeipa_server_vault_secret` : `dm_password` |
+| IDAM admin password | `freeipa_server_admin_password` | `freeipa_idam_vault_secret` : `admin_password` |
+
+Provide **one** column. Either set the password var(s), or set the
+`*_vault_secret` path(s) — the role asserts at least one source exists.
+
+### Minimum to run each phase
+
+| Phase | Minimum vars |
+|---|---|
+| `export` (snapshot a live IPA) | `freeipa_server_admin_password` **or** `freeipa_idam_vault_secret` — nothing else |
+| `idam` (reconcile identity) | admin password (declared or Vault) + the `freeipa_idam_*` data |
+| `install` (build a server) | admin **and** dm password (declared or Vault) + `freeipa_server_forwarders` |
+
+Other inventory variables:
 
 | Variable | Example | Purpose |
 |---|---|---|
 | `domain` | `example.com` | Base domain (in `group_vars/all.yml`); realm derives as upper-case |
-| `freeipa_server_vault_secret` | `kv/data/platform/freeipa/runtime` | Vault path for `admin_password` + `dm_password` |
-| `freeipa_idam_vault_secret` | `kv/data/platform/freeipa/runtime` | Vault path for the IDAM admin password |
-| `freeipa_server_forwarders` | `[10.0.0.1]` | Upstream DNS forwarders for the IPA zone |
+| `freeipa_server_forwarders` | `[10.0.0.1]` | Upstream DNS forwarders for the IPA zone (install) |
 
 Derived automatically (override only to break convention):
 `freeipa_server_domain` (`{{ domain }}`), `freeipa_server_realm`
@@ -213,12 +236,23 @@ reconciliation; managed users removed from config are deleted (except
 Already have a hand-built FreeIPA you'd rather not rebuild? Snapshot its live
 config into this role's declarative contract, then reapply with the role —
 no green-field rebuild. The export is **read-only** (only `*_find`/`*_show`
-via the on-server `ipalib`) and opt-in behind the `export` tag:
+via the on-server `ipalib`) and opt-in behind the `export` tag.
+
+**Minimum to export:** an inventory with the IPA host in the `freeipa` group, and
+**one** credential source — just the admin password, no HashiCorp Vault needed:
 
 ```bash
+# Option A — no HashiCorp Vault: pass the admin password directly.
+# (Best from an Ansible-Vault file: -e @secrets.yml, so it isn't in your shell history.)
+ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml \
+  --tags export \
+  -e freeipa_server_admin_password='<ADMIN_PASSWORD>'
+
+# Option B — fall back to HashiCorp Vault (set freeipa_idam_vault_secret in group_vars):
 ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags export
-# → writes freeipa.config.snapshot.yml on the control node; move it into an
-#   inventory group_vars (rename to taste) to reapply.
+
+# Either way → writes freeipa.config.snapshot.yml on the control node; move it
+# into an inventory group_vars (rename to taste) to reapply.
 ```
 
 It captures users, groups (+ nesting), hostgroups, HBAC rules, sudo commands &

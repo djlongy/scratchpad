@@ -7,12 +7,14 @@
 #
 # Only meaningful when IPA runs integrated DNS (freeipa_server_setup_dns: true).
 
-- name: DNS | Fetch admin password
+- name: DNS | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
     _freeipa_dns_admin_pw: >-
-      {{ lookup('community.hashi_vault.hashi_vault',
-         'secret=' + freeipa_server_vault_secret
-         + ':' + freeipa_server_admin_password_field) }}
+      {{ freeipa_server_admin_password
+         if (freeipa_server_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_server_vault_secret
+            + ':' + freeipa_server_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false
