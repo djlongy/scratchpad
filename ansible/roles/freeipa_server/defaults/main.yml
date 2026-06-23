@@ -138,6 +138,12 @@ freeipa_server_automember_rules: []
 #    inclusive:
 #      - { key: "title", expression: "Contractor" }
 
+# Re-evaluate EXISTING members after a rule changes, so hosts that enrolled BEFORE
+# their rule existed get placed (a newly-enrolling host is placed automatically by
+# IPA at host-create — no rebuild needed). The rebuild runs only when a rule
+# changed this run; set true to force a one-off rebuild on demand.
+freeipa_server_automember_rebuild: false
+
 # ── POSIX ID range / HBAC / homedirs ────────────────────────────────────────
 freeipa_server_idstart: 0                 # 0 → upstream/random default
 freeipa_server_idmax: 0

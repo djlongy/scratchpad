@@ -27,4 +27,22 @@
   loop: "{{ freeipa_server_automember_rules }}"
   loop_control:
     label: "{{ item.automember_type }}:{{ item.name }}"
+  register: _freeipa_automember_result
+  no_log: true
+
+# A host that enrols AFTER its rule exists is placed automatically by the IPA
+# automember plugin at host-create time — no rebuild needed. A rebuild only
+# re-evaluates members that ALREADY existed when a rule was added or changed
+# (e.g. hosts enrolled before the rule). So rebuild per type, but ONLY when a
+# rule actually changed this run (or when forced) — a rebuild is a heavy
+# directory-wide re-evaluation, not something to run every play.
+- name: Automember | Rebuild membership after rule changes
+  freeipa.ansible_freeipa.ipaautomember:
+    ipaadmin_password: "{{ _freeipa_automember_admin_pw }}"
+    automember_type: "{{ item }}"
+    state: rebuilt
+  loop: "{{ freeipa_server_automember_rules | map(attribute='automember_type') | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+  when: (_freeipa_automember_result is changed) or (freeipa_server_automember_rebuild | bool)
   no_log: true

@@ -27,3 +27,61 @@ connection_name: "eth0"
 # freeipa_migrate_source: "freeipa01.old.example.com"   # source IPA FQDN
 # freeipa_migrate_source_host: "old-freeipa01"          # inventory host of the source
 # freeipa_migrate_bind_pw_vault: "kv/data/platform/freeipa/old-runtime"
+
+# ── Host access via automember + HBAC — the "enrol → immediately reachable" pattern ──
+# Hostnames are tenancy-env-service-index (e.g. acme-dev-bastion, acme-qa-worker-1),
+# so a host's FQDN tells us its environment. The flow that solves the enrolment
+# chicken-and-egg WITHOUT chaining freeipa_client → freeipa_server:
+#   1. the env hostgroups exist (freeipa_idam_hostgroups)
+#   2. an AUTOMEMBER rule auto-adds each host to its env hostgroup by FQDN regex
+#   3. an HBAC rule grants the matching user group SSH to that hostgroup
+# A freshly-enrolled host is placed in its hostgroup by IPA at host-create time and
+# is immediately SSH-reachable by its team — no per-host membership lists, and the
+# freeipa_client playbook is all you run for a new workstation. (Hosts enrolled
+# BEFORE a rule existed are re-evaluated when the rule changes, or run once with
+# -e freeipa_server_automember_rebuild=true.)
+#
+# This uses the LOW-LEVEL interface (freeipa_idam_*) so names match the tenancy
+# convention exactly. The role also has a high-level alternative — freeipa_rbac_roles
+# — which auto-generates role-<name>/hosts-<name>/hbac-<name> objects; use that when
+# you want roles bundled, this when you want to name the hostgroup yourself.
+
+freeipa_idam_hostgroups:
+  - name: acme-dev
+    description: "ACME — dev environment hosts"
+  - name: acme-qa
+    description: "ACME — qa environment hosts"
+
+freeipa_server_automember_rules:
+  - name: acme-dev                 # rule name MUST match the target hostgroup
+    automember_type: hostgroup
+    description: "Auto-add ACME dev hosts by FQDN"
+    inclusive:
+      - key: "fqdn"                 # matches acme-dev-bastion, acme-dev-worker-1, …
+        expression: "^acme-dev-"
+  - name: acme-qa
+    automember_type: hostgroup
+    description: "Auto-add ACME qa hosts by FQDN"
+    inclusive:
+      - key: "fqdn"
+        expression: "^acme-qa-"
+
+freeipa_idam_groups:
+  - name: acme-dev-users
+    description: "ACME developers — SSH to dev hosts"
+  - name: acme-qa-users
+    description: "ACME QA engineers — SSH to qa hosts"
+
+freeipa_idam_hbac_rules:
+  - name: acme-dev-ssh
+    description: "Dev users SSH into ACME dev hosts"
+    group: [acme-dev-users]
+    hostgroup: [acme-dev]
+    hbacsvc: [sshd]
+    state: enabled
+  - name: acme-qa-ssh
+    description: "QA users SSH into ACME qa hosts"
+    group: [acme-qa-users]
+    hostgroup: [acme-qa]
+    hbacsvc: [sshd]
+    state: enabled
