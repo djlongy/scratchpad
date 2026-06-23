@@ -64,11 +64,16 @@ if AnsibleDumper is not None and hasattr(AnsibleDumper, "yaml_representers"):
 else:
     # ansible-core 2.20 turned AnsibleDumper into a factory function with no
     # class-level representers (the old grafting raised AttributeError, not
-    # ImportError, so it was not caught above). Fall back to dumping every str
-    # subclass — AnsibleUnsafeText, vaulted text — as a plain string so live API
-    # data still serializes instead of raising RepresenterError.
+    # ImportError, so it was not caught above). 2.20 also wraps filter inputs in
+    # lazy/tagged proxy SUBCLASSES of dict/list/str, which SafeDumper's exact-type
+    # representers miss ("cannot represent an object"). Fall back to representing
+    # each proxy as its plain equivalent so live data still serializes.
     IndentedDumper.add_multi_representer(
         str, lambda dumper, data: dumper.represent_str(str(data)))
+    IndentedDumper.add_multi_representer(
+        dict, lambda dumper, data: dumper.represent_dict(dict(data)))
+    IndentedDumper.add_multi_representer(
+        list, lambda dumper, data: dumper.represent_list(list(data)))
 
 
 class _GappedRenderer:

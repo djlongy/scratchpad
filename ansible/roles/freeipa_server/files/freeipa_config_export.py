@@ -71,7 +71,9 @@ def _many(entry, key):
 
 def _str(entry, key):
     v = _one(entry, key)
-    return None if v is None else (v if isinstance(v, str) else str(v))
+    if v is None:
+        return None
+    return v if isinstance(v, str) else str(v)
 
 
 def _int(entry, key):
@@ -286,6 +288,17 @@ def export_pwpolicies():
     return out
 
 
+def _automember_regex(entry, attr):
+    """Parse FreeIPA automember '<key>=<expr>' regex strings into the role's
+    [{key, expression}] inclusive/exclusive form (skipping malformed entries)."""
+    out = []
+    for raw in _many(entry, attr):
+        key, _, expr = raw.partition("=")
+        if expr:
+            out.append({"key": key, "expression": expr})
+    return out
+
+
 def export_automember_rules():
     out = []
     for atype in ("group", "hostgroup"):
@@ -293,15 +306,8 @@ def export_automember_rules():
             name = _str(e, "cn")
             if not name:
                 continue
-            inclusive, exclusive = [], []
-            for raw in _many(e, "automemberinclusiveregex"):
-                k, _, expr = raw.partition("=")
-                if expr:
-                    inclusive.append({"key": k, "expression": expr})
-            for raw in _many(e, "automemberexclusiveregex"):
-                k, _, expr = raw.partition("=")
-                if expr:
-                    exclusive.append({"key": k, "expression": expr})
+            inclusive = _automember_regex(e, "automemberinclusiveregex")
+            exclusive = _automember_regex(e, "automemberexclusiveregex")
             if not inclusive and not exclusive:
                 continue  # a target group with no regex is not a useful rule
             out.append(_prune({
@@ -457,7 +463,8 @@ def main():
             "source": api.env.host,
             "domain": api.env.domain,
             "realm": api.env.realm,
-            "captured_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "captured_at": datetime.datetime.now(
+                datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "host_membership_included": args.include_host_membership,
             "fallback_group_used": used_fallback,
             "roles_excluded_from_mining": roles_excluded,
