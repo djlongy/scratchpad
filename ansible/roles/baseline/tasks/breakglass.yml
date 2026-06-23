@@ -1,8 +1,14 @@
 ---
-- name: Fetch breakglass password from Vault
+- name: Resolve breakglass password (declared var first, HashiCorp Vault fallback)
   ansible.builtin.set_fact:
-    _breakglass_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=' + baseline_breakglass_vault_secret) }}"
+    _breakglass_password: >-
+      {{ baseline_breakglass_password
+         if (baseline_breakglass_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + baseline_breakglass_vault_secret) }}
   no_log: true
+  delegate_to: localhost
+  become: false
 
 - name: Ensure breakglass local admin account exists
   ansible.builtin.user:

@@ -198,10 +198,14 @@ baseline_kernel_console_loglevel: 4
 # Disable IPv6 via sysctl (reduces fe80:: noise in vSphere, especially on K3s nodes)
 baseline_disable_ipv6: false
 
-# Breakglass emergency local-admin account — Vault secret (mount/path:field)
-# holding its password. ENV-SPECIFIC: set in inventory. Empty = breakglass skipped.
+# Breakglass emergency local-admin account. The password is resolved
+# declared-var-first: set baseline_breakglass_password directly (e.g. from an
+# ansible-vault var) for a portable, HashiCorp-free deployment; otherwise leave it
+# empty and set baseline_breakglass_vault_secret to fall back to a HashiCorp Vault
+# lookup. Breakglass is skipped only when BOTH are empty. ENV-SPECIFIC.
+baseline_breakglass_password: ""         # declared/ansible-vault password (wins when set)
 #   e.g. baseline_breakglass_vault_secret: "kv/data/ops/breakglass/runtime:password"
-baseline_breakglass_vault_secret: ""
+baseline_breakglass_vault_secret: ""     # HashiCorp Vault fallback (mount/path:field)
 
 # Fail2ban (Ubuntu hosts). Append admin/jump IPs in inventory so they're never
 # banned, e.g. baseline_fail2ban_ignoreip: "127.0.0.1/8 ::1 198.51.100.10".

@@ -113,9 +113,35 @@ networks:
     external: true
 ```
 
-Because secrets are created with `rolling_versions: true`, rotating a value in
-Vault yields a new versioned name → a compose diff → swarm rolls the service.
+Because secrets are created with `rolling_versions: true`, rotating a value
+yields a new versioned name → a compose diff → swarm rolls the service.
 Rolling secret rotation is preserved under compose-first.
+
+## Secret resolution — portable, HashiCorp-optional
+
+Each `swarm_stack_secrets` entry resolves its value **declared-value-first**:
+
+1. `value` — supplied directly (e.g. from an ansible-vault var). When set it
+   **wins** and no HashiCorp Vault read happens for that entry.
+2. `vault_path` + `vault_field` — HashiCorp Vault **fallback**, read on the
+   control node only when `value` is unset.
+3. `auto_generate: true` — generate a passphrase and write it to Vault if it is
+   missing there (Vault-backed entries only).
+
+Supply `value` for every secret and the role never invokes the `vault` CLI, so it
+runs on sites without HashiCorp Vault. Mix the two per entry otherwise.
+
+```yaml
+swarm_stack_secrets:
+  # Portable: value from an ansible-vault-encrypted inventory var
+  - name: pg_password
+    value: "{{ vault_pg_password }}"
+  # HashiCorp Vault fallback, auto-generated if absent
+  - name: at_rest_key
+    vault_path: kv/apps/myapp/runtime
+    vault_field: at_rest_key
+    auto_generate: true
+```
 
 ## Hard rule — secrets are consumed via `/run/secrets`
 
@@ -146,7 +172,7 @@ Key inputs:
 |---|---|
 | `swarm_stack_name` | stack name (docker stack name + label) |
 | `swarm_stack_compose_template` | path to the wrapper's `compose.yml.j2` |
-| `swarm_stack_secrets` | list of `{name, vault_path, vault_field, auto_generate}` |
+| `swarm_stack_secrets` | list of `{name, value?, vault_path?, vault_field?, auto_generate?}` — `value` wins, Vault is the fallback |
 | `swarm_stack_configs` | list of `{name, src[, target, mode]}` |
 | `swarm_stack_networks` | list of `{name, encrypted, subnet, …}` |
 | `swarm_stack_volumes` | list of `{name, type: volume\|bind\|tmpfs, …}` |

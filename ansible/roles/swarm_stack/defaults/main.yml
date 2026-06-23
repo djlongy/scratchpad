@@ -92,21 +92,29 @@ swarm_stack_networks: []
 #     src:  absolute path to the template file
 swarm_stack_configs: []
 
-# ── Docker secrets (Vault-backed) ─────────────────────────────────────
-# Each value is read from Vault on the control node, then created via
+# ── Docker secrets (declared value, or HashiCorp Vault-backed) ────────
+# Each value is resolved declared-value-first, then created via
 # community.docker.docker_secret (rolling_versions=true). Resolved name
 # lands in secret_names[name] for the compose template. The plaintext
 # value is NEVER retained — see the /run/secrets hard rule above.
-#   - name:           logical key
+#   - name:           logical key (required)
+#     value:          the secret value supplied directly (e.g. from an
+#                     ansible-vault var). When set it WINS and no HashiCorp
+#                     Vault read happens for this entry — this is the
+#                     portable, HashiCorp-free path.
 #     vault_path:     full KV path, e.g. kv/apps/mattermost/runtime
-#     vault_field:    field within that path
+#                     (HashiCorp Vault FALLBACK — used only when `value` is unset)
+#     vault_field:    field within that path (with vault_path)
 #     auto_generate:  true → generate passphrase + write to Vault if missing
-#                     false → fail if missing (caller must seed it)
+#                     false → fail if missing (caller must seed it or set `value`)
+# Supply `value` for every secret to run with no HashiCorp Vault at all; mix
+# the two freely per entry otherwise.
 swarm_stack_secrets: []
 
-# Vault address the control node uses to read/write the declared secrets.
-# Defaults to the VAULT_ADDR in the operator's environment, falling back to
-# a placeholder — set this in inventory (or export VAULT_ADDR) for your site.
+# Vault address the control node uses to read/write Vault-backed secrets. Only
+# consulted for entries that omit `value`; irrelevant when every secret declares
+# a value. Defaults to the VAULT_ADDR in the operator's environment, falling back
+# to a placeholder — set this in inventory (or export VAULT_ADDR) for your site.
 swarm_stack_vault_addr: "{{ lookup('ansible.builtin.env', 'VAULT_ADDR') | default('https://vault.example.com:8200', true) }}"
 
 # Number of old hashed secret/config versions to retain for rollback.

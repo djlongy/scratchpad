@@ -240,7 +240,7 @@
     file: breakglass.yml
     apply:
       tags: [baseline, breakglass]
-  when: baseline_breakglass_vault_secret | length > 0
+  when: (baseline_breakglass_password | length > 0) or (baseline_breakglass_vault_secret | length > 0)
   tags: [baseline, breakglass]
 
 # ── Observability / security agents (separate roles, gated by enable_*) ──────

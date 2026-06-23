@@ -37,7 +37,10 @@ argument_specs:
         elements: dict
         default: []
         description: >-
-          List of {name, vault_path, vault_field, auto_generate}. Created as
+          List of {name, value?, vault_path?, vault_field?, auto_generate?}.
+          Value is resolved declared-value-first (`value`, e.g. an ansible-vault
+          var) with a HashiCorp Vault read (vault_path:vault_field) as fallback,
+          so the role is portable to sites without HashiCorp Vault. Created as
           external rolling-version docker secrets; resolved versioned name is
           exposed to the compose template as secret_names[<name>].
       swarm_stack_configs:

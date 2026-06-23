@@ -41,6 +41,22 @@
     swarm_stack_network_names: {}
   tags: [always]
 
+# Each secret must resolve from somewhere: a declared `value` (portable,
+# HashiCorp-free) or a `vault_path` for the HashiCorp Vault fallback.
+- name: Validate each secret declares a value or a vault_path
+  ansible.builtin.assert:
+    that:
+      - (item.value is defined) or (item.vault_path | default('') | length > 0)
+    fail_msg: >-
+      swarm_stack_secrets entry '{{ item.name | default('?') }}' must supply
+      either `value` (e.g. from an ansible-vault var) or `vault_path` for the
+      HashiCorp Vault fallback.
+  loop: "{{ swarm_stack_secrets }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+  no_log: true
+  tags: [always]
+
 # Classify volume entries by mount type. Untyped entries default to
 # 'volume' (NFS-backed local-driver) for back-compat with wrappers
 # written before the type field existed. The volumes.yml phase loops on
