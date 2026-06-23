@@ -1,0 +1,9 @@
+---
+- name: Open NFS firewalld services
+  ansible.posix.firewalld:
+    zone: public
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ nfs_server_effective_firewalld_services }}"

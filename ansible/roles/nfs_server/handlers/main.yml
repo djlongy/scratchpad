@@ -1,7 +1,8 @@
 ---
-- name: Reload NFS exports
+- name: Reload nfs exports
   ansible.builtin.command: exportfs -ra
   changed_when: true
+  listen: Reload nfs exports
   when: nfs_server_manage_service | bool
 
 - name: Restart nfs idmapd

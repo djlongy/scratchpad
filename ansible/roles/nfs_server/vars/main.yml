@@ -5,3 +5,14 @@
 nfs_server_idmapd_domain: >-
   {{ nfs_server_realm_domain
      | default(domain | default(ansible_domain | default('localdomain'), true), true) }}
+
+# sec= and client spec for the generated per-user/shared exports.
+nfs_server_generated_sec: "{{ 'krb5p' if nfs_server_kerberos | bool else 'sys' }}"
+nfs_server_generated_client: "{{ '*' if nfs_server_kerberos | bool else nfs_server_allowed_cidr }}"
+
+# Effective package + firewall lists (v4-only drops rpcbind / v3 services).
+nfs_server_effective_packages: >-
+  {{ nfs_server_packages | reject('equalto', 'rpcbind') | list
+     if nfs_server_v4_only | bool else nfs_server_packages }}
+nfs_server_effective_firewalld_services: >-
+  {{ ['nfs'] if nfs_server_v4_only | bool else nfs_server_firewalld_services }}

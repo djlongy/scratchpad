@@ -1,0 +1,11 @@
+{# Managed by nfs_server role — do not edit manually.
+   Three sources: generic exports, per-user storage, shared storage. #}
+{% for e in nfs_server_exports %}
+{{ e.path }} {{ nfs_server_allowed_cidr }}({{ e.options }})
+{% endfor %}
+{% for u in nfs_server_users %}
+{{ nfs_server_export_base }}/users/{{ u.name }} {{ nfs_server_generated_client }}({{ nfs_server_export_options_default }},sec={{ nfs_server_generated_sec }})
+{% endfor %}
+{% for s in nfs_server_shares %}
+{{ nfs_server_export_base }}/share/{{ s.name }} {{ nfs_server_generated_client }}({{ nfs_server_export_options_default }},sec={{ nfs_server_generated_sec }})
+{% endfor %}

@@ -1,20 +1,53 @@
 ---
-# roles/nfs_server/tasks/main.yml — dispatch only. Shared plumbing (install,
-# provision) always runs; exactly one security path runs based on the toggle.
-- name: Install and configure the NFS server
-  ansible.builtin.import_tasks: install.yml
-  tags: [nfs_server, install]
+# roles/nfs_server/tasks/main.yml
+#
+# Phase dispatch (tags let callers run a subset; a no-tag run runs everything):
+#   --tags install    Packages + start nfs-server (+ v4-only / idmapd / SELinux)
+#   --tags firewall   Open NFS firewalld services
+#   --tags storage    Bind mount + generic/per-user/shared export dirs
+#   --tags exports    Render /etc/exports + reload
 
-- name: Provision per-user and shared export directories
-  ansible.builtin.import_tasks: provision.yml
-  tags: [nfs_server, provision]
+- name: Skip nfs_server (nfs_server_enabled is false)
+  ansible.builtin.debug:
+    msg: "nfs_server_enabled is false — skipping role"
+  when: not (nfs_server_enabled | bool)
+  tags: [always]
 
-- name: Configure Kerberized exports (sec=krb5p)
-  ansible.builtin.import_tasks: export_kerberos.yml
-  when: nfs_server_kerberos | bool
-  tags: [nfs_server, export]
+- name: Configure NFS server
+  when: nfs_server_enabled | bool
+  block:
 
-- name: Configure host-trust exports (sec=sys)
-  ansible.builtin.import_tasks: export_sys.yml
-  when: not (nfs_server_kerberos | bool)
-  tags: [nfs_server, export]
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - nfs_server_export_base | length > 0
+          - (nfs_server_allowed_cidr | length > 0) or _nfs_no_sys_exports
+        fail_msg: >-
+          nfs_server_allowed_cidr is required whenever a sec=sys export exists
+          (generic nfs_server_exports, or per-user/shared while nfs_server_kerberos
+          is false). Set it in inventory, or use Kerberos with only user/share
+          exports.
+      vars:
+        _nfs_no_sys_exports: >-
+          {{ (nfs_server_exports | length == 0)
+             and ((nfs_server_kerberos | bool)
+                  or ((nfs_server_users | length == 0)
+                      and (nfs_server_shares | length == 0))) }}
+      tags: [always]
+
+    - name: Install NFS server packages
+      ansible.builtin.import_tasks: install.yml
+      tags: [install]
+
+    - name: Open NFS firewall ports
+      ansible.builtin.import_tasks: firewall.yml
+      when: nfs_server_manage_firewall | bool
+      tags: [firewall, install]
+
+    - name: Ensure storage layout (bind mount + export directories)
+      ansible.builtin.import_tasks: storage.yml
+      tags: [storage, install]
+
+    - name: Render /etc/exports
+      ansible.builtin.import_tasks: exports.yml
+      tags: [exports, configure]

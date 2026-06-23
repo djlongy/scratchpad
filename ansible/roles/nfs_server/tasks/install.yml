@@ -1,11 +1,11 @@
 ---
-# roles/nfs_server/tasks/install.yml — universal NFS plumbing (both security modes).
-- name: Install NFS server package
+# roles/nfs_server/tasks/install.yml — packages, service, protocol, idmapd, SELinux.
+- name: Install NFS server packages
   ansible.builtin.package:
-    name: "{{ 'nfs-utils' if ansible_os_family == 'RedHat' else 'nfs-kernel-server' }}"
+    name: "{{ nfs_server_effective_packages }}"
     state: present
 
-- name: Force NFSv4-only (disable v3 → firewall surface is just tcp/2049)
+- name: Configure NFSv4-only (disable v3) when requested
   community.general.ini_file:
     path: /etc/nfs.conf
     section: nfsd
@@ -18,7 +18,19 @@
     - {opt: vers4, val: "y"}
   loop_control:
     label: "{{ item.opt }}={{ item.val }}"
-  notify: Reload NFS exports
+  when: nfs_server_v4_only | bool
+  notify: Reload nfs exports
+
+- name: Set the NFSv4 idmapd domain (Kerberos; must match clients)
+  community.general.ini_file:
+    path: /etc/idmapd.conf
+    section: General
+    option: Domain
+    value: "{{ nfs_server_idmapd_domain }}"
+    mode: "0644"
+    no_extra_spaces: false
+  when: nfs_server_kerberos | bool
+  notify: Restart nfs idmapd
 
 - name: Allow NFS exports under SELinux
   ansible.posix.seboolean:
@@ -32,19 +44,10 @@
     - nfs_server_manage_selinux | bool
     - ansible_selinux.status | default('disabled') == 'enabled'
 
-- name: Open the NFS firewall port (NFSv4, tcp/2049)
-  ansible.posix.firewalld:
-    service: nfs
-    permanent: true
-    immediate: true
-    state: enabled
-  when:
-    - nfs_server_manage_firewall | bool
-    - ansible_os_family == 'RedHat'
-
-- name: Enable and start the NFS server
-  ansible.builtin.service:
-    name: "{{ 'nfs-server' if ansible_os_family == 'RedHat' else 'nfs-kernel-server' }}"
-    enabled: true
+- name: Enable and start nfs-server
+  ansible.builtin.systemd:
+    name: nfs-server
     state: started
+    enabled: true
+    daemon_reload: true
   when: nfs_server_manage_service | bool

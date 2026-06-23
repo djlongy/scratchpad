@@ -1,52 +1,87 @@
 ---
 argument_specs:
   main:
-    short_description: Dedicated NFS storage server (per-user + shared exports, krb5p|sys).
+    short_description: One NFS server role — generic exports + per-user/shared storage (sys|krb5p).
     description:
-      - Exports a /srv/nfs tree. Per-user dirs are private (0700); shared dirs are
-        setgid (2770). Security is selected by nfs_server_kerberos and dispatched
-        to mutually-exclusive task files.
+      - A dual-purpose NFS server. Renders /etc/exports from three list-driven
+        sources that compose freely - generic exports (e.g. docker_swarm app
+        data), per-user private storage, and shared/group storage. Per-user and
+        shared exports can be sec=sys or sec=krb5p via nfs_server_kerberos.
     options:
-      nfs_server_kerberos:
+      nfs_server_enabled:
         type: bool
         default: true
-        description: true → sec=krb5p (FreeIPA-enrolled host); false → sec=sys (subnet trust).
-      nfs_server_base:
+        description: Master switch; false skips the whole role.
+      nfs_server_export_base:
         type: str
         default: /srv/nfs
-        description: Export root directory (FHS — data served by this system).
-      nfs_server_users:
-        type: list
-        elements: dict
-        default: []
-        description: "Per-user private exports: [{name: <user>}]. Dir 0700 owned <user>:<user>."
-      nfs_server_shares:
-        type: list
-        elements: dict
-        default: []
-        description: "Shared exports: [{name: <share>, group: <grp>, mode: '2770'}]. Dir setgid owned root:<grp>."
-      nfs_server_sys_networks:
-        type: list
-        elements: str
-        default: []
-        description: sec=sys ONLY — allowed client CIDRs. Required when nfs_server_kerberos=false.
-      nfs_server_export_options:
+        description: Canonical export root (what clients reference).
+      nfs_server_bind_mount_enabled:
+        type: bool
+        default: false
+        description: Bind-mount nfs_server_storage_path → nfs_server_export_base (storage on a data disk).
+      nfs_server_storage_path:
         type: str
-        default: "rw,soft,no_subtree_check,root_squash"
-        description: Base export options; the security suffix (sec=...) is added per mode.
-      nfs_server_manage_service:
+        default: /opt/nfs
+        description: Real storage path (used when bind_mount_enabled).
+      nfs_server_allowed_cidr:
+        type: str
+        default: ""
+        description: sec=sys client ACL. Required when any sec=sys export exists.
+      nfs_server_kerberos:
         type: bool
-        default: true
-        description: Enable/start nfs-server and run exportfs. Disable in containers/CI.
-      nfs_server_manage_firewall:
-        type: bool
-        default: true
-        description: Open tcp/2049 via firewalld (EL).
-      nfs_server_manage_selinux:
-        type: bool
-        default: true
-        description: Set nfs_export_all_* SELinux booleans (EL).
+        default: false
+        description: Per-user/shared exports use sec=krb5p (true) or sec=sys (false). Generic exports unaffected.
       nfs_server_realm_domain:
         type: str
         required: false
         description: NFSv4 idmapd Domain (krb5p). Defaults to the global `domain`.
+      nfs_server_v4_only:
+        type: bool
+        default: false
+        description: Disable v3/rpcbind and trim the firewall to nfs only.
+      nfs_server_exports:
+        type: list
+        elements: dict
+        default: []
+        description: "Generic exports: [{path, options, mode?, owner?, group?}]. Rendered <path> <cidr>(<options>)."
+      nfs_server_users:
+        type: list
+        elements: dict
+        default: []
+        description: "Per-user private storage: [{name}] → <base>/users/<name> (0700, owned <name>:<name>)."
+      nfs_server_shares:
+        type: list
+        elements: dict
+        default: []
+        description: "Shared storage: [{name, group, mode?}] → <base>/share/<name> (2770 setgid, owned root:<group>)."
+      nfs_server_export_dir_mode:
+        type: str
+        default: "0755"
+        description: Default mode for generic export directories.
+      nfs_server_export_options_default:
+        type: str
+        default: "rw,sync,no_subtree_check"
+        description: Export options for generated per-user/shared lines (sec= appended).
+      nfs_server_packages:
+        type: list
+        elements: str
+        default: [nfs-utils, rpcbind]
+        description: Packages to install (rpcbind auto-dropped when v4_only).
+      nfs_server_firewalld_services:
+        type: list
+        elements: str
+        default: [nfs, rpc-bind, mountd]
+        description: firewalld services to open (trimmed to [nfs] when v4_only).
+      nfs_server_manage_firewall:
+        type: bool
+        default: true
+        description: Open firewalld services.
+      nfs_server_manage_selinux:
+        type: bool
+        default: true
+        description: Set nfs_export_all_* SELinux booleans (EL).
+      nfs_server_manage_service:
+        type: bool
+        default: true
+        description: Enable/start nfs-server and run exportfs. Disable in containers/CI.

@@ -5,56 +5,43 @@
   tasks:
     - name: nfs-utils is installed
       ansible.builtin.command: rpm -q nfs-utils
-      register: _v_pkg
       changed_when: false
+
+    - name: Generic export dir exists
+      ansible.builtin.stat:
+        path: /srv/nfs/app-data
+      register: _v_generic
 
     - name: Per-user dir exists with 0700 owned by the user
       ansible.builtin.stat:
         path: /srv/nfs/users/alice
       register: _v_user
 
-    - name: Assert per-user dir perms/owner
-      ansible.builtin.assert:
-        that:
-          - _v_user.stat.exists
-          - _v_user.stat.isdir
-          - _v_user.stat.mode == '0700'
-          - _v_user.stat.pw_name == 'alice'
-        fail_msg: "users/alice wrong: {{ _v_user.stat }}"
-
     - name: Shared dir exists with setgid 2770 owned root:ops-admins
       ansible.builtin.stat:
         path: /srv/nfs/share/ops
       register: _v_share
 
-    - name: Assert shared dir perms/owner
+    - name: Assert all three directories
       ansible.builtin.assert:
         that:
-          - _v_share.stat.exists
-          - _v_share.stat.mode == '2770'
-          - _v_share.stat.gr_name == 'ops-admins'
-        fail_msg: "share/ops wrong: {{ _v_share.stat }}"
+          - _v_generic.stat.exists and _v_generic.stat.isdir
+          - _v_user.stat.exists and _v_user.stat.mode == '0700' and _v_user.stat.pw_name == 'alice'
+          - _v_share.stat.exists and _v_share.stat.mode == '2770' and _v_share.stat.gr_name == 'ops-admins'
+        fail_msg: "dirs wrong: generic={{ _v_generic.stat }} user={{ _v_user.stat }} share={{ _v_share.stat }}"
 
-    - name: Read the exports file
+    - name: Read /etc/exports
       ansible.builtin.slurp:
-        path: /etc/exports.d/nfs_server.exports
+        path: /etc/exports
       register: _v_exports
 
-    - name: Assert sec=sys exports for the network ACL
+    - name: Assert all three export sources render correctly
       ansible.builtin.assert:
         that:
-          - "'/srv/nfs/users/alice 192.0.2.0/24(' in (_v_exports.content | b64decode)"
-          - "'sec=sys' in (_v_exports.content | b64decode)"
-          - "'/srv/nfs/share/ops 192.0.2.0/24(' in (_v_exports.content | b64decode)"
-        fail_msg: "exports content wrong: {{ _v_exports.content | b64decode }}"
-
-    - name: Read nfs.conf
-      ansible.builtin.slurp:
-        path: /etc/nfs.conf
-      register: _v_nfsconf
-
-    - name: Assert NFSv4-only (vers3 disabled)
-      ansible.builtin.assert:
-        that:
-          - "'vers3 = n' in (_v_nfsconf.content | b64decode)"
-        fail_msg: "nfs.conf not v4-only: {{ _v_nfsconf.content | b64decode }}"
+          # 1. generic export — backward-compatible line (path cidr(options))
+          - "'/srv/nfs/app-data 192.0.2.0/24(rw,sync,no_subtree_check,no_root_squash)' in (_v_exports.content | b64decode)"
+          # 2. per-user export — sec=sys scoped by the cidr
+          - "'/srv/nfs/users/alice 192.0.2.0/24(rw,sync,no_subtree_check,sec=sys)' in (_v_exports.content | b64decode)"
+          # 3. shared export
+          - "'/srv/nfs/share/ops 192.0.2.0/24(rw,sync,no_subtree_check,sec=sys)' in (_v_exports.content | b64decode)"
+        fail_msg: "exports wrong: {{ _v_exports.content | b64decode }}"

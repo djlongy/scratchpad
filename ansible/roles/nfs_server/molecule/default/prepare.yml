@@ -13,3 +13,9 @@
         name: alice
         state: present
         create_home: false
+
+    - name: Ensure the generic-export parent dir's disk path is writable
+      ansible.builtin.file:
+        path: /srv/nfs
+        state: directory
+        mode: "0755"

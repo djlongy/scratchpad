@@ -1,4 +1,7 @@
 ---
+# Exercises all three export sources at once in sec=sys mode: a generic export
+# (backward-compat path), a per-user dir, and a shared dir. Service + firewall +
+# selinux management off (container can't run nfsd / firewalld).
 - name: Converge
   hosts: all
   become: false
@@ -7,7 +10,9 @@
     nfs_server_manage_service: false
     nfs_server_manage_firewall: false
     nfs_server_manage_selinux: false
-    nfs_server_sys_networks: ["192.0.2.0/24"]
+    nfs_server_allowed_cidr: "192.0.2.0/24"
+    nfs_server_exports:
+      - {path: /srv/nfs/app-data, options: "rw,sync,no_subtree_check,no_root_squash"}
     nfs_server_users:
       - {name: alice}
     nfs_server_shares:

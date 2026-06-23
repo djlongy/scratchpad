@@ -1,0 +1,70 @@
+---
+# roles/nfs_server/tasks/storage.yml — bind mount + every export directory.
+
+- name: Ensure export base directory exists
+  ansible.builtin.file:
+    path: "{{ nfs_server_export_base }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure underlying storage path exists (bind-mount source)
+  ansible.builtin.file:
+    path: "{{ nfs_server_storage_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: nfs_server_bind_mount_enabled | bool
+
+- name: Bind-mount storage path to export base
+  ansible.posix.mount:
+    src: "{{ nfs_server_storage_path }}"
+    path: "{{ nfs_server_export_base }}"
+    fstype: none
+    opts: bind,nofail
+    state: mounted
+  when: nfs_server_bind_mount_enabled | bool
+
+- name: Ensure each generic export directory exists
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode | default(nfs_server_export_dir_mode) }}"
+  loop: "{{ nfs_server_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Ensure users/share parent directories exist
+  ansible.builtin.file:
+    path: "{{ nfs_server_export_base }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ (['users'] if nfs_server_users | length > 0 else []) + (['share'] if nfs_server_shares | length > 0 else []) }}"
+
+- name: Ensure per-user export directories exist (private)
+  ansible.builtin.file:
+    path: "{{ nfs_server_export_base }}/users/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ nfs_server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ensure shared/group export directories exist (setgid)
+  ansible.builtin.file:
+    path: "{{ nfs_server_export_base }}/share/{{ item.name }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode | default('2770') }}"
+  loop: "{{ nfs_server_shares }}"
+  loop_control:
+    label: "{{ item.name }}"
