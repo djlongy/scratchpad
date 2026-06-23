@@ -1,0 +1,16 @@
+---
+# Configure dedicated NFS storage hosts in the `nfs_servers` group. Enrols them in
+# FreeIPA first (needed for sec=krb5p host keytab), then exports the /srv/nfs tree.
+# Block-device provisioning for /srv is handled separately by the `storage` role.
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/nfs_server.yml
+
+- name: Configure NFS storage servers
+  hosts: nfs_servers
+  gather_facts: true
+  become: true
+  become_user: root
+  become_method: ansible.builtin.sudo
+  roles:
+    - role: freeipa_client
+    - role: nfs_server
