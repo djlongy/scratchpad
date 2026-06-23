@@ -246,6 +246,26 @@ freeipa_server_export_role_exclude:
 # A co-occurrence bundle becomes a role only with at least this many groups;
 # smaller bundles stay as direct groups (no 1-group "roles").
 freeipa_server_export_role_min_groups: 2
+# Stock HBAC services that ship with FreeIPA — skipped by the export (only CUSTOM
+# services are captured). APPEND to this list if a newer FreeIPA version ships
+# additional stock services, so they aren't mis-captured as custom.
+freeipa_server_export_hbacsvc_stock:
+  - crond
+  - ftp
+  - gdm
+  - gdm-password
+  - gssftp
+  - kdm
+  - login
+  - proftpd
+  - pure-ftpd
+  - sshd
+  - su
+  - su-l
+  - sudo
+  - sudo-i
+  - systemd-user
+  - vsftpd
 
 # ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
 # Runs ipa-migrate ON this (new-realm) primary, pulling identities from a source

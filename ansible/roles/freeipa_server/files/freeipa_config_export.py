@@ -32,9 +32,11 @@ GROUP_DENYLIST = {"ipausers", "idam-managed-users"}
 # pwpolicy owned by FreeIPA itself.
 PWPOLICY_DENYLIST = {"global_policy"}
 DEFAULT_FALLBACK_GROUP = "ipausers"  # only used if a user has no other group
-# Stock FreeIPA HBAC services — shipped on every server, so they are excluded
-# from the snapshot. Only CUSTOM services are captured (and later seeded on a
-# fresh server before HBAC rule memberships that reference them).
+# Built-in fallback set of stock FreeIPA HBAC services — shipped on every server,
+# so they are excluded from the snapshot (only CUSTOM services are captured, then
+# seeded on a fresh server before the HBAC rule memberships that reference them).
+# Overridable via --stock-hbacsvc (the role exposes freeipa_server_export_hbacsvc_stock)
+# so a newer FreeIPA that ships extra stock services can extend it without code edits.
 DEFAULT_HBACSVCS = {
     "crond", "ftp", "gdm", "gdm-password", "gssftp", "kdm", "login", "proftpd",
     "pure-ftpd", "sshd", "su", "su-l", "sudo", "sudo-i", "systemd-user", "vsftpd",
@@ -193,12 +195,14 @@ def export_hbac_rules():
     return out
 
 
-def export_hbacsvcs():
-    """Custom HBAC services only — the stock services already exist everywhere."""
+def export_hbacsvcs(stock):
+    """Custom HBAC services only — services named in `stock` already exist on a
+    fresh server, so they are skipped. `stock` is caller-supplied (default the
+    built-in set) so newer FreeIPA versions can extend it without code changes."""
     out = []
     for e in _find("hbacsvc_find"):
         name = _str(e, "cn")
-        if not name or name in DEFAULT_HBACSVCS:
+        if not name or name in stock:
             continue
         out.append(_prune({"name": name, "description": _str(e, "description")}))
     return out
@@ -393,7 +397,14 @@ def main():
     ap.add_argument("--role-min-groups", type=int, default=2, metavar="N",
                     help="a co-occurrence bundle becomes a role only with >= N "
                          "groups; smaller bundles stay direct (default: 2)")
+    ap.add_argument("--stock-hbacsvc", default=None, metavar="JSON",
+                    help="JSON array of stock HBAC service names to skip (already "
+                         "exist on a fresh server); extend it for newer FreeIPA "
+                         "versions (default: the built-in set)")
     args = ap.parse_args()
+
+    stock_hbacsvc = (set(json.loads(args.stock_hbacsvc))
+                     if args.stock_hbacsvc else DEFAULT_HBACSVCS)
 
     api.bootstrap(context="cli", log=None)
     api.finalize()
@@ -433,7 +444,7 @@ def main():
         "freeipa_idam_roles": roles,
         "freeipa_idam_users": users,
         "freeipa_idam_hostgroups": export_hostgroups(args.include_host_membership),
-        "freeipa_idam_hbacsvcs": export_hbacsvcs(),
+        "freeipa_idam_hbacsvcs": export_hbacsvcs(stock_hbacsvc),
         "freeipa_idam_hbac_rules": export_hbac_rules(),
         "freeipa_idam_sudo_commands": export_sudo_commands(),
         "freeipa_idam_sudo_rules": export_sudo_rules(),

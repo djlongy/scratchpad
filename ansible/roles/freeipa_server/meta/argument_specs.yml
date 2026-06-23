@@ -136,6 +136,11 @@ argument_specs:
         type: int
         required: false
         description: Export task — minimum groups in a co-occurrence bundle for it to become a role (default 2); smaller bundles stay as direct groups.
+      freeipa_server_export_hbacsvc_stock:
+        type: list
+        elements: str
+        required: false
+        description: Export task — stock HBAC service names skipped during capture (only custom services are exported). Append to it for newer FreeIPA versions that ship extra stock services.
       freeipa_server_setup_adtrust:
         type: bool
         required: false
