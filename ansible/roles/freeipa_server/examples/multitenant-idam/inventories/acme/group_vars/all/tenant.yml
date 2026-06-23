@@ -1,35 +1,31 @@
 ---
-# inventories/acme/ — this whole directory IS team ACME's inventory (its host in
-# hosts.yml + this data). It references no other team, and no other team references
-# it. Run it:
-#   ansible-playbook -i inventories/acme site.yml --tags idam
+# inventories/acme/ — team ACME's inventory (its host in hosts.yml + this data).
+# Run it:  ansible-playbook -i inventories/acme site.yml --tags idam
 #
 # The var is named tenant_acme_spec (not tenant_spec) so a union/audit run can load
-# several tenants at once without them colliding — see group_vars/all/10_generate.yml.
-# `tiers:` is optional — omit to inherit identity_access_tiers (admin/operator/viewer).
+# several tenants at once without colliding — see group_vars/all/10_generate.yml.
+# access_levels is optional — omit to inherit identity_access_levels (access/priv-access).
 tenant_acme_spec:
   code: acme
-  apps:
+  services:
     - payments
     - ledger
 
-  # LAYER 2 — personas: a role bundles several (app, tier) groups. Name becomes
+  # LAYER 2 — personas: a role bundles several (service, level) groups. Name becomes
   # "role-acme-<persona>"; users reference it instead of listing many groups.
   roles:
-    - name: developer            # -> role-acme-developer
-      grants:
-        - {app: payments, tier: operator}
-        - {app: ledger, tier: viewer}
     - name: lead                 # -> role-acme-lead
       grants:
-        - {app: payments, tier: admin}
-        - {app: ledger, tier: admin}
+        - {service: payments, level: priv-access}
+        - {service: ledger, level: priv-access}
 
-  # LAYER 3 — members reference the SHORT persona name; the generator adds role-.
-  #   ann.lee -> role-acme-lead       (acme-payments-admin + acme-ledger-admin)
-  #   bo.ng   -> role-acme-developer  (acme-payments-operator + acme-ledger-viewer)
-  #   cj.park -> direct group only    (acme-payments-viewer) — no role
+  # LAYER 3 — members. username defaults to <first>.<last> lowercased (override with
+  # `name:`); email is <username>@<domain>. Assign roles, and/or a direct group via
+  # {service|services, level}.
+  #   Ann Lee -> ann.lee, role-acme-lead       (acme-prod-payments-priv-access + ledger)
+  #   Bo Ng   -> bo.ng,   direct access        (acme-prod-ledger-access)
+  #   CJ Park -> cj.park, direct access on two services
   members:
-    - {name: ann.lee, first: Ann, last: Lee, roles: [lead]}
-    - {name: bo.ng, first: Bo, last: Ng, roles: [developer]}
-    - {name: cj.park, first: CJ, last: Park, app: payments, tier: viewer}
+    - {first: Ann, last: Lee, roles: [lead]}
+    - {first: Bo, last: Ng, service: ledger, level: access}
+    - {first: CJ, last: Park, services: [payments, ledger], level: access}

@@ -1,37 +1,34 @@
 ---
 # group_vars/all/00_naming.yml — ENVIRONMENT-AGNOSTIC naming inputs only.
 #
-# This sits next to the PLAYBOOK (site.yml), so Ansible auto-loads it on every run
-# WITHOUT it being named as an inventory. CRUCIAL CONSEQUENCE: playbook group_vars/all
-# OUTRANKS inventory group_vars/all in Ansible's precedence — so anything here CANNOT
-# be overridden by an inventory's group_vars/all. Therefore ONLY put values that are
-# the same in every environment here. Environment-specific values (env, domain) live
-# in each tenant inventory (inventories/<tenant>/group_vars/all/), NOT here — putting
-# `env: prod` here would force prod onto a test inventory.
+# This sits next to the PLAYBOOK (site.yml), so Ansible auto-loads it on every run.
+# CRUCIAL: playbook group_vars/all OUTRANKS inventory group_vars/all in precedence,
+# so anything here CANNOT be overridden by an inventory. Put ONLY values identical
+# across every environment here. Environment-specific values (env, domain) live in
+# each tenant inventory (inventories/<tenant>/group_vars/all/00_env.yml), NOT here.
 #
-# The only thing CONSUMED from this file is `identity_access_tiers` (read by
-# 10_generate.yml). The naming PATTERNS are documented in the comment block below;
-# the live source of truth that actually builds the names is the generator in
-# 10_generate.yml (it encodes both which fields combine AND their format, so the
-# pattern can't be pure data). env/domain are read by the freeipa_server role and
-# are supplied per-inventory.
+# The only thing CONSUMED from this file is `identity_access_levels` (read by
+# 10_generate.yml). The naming PATTERNS below are documentation; the live source of
+# truth that builds the names is the generator in 10_generate.yml.
 #
 # ── Naming patterns (documented convention — generators in 10_generate.yml) ───
-#   group       <tenant>-<app>-<tier>              acme-payments-admin
-#   role        role-<tenant>-<persona>            role-acme-developer  (bundle of groups)
-#   hostgroup   <tenant>-<app>                      acme-payments
-#   host FQDN   <env>-<tenant>-<app>-<NN>.<domain>  prod-acme-payments-01.example.com
-#   service URL <app>.<tenant>.<env>.<domain>       payments.acme.prod.example.com
+#   group       <tenant>-<env>-<service>-<level>      acme-prod-payments-access
+#                                                      acme-prod-payments-priv-access
+#   role        role-<tenant>-<persona>               role-acme-lead   (bundle of groups)
+#   hostgroup   <tenant>-<env>-<service>              acme-prod-payments
+#   host FQDN   <env>-<tenant>-<service>-<NN>.<domain> prod-acme-payments-01.example.com
+#   service URL <service>.<tenant>.<env>.<domain>     payments.acme.prod.example.com
 #
-# Type marker: roles are prefixed `role-` so the FIRST token tells you the kind —
-# scan any list and `role-*` = a role, everything else = a plain permission group,
-# without parsing segments to guess whether `admin` is an app tier or a role.
-# (`role-*` also matches the export tool's default exclude, so roles are never
-# re-mined into groups.) Permission groups keep the plain <tenant>-<app>-<tier> name.
+# The ACCESS LEVEL suffix is the point: `-access` = normal entitlement,
+# `-priv-access` = privileged. The suffix tells you what a group is FOR at a glance,
+# and `role-*` marks a persona bundle. (`role-*` also matches the export tool's
+# default exclude, so roles are never re-mined into groups.)
 #
-# (If you change a pattern, change it in 10_generate.yml — that is where the names
-# are actually built. This comment is the human reference for that code.)
+# This matches the inline form teams usually type by hand —
+#   {{ tenancy }}-{{ env }}-{{ service }}-access / -priv-access
+# except the pattern lives in ONE place (the generator) instead of being repeated
+# in every task, and a typo fails fast via the reference index (see 10_generate.yml).
 
-# Access tiers a tenant gets per app unless its spec overrides `tiers:`. These are
-# the ATOMIC permission groups; roles (personas) bundle them.
-identity_access_tiers: [admin, operator, viewer]
+# The access levels each service gets unless a tenant overrides `access_levels:`.
+# Two by default: normal `access` and privileged `priv-access`. Extend per policy.
+identity_access_levels: [access, priv-access]

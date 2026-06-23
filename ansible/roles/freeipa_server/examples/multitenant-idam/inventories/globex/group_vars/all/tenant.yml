@@ -1,22 +1,20 @@
 ---
 # inventories/globex/ — team GLOBEX's inventory (its host in hosts.yml + this data).
-# Run it:   ansible-playbook -i inventories/globex site.yml --tags idam
-# GLOBEX narrows its own tiers (no `operator`) and has a single app — a per-tenant
-# override that still flows through the shared convention.
+# Run it:  ansible-playbook -i inventories/globex site.yml --tags idam
+# GLOBEX has a single service and overrides access_levels to regular `access` only
+# (no privileged tier) — a per-tenant override that still flows through the shared
+# convention.
 tenant_globex_spec:
   code: globex
-  apps:
+  services:
     - search
-  tiers: [admin, viewer]          # overrides identity_access_tiers for this tenant
+  access_levels: [access]          # regular access only — no priv-access for this tenant
 
   roles:
-    - name: analyst               # -> role-globex-analyst
+    - name: analyst                # -> role-globex-analyst
       grants:
-        - {app: search, tier: viewer}
-    - name: owner                 # -> role-globex-owner
-      grants:
-        - {app: search, tier: admin}
+        - {service: search, level: access}
 
   members:
-    - {name: dee.fox, first: Dee, last: Fox, roles: [owner]}
-    - {name: eli.mak, first: Eli, last: Mak, roles: [analyst]}
+    - {first: Dee, last: Fox, roles: [analyst]}
+    - {first: Eli, last: Mak, service: search, level: access}

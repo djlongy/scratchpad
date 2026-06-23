@@ -13,7 +13,7 @@ tenant is consistent by construction and you never hand-type a group or role nam
 multitenant-idam/
 ├── site.yml                         # the play
 ├── group_vars/all/                  # GLOBAL, env-AGNOSTIC logic — adjacent to the playbook
-│   ├── 00_naming.yml                #   access tiers + the documented name patterns
+│   ├── 00_naming.yml                #   access levels + the documented name patterns
 │   └── 10_generate.yml              #   tenant_*_spec → freeipa_idam_* + per-tenant marker
 ├── inventories/
 │   ├── acme/                        # team ACME — self-contained
@@ -84,10 +84,15 @@ So a single-team run reconciles only that team's marker; the others are untouche
 
 | Layer | Pattern | Generated example | Defined in |
 |-------|---------|-------------------|-----------|
-| **group** (atomic permission) | `<tenant>-<app>-<tier>` | `acme-payments-admin` | `apps × tiers` |
-| **role** (persona; bundles groups) | `role-<tenant>-<persona>` | `role-acme-lead` → `[acme-payments-admin, acme-ledger-admin]` | tenant `roles:` |
-| **user** (assigned roles/groups) | — | `ann.lee` → `role-acme-lead` | tenant `members:` |
-| **HBAC rule** (access) | `hbac-<tenant>-<app>` | `hbac-acme-payments` → those groups SSH to `acme-payments` hostgroup | `apps` (generated) |
+| **group** (atomic permission) | `<tenant>-<env>-<service>-<level>` | `acme-prod-payments-access`, `…-priv-access` | `services × access_levels` |
+| **role** (persona; bundles groups) | `role-<tenant>-<persona>` | `role-acme-lead` → `[acme-prod-payments-priv-access, acme-prod-ledger-priv-access]` | tenant `roles:` |
+| **user** (rich: name/first/last/email + roles/groups) | name=`<first>.<last>`, email=`<name>@<domain>` | `ann.lee` / `ann.lee@example.com` → `role-acme-lead` | tenant `members:` |
+| **HBAC rule** (access) | `hbac-<tenant>-<env>-<service>` | `hbac-acme-prod-payments` → that service's access groups SSH to `acme-prod-payments` | `services` (generated) |
+
+The **access level** suffix is the point — `-access` = normal, `-priv-access` =
+privileged — so the group name says what it's *for* at a glance. This is the inline
+form teams usually type (`{{ tenancy }}-{{ env }}-{{ service }}-access`), except the
+pattern lives in ONE place and a typo fails fast (see referencing below).
 
 **Two kinds of tenant.** Identity tenants (above) own users/groups/roles + HBAC
 *rules*. The **realm/auth tenant** (the FreeIPA realm itself) owns the
@@ -96,62 +101,60 @@ HBAC *services* (`sshd`, custom svcs — one per realm), automember, DNS. Rules 
 per-tenant; services are shared. HBAC rules are additive (not pruned) — remove
 access with `state: absent`.
 
-### Referencing a generated group/role from elsewhere
+### Referencing generated objects from elsewhere
 
-The names are generated, never hand-written — so **don't copy-paste them out of
-FreeIPA**. The convention *is* the contract: a name is a pure function of
-`(tenant, app, tier)`. The generator exposes a semantic index so other Ansible (a
-firewall rule, an app's RBAC, another playbook) references by **intent**, and a
-typo fails fast instead of silently granting nothing:
+Names are generated, never hand-written — so **don't copy-paste them out of
+FreeIPA**. Three ways to refer to them:
 
 ```yaml
-# in some other role/playbook that loads these group_vars:
-firewalld_allow_groups: "{{ [freeipa_group_ref['acme.payments.admin']] }}"   # -> acme-payments-admin
-app_admin_role:         "{{ freeipa_role_ref['acme.lead'] }}"                # -> role-acme-lead
+# 1. one group/role by INTENT (env-portable key; typo'd key fails fast):
+firewalld_allow_groups: "{{ [freeipa_group_ref['acme.payments.priv-access']] }}"  # -> acme-prod-payments-priv-access
+app_admin_role:         "{{ freeipa_role_ref['acme.lead'] }}"                      # -> role-acme-lead
+
+# 2. loop the RICH user list — each item has name/first/last/email + roles/groups:
+- debug: { msg: "{{ item.name }} <{{ item.email }}>" }
+  loop: "{{ freeipa_idam_users }}"
+
+# 3. flat name lists for bulk loops, or a whole team's users:
+loop: "{{ freeipa_all_group_names }}"            # every group in the loaded scope
+notify: "{{ freeipa_users_by_tenant['acme'] }}"  # -> ['ann.lee','bo.ng','cj.park']
 ```
 
-If the naming convention ever changes, the index *values* change and every
-reference follows — no estate-wide find/replace, no looking names up by hand.
-(Prefer this over a one-off filter plugin unless you need the lookup outside a run
-where these group_vars aren't loaded.)
+A single **username** is just the literal (`ann.lee`) — it's explicit, not generated.
+If the convention ever changes, the `*_ref` *values* change and every reference
+follows; no estate-wide find/replace. "All" in the flat lists = all tenants LOADED
+this run (one, or several on a union run) — realm-wide is a FreeIPA query by design.
 
-**Type marker:** roles are prefixed `role-` so the FIRST token tells you the kind —
-`role-*` is a role, everything else is a plain permission group, no segment-parsing
-to guess whether `admin` is an app tier or a role. A role bundles groups; a user
-references roles (preferred) and/or a direct group; the role expands `user.roles`
-→ groups at apply time, so a roles-only user is valid.
-
-Plus `hostgroup` (`<tenant>-<app>`), host FQDN (`<env>-<tenant>-<app>-<NN>.<domain>`),
-and service URL (`<app>.<tenant>.<env>.<domain>`). All patterns live in `00_naming.yml`.
+**Type marker:** roles are prefixed `role-` so the FIRST token tells you the kind.
+A role bundles groups; a user references roles and/or a direct group; the role
+expands `user.roles` → groups at apply time, so a roles-only user is valid.
 
 ## What this produces (verified with `ansible-playbook`)
 
 ```
 -i inventories/acme                       → marker idam-managed-acme
-  groups(6): acme-payments-{admin,operator,viewer}, acme-ledger-{admin,operator,viewer}
-  roles:     role-acme-developer, role-acme-lead
-  users(3):  ann.lee→role-acme-lead, bo.ng→role-acme-developer, cj.park→group acme-payments-viewer
+  groups(4): acme-prod-{payments,ledger}-{access,priv-access}
+  roles:     role-acme-lead → [acme-prod-payments-priv-access, acme-prod-ledger-priv-access]
+  hbac:      hbac-acme-prod-payments, hbac-acme-prod-ledger
+  users(3):  ann.lee <ann.lee@example.com> → role-acme-lead
+             bo.ng, cj.park → direct -access groups
 
 -i inventories/acme -i inventories/globex → marker idam-managed-users  (union)
-  groups(8): + globex-search-{admin,viewer}      # globex narrowed its tiers
-  roles:     + role-globex-analyst, role-globex-owner
-  users(5):  + dee.fox→role-globex-owner, eli.mak→role-globex-analyst
+  + globex-prod-search-access            # globex overrides access_levels to [access] only
+  + role-globex-analyst, users dee.fox / eli.mak
 ```
 
 ## Scaling checklist
 
 - **Add a team** → `cp -r inventories/acme inventories/<code>`, edit its `tenant.yml`
-  (and `hosts.yml` if it's a different realm), run
-  `ansible-playbook -i inventories/<code> site.yml --tags idam`. Nothing else to
-  touch — no count, no registry, no selector.
-- **Add an app** → one line in the tenant's `apps:`; its groups/hostgroup appear.
+  (and `hosts.yml`/`00_env.yml` if it's a different realm/env), run
+  `ansible-playbook -i inventories/<code> site.yml --tags idam`. No count/registry.
+- **Add a service** → one line in the tenant's `services:`; its groups/hostgroup/HBAC appear.
 - **Add a persona** → one entry in the tenant's `roles:`.
-- **Add a person** → one `members:` line referencing a role, then
-  `ansible-playbook -i inventories/<code> site.yml --tags idam` (seconds; others untouched).
+- **Add a person** → one `members:` line (`{first, last, …}` — username + email derived).
 - **Add an environment (dev/test)** → a tenant inventory whose `hosts.yml` points at
-  that environment's FreeIPA IP and whose group_vars set `env` — same convention,
-  same generators.
-- **Tighten tiers for a team** → set `tiers:` in that tenant's spec.
+  that environment's FreeIPA IP and whose `00_env.yml` sets `env`/`domain`.
+- **Restrict access levels for a team** → set `access_levels:` in that tenant's spec.
 
 ## Alternative layout
 

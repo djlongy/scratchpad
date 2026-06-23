@@ -7,13 +7,13 @@
 # self-contained (its own host + a DISTINCTLY-named tenant_<code>_spec):
 #   -i inventories/acme                       → ACME only
 #   -i inventories/acme -i inventories/globex → both specs loaded → union (audit)
-# Passing several composes them; passing one isolates it. No selector, no count,
-# no registry — adding a team is a new inventory dir and nothing else.
 #
-# Three layers, smallest grain up:
-#   groups  = atomic permissions   <tenant>-<app>-<tier>
-#   roles   = personas bundling groups   role-<tenant>-<persona>
-#   users   = people assigned roles (and/or direct groups)
+# Convention (env + domain come from the tenant inventory's 00_env.yml):
+#   group      <tenant>-<env>-<service>-<level>   acme-prod-payments-access / -priv-access
+#   role       role-<tenant>-<persona>            role-acme-lead
+#   hostgroup  <tenant>-<env>-<service>           acme-prod-payments
+#   user       name = <first>.<last> (lower)      ann.lee   (override with name:)
+#              email = <name>@<domain>            ann.lee@example.com
 
 # Every tenant spec currently loaded (one per tenant inventory passed via -i).
 _tenant_specs: >-
@@ -21,77 +21,70 @@ _tenant_specs: >-
      | map('extract', vars) | list }}
 
 # ── per-tenant marker → makes the role's prune SAFE under isolation ─────────
-# The role reconciles ONE marker group, deleting managed users not in the desired
-# set. When exactly ONE tenant is loaded, scope the marker to it so the prune can
-# only ever touch THAT tenant. A union run (several loaded) uses the global marker,
-# which is correct there because the desired set IS everyone.
 freeipa_idam_managed_group: >-
   {{ ('idam-managed-' ~ _tenant_specs[0].code)
      if (_tenant_specs | length == 1) else 'idam-managed-users' }}
 
-# ── LAYER 1 — groups: every tenant × app × tier ─────────────────────────────
+# ── LAYER 1 — groups: every tenant × service × access-level ─────────────────
 freeipa_idam_groups: "{{ (_gen_groups | from_yaml) or [] }}"
 _gen_groups: |-
   {% for t in _tenant_specs %}
-  {% for app in t.apps %}
-  {% for tier in (t.tiers | default(identity_access_tiers)) %}
-  - {name: "{{ t.code }}-{{ app }}-{{ tier }}", description: "{{ t.code }} {{ app }} {{ tier }} (managed)"}
+  {% for svc in t.services %}
+  {% for lvl in (t.access_levels | default(identity_access_levels)) %}
+  - {name: "{{ t.code }}-{{ env }}-{{ svc }}-{{ lvl }}", description: "{{ t.code }} {{ env }} {{ svc }} {{ lvl }} (managed)"}
   {% endfor %}{% endfor %}{% endfor %}
 
-# ── LAYER 2 — roles: a persona bundling several (app,tier) groups ────────────
+# ── LAYER 2 — roles: a persona bundling several (service, level) groups ──────
 freeipa_idam_roles: "{{ (_gen_roles | from_yaml) or [] }}"
 _gen_roles: |-
   {% for t in _tenant_specs %}
   {% for r in (t.roles | default([])) %}
-  - {name: "role-{{ t.code }}-{{ r.name }}", groups: [{% for g in r.grants %}"{{ t.code }}-{{ g.app }}-{{ g.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]}
+  - {name: "role-{{ t.code }}-{{ r.name }}", groups: [{% for g in r.grants %}"{{ t.code }}-{{ env }}-{{ g.service }}-{{ g.level }}"{% if not loop.last %}, {% endif %}{% endfor %}]}
   {% endfor %}{% endfor %}
 
-# ── hostgroups: every tenant × app ──────────────────────────────────────────
+# ── hostgroups: every tenant × service ──────────────────────────────────────
 freeipa_idam_hostgroups: "{{ (_gen_hostgroups | from_yaml) or [] }}"
 _gen_hostgroups: |-
   {% for t in _tenant_specs %}
-  {% for app in t.apps %}
-  - {name: "{{ t.code }}-{{ app }}", description: "{{ t.code }} {{ app }} hosts"}
+  {% for svc in t.services %}
+  - {name: "{{ t.code }}-{{ env }}-{{ svc }}", description: "{{ t.code }} {{ env }} {{ svc }} hosts"}
   {% endfor %}{% endfor %}
 
-# ── LAYER 3 — users: assigned ROLES and/or direct GROUPS ────────────────────
-# A member lists `roles: [persona, ...]` (preferred, gets the role- prefix) and/or
-# a direct group via {app|apps, tier}. Names are generated, never hand-typed.
+# ── LAYER 3 — users: RICH dicts (name, first, last, email + roles/groups) ────
+# name  = explicit `name:`, else <first>.<last> lowercased  (ann.lee)
+# email = <name>@<domain>  (domain from the tenant inventory; swap for a mail_domain
+#         var if mail differs from the realm domain)
+# A member lists `roles: [persona, ...]` and/or a direct group via {service|services,
+# level}. Loop freeipa_idam_users and use item.name / item.email / item.first / …
 freeipa_idam_users: "{{ (_gen_users | from_yaml) or [] }}"
 _gen_users: |-
   {% for t in _tenant_specs %}
   {% for m in t.members %}
-  - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
+  {% set uname = m.name | default((m.first ~ '.' ~ m.last) | lower) %}
+  - {name: "{{ uname }}", first: "{{ m.first }}", last: "{{ m.last }}", email: "{{ uname }}@{{ domain }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.service is defined) or (m.services is defined) %}, groups: [{% for s in (m.services | default([m.service])) %}"{{ t.code }}-{{ env }}-{{ s }}-{{ m.level }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
   {% endfor %}{% endfor %}
 
-# ── LAYER 4 — HBAC RULES (the access layer): per tenant × app, that app's groups
-#    get SSH to that app's hostgroup. One rule per app keeps grants scoped tight.
-#    Prefixed `hbac-` (type marker, like role-). The hbacsvc `sshd` is a STOCK,
-#    realm-global service — custom HBAC *services* belong to the realm/auth tenant
-#    (freeipa_idam_hbacsvcs), not here. HBAC rules are additive (not pruned by the
-#    role); remove a tenant's access by setting state: absent or deleting the rule.
+# ── LAYER 4 — HBAC rules: per tenant × service, that service's access groups get
+#    SSH to its hostgroup. Prefixed `hbac-`. sshd is a stock realm-global service.
 freeipa_idam_hbac_rules: "{{ (_gen_hbac | from_yaml) or [] }}"
 _gen_hbac: |-
   {% for t in _tenant_specs %}
-  {% for app in t.apps %}
-  - {name: "hbac-{{ t.code }}-{{ app }}", description: "{{ t.code }} {{ app }} SSH", group: [{% for tier in (t.tiers | default(identity_access_tiers)) %}"{{ t.code }}-{{ app }}-{{ tier }}"{% if not loop.last %}, {% endif %}{% endfor %}], hostgroup: ["{{ t.code }}-{{ app }}"], hbacsvc: ["sshd"]}
+  {% for svc in t.services %}
+  - {name: "hbac-{{ t.code }}-{{ env }}-{{ svc }}", description: "{{ t.code }} {{ env }} {{ svc }} SSH", group: [{% for lvl in (t.access_levels | default(identity_access_levels)) %}"{{ t.code }}-{{ env }}-{{ svc }}-{{ lvl }}"{% if not loop.last %}, {% endif %}{% endfor %}], hostgroup: ["{{ t.code }}-{{ env }}-{{ svc }}"], hbacsvc: ["sshd"]}
   {% endfor %}{% endfor %}
 
-# ── REFERENCE INDEX — how OTHER Ansible refers to a generated group/role ─────
-# Generated names are never hand-written, so don't copy-paste them out of FreeIPA.
-# Reference by INTENT through this index — a firewall rule, an app's RBAC, another
-# playbook — and a typo'd key fails fast (undefined) instead of silently granting
-# nothing. The naming convention is the contract; if it ever changes, the VALUES
-# change and every reference follows — no estate-wide find/replace.
-#   freeipa_group_ref['acme.payments.admin']  -> "acme-payments-admin"
-#   freeipa_role_ref['acme.lead']             -> "role-acme-lead"
-# e.g. firewalld:  permitted_groups: "{{ [freeipa_group_ref['acme.payments.admin']] }}"
+# ── REFERENCE INDEX — refer to a generated group/role by INTENT, not a literal ─
+# Key is env-PORTABLE (<tenant>.<service>.<level>); the value carries the env, so
+# the same key yields the env-correct name in dev/test/prod. A typo'd key fails
+# fast (undefined) instead of silently building a non-existent group name.
+#   freeipa_group_ref['acme.payments.priv-access']  -> "acme-prod-payments-priv-access"
+#   freeipa_role_ref['acme.lead']                   -> "role-acme-lead"
 freeipa_group_ref: "{{ (_gen_group_ref | from_yaml) or {} }}"
 _gen_group_ref: |-
   {% for t in _tenant_specs %}
-  {% for app in t.apps %}
-  {% for tier in (t.tiers | default(identity_access_tiers)) %}
-  "{{ t.code }}.{{ app }}.{{ tier }}": "{{ t.code }}-{{ app }}-{{ tier }}"
+  {% for svc in t.services %}
+  {% for lvl in (t.access_levels | default(identity_access_levels)) %}
+  "{{ t.code }}.{{ svc }}.{{ lvl }}": "{{ t.code }}-{{ env }}-{{ svc }}-{{ lvl }}"
   {% endfor %}{% endfor %}{% endfor %}
 freeipa_role_ref: "{{ (_gen_role_ref | from_yaml) or {} }}"
 _gen_role_ref: |-
@@ -99,22 +92,16 @@ _gen_role_ref: |-
   {% for r in (t.roles | default([])) %}
   "{{ t.code }}.{{ r.name }}": "role-{{ t.code }}-{{ r.name }}"
   {% endfor %}{% endfor %}
-
-# Usernames are EXPLICIT in each tenant spec (you typed them), so a single user is
-# referenced directly as a literal — there's no generated name to look up. For
-# "everyone on a team", this index gives tenant -> [usernames]:
-#   freeipa_users_by_tenant['acme']  -> ['ann.lee', 'bo.ng', 'cj.park']
 freeipa_users_by_tenant: "{{ (_gen_users_by_tenant | from_yaml) or {} }}"
 _gen_users_by_tenant: |-
   {% for t in _tenant_specs %}
-  "{{ t.code }}": [{% for m in t.members %}"{{ m.name }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+  "{{ t.code }}": [{% for m in t.members %}"{{ m.name | default((m.first ~ '.' ~ m.last) | lower) }}"{% if not loop.last %}, {% endif %}{% endfor %}]
   {% endfor %}
 
-# ── FLAT NAME LISTS — loop over these to act on EVERY object in scope ────────
-# "Every" = everything LOADED this run: one tenant if you ran `-i inventories/acme`,
-# all of them on a union run (`-i acme -i globex …`). There is intentionally no
-# realm-wide "all users" var — isolation means a run only sees the tenants you pass.
-# For the entire realm regardless of inventory, query FreeIPA (`ipa user-find`).
+# ── FLAT NAME LISTS — loop to act on EVERY object in the LOADED scope ────────
+# "Every" = all tenants you passed via -i (one, or several on a union run). There is
+# no realm-wide "all" var — a run only sees the inventories you pass. For the whole
+# realm regardless of inventory, query FreeIPA (`ipa user-find`).
 freeipa_all_group_names: "{{ freeipa_idam_groups | map(attribute='name') | list }}"
 freeipa_all_role_names: "{{ freeipa_idam_roles | map(attribute='name') | list }}"
 freeipa_all_hostgroup_names: "{{ freeipa_idam_hostgroups | map(attribute='name') | list }}"
