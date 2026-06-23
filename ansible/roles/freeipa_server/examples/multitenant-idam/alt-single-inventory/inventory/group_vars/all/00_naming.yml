@@ -33,12 +33,10 @@ domain: "example.com"
 #
 # host FQDN keeps the repo's "host = flat zone, no env subdomain" rule by putting
 # env in the NAME (not a DNS subdomain); the service URL keeps an env subdomain.
-identity_naming:
-  group: "{tenant}-{app}-{tier}"
-  role: "role-{tenant}-{persona}"
-  hostgroup: "{tenant}-{app}"
-  host_fqdn: "{env}-{tenant}-{app}-{nn}.{domain}"
-  service_url: "{app}.{tenant}.{env}.{domain}"
+#
+# (Patterns are documented here for humans; the names are actually built by the
+# generator in 10_aggregate.yml — change a pattern there. Only identity_access_tiers
+# below and env/domain are consumed as variables.)
 
 # Access tiers each tenant gets per app unless it overrides `tiers:` in its spec.
 # These are the ATOMIC permission groups; roles (personas) bundle them. Extend per

@@ -1,11 +1,16 @@
 ---
-# group_vars/all/00_naming.yml — the ONE source of truth for identity naming.
+# group_vars/all/00_naming.yml — shared naming inputs + the documented convention.
 #
 # This sits next to the PLAYBOOK (site.yml), so Ansible auto-loads it on every run
 # WITHOUT it being named as an inventory — group_vars/host_vars adjacent to a
-# playbook are always loaded. Tenant inventories carry DATA only; this file
-# (+ 10_generate.yml) owns the PATTERN, so naming can never drift between teams.
+# playbook are always loaded. Tenant inventories carry DATA only.
 # In a real repo this lives at playbooks/group_vars/all/ next to the idam playbook.
+#
+# Only two things here are CONSUMED: `env`/`domain` (read by the freeipa_server role
+# for FQDNs/realm) and `identity_access_tiers` (read by 10_generate.yml). The naming
+# PATTERNS are documented in the comment block below; the live source of truth that
+# actually builds the names is the generator in 10_generate.yml (it has to encode
+# both which fields combine AND their format, so the pattern can't be pure data).
 #
 # ── env / domain scaling ─────────────────────────────────────────────────────
 # Each tenant inventory is self-contained, so a dev/test tenancy is just another
@@ -31,12 +36,9 @@ domain: "example.com"
 # without parsing segments to guess whether `admin` is an app tier or a role.
 # (`role-*` also matches the export tool's default exclude, so roles are never
 # re-mined into groups.) Permission groups keep the plain <tenant>-<app>-<tier> name.
-identity_naming:
-  group: "{tenant}-{app}-{tier}"
-  role: "role-{tenant}-{persona}"
-  hostgroup: "{tenant}-{app}"
-  host_fqdn: "{env}-{tenant}-{app}-{nn}.{domain}"
-  service_url: "{app}.{tenant}.{env}.{domain}"
+#
+# (If you change a pattern, change it in 10_generate.yml — that is where the names
+# are actually built. This comment is the human reference for that code.)
 
 # Access tiers a tenant gets per app unless its spec overrides `tiers:`. These are
 # the ATOMIC permission groups; roles (personas) bundle them.
