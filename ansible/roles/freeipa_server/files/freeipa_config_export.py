@@ -325,11 +325,12 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
         bundles stay as direct groups, so you never get a 1-group "role" that is
         just a renamed group.
 
-    Each user then carries the `roles` covering its mineable groups, plus any
-    `groups` left direct. Lossless: a user's groups == union(role groups) +
-    direct groups. Returns (roles, users, excluded) where `excluded` maps each
-    matched pattern -> the groups it held out of mining (a diagnostic; those
-    groups are STILL exported as direct memberships).
+    Users are left NATIVE — each keeps its full real `groups` plus an empty
+    `roles: []` placeholder. The matrix is a non-applied SUGGESTION only (the user
+    opts in by renaming it and wiring users' `roles:` themselves). Returns
+    (roles, users, excluded, user_role_map): `excluded` maps each matched pattern
+    -> the groups it held out of mining (diagnostic); `user_role_map` maps each
+    user -> the roles it WOULD get if the suggestion were adopted (also advisory).
     """
     patterns = ["role"] if exclude_patterns is None else exclude_patterns
     pairs = [(p, re.compile(p, re.IGNORECASE)) for p in patterns if p]
@@ -361,18 +362,22 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
         for un in uset:
             user_to_roles.setdefault(un, []).append(name)
 
+    # Users stay native: full groups preserved, an empty `roles: []` placeholder
+    # inserted before `groups`. We do NOT auto-assign roles — copy-paste-apply
+    # must reproduce real FreeIPA membership, never the synthetic suggestion.
     new_users = []
     for u in users:
-        held = u.get("groups", [])
-        rs = sorted(user_to_roles.get(u["name"], []))
-        # Direct = excluded (role-named) groups + mineable groups not in any role.
-        direct = sorted(g for g in held if not mineable(g) or g not in in_a_role)
-        nu = {k: v for k, v in u.items() if k != "groups"}
-        if rs:
-            nu["roles"] = rs
-        if direct:
-            nu["groups"] = direct
+        nu = {}
+        for k, v in u.items():
+            if k == "groups" and "roles" not in nu:
+                nu["roles"] = []
+            nu[k] = v
+        nu.setdefault("roles", [])
         new_users.append(nu)
+
+    # Advisory: which roles each user WOULD get if the suggestion were adopted.
+    user_role_map = {u["name"]: sorted(user_to_roles[u["name"]])
+                     for u in users if user_to_roles.get(u["name"])}
 
     # Diagnostic: which membership groups each pattern held out of mining.
     excluded = {}
@@ -381,7 +386,7 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
             if rx.search(g):
                 excluded.setdefault(p, []).append(g)
                 break
-    return roles, new_users, excluded
+    return roles, new_users, excluded, user_role_map
 
 
 def main():
@@ -426,11 +431,13 @@ def main():
     if used_fallback and not any(g["name"] == DEFAULT_FALLBACK_GROUP for g in groups):
         groups.append({"name": DEFAULT_FALLBACK_GROUP})
 
-    # Bridge users <-> groups with a roles matrix (unless --flat-groups).
-    roles, roles_excluded = [], {}
+    # Suggest a roles matrix (unless --flat-groups). Users stay NATIVE; the matrix
+    # is advisory only and emitted under a key the role does NOT read.
+    roles_suggested, roles_excluded, roles_user_map = [], {}, {}
     if not args.flat_groups:
         exclude = json.loads(args.role_exclude)
-        roles, users, roles_excluded = mine_roles(users, exclude, args.role_min_groups)
+        roles_suggested, users, roles_excluded, roles_user_map = mine_roles(
+            users, exclude, args.role_min_groups)
 
     doc = {
         "meta": {
@@ -441,11 +448,13 @@ def main():
             "host_membership_included": args.include_host_membership,
             "fallback_group_used": used_fallback,
             "roles_excluded_from_mining": roles_excluded,
+            "roles_suggested_user_map": roles_user_map,
         },
         "freeipa_server_domain": api.env.domain,
         "freeipa_server_realm": api.env.realm,
         "freeipa_idam_groups": groups,
-        "freeipa_idam_roles": roles,
+        # Advisory only — the role does NOT read this key (see template header).
+        "freeipa_idam_roles_suggested": roles_suggested,
         "freeipa_idam_users": users,
         "freeipa_idam_hostgroups": export_hostgroups(args.include_host_membership),
         "freeipa_idam_hbacsvcs": export_hbacsvcs(stock_hbacsvc),

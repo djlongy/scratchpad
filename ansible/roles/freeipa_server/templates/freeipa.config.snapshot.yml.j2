@@ -30,22 +30,17 @@
 # Remove/change them if you are reapplying into a differently-named realm.
 freeipa_server_domain: {{ _freeipa_export.freeipa_server_domain }}
 freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
-{% if _freeipa_export.freeipa_idam_roles | length > 0 %}
-# Roles matrix — a role is a named bundle of groups; users below reference roles
-# instead of long group lists (derived by co-occurrence: groups always held by
-# the same users bundle together). Lossless. Rename role-NN to meaningful names.
-{% endif %}
 {% if _freeipa_export.meta.roles_excluded_from_mining %}
 # ── Held OUT of role-mining (matched freeipa_server_export_role_exclude) ─────
 # SANITY CHECK, not config (commented out, not loaded). These groups ARE still
 # exported and applied below — as DIRECT group memberships in freeipa_idam_groups
 # and on the users — they are NOT dropped. They were only kept out of the
-# synthetic role bundles, so this explains why a group isn't inside a role:
+# suggested role bundles, so this explains why a group isn't inside a role:
 {% for pat, grps in _freeipa_export.meta.roles_excluded_from_mining.items() %}
 #   /{{ pat }}/  →  {{ grps | join(', ') }}
 {% endfor %}
 {% endif %}
-{% for key in ['freeipa_idam_groups', 'freeipa_idam_roles', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
+{% for key in ['freeipa_idam_groups', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
 {% if _freeipa_export[key] | length > 0 %}
 {{ key }}:
 {{ _freeipa_export[key] | to_nice_yaml(indent=2, width=160, sort_keys=False) | indent(2, first=True) }}
@@ -53,3 +48,28 @@ freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
 {{ key }}: []
 {% endif %}
 {% endfor %}
+{% if _freeipa_export.freeipa_idam_roles_suggested | length > 0 %}
+
+# ╔════════════════════════════════════════════════════════════════════════════╗
+# ║  SUGGESTED ROLES MATRIX — NOT APPLIED.  Best-guess; safe to ignore/delete.  ║
+# ╚════════════════════════════════════════════════════════════════════════════╝
+# The role does NOT read `freeipa_idam_roles_suggested`. The users above already
+# carry their REAL `groups` (native FreeIPA) plus an empty `roles: []`, so this
+# snapshot reapplies EXACTLY as-is with NO roles — applying it can never create
+# any role-NN object. This block is an OPTIONAL value-add (a co-occurrence guess
+# at reusable roles).
+#
+# To ADOPT it (only if you want roles): 1) rename the key below to
+# `freeipa_idam_roles`, 2) give the roles meaningful names, 3) set each user's
+# `roles:` above (see the suggested map), 4) drop the groups you fold into roles.
+# Otherwise DELETE this whole block — it changes nothing.
+{% if _freeipa_export.meta.roles_suggested_user_map %}
+#
+# Suggested user → roles (advisory; apply by editing users' `roles:` above):
+{% for usr, rls in _freeipa_export.meta.roles_suggested_user_map.items() %}
+#   {{ usr }}: [{{ rls | join(', ') }}]
+{% endfor %}
+{% endif %}
+freeipa_idam_roles_suggested:
+{{ _freeipa_export.freeipa_idam_roles_suggested | to_nice_yaml(indent=2, width=160, sort_keys=False) | trim | indent(2, first=True) }}
+{% endif %}

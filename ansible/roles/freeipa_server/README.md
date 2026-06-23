@@ -255,8 +255,16 @@ any direct `groups`), so everything downstream is unchanged. Lossless. Distinct
 from `freeipa_rbac_roles` (which *generates* groups/hostgroups/HBAC/sudo) — this
 just bridges users to **existing** groups.
 
-The export **derives** this matrix from live state by co-occurrence (groups
-always held by the same users bundle into one role). Two knobs keep it honest:
+**Roles are opt-in.** The export keeps users **native** — each carries its real
+`groups` plus an empty `roles: []`, so a snapshot reapplies exactly as captured
+with no roles involved. It also emits a best-guess matrix under
+`freeipa_idam_roles_suggested` — a key the role **does not read** — so
+copy-paste-apply can never activate it. To adopt: rename that key to
+`freeipa_idam_roles`, give the roles real names, and set each user's `roles:`
+(the snapshot prints a suggested user→role map). Or delete the block.
+
+The suggestion is **derived** from live state by co-occurrence (groups always
+held by the same users bundle into one role). Two knobs keep it honest:
 
 - `freeipa_server_export_role_exclude` (default `[role]`) — a list of
   case-insensitive regexes; groups matching any are kept as **direct** group

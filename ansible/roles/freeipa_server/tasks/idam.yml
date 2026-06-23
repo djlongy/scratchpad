@@ -159,7 +159,7 @@
 
 - name: Build FreeIPA users payload without local-only keys
   ansible.builtin.set_fact:
-    freeipa_idam_users_effective: "{{ (freeipa_idam_users_effective | default([])) + [item | dict2items | rejectattr('key', 'equalto', 'groups') | items2dict] }}"
+    freeipa_idam_users_effective: "{{ (freeipa_idam_users_effective | default([])) + [item | dict2items | rejectattr('key', 'equalto', 'groups') | rejectattr('key', 'equalto', 'roles') | items2dict] }}"
   loop: "{{ _freeipa_idam_users }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
