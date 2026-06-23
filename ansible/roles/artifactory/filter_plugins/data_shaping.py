@@ -4,8 +4,6 @@
 # These operate on the data (dict in → smaller dict out) and are
 # format-agnostic, so they serve both the YAML and JSON export paths.
 
-from __future__ import annotations
-
 import re
 
 

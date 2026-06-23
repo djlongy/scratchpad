@@ -32,8 +32,6 @@
 #      while multi-line objects (a repo, a group) still each get their own
 #      paragraph. Set False to gap every sibling regardless (the old behaviour).
 
-from __future__ import annotations
-
 import yaml
 
 from ansible.errors import AnsibleFilterError
