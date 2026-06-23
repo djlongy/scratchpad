@@ -1,6 +1,6 @@
 ---
-# inventories/globex/ — team GLOBEX's inventory. Data only.
-# Run it:   ./apply.sh globex
+# inventories/globex/ — team GLOBEX's inventory (its host in hosts.yml + this data).
+# Run it:   ansible-playbook -i inventories/globex site.yml --tags idam
 # GLOBEX narrows its own tiers (no `operator`) and has a single app — a per-tenant
 # override that still flows through the shared convention.
 tenant_globex_spec:

@@ -8,9 +8,14 @@
 # In a real repo this lives at playbooks/group_vars/all/ next to the idam playbook.
 #
 # ── env / domain scaling ─────────────────────────────────────────────────────
-# Scale environments by keeping one host inventory per env (inventories/_common.dev
-# / .test / .prod) that changes only `env` + the host, and REUSE the same tenant
-# dirs. (env/domain could also move here if it's the same across environments.)
+# Each tenant inventory is self-contained, so a dev/test tenancy is just another
+# inventory dir pointing its hosts.yml at that environment's FreeIPA IP, with `env`
+# set per inventory (group_vars there). The identical convention + generators below
+# apply unchanged — only the host IP and env label differ.
+#
+# These two defaults are shown here for a self-contained example; in practice set
+# `env` (and `domain` if it differs) in each tenant inventory's group_vars, not in
+# this shared file, so dev/test/prod can diverge.
 env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
 domain: "example.com"
 

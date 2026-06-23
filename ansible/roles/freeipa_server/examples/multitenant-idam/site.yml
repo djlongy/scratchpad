@@ -1,24 +1,43 @@
 ---
-# site.yml — apply identity to the realm. WHICH tenants are applied is decided by
-# which inventories you pass (not a flag): one tenant dir = isolated, fast; several
-# = a union/audit run.
+# site.yml — apply declarative identity to a FreeIPA realm.
 #
-#   ./apply.sh acme                 # team ACME only — seconds, GLOBEX untouched
-#   ./apply.sh acme globex          # union/audit — reconcile both at once
-#   ansible-playbook -i inventories/_common -i inventories/acme site.yml --tags idam
+# WHICH tenant is applied is the inventory you point at; each tenant inventory is
+# self-contained (its own FreeIPA host + its own data). The naming convention and
+# generators load automatically from group_vars/all/ next to this playbook, so they
+# are never passed on the command line.
+#
+# ── How to run it (no wrapper — plain ansible-playbook) ─────────────────────
+#
+#   # Identity only (groups, roles, users, hostgroups) — the routine change:
+#   ansible-playbook -i inventories/acme site.yml --tags idam
+#
+#   # The full role (also install/configure the server) — e.g. first build:
+#   ansible-playbook -i inventories/acme site.yml
+#
+#   # Preview, change nothing (dry run + show diffs):
+#   ansible-playbook -i inventories/acme site.yml --tags idam --check --diff
+#
+#   # List what the tags would run:
+#   ansible-playbook -i inventories/acme site.yml --list-tags
+#
+#   # Union / audit across several tenants on the SAME realm (one reconcile):
+#   ansible-playbook -i inventories/acme -i inventories/globex site.yml --tags idam
+#
+# Realm admin/DM passwords come from group_vars + HashiCorp Vault
+# (freeipa_idam_vault_secret) — see the role README. If your group_vars are
+# Ansible-Vault encrypted, add --ask-vault-pass (or --vault-password-file ...).
 - name: FreeIPA multi-tenant IDAM
   hosts: freeipa
   become: true
   tasks:
-    # The only foot-gun is forgetting to pass a tenant inventory (just _common),
-    # which would load zero specs. Catch it explicitly — no counts, no registry.
-    - name: Refuse to run without a tenant inventory
+    # The only foot-gun is pointing at an inventory with no tenant data, which would
+    # load zero specs. Catch it explicitly — no counts, no registry.
+    - name: Refuse to run without tenant data
       ansible.builtin.assert:
         that: _tenant_specs | length > 0
         fail_msg: >-
-          No tenant specs loaded — pass at least one tenant inventory alongside
-          _common, e.g. `-i inventories/_common -i inventories/acme`
-          (or `./apply.sh acme`).
+          No tenant specs loaded — point -i at a tenant inventory, e.g.
+          `-i inventories/acme`.
         success_msg: >-
           Applying {{ _tenant_specs | map(attribute='code') | list }}
           → marker {{ freeipa_idam_managed_group }}.
@@ -26,7 +45,4 @@
     - name: Apply declarative identity (groups, roles, users, hostgroups)
       ansible.builtin.import_role:
         name: freeipa_server
-      # Realm admin/DM passwords come from group_vars + HashiCorp Vault
-      # (freeipa_idam_vault_secret) — see the role README. Put shared secrets in
-      # _common/group_vars/freeipa.yml.
       tags: [idam]

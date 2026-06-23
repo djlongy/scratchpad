@@ -3,13 +3,12 @@
 # role's flat IDAM lists. Lives next to the playbook (always auto-loaded), so it is
 # never passed as an inventory and never edited when adding a team.
 #
-# Selection is by INVENTORY COMPOSITION, not a flag (the host comes from _common,
-# which must be passed because a host cannot be defined in playbook group_vars):
-#   -i _common -i acme            → only tenant_acme_spec loaded  → ACME only
-#   -i _common -i acme -i globex  → both specs loaded             → union (audit)
-# Each tenant dir defines a DISTINCTLY-named tenant_<code>_spec, so passing several
-# -i dirs composes them; passing one isolates it. No idam_tenants selector, no
-# count, no registry — adding a team is a new inventory dir and nothing else.
+# Selection is by INVENTORY COMPOSITION, not a flag. Each tenant inventory is
+# self-contained (its own host + a DISTINCTLY-named tenant_<code>_spec):
+#   -i inventories/acme                       → ACME only
+#   -i inventories/acme -i inventories/globex → both specs loaded → union (audit)
+# Passing several composes them; passing one isolates it. No selector, no count,
+# no registry — adding a team is a new inventory dir and nothing else.
 #
 # Three layers, smallest grain up:
 #   groups  = atomic permissions   <tenant>-<app>-<tier>

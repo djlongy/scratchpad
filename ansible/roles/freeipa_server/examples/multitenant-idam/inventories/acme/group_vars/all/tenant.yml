@@ -1,10 +1,11 @@
 ---
-# inventories/acme/ — this whole directory IS team ACME's inventory. Data only.
-# Run it:   ./apply.sh acme      (or -i inventories/_common -i inventories/acme)
-# It references no other team, and no other team references it.
+# inventories/acme/ — this whole directory IS team ACME's inventory (its host in
+# hosts.yml + this data). It references no other team, and no other team references
+# it. Run it:
+#   ansible-playbook -i inventories/acme site.yml --tags idam
 #
-# The var is named tenant_acme_spec (not tenant_spec) so a union/audit run can
-# load several tenants at once without them colliding — see _common/10_generate.yml.
+# The var is named tenant_acme_spec (not tenant_spec) so a union/audit run can load
+# several tenants at once without them colliding — see group_vars/all/10_generate.yml.
 # `tiers:` is optional — omit to inherit identity_access_tiers (admin/operator/viewer).
 tenant_acme_spec:
   code: acme

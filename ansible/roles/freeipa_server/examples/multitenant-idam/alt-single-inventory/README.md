@@ -15,7 +15,7 @@ marker derivation. The differences vs the primary pattern:
 
 | | Primary (per-tenant inventories) | This (single inventory + selector) |
 |---|---|---|
-| Pick a team | `./apply.sh acme` (which `-i` you pass) | `-e idam_tenants=acme` (a flag) |
+| Pick a team | `-i inventories/acme` (which `-i` you pass) | `-e idam_tenants=acme` (a flag) |
 | Isolation | structural — other teams aren't loaded | by convention — flag must be remembered |
 | Newcomer view | "ACME's stuff is in `inventories/acme/`" | "what's `idam_tenants`?" |
 
