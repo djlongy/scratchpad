@@ -1,0 +1,35 @@
+---
+# roles/freeipa_client/tasks/resilience.yml — make login independent of IPA/NFS.
+# Idempotent guards; only run post-enrolment when SSSD config exists.
+- name: Ensure SSSD caches credentials for offline auth
+  community.general.ini_file:
+    path: /etc/sssd/sssd.conf
+    section: "domain/{{ freeipa_client_domain }}"
+    option: "{{ item.opt }}"
+    value: "{{ item.val }}"
+    owner: root
+    group: root
+    mode: "0600"
+    no_extra_spaces: false
+  loop:
+    - {opt: cache_credentials, val: "true"}
+    - {opt: krb5_store_password_if_offline, val: "true"}
+  loop_control:
+    label: "{{ item.opt }}"
+  notify: Restart sssd
+  register: _freeipa_sssd_offline
+
+- name: Check that sshd reads SSH keys from SSSD (home-independent login)
+  ansible.builtin.command: sshd -T
+  register: _freeipa_sshd_cfg
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Warn if AuthorizedKeysCommand is not sss_ssh_authorizedkeys
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: sshd AuthorizedKeysCommand does not reference sss_ssh_authorizedkeys.
+      SSH key login may depend on ~/.ssh, which breaks if a user's home is on a
+      down NFS server. Re-run ipa-client-install or configure it manually.
+  when: "'sss_ssh_authorizedkeys' not in (_freeipa_sshd_cfg.stdout | default(''))"

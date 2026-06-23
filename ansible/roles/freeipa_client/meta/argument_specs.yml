@@ -16,10 +16,15 @@ argument_specs:
         elements: str
         required: false
         description: FreeIPA server FQDNs to enrol against (else SRV discovery).
+      freeipa_client_admin_password:
+        type: str
+        required: false
+        no_log: true
+        description: IPA admin password for admin-join. Declared vars win over Vault; set this (e.g. from an ansible-vault var) — with it set, no HashiCorp Vault is needed.
       freeipa_client_vault_secret:
         type: str
         required: false
-        description: Vault path holding the admin password (admin-join). Required unless use_otp.
+        description: HashiCorp Vault KV path holding the admin password (admin-join). FALLBACK only — used when freeipa_client_admin_password is empty. Required unless that is set or use_otp.
       freeipa_client_use_otp:
         type: bool
         required: false
@@ -40,6 +45,10 @@ argument_specs:
         type: bool
         required: false
         description: Create home directories on first login (oddjob/pam).
+      freeipa_client_offline_resilient:
+        type: bool
+        default: true
+        description: Ensure SSSD offline credential caching and home-independent SSH key login.
       freeipa_client_no_sudo:
         type: bool
         required: false

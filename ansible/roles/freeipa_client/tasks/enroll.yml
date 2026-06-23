@@ -12,19 +12,22 @@
     that:
       - freeipa_client_domain | length > 0
       - freeipa_client_realm | length > 0
-      - (freeipa_client_use_otp | bool) or (freeipa_client_vault_secret | default('') | length > 0)
+      - (freeipa_client_use_otp | bool) or (freeipa_client_admin_password | default('') | length > 0) or (freeipa_client_vault_secret | default('') | length > 0)
       - (not (freeipa_client_use_otp | bool)) or (freeipa_client_otp | default('') | length > 0)
     fail_msg: >-
-      Need freeipa_client_domain + freeipa_client_realm, and either
-      freeipa_client_vault_secret (admin-join) or freeipa_client_use_otp=true
-      with freeipa_client_otp set.
+      Need freeipa_client_domain + freeipa_client_realm, and either an admin
+      password for admin-join (freeipa_client_admin_password declared, or
+      freeipa_client_vault_secret for the HashiCorp Vault fallback) or
+      freeipa_client_use_otp=true with freeipa_client_otp set.
 
-- name: Fetch admin password for enrolment (admin-join)
+- name: Resolve admin password for enrolment (declared var first, HashiCorp Vault fallback)
   ansible.builtin.set_fact:
     _freeipa_client_admin_pw: >-
-      {{ lookup('community.hashi_vault.hashi_vault',
-         'secret=' + freeipa_client_vault_secret
-         + ':' + freeipa_client_admin_password_field) }}
+      {{ freeipa_client_admin_password
+         if (freeipa_client_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_client_vault_secret
+            + ':' + freeipa_client_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false

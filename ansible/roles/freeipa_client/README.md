@@ -99,7 +99,8 @@ A re-run on a healthy client makes **no changes**.
 | Variable | Example | Purpose |
 |---|---|---|
 | `domain` | `example.com` | base domain (`group_vars/all.yml`); realm derives as upper-case |
-| `freeipa_client_vault_secret` | `kv/data/platform/freeipa/runtime` | admin password path (admin-join) |
+| `freeipa_client_admin_password` | `Judicial4-Prolonged-Shortly` | admin password (admin-join) — set directly (e.g. from an ansible-vault var) for a HashiCorp-free deployment |
+| `freeipa_client_vault_secret` | `kv/data/platform/freeipa/runtime` | HashiCorp Vault path for the admin password — **fallback only**, used when `freeipa_client_admin_password` is empty |
 | `freeipa_client_use_otp` + `freeipa_client_otp` | `true` / `<otp>` | OTP-join instead of admin |
 | `freeipa_client_servers` | `[idm01.example.com]` | servers to enrol against (else SRV) |
 

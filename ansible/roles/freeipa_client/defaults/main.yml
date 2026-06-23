@@ -26,10 +26,15 @@ freeipa_client_servers: >-
      | map('regex_replace', '^(.*)$', '\1.' + freeipa_client_domain) | list }}
 
 # ── Enrolment credentials ────────────────────────────────────────────────────
-# Admin-based join (default): reads admin password from Vault.
+# Admin-based join (default). The admin password is resolved declared-var-first:
+# set freeipa_client_admin_password directly (e.g. from an ansible-vault encrypted
+# var) for a portable, HashiCorp-free deployment; leave it empty to fall back to a
+# HashiCorp Vault lookup at freeipa_client_vault_secret. This mirrors freeipa_server.
+freeipa_client_admin_principal: "admin"
+freeipa_client_admin_password: ""        # declared/ansible-vault password (wins when set)
+# HashiCorp Vault fallback — used only when freeipa_client_admin_password is empty.
 # ENV-SPECIFIC — set in inventory:
 # freeipa_client_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
-freeipa_client_admin_principal: "admin"
 freeipa_client_admin_password_field: "admin_password"
 # OTP-based join (alternative — preferred for unattended/airgapped enrolment so no
 # admin password touches the client). When use_otp, supply a one-time password
@@ -128,3 +133,9 @@ freeipa_client_subid: false
 
 # ── Preflight tolerances ─────────────────────────────────────────────────────
 freeipa_client_preflight_time_tolerance_sec: 120
+
+# ── Offline resilience (login must survive IPA/storage being down) ────────────
+# Ensure SSSD caches credentials (offline auth) and that SSH key login is served
+# from SSSD (sss_ssh_authorizedkeys) rather than ~/.ssh — so login never depends
+# on a network home. See docs/superpowers/specs/2026-06-23-nfs-network-storage-design.md.
+freeipa_client_offline_resilient: true

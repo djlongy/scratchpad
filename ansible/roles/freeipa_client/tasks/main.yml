@@ -6,6 +6,7 @@
 #   enroll     → upstream ipaclient join (idempotent; re-joins if preflight found stale)
 #   dns        → seed this host's A/PTR record server-side (opt-in; admin-join only)
 #   configure  → post-join client config (automount homes, verification)
+#   resilience → ensure login survives IPA/storage outages (SSSD cache + SSH keys)
 
 - name: Run FreeIPA client preflight (incl. stale-rejoin cleanup)
   ansible.builtin.import_tasks: preflight.yml
@@ -25,3 +26,8 @@
 - name: Configure post-join client integration
   ansible.builtin.import_tasks: configure.yml
   tags: [configure]
+
+- name: Apply offline-resilience guards (login independent of IPA/NFS)
+  ansible.builtin.import_tasks: resilience.yml
+  when: freeipa_client_offline_resilient | bool
+  tags: [resilience]
