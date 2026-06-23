@@ -231,6 +231,31 @@ rule exists), `freeipa_server_crypto_policy` (report-only).
 reconciliation; managed users removed from config are deleted (except
 `freeipa_idam_protected_users`).
 
+### Roles matrix (cleaner user↔group RBAC)
+
+Instead of giving each user a long list of groups, define **roles** — named
+bundles of groups — and let users reference the roles they belong to:
+
+```yaml
+freeipa_idam_roles:
+  - name: platform-admin
+    groups: [app-gitlab-admin, app-harbor-admin, role-tier1-platform-admin]
+  - name: viewer
+    groups: [app-grafana-viewer, app-kibana-viewer]
+
+freeipa_idam_users:
+  - name: alice
+    first: Alice
+    last: Smith
+    roles: [platform-admin, viewer]      # not a 20-line groups list
+```
+
+At reconcile each user's `roles` expand to the union of their groups (merged with
+any direct `groups`), so everything downstream is unchanged. Lossless. Distinct
+from `freeipa_rbac_roles` (which *generates* groups/hostgroups/HBAC/sudo) — this
+just bridges users to **existing** groups. The export builds this matrix
+automatically (see below); `freeipa_server_export_roles=false` for flat groups.
+
 ## Adopt an existing instance (config export / snapshot)
 
 Already have a hand-built FreeIPA you'd rather not rebuild? Snapshot its live

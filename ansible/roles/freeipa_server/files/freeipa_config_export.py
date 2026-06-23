@@ -299,6 +299,42 @@ def export_automember_rules():
     return out
 
 
+def mine_roles(users):
+    """Bridge users <-> groups with a roles matrix via co-occurrence bundling.
+
+    Groups that are held by the EXACT same set of (managed) users always travel
+    together, so they collapse into one role. Each user then references the few
+    roles that cover their groups instead of a long flat group list. Lossless:
+    a user's groups == the union of their roles' groups. Returns (roles, users)
+    where each user carries `roles` instead of `groups`.
+    """
+    group_users = {}                      # group -> frozenset(users holding it)
+    for u in users:
+        for g in u.get("groups", []):
+            group_users.setdefault(g, set()).add(u["name"])
+
+    bundles = {}                          # frozenset(users) -> [groups]
+    for g, us in group_users.items():
+        bundles.setdefault(frozenset(us), []).append(g)
+
+    # Deterministic: order bundles by their (sorted) group list, name role-NN.
+    ordered = sorted(bundles.items(), key=lambda kv: sorted(kv[1]))
+    pad = max(2, len(str(len(ordered))))
+    roles, user_to_roles = [], {}
+    for i, (uset, groups) in enumerate(ordered, 1):
+        name = "role-%0*d" % (pad, i)
+        roles.append({"name": name, "groups": sorted(groups)})
+        for un in uset:
+            user_to_roles.setdefault(un, []).append(name)
+
+    new_users = []
+    for u in users:
+        nu = {k: v for k, v in u.items() if k != "groups"}
+        nu["roles"] = sorted(user_to_roles.get(u["name"], []))
+        new_users.append(nu)
+    return roles, new_users
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--include-host-membership", action="store_true",
@@ -306,6 +342,9 @@ def main():
                          "enrolment + automember)")
     ap.add_argument("--include-sshkeys", action="store_true",
                     help="emit per-user ipasshpubkey values")
+    ap.add_argument("--flat-groups", action="store_true",
+                    help="emit users with a flat `groups` list instead of the "
+                         "roles matrix (default: derive roles)")
     args = ap.parse_args()
 
     api.bootstrap(context="cli", log=None)
@@ -324,6 +363,11 @@ def main():
     if used_fallback and not any(g["name"] == DEFAULT_FALLBACK_GROUP for g in groups):
         groups.append({"name": DEFAULT_FALLBACK_GROUP})
 
+    # Bridge users <-> groups with a roles matrix (unless --flat-groups).
+    roles = []
+    if not args.flat_groups:
+        roles, users = mine_roles(users)
+
     doc = {
         "meta": {
             "source": api.env.host,
@@ -336,6 +380,7 @@ def main():
         "freeipa_server_domain": api.env.domain,
         "freeipa_server_realm": api.env.realm,
         "freeipa_idam_groups": groups,
+        "freeipa_idam_roles": roles,
         "freeipa_idam_users": users,
         "freeipa_idam_hostgroups": export_hostgroups(args.include_host_membership),
         "freeipa_idam_hbacsvcs": export_hbacsvcs(),

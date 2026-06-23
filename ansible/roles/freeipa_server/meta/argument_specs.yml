@@ -92,6 +92,11 @@ argument_specs:
         elements: dict
         required: false
         description: DNS records to manage (ipadnsrecord). Each item needs zone_name, name, record_type, record_value.
+      freeipa_idam_roles:
+        type: list
+        elements: dict
+        required: false
+        description: Roles matrix — each role bundles groups (name + groups). Users reference roles instead of long group lists; at reconcile each user's roles expand to the union of their groups. Distinct from freeipa_rbac_roles.
       freeipa_idam_hbacsvcs:
         type: list
         elements: dict
@@ -118,6 +123,10 @@ argument_specs:
         type: bool
         required: false
         description: Export task — emit per-user SSH public keys in the snapshot.
+      freeipa_server_export_roles:
+        type: bool
+        required: false
+        description: Export task — derive a roles matrix so users reference roles (default true); false emits a flat per-user groups list.
       freeipa_server_setup_adtrust:
         type: bool
         required: false

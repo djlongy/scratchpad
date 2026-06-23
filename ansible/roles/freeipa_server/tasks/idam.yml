@@ -14,12 +14,61 @@
   tags: [freeipa_server, freeipa, idam, rbac]
   when: freeipa_rbac_roles is defined and freeipa_rbac_roles | length > 0
 
+# Roles matrix: a role is a named bundle of groups, and a user references the
+# roles it belongs to instead of a long flat group list. Here we expand each
+# user's `roles` into concrete group memberships (merged with any direct
+# `groups`) and drop the `roles` key, so every task below sees the familiar
+# users-with-groups shape — no other change needed. A user's effective groups =
+# the union of all its roles' groups.
+- name: Build role -> groups lookup
+  ansible.builtin.set_fact:
+    _freeipa_role_groups: >-
+      {{ dict(freeipa_idam_roles | map(attribute='name')
+              | zip(freeipa_idam_roles | map(attribute='groups'))) }}
+  when: freeipa_idam_roles | length > 0
+
+- name: Validate every role referenced by a user is defined
+  ansible.builtin.assert:
+    that: item.1 in _freeipa_role_groups
+    fail_msg: "User '{{ item.0.name }}' references unknown role '{{ item.1 }}'. Define it in freeipa_idam_roles."
+    quiet: true
+  loop: "{{ freeipa_idam_users | subelements('roles', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} -> {{ item.1 }}"
+  when: freeipa_idam_roles | length > 0
+  no_log: true
+
+- name: Expand user roles into group memberships
+  ansible.builtin.set_fact:
+    _freeipa_users_roled: >-
+      {{ (_freeipa_users_roled | default([])) + [
+           (item | dict2items | rejectattr('key', 'equalto', 'roles') | items2dict)
+           | combine({'groups': (
+               (item.groups | default([]))
+               + (item.roles | default([]) | map('extract', _freeipa_role_groups) | flatten)
+             ) | unique })
+         ] }}
+  loop: "{{ freeipa_idam_users }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_roles | length > 0
+  no_log: true
+
+# Downstream tasks consume this internal fact (never the public freeipa_idam_users)
+# so that role expansion holds even when users are supplied via extra-vars, which
+# outrank set_fact. role-expanded when roles are used, else the users as given.
+- name: Resolve effective users (role-expanded when roles are used)
+  ansible.builtin.set_fact:
+    _freeipa_idam_users: >-
+      {{ _freeipa_users_roled if (freeipa_idam_roles | length > 0) else freeipa_idam_users }}
+
 - name: Validate FreeIPA IDAM configuration
   ansible.builtin.assert:
     that:
       - freeipa_idam_managed_group | length > 0
       - freeipa_idam_users is iterable
       - freeipa_idam_groups is iterable
+      - freeipa_idam_roles is iterable
       - freeipa_idam_hostgroups is iterable
       - freeipa_idam_hbacsvcs is iterable
       - freeipa_idam_hbac_rules is iterable
@@ -36,15 +85,15 @@
       - item.groups is defined
       - item.groups is iterable
       - item.groups | length > 0
-    fail_msg: "Each freeipa_idam_users item must include name, first, last, and a non-empty groups list."
-  loop: "{{ freeipa_idam_users }}"
+    fail_msg: "Each freeipa_idam_users item needs name, first, last, and a non-empty group set (via `groups`, or via `roles` that resolve to groups)."
+  loop: "{{ _freeipa_idam_users }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   no_log: true
 
 - name: Build desired FreeIPA username list
   ansible.builtin.set_fact:
-    freeipa_idam_desired_usernames: "{{ freeipa_idam_users | map(attribute='name') | list | unique }}"
+    freeipa_idam_desired_usernames: "{{ _freeipa_idam_users | map(attribute='name') | list | unique }}"
 
 - name: Build declarative FreeIPA group name list
   ansible.builtin.set_fact:
@@ -53,13 +102,13 @@
 - name: Validate FreeIPA usernames are unique
   ansible.builtin.assert:
     that:
-      - freeipa_idam_desired_usernames | length == (freeipa_idam_users | length)
+      - freeipa_idam_desired_usernames | length == (_freeipa_idam_users | length)
     fail_msg: "Duplicate user names found in freeipa_idam_users."
 
 - name: Build requested user->group memberships from user entries
   ansible.builtin.set_fact:
     freeipa_idam_user_group_pairs: "{{ (freeipa_idam_user_group_pairs | default([])) + [ {'user': item.0.name, 'group': item.1} ] }}"
-  loop: "{{ freeipa_idam_users | subelements('groups', skip_missing=True) }}"
+  loop: "{{ _freeipa_idam_users | subelements('groups', skip_missing=True) }}"
   loop_control:
     label: "{{ item.0.name }} -> {{ item.1 }}"
   no_log: true
@@ -97,7 +146,7 @@
 - name: Build FreeIPA users payload without local-only keys
   ansible.builtin.set_fact:
     freeipa_idam_users_effective: "{{ (freeipa_idam_users_effective | default([])) + [item | dict2items | rejectattr('key', 'equalto', 'groups') | items2dict] }}"
-  loop: "{{ freeipa_idam_users }}"
+  loop: "{{ _freeipa_idam_users }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   no_log: true

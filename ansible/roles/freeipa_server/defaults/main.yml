@@ -206,6 +206,14 @@ freeipa_idam_admin_principal: "admin"
 freeipa_idam_admin_password_field: "admin_password"
 freeipa_idam_managed_group: "idam-managed-users"
 freeipa_idam_groups: []
+# Roles matrix — a role is a named bundle of groups; users reference roles
+# (user `roles: [...]`) instead of long flat group lists. At reconcile, each
+# user's roles expand to the union of their groups (merged with any direct
+# `groups`). Distinct from freeipa_rbac_roles (which generates groups/hostgroups/
+# HBAC/sudo) — this just bridges users <-> existing groups for cleaner RBAC.
+freeipa_idam_roles: []
+#  - name: platform-admin
+#    groups: [app-gitlab-admin, app-harbor-admin]
 freeipa_idam_users: []
 freeipa_idam_hostgroups: []
 freeipa_idam_hbacsvcs: []                  # custom HBAC services (seeded before HBAC rule members)
@@ -226,6 +234,9 @@ freeipa_server_export_output: "freeipa.config.snapshot.yml"
 freeipa_server_export_include_host_membership: false
 # Emit per-user SSH public keys.
 freeipa_server_export_include_sshkeys: false
+# Derive a roles matrix (freeipa_idam_roles) so users reference roles, not long
+# group lists. Set false to export a flat `groups` list per user instead.
+freeipa_server_export_roles: true
 
 # ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
 # Runs ipa-migrate ON this (new-realm) primary, pulling identities from a source

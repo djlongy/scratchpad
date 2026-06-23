@@ -30,7 +30,12 @@
 # Remove/change them if you are reapplying into a differently-named realm.
 freeipa_server_domain: {{ _freeipa_export.freeipa_server_domain }}
 freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
-{% for key in ['freeipa_idam_groups', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
+{% if _freeipa_export.freeipa_idam_roles | length > 0 %}
+# Roles matrix — a role is a named bundle of groups; users below reference roles
+# instead of long group lists (derived by co-occurrence: groups always held by
+# the same users bundle together). Lossless. Rename role-NN to meaningful names.
+{% endif %}
+{% for key in ['freeipa_idam_groups', 'freeipa_idam_roles', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
 {% if _freeipa_export[key] | length > 0 %}
 {{ key }}:
 {{ _freeipa_export[key] | to_nice_yaml(indent=2, width=160, sort_keys=False) | indent(2, first=True) }}
