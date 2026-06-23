@@ -80,13 +80,21 @@ teams. `group_vars/all/10_generate.yml` derives the marker from what's loaded:
 
 So a single-team run reconciles only that team's marker; the others are untouched.
 
-## The three layers (smallest grain up)
+## The layers (smallest grain up)
 
 | Layer | Pattern | Generated example | Defined in |
 |-------|---------|-------------------|-----------|
 | **group** (atomic permission) | `<tenant>-<app>-<tier>` | `acme-payments-admin` | `apps × tiers` |
 | **role** (persona; bundles groups) | `role-<tenant>-<persona>` | `role-acme-lead` → `[acme-payments-admin, acme-ledger-admin]` | tenant `roles:` |
 | **user** (assigned roles/groups) | — | `ann.lee` → `role-acme-lead` | tenant `members:` |
+| **HBAC rule** (access) | `hbac-<tenant>-<app>` | `hbac-acme-payments` → those groups SSH to `acme-payments` hostgroup | `apps` (generated) |
+
+**Two kinds of tenant.** Identity tenants (above) own users/groups/roles + HBAC
+*rules*. The **realm/auth tenant** (the FreeIPA realm itself) owns the
+infrastructure baseline (`freeipa_server_*` install/config) and the **global** bits:
+HBAC *services* (`sshd`, custom svcs — one per realm), automember, DNS. Rules are
+per-tenant; services are shared. HBAC rules are additive (not pruned) — remove
+access with `state: absent`.
 
 **Type marker:** roles are prefixed `role-` so the FIRST token tells you the kind —
 `role-*` is a role, everything else is a plain permission group, no segment-parsing

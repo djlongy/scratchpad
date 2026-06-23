@@ -63,3 +63,16 @@ _gen_users: |-
   {% for m in t.members %}
   - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
   {% endfor %}{% endfor %}
+
+# ── LAYER 4 — HBAC RULES (the access layer): per tenant × app, that app's groups
+#    get SSH to that app's hostgroup. One rule per app keeps grants scoped tight.
+#    Prefixed `hbac-` (type marker, like role-). The hbacsvc `sshd` is a STOCK,
+#    realm-global service — custom HBAC *services* belong to the realm/auth tenant
+#    (freeipa_idam_hbacsvcs), not here. HBAC rules are additive (not pruned by the
+#    role); remove a tenant's access by setting state: absent or deleting the rule.
+freeipa_idam_hbac_rules: "{{ _gen_hbac | from_yaml }}"
+_gen_hbac: |-
+  {% for t in _tenant_specs %}
+  {% for app in t.apps %}
+  - {name: "hbac-{{ t.code }}-{{ app }}", description: "{{ t.code }} {{ app }} SSH", group: [{% for tier in (t.tiers | default(identity_access_tiers)) %}"{{ t.code }}-{{ app }}-{{ tier }}"{% if not loop.last %}, {% endif %}{% endfor %}], hostgroup: ["{{ t.code }}-{{ app }}"], hbacsvc: ["sshd"]}
+  {% endfor %}{% endfor %}
