@@ -91,14 +91,11 @@ _idam_users_yaml: |-
   - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
   {% endfor %}{% endfor %}
 
-# ── safety: detect a tenant file that silently failed to load ───────────────
-# Because the role's prune step deletes managed users not in the desired set, a
-# tenant whose file is missing/broken would have its users REMOVED. Expose the live
-# count + a boolean so the play can assert BEFORE idam runs (see site.yml). Bump
-# the expected count whenever you add a tenant file.
-#
-# NB: this checks _all_tenant_specs (how many LOADED), NOT _tenant_specs (how many
-# the selector picked) — so a targeted run (-e idam_tenants=acme) still verifies
-# every tenant file parsed before it prunes anything.
-identity_expected_tenant_count: 2
-identity_tenant_count_ok: "{{ (_all_tenant_specs | length) == identity_expected_tenant_count }}"
+# ── safety: catch a mistyped selector (derived from data — no magic number) ──
+# Adding a tenant is just dropping a new tenant_*.yml file; there is no count to
+# maintain. The only foot-gun is a typo'd selector (e.g. `-e idam_tenants=acmee`)
+# that matches nothing and, in a full run, could reconcile an empty desired set.
+# So we assert every REQUESTED tenant resolves to a loaded tenant_*_spec.
+identity_known_tenants: "{{ _all_tenant_specs | map(attribute='code') | list }}"
+identity_unknown_tenants: "{{ _idam_tenant_filter | difference(identity_known_tenants) }}"
+identity_selector_ok: "{{ identity_unknown_tenants | length == 0 }}"

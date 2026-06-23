@@ -131,7 +131,8 @@ change.
 
 ## Scaling checklist
 
-- **Add a team** → drop `tenant_<code>.yml`, bump `identity_expected_tenant_count`.
+- **Add a team** → drop a new `tenant_<code>.yml`. Nothing else to update — it is
+  auto-discovered; there is no count or registry to maintain.
 - **Add an app** → one line in the tenant's `apps:`; its groups/hostgroup appear.
 - **Add a persona** → one entry in the tenant's `roles:`.
 - **Add a person** → one `members:` line referencing a role, then apply just that
