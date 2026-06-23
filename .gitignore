@@ -180,3 +180,6 @@ ansible/artifactory-as-built*.yml
 **/files/state/*/artifactory.*
 # Ansible inventory local overrides (real hostnames/URLs/secrets — never commit).
 ansible/inventories/**/local.yml
+# FreeIPA config snapshots from `--tags export` (real usernames/emails — rename
+# into group_vars deliberately if you want to commit one)
+**/freeipa.config.snapshot.yml

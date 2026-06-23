@@ -78,3 +78,8 @@
     - freeipa_server_is_primary | bool
     - freeipa_server_restore_name | length > 0
   tags: [never, restore]
+
+- name: Export live config to declarative group_vars (opt-in; primary only)
+  ansible.builtin.import_tasks: export_config.yml
+  when: freeipa_server_is_primary | bool
+  tags: [never, export]

@@ -91,6 +91,18 @@ argument_specs:
         type: bool
         required: false
         description: Force a one-off automember rebuild even when no rule changed (re-evaluates existing members; newly-enrolling hosts are placed automatically without it).
+      freeipa_server_export_output:
+        type: str
+        required: false
+        description: Control-node path for the config snapshot written by the export task (tags-export).
+      freeipa_server_export_include_host_membership:
+        type: bool
+        required: false
+        description: Export task — pin static hostgroup host rosters (default off; enrolment + automember own them).
+      freeipa_server_export_include_sshkeys:
+        type: bool
+        required: false
+        description: Export task — emit per-user SSH public keys in the snapshot.
       freeipa_server_setup_adtrust:
         type: bool
         required: false

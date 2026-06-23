@@ -208,6 +208,31 @@ rule exists), `freeipa_server_crypto_policy` (report-only).
 reconciliation; managed users removed from config are deleted (except
 `freeipa_idam_protected_users`).
 
+## Adopt an existing instance (config export / snapshot)
+
+Already have a hand-built FreeIPA you'd rather not rebuild? Snapshot its live
+config into this role's declarative contract, then reapply with the role —
+no green-field rebuild. The export is **read-only** (only `*_find`/`*_show`
+via the on-server `ipalib`) and opt-in behind the `export` tag:
+
+```bash
+ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags export
+# → writes freeipa.config.snapshot.yml on the control node; move it into an
+#   inventory group_vars (rename to taste) to reapply.
+```
+
+It captures users, groups (+ nesting), hostgroups, HBAC rules, sudo commands &
+rules, password policies, and automember rules into `freeipa_idam_*` /
+`freeipa_server_automember_rules` — the same vars `default/main.yml` documents,
+so the output is drop-in and reapplies idempotently.
+
+Deliberately **not** captured: user passwords / Kerberos keys (unreadable),
+POSIX uid/gid numbers (IPA reassigns on a rebuild — avoids ID collisions),
+hostgroup host rosters (enrolment + automember repopulate them — opt in with
+`freeipa_server_export_include_host_membership=true`), and FreeIPA's own
+`global_policy`. SSH keys are off by default
+(`freeipa_server_export_include_sshkeys=true` to include).
+
 ## IPA-to-IPA realm migration
 
 Migrate identities from a source (old) realm into this realm — 100% Ansible,
