@@ -35,6 +35,16 @@ freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
 # instead of long group lists (derived by co-occurrence: groups always held by
 # the same users bundle together). Lossless. Rename role-NN to meaningful names.
 {% endif %}
+{% if _freeipa_export.meta.roles_excluded_from_mining %}
+# ── Held OUT of role-mining (matched freeipa_server_export_role_exclude) ─────
+# SANITY CHECK, not config (commented out, not loaded). These groups ARE still
+# exported and applied below — as DIRECT group memberships in freeipa_idam_groups
+# and on the users — they are NOT dropped. They were only kept out of the
+# synthetic role bundles, so this explains why a group isn't inside a role:
+{% for pat, grps in _freeipa_export.meta.roles_excluded_from_mining.items() %}
+#   /{{ pat }}/  →  {{ grps | join(', ') }}
+{% endfor %}
+{% endif %}
 {% for key in ['freeipa_idam_groups', 'freeipa_idam_roles', 'freeipa_idam_users', 'freeipa_idam_hostgroups', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_automember_rules'] %}
 {% if _freeipa_export[key] | length > 0 %}
 {{ key }}:

@@ -51,7 +51,7 @@
     {{ '--include-host-membership' if freeipa_server_export_include_host_membership | bool else '' }}
     {{ '--include-sshkeys' if freeipa_server_export_include_sshkeys | bool else '' }}
     {{ '--flat-groups' if not (freeipa_server_export_roles | bool) else '' }}
-    --role-exclude '{{ freeipa_server_export_role_exclude | join(",") }}'
+    --role-exclude {{ freeipa_server_export_role_exclude | to_json | quote }}
     --role-min-groups {{ freeipa_server_export_role_min_groups | int }}
   args:
     executable: /usr/bin/python3

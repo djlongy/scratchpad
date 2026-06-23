@@ -319,13 +319,15 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
 
     Each user then carries the `roles` covering its mineable groups, plus any
     `groups` left direct. Lossless: a user's groups == union(role groups) +
-    direct groups. Returns (roles, users).
+    direct groups. Returns (roles, users, excluded) where `excluded` maps each
+    matched pattern -> the groups it held out of mining (a diagnostic; those
+    groups are STILL exported as direct memberships).
     """
     patterns = ["role"] if exclude_patterns is None else exclude_patterns
-    rxs = [re.compile(p, re.IGNORECASE) for p in patterns if p]
+    pairs = [(p, re.compile(p, re.IGNORECASE)) for p in patterns if p]
 
     def mineable(g):
-        return not any(rx.search(g) for rx in rxs)
+        return not any(rx.search(g) for _, rx in pairs)
 
     group_users = {}                      # mineable group -> set(users holding it)
     for u in users:
@@ -363,7 +365,15 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
         if direct:
             nu["groups"] = direct
         new_users.append(nu)
-    return roles, new_users
+
+    # Diagnostic: which membership groups each pattern held out of mining.
+    excluded = {}
+    for g in sorted({g for u in users for g in u.get("groups", [])}):
+        for p, rx in pairs:
+            if rx.search(g):
+                excluded.setdefault(p, []).append(g)
+                break
+    return roles, new_users, excluded
 
 
 def main():
@@ -376,10 +386,10 @@ def main():
     ap.add_argument("--flat-groups", action="store_true",
                     help="emit users with a flat `groups` list instead of the "
                          "roles matrix (default: derive roles)")
-    ap.add_argument("--role-exclude", default="role", metavar="REGEXES",
-                    help="comma-separated case-insensitive regexes; groups whose "
+    ap.add_argument("--role-exclude", default='["role"]', metavar="JSON",
+                    help="JSON array of case-insensitive regexes; groups whose "
                          "name matches ANY are kept as direct groups, not mined "
-                         "into roles (default: 'role'; '' to mine everything)")
+                         "into roles (default: '[\"role\"]'; '[]' mines everything)")
     ap.add_argument("--role-min-groups", type=int, default=2, metavar="N",
                     help="a co-occurrence bundle becomes a role only with >= N "
                          "groups; smaller bundles stay direct (default: 2)")
@@ -402,10 +412,10 @@ def main():
         groups.append({"name": DEFAULT_FALLBACK_GROUP})
 
     # Bridge users <-> groups with a roles matrix (unless --flat-groups).
-    roles = []
+    roles, roles_excluded = [], {}
     if not args.flat_groups:
-        exclude = [p.strip() for p in args.role_exclude.split(",") if p.strip()]
-        roles, users = mine_roles(users, exclude, args.role_min_groups)
+        exclude = json.loads(args.role_exclude)
+        roles, users, roles_excluded = mine_roles(users, exclude, args.role_min_groups)
 
     doc = {
         "meta": {
@@ -415,6 +425,7 @@ def main():
             "captured_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             "host_membership_included": args.include_host_membership,
             "fallback_group_used": used_fallback,
+            "roles_excluded_from_mining": roles_excluded,
         },
         "freeipa_server_domain": api.env.domain,
         "freeipa_server_realm": api.env.realm,
