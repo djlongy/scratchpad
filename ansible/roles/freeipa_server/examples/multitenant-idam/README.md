@@ -12,26 +12,30 @@ tenant is consistent by construction and you never hand-type a group or role nam
 ```
 multitenant-idam/
 ├── site.yml                         # the play
-├── group_vars/all/                  # GLOBAL logic — adjacent to the playbook, ALWAYS loaded
-│   ├── 00_naming.yml                #   env, domain, name patterns, access tiers
+├── group_vars/all/                  # GLOBAL, env-AGNOSTIC logic — adjacent to the playbook
+│   ├── 00_naming.yml                #   access tiers + the documented name patterns
 │   └── 10_generate.yml              #   tenant_*_spec → freeipa_idam_* + per-tenant marker
 ├── inventories/
 │   ├── acme/                        # team ACME — self-contained
 │   │   ├── hosts.yml                #   its FreeIPA host (its own IP per env/tenancy)
-│   │   └── group_vars/all/tenant.yml   #   its data (tenant_acme_spec)
-│   └── globex/                      # team GLOBEX — self-contained
+│   │   └── group_vars/all/
+│   │       ├── 00_env.yml           #   env + domain (ENVIRONMENT-specific → lives here)
+│   │       └── tenant.yml           #   its data (tenant_acme_spec)
+│   └── globex/                      # team GLOBEX — self-contained (same shape)
 │       ├── hosts.yml
-│       └── group_vars/all/tenant.yml
+│       └── group_vars/all/{00_env.yml, tenant.yml}
 └── alt-single-inventory/            # the same generators, one-inventory layout (comparison)
 ```
 
-**Why host-per-inventory:** Ansible auto-loads `group_vars`/`host_vars` next to the
-*playbook* on every run, so the convention + generators are global and never passed
-on the command line. A *host*, though, can only come from an inventory — so each
-tenant inventory carries its own `hosts.yml`. That is intended: a dev/test tenancy
-is just another inventory dir pointing at that environment's FreeIPA IP, reusing the
-identical naming + generation. Tenants that share one realm repeat the same host
-block (a union run merges the identical host harmlessly).
+**Why host- and env-per-inventory:** Ansible auto-loads `group_vars`/`host_vars` next
+to the *playbook* on every run, so the convention + generators are global and never
+passed on the command line. But that location also **outranks** inventory
+`group_vars/all` in precedence — so anything env-specific put there (like `env` or
+`domain`) would override what a test inventory sets, forcing prod onto test. So
+`env`/`domain` live **per inventory** (`00_env.yml`), and a *host* can only come from
+an inventory anyway — each tenant inventory carries its own `hosts.yml`. A dev/test
+tenancy is just another inventory dir with its own host IP + `env`/`domain`, reusing
+the identical naming + generators. Only env-agnostic things stay global.
 
 ## How you run it — plain `ansible-playbook`, no wrapper
 

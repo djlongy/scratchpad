@@ -1,29 +1,21 @@
 ---
-# group_vars/all/00_naming.yml — shared naming inputs + the documented convention.
+# group_vars/all/00_naming.yml — ENVIRONMENT-AGNOSTIC naming inputs only.
 #
 # This sits next to the PLAYBOOK (site.yml), so Ansible auto-loads it on every run
-# WITHOUT it being named as an inventory — group_vars/host_vars adjacent to a
-# playbook are always loaded. Tenant inventories carry DATA only.
-# In a real repo this lives at playbooks/group_vars/all/ next to the idam playbook.
+# WITHOUT it being named as an inventory. CRUCIAL CONSEQUENCE: playbook group_vars/all
+# OUTRANKS inventory group_vars/all in Ansible's precedence — so anything here CANNOT
+# be overridden by an inventory's group_vars/all. Therefore ONLY put values that are
+# the same in every environment here. Environment-specific values (env, domain) live
+# in each tenant inventory (inventories/<tenant>/group_vars/all/), NOT here — putting
+# `env: prod` here would force prod onto a test inventory.
 #
-# Only two things here are CONSUMED: `env`/`domain` (read by the freeipa_server role
-# for FQDNs/realm) and `identity_access_tiers` (read by 10_generate.yml). The naming
-# PATTERNS are documented in the comment block below; the live source of truth that
-# actually builds the names is the generator in 10_generate.yml (it has to encode
-# both which fields combine AND their format, so the pattern can't be pure data).
+# The only thing CONSUMED from this file is `identity_access_tiers` (read by
+# 10_generate.yml). The naming PATTERNS are documented in the comment block below;
+# the live source of truth that actually builds the names is the generator in
+# 10_generate.yml (it encodes both which fields combine AND their format, so the
+# pattern can't be pure data). env/domain are read by the freeipa_server role and
+# are supplied per-inventory.
 #
-# ── env / domain scaling ─────────────────────────────────────────────────────
-# Each tenant inventory is self-contained, so a dev/test tenancy is just another
-# inventory dir pointing its hosts.yml at that environment's FreeIPA IP, with `env`
-# set per inventory (group_vars there). The identical convention + generators below
-# apply unchanged — only the host IP and env label differ.
-#
-# These two defaults are shown here for a self-contained example; in practice set
-# `env` (and `domain` if it differs) in each tenant inventory's group_vars, not in
-# this shared file, so dev/test/prod can diverge.
-env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
-domain: "example.com"
-
 # ── Naming patterns (documented convention — generators in 10_generate.yml) ───
 #   group       <tenant>-<app>-<tier>              acme-payments-admin
 #   role        role-<tenant>-<persona>            role-acme-developer  (bundle of groups)

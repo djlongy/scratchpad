@@ -1,0 +1,10 @@
+---
+# inventories/acme/group_vars/all/00_env.yml — environment identity for THIS realm.
+#
+# env + domain are ENVIRONMENT-SPECIFIC, so they live in the inventory, never in the
+# playbook-global group_vars/all (which would override them — playbook group_vars/all
+# outranks inventory group_vars/all). The freeipa_server role reads these for the
+# realm/FQDN. A dev/test tenancy is a separate inventory that sets env: dev/test here
+# and points hosts.yml at that environment's FreeIPA — same convention, same generators.
+env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
+domain: "example.com"
