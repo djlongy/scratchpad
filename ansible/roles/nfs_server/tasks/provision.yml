@@ -1,0 +1,35 @@
+---
+# roles/nfs_server/tasks/provision.yml — create the export tree (both modes).
+- name: Ensure the export base directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ nfs_server_base }}"
+    - "{{ nfs_server_base }}/users"
+    - "{{ nfs_server_base }}/share"
+
+- name: Ensure per-user export directories exist (private)
+  ansible.builtin.file:
+    path: "{{ nfs_server_base }}/users/{{ item.name }}"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ nfs_server_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ensure shared/group export directories exist (setgid)
+  ansible.builtin.file:
+    path: "{{ nfs_server_base }}/share/{{ item.name }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode | default('2770') }}"
+  loop: "{{ nfs_server_shares }}"
+  loop_control:
+    label: "{{ item.name }}"

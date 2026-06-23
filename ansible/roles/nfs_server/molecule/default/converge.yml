@@ -1,0 +1,16 @@
+---
+- name: Converge
+  hosts: all
+  become: false
+  vars:
+    nfs_server_kerberos: false
+    nfs_server_manage_service: false
+    nfs_server_manage_firewall: false
+    nfs_server_manage_selinux: false
+    nfs_server_sys_networks: ["192.0.2.0/24"]
+    nfs_server_users:
+      - {name: alice}
+    nfs_server_shares:
+      - {name: ops, group: ops-admins}
+  roles:
+    - role: nfs_server

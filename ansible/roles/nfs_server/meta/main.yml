@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: nfs_server
+  author: longy lab
+  description: Dedicated NFS storage server with per-user/shared exports and krb5p|sys toggle.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["9"]
+    - name: Ubuntu
+      versions: ["jammy", "noble"]
+  galaxy_tags: [nfs, storage, freeipa, kerberos]
+dependencies: []

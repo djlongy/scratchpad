@@ -1,0 +1,7 @@
+{{ ansible_managed | comment }}
+{% for u in nfs_server_users %}
+{{ nfs_server_base }}/users/{{ u.name }} *({{ nfs_server_export_options }},sec=krb5p)
+{% endfor %}
+{% for s in nfs_server_shares %}
+{{ nfs_server_base }}/share/{{ s.name }} *({{ nfs_server_export_options }},sec=krb5p)
+{% endfor %}

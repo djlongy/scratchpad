@@ -1,0 +1,52 @@
+---
+argument_specs:
+  main:
+    short_description: Dedicated NFS storage server (per-user + shared exports, krb5p|sys).
+    description:
+      - Exports a /srv/nfs tree. Per-user dirs are private (0700); shared dirs are
+        setgid (2770). Security is selected by nfs_server_kerberos and dispatched
+        to mutually-exclusive task files.
+    options:
+      nfs_server_kerberos:
+        type: bool
+        default: true
+        description: true → sec=krb5p (FreeIPA-enrolled host); false → sec=sys (subnet trust).
+      nfs_server_base:
+        type: str
+        default: /srv/nfs
+        description: Export root directory (FHS — data served by this system).
+      nfs_server_users:
+        type: list
+        elements: dict
+        default: []
+        description: "Per-user private exports: [{name: <user>}]. Dir 0700 owned <user>:<user>."
+      nfs_server_shares:
+        type: list
+        elements: dict
+        default: []
+        description: "Shared exports: [{name: <share>, group: <grp>, mode: '2770'}]. Dir setgid owned root:<grp>."
+      nfs_server_sys_networks:
+        type: list
+        elements: str
+        default: []
+        description: sec=sys ONLY — allowed client CIDRs. Required when nfs_server_kerberos=false.
+      nfs_server_export_options:
+        type: str
+        default: "rw,soft,no_subtree_check,root_squash"
+        description: Base export options; the security suffix (sec=...) is added per mode.
+      nfs_server_manage_service:
+        type: bool
+        default: true
+        description: Enable/start nfs-server and run exportfs. Disable in containers/CI.
+      nfs_server_manage_firewall:
+        type: bool
+        default: true
+        description: Open tcp/2049 via firewalld (EL).
+      nfs_server_manage_selinux:
+        type: bool
+        default: true
+        description: Set nfs_export_all_* SELinux booleans (EL).
+      nfs_server_realm_domain:
+        type: str
+        required: false
+        description: NFSv4 idmapd Domain (krb5p). Defaults to the global `domain`.

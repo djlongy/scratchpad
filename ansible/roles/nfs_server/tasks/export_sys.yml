@@ -1,0 +1,19 @@
+---
+# roles/nfs_server/tasks/export_sys.yml — host-trust exports (sec=sys). Access is
+# by client subnet only; mutually exclusive with export_kerberos.yml.
+- name: Assert sec=sys networks are defined
+  ansible.builtin.assert:
+    that:
+      - nfs_server_sys_networks | length > 0
+    fail_msg: >-
+      sec=sys mode requires nfs_server_sys_networks (allowed client CIDRs). Set it
+      in inventory, or switch to Kerberos with nfs_server_kerberos=true.
+
+- name: Write host-trust (sec=sys) exports
+  ansible.builtin.template:
+    src: exports_sys.j2
+    dest: /etc/exports.d/nfs_server.exports
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload NFS exports

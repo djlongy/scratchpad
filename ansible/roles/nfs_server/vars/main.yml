@@ -1,0 +1,7 @@
+---
+# roles/nfs_server/vars/main.yml — non-overridable derivations.
+# idmapd Domain must match across server + clients for NFSv4 id mapping. Prefer an
+# explicit nfs_server_realm_domain, else the global `domain`, else the gathered one.
+nfs_server_idmapd_domain: >-
+  {{ nfs_server_realm_domain
+     | default(domain | default(ansible_domain | default('localdomain'), true), true) }}

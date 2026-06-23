@@ -1,0 +1,20 @@
+---
+# roles/nfs_server/tasks/main.yml — dispatch only. Shared plumbing (install,
+# provision) always runs; exactly one security path runs based on the toggle.
+- name: Install and configure the NFS server
+  ansible.builtin.import_tasks: install.yml
+  tags: [nfs_server, install]
+
+- name: Provision per-user and shared export directories
+  ansible.builtin.import_tasks: provision.yml
+  tags: [nfs_server, provision]
+
+- name: Configure Kerberized exports (sec=krb5p)
+  ansible.builtin.import_tasks: export_kerberos.yml
+  when: nfs_server_kerberos | bool
+  tags: [nfs_server, export]
+
+- name: Configure host-trust exports (sec=sys)
+  ansible.builtin.import_tasks: export_sys.yml
+  when: not (nfs_server_kerberos | bool)
+  tags: [nfs_server, export]

@@ -1,0 +1,15 @@
+---
+- name: Prepare
+  hosts: all
+  become: false
+  tasks:
+    - name: Create test group for a shared export
+      ansible.builtin.group:
+        name: ops-admins
+        state: present
+
+    - name: Create a test user for a per-user export
+      ansible.builtin.user:
+        name: alice
+        state: present
+        create_home: false

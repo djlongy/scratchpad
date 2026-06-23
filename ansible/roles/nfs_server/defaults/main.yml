@@ -1,0 +1,27 @@
+---
+# roles/nfs_server/defaults/main.yml
+# Dedicated NFS storage server. Exports a /srv/nfs tree of per-user and shared
+# directories, secured by Kerberos (sec=krb5p) OR host-trust (sec=sys) selected by
+# nfs_server_kerberos. Behavioural defaults live here; env-specifics are commented.
+
+nfs_server_kerberos: true                 # true -> sec=krb5p ; false -> sec=sys
+nfs_server_base: /srv/nfs                  # export root (FHS: data served by this system)
+
+# Per-user private dirs (0700) and shared/group dirs (setgid). Explicit lists keep
+# the role portable (sys mode needs no IPA); a caller may template nfs_server_users
+# from an IPA group at the playbook level.
+nfs_server_users: []                       # [ {name: alice}, ... ]
+nfs_server_shares: []                      # [ {name: ops, group: ops-admins, mode: "2770"}, ... ]
+
+# sec=sys ONLY: client networks allowed to mount (ignored under krb5p).
+nfs_server_sys_networks: []                # e.g. ["192.0.2.0/24"]
+
+nfs_server_export_options: "rw,soft,no_subtree_check,root_squash"
+
+# Host-integration toggles (disable in containers/CI).
+nfs_server_manage_service: true
+nfs_server_manage_firewall: true
+nfs_server_manage_selinux: true
+
+# ENV-SPECIFIC (set in inventory; commented for discoverability):
+# nfs_server_realm_domain: "example.com"   # NFSv4 idmapd Domain (krb5p)

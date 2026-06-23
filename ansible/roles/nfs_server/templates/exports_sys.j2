@@ -1,0 +1,11 @@
+{{ ansible_managed | comment }}
+{% for u in nfs_server_users %}
+{% for net in nfs_server_sys_networks %}
+{{ nfs_server_base }}/users/{{ u.name }} {{ net }}({{ nfs_server_export_options }},sec=sys)
+{% endfor %}
+{% endfor %}
+{% for s in nfs_server_shares %}
+{% for net in nfs_server_sys_networks %}
+{{ nfs_server_base }}/share/{{ s.name }} {{ net }}({{ nfs_server_export_options }},sec=sys)
+{% endfor %}
+{% endfor %}
