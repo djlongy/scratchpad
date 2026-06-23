@@ -53,91 +53,119 @@ except ImportError:  # path moved in newer ansible-core
 class IndentedDumper(yaml.SafeDumper):
     def increase_indent(self, flow=False, indentless=False):
         # indentless=False is the whole trick: never emit indentless sequences.
-        return super(IndentedDumper, self).increase_indent(flow, False)
+        return super().increase_indent(flow, False)
 
 
 # Graft Ansible's representers (AnsibleUnsafeText, vaulted strings, …) onto the
 # pure-Python dumper so live API data (uri results) still serializes cleanly.
-if AnsibleDumper is not None:
+if AnsibleDumper is not None and hasattr(AnsibleDumper, "yaml_representers"):
     for _type, _repr in AnsibleDumper.yaml_representers.items():
         IndentedDumper.add_representer(_type, _repr)
+else:
+    # ansible-core 2.20 turned AnsibleDumper into a factory function with no
+    # class-level representers (the old grafting raised AttributeError, not
+    # ImportError, so it was not caught above). Fall back to dumping every str
+    # subclass — AnsibleUnsafeText, vaulted text — as a plain string so live API
+    # data still serializes instead of raising RepresenterError.
+    IndentedDumper.add_multi_representer(
+        str, lambda dumper, data: dumper.represent_str(str(data)))
+
+
+class _GappedRenderer:
+    """Render a tree to indented YAML with blank-line gaps between siblings down
+    to `gap_depth`. Splitting the closures of the old to_pretty_yaml() into
+    methods keeps each unit simple (and well under Sonar's cognitive-complexity
+    limit) while preserving the exact output."""
+
+    def __init__(self, indent, width, gap_depth, gap_blocks_only, sort_keys):
+        self.indent = indent
+        self.width = width
+        self.gap_depth = gap_depth
+        self.gap_blocks_only = gap_blocks_only
+        self.sort_keys = sort_keys
+
+    def _plain(self, node):
+        return to_text(yaml.dump(
+            node,
+            Dumper=IndentedDumper,
+            indent=self.indent,
+            width=self.width,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=self.sort_keys,
+        ))
+
+    def _reindent(self, text, levels):
+        pad = ' ' * (self.indent * levels)
+        return ''.join(
+            (pad + ln if ln.strip() else ln) + '\n'
+            for ln in text.splitlines()
+        )
+
+    def _bullet(self, text):
+        # turn a column-0 block into a "- " list entry at column 0
+        pad = ' ' * self.indent
+        lines = text.splitlines()
+        out = ['-' + ' ' * (self.indent - 1) + lines[0]]
+        out.extend(pad + ln if ln.strip() else ln for ln in lines[1:])
+        return '\n'.join(out) + '\n'
+
+    def _key_header(self, key):
+        # serialize just the key (with correct quoting): "<key>: {}" → "<key>:"
+        line = self._plain({key: {}}).rstrip('\n')
+        return line[:line.rindex(': {}')] + ':'
+
+    def _join(self, parts):
+        # Concatenate sibling blocks, deciding the separator per-boundary.
+        # gap_blocks_only: blank line only when a multi-line block is on either
+        # side; two single-line siblings stay packed. Otherwise: always a blank
+        # line (every sibling its own paragraph).
+        out = ''
+        for i, part in enumerate(parts):
+            if i:
+                block = ('\n' in parts[i - 1]) or ('\n' in part)
+                out += '\n\n' if (block or not self.gap_blocks_only) else '\n'
+            out += part
+        return out + '\n'
+
+    def _render_dict(self, node, depth):
+        parts = []
+        for key in (sorted(node, key=str) if self.sort_keys else list(node)):
+            value = node[key]
+            if isinstance(value, (dict, list)) and value and depth < self.gap_depth:
+                body = self._reindent(self.render(value, depth + 1), 1)
+                parts.append(self._key_header(key) + '\n' + body.rstrip('\n'))
+            else:
+                parts.append(self._plain({key: value}).rstrip('\n'))
+        return parts
+
+    def _render_list(self, node, depth):
+        parts = []
+        for entry in node:
+            if isinstance(entry, (dict, list)) and entry and depth < self.gap_depth:
+                parts.append(self._bullet(self.render(entry, depth + 1)).rstrip('\n'))
+            else:
+                parts.append(self._plain([entry]).rstrip('\n'))
+        return parts
+
+    def render(self, node, depth):
+        # Emit `node` at column 0 with blank lines between its children when
+        # their depth (= `depth`) is within gap_depth.
+        if depth > self.gap_depth or not isinstance(node, (dict, list)) or not node:
+            return self._plain(node)
+        parts = (self._render_dict(node, depth) if isinstance(node, dict)
+                 else self._render_list(node, depth))
+        return self._join(parts)
 
 
 def to_pretty_yaml(data, indent=2, width=200, gap_depth=1,
                    gap_blocks_only=True, sort_keys=False):
     try:
-        gap_depth = int(gap_depth)
-        gap_blocks_only = bool(gap_blocks_only)
-
-        def plain(node):
-            return to_text(yaml.dump(
-                node,
-                Dumper=IndentedDumper,
-                indent=indent,
-                width=width,
-                allow_unicode=True,
-                default_flow_style=False,
-                sort_keys=sort_keys,
-            ))
-
-        def reindent(text, levels):
-            pad = ' ' * (indent * levels)
-            return ''.join(
-                (pad + ln if ln.strip() else ln) + '\n'
-                for ln in text.splitlines()
-            )
-
-        def bullet(text):
-            # turn a column-0 block into a "- " list entry at column 0
-            pad = ' ' * indent
-            lines = text.splitlines()
-            out = ['-' + ' ' * (indent - 1) + lines[0]]
-            out.extend(pad + ln if ln.strip() else ln for ln in lines[1:])
-            return '\n'.join(out) + '\n'
-
-        def key_header(k):
-            # serialize just the key (with correct quoting): "<key>: {}" → "<key>:"
-            line = plain({k: {}}).rstrip('\n')
-            return line[:line.rindex(': {}')] + ':'
-
-        def join(parts):
-            # Concatenate sibling blocks, deciding the separator per-boundary.
-            # gap_blocks_only: blank line only when a multi-line block is on
-            # either side; two single-line siblings stay packed. Otherwise:
-            # always a blank line (every sibling its own paragraph).
-            out = ''
-            for i, part in enumerate(parts):
-                if i:
-                    block = ('\n' in parts[i - 1]) or ('\n' in part)
-                    out += '\n\n' if (block or not gap_blocks_only) else '\n'
-                out += part
-            return out + '\n'
-
-        def render(node, depth):
-            # Emit `node` at column 0 with blank lines between its children
-            # when their depth (= `depth`) is within gap_depth.
-            if depth > gap_depth or not isinstance(node, (dict, list)) or not node:
-                return plain(node)
-            parts = []
-            if isinstance(node, dict):
-                for k in (sorted(node, key=str) if sort_keys else list(node)):
-                    v = node[k]
-                    if isinstance(v, (dict, list)) and v and depth < gap_depth:
-                        body = reindent(render(v, depth + 1), 1)
-                        parts.append(key_header(k) + '\n' + body.rstrip('\n'))
-                    else:
-                        parts.append(plain({k: v}).rstrip('\n'))
-            else:
-                for e in node:
-                    if isinstance(e, (dict, list)) and e and depth < gap_depth:
-                        parts.append(bullet(render(e, depth + 1)).rstrip('\n'))
-                    else:
-                        parts.append(plain([e]).rstrip('\n'))
-            return join(parts)
-
-        return render(data, 1)
-    except Exception as exc:
-        raise AnsibleFilterError('to_pretty_yaml: %s' % exc)
+        renderer = _GappedRenderer(
+            indent, width, int(gap_depth), bool(gap_blocks_only), sort_keys)
+        return renderer.render(data, 1)
+    except (yaml.YAMLError, ValueError, TypeError, RecursionError) as exc:
+        raise AnsibleFilterError(f"to_pretty_yaml: {exc}") from exc
 
 
 class FilterModule(object):

@@ -66,6 +66,11 @@ SECTION_IDENTITY = {
     'artifactory_webhooks': 'key',
 }
 
+# Diff-result schema keys — one source of truth for config_diff's output shape,
+# read back by diff_summary.
+_ADDED, _REMOVED, _CHANGED = 'added', 'removed', 'changed'
+_BEFORE, _AFTER = 'before', 'after'
+
 
 def _get_path(obj, path):
     """Resolve a dotted path (general_data.name) against a mapping; None if absent."""
@@ -100,12 +105,12 @@ def config_diff(saved, asbuilt, identity=None, ignore=None):
             ab_map = {_get_path(i, idk): i for i in (ab or []) if isinstance(i, dict)}
             added = [ab_map[k] for k in ab_map if k not in sv_map]
             removed = [sv_map[k] for k in sv_map if k not in ab_map]
-            changed = [{'id': k, 'before': sv_map[k], 'after': ab_map[k]}
+            changed = [{'id': k, _BEFORE: sv_map[k], _AFTER: ab_map[k]}
                        for k in ab_map if k in sv_map and ab_map[k] != sv_map[k]]
             if added or removed or changed:
-                result[sec] = {'added': added, 'removed': removed, 'changed': changed}
+                result[sec] = {_ADDED: added, _REMOVED: removed, _CHANGED: changed}
         elif sv != ab and (sv or ab):
-            result[sec] = {'before': sv, 'after': ab}
+            result[sec] = {_BEFORE: sv, _AFTER: ab}
     return result
 
 
@@ -114,11 +119,11 @@ def diff_summary(diff):
     lines = []
     for sec in sorted(diff):
         d = diff[sec]
-        if 'added' in d:
-            lines.append("%-40s +%d ~%d -%d" % (
-                sec, len(d['added']), len(d['changed']), len(d['removed'])))
+        if _ADDED in d:
+            lines.append(
+                f"{sec:<40} +{len(d[_ADDED])} ~{len(d[_CHANGED])} -{len(d[_REMOVED])}")
         else:
-            lines.append("%-40s changed (scalar/map)" % sec)
+            lines.append(f"{sec:<40} changed (scalar/map)")
     return lines or ["no differences — live state matches the desired group_vars"]
 
 
@@ -190,42 +195,55 @@ def _coerce_scalar(v):
     return v
 
 
+def _clean_wrapped(wrapper_key, val):
+    """Unwrap an XML <plural><singular ...>…</singular></plural> block into a
+    keyed map {<identity>: {…}}, cleaning each item. None if the block is empty."""
+    child, idf = _CONFIG_WRAP[wrapper_key]
+    inner = val.get(child) if isinstance(val, dict) else val
+    if inner is None:
+        return None
+    items = inner if isinstance(inner, list) else [inner]
+    keyed = {}
+    for item in items:
+        cleaned = _clean_config(item, wrapper_key)
+        if not isinstance(cleaned, dict):
+            continue
+        idv = cleaned.pop(idf, None)
+        if idv is not None:
+            keyed[idv] = cleaned
+    return keyed or None
+
+
+def _skip_key(key, parent):
+    """True if a descriptor key is an @attr, a secret leaf, or a security
+    sub-block the role manages elsewhere — none of which belong in the YAML."""
+    return (key.startswith('@')
+            or _SECRET_RE.search(key)
+            or (parent == 'security' and key in _SECURITY_SUBKEYS_DROP))
+
+
 def _clean_config(node, parent=None):
     """Recursively reshape an xmltodict descriptor node into PATCH-ready form:
     drop @attrs/secrets/empties, unwrap list-wrappers into keyed maps, and
     coerce scalar types. Empties (None/''/[]/{}) are pruned so unset fields are
     simply absent (PATCH is additive — absent leaves existing values alone)."""
-    if isinstance(node, dict):
-        out = {}
-        for k, val in node.items():
-            if k.startswith('@') or _SECRET_RE.search(k):
-                continue
-            if parent == 'security' and k in _SECURITY_SUBKEYS_DROP:
-                continue
-            if k in _CONFIG_WRAP:
-                child, idf = _CONFIG_WRAP[k]
-                inner = val.get(child) if isinstance(val, dict) else val
-                if inner is None:
-                    continue
-                items = inner if isinstance(inner, list) else [inner]
-                keyed = {}
-                for it in items:
-                    ci = _clean_config(it, k)
-                    if not isinstance(ci, dict):
-                        continue
-                    idv = ci.pop(idf, None)
-                    if idv is not None:
-                        keyed[idv] = ci
-                if keyed:
-                    out[k] = keyed
-                continue
-            cv = _clean_config(val, k)
-            if cv not in (None, '', [], {}):
-                out[k] = cv
-        return out
     if isinstance(node, list):
         return [_clean_config(x, parent) for x in node]
-    return _coerce_scalar(node)
+    if not isinstance(node, dict):
+        return _coerce_scalar(node)
+    out = {}
+    for key, val in node.items():
+        if _skip_key(key, parent):
+            continue
+        if key in _CONFIG_WRAP:
+            keyed = _clean_wrapped(key, val)
+            if keyed:
+                out[key] = keyed
+            continue
+        cleaned = _clean_config(val, key)
+        if cleaned not in (None, '', [], {}):
+            out[key] = cleaned
+    return out
 
 
 def descriptor_to_config(parsed):

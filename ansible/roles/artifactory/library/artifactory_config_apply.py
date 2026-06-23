@@ -25,6 +25,8 @@ rejected ({block: message}).  NB: the result key is 'rejected', not 'failed' —
 from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
+import base64
+import copy
 import json
 import re
 
@@ -37,6 +39,8 @@ try:
     HAS_YAML = True
 except ImportError:
     HAS_YAML = False
+
+_HTTP_OK = 200
 
 # 400 messages that name a single offending key we can drop and retry.
 _UNKNOWN_KEY_RE = re.compile(
@@ -61,7 +65,6 @@ def _strip_key(node, target):
 def _patch_block(module, url, headers, block, value, max_drops):
     """PATCH one {block: value}, dropping server-rejected keys until it applies.
     Returns (status, dropped_keys, message)."""
-    import copy
     body_val = copy.deepcopy(value)
     dropped = []
     for _ in range(max_drops + 1):
@@ -71,14 +74,14 @@ def _patch_block(module, url, headers, block, value, max_drops):
             headers=headers, method='PATCH',
             timeout=module.params['timeout'])
         status = info.get('status', -1)
-        if status == 200:
-            return 200, dropped, ''
+        if status == _HTTP_OK:
+            return _HTTP_OK, dropped, ''
         # read the error body (fetch_url puts it in info['body'] on failure)
         raw = info.get('body')
         if raw is None and resp is not None:
             try:
                 raw = resp.read()
-            except Exception:
+            except (OSError, AttributeError):
                 raw = b''
         text = to_text(raw or b'')
         # The message is wrapped in JSON ({"errors":[{"message":"Key \"x\" …"}]}),
@@ -102,7 +105,7 @@ def _patch_block(module, url, headers, block, value, max_drops):
         if n == 0 or body_val in ({}, None, [], ''):
             return status, dropped, text[:300]
         dropped.append(bad)
-    return status, dropped, 'exceeded max_drops (%d)' % max_drops
+    return status, dropped, f'exceeded max_drops ({max_drops})'
 
 
 def main():
@@ -128,24 +131,21 @@ def main():
     if p['token']:
         headers['Authorization'] = 'Bearer ' + p['token']
     elif p['username']:
-        import base64
-        basic = base64.b64encode(('%s:%s' % (p['username'], p['password'])).encode()).decode()
+        creds = f"{p['username']}:{p['password']}"
+        basic = base64.b64encode(creds.encode()).decode()
         headers['Authorization'] = 'Basic ' + basic
-
-    module.params['validate_certs'] = p['validate_certs']
-    module.params['timeout'] = p['timeout']
 
     applied, dropped, rejected = [], {}, {}
 
     if module.check_mode:
         module.exit_json(changed=bool(cfg), applied=list(cfg.keys()),
                          dropped={}, rejected={},
-                         msg="check mode: would apply %d block(s)" % len(cfg))
+                         msg=f"check mode: would apply {len(cfg)} block(s)")
 
     for block, value in cfg.items():
         status, drops, msg = _patch_block(
             module, p['url'], headers, block, value, p['max_drops'])
-        if status == 200:
+        if status == _HTTP_OK:
             applied.append(block)
             if drops:
                 dropped[block] = drops
@@ -157,8 +157,8 @@ def main():
         applied=applied,
         dropped=dropped,
         rejected=rejected,
-        msg="applied %d block(s); %d with dropped keys; %d rejected"
-            % (len(applied), len(dropped), len(rejected)),
+        msg=(f"applied {len(applied)} block(s); "
+             f"{len(dropped)} with dropped keys; {len(rejected)} rejected"),
     )
 
 

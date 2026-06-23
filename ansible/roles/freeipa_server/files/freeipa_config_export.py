@@ -41,6 +41,12 @@ DEFAULT_HBACSVCS = {
     "crond", "ftp", "gdm", "gdm-password", "gssftp", "kdm", "login", "proftpd",
     "pure-ftpd", "sshd", "su", "su-l", "sudo", "sudo-i", "systemd-user", "vsftpd",
 }
+# Reused output-contract / LDAP-attribute key names — a single source for the
+# repeated string literals. ("group"/"hostgroup" are deliberately NOT constants:
+# they double as automember type values, which is a different meaning.)
+_DESCRIPTION = "description"
+_GROUPS, _ROLES = "groups", "roles"
+_USERCATEGORY, _HOSTCATEGORY = "usercategory", "hostcategory"
 
 
 def _one(entry, key):
@@ -119,7 +125,7 @@ def export_groups():
         nested = [g for g in _many(e, "member_group") if g in names]
         out.append(_prune({
             "name": name,
-            "description": _str(e, "description"),
+            _DESCRIPTION: _str(e, _DESCRIPTION),
             "group": nested,  # nested member groups only; user membership lives on users
             # Member managers — users/groups allowed to manage THIS group's
             # membership without being admins (e.g. a PAM/JIT toggler service).
@@ -148,7 +154,7 @@ def export_users(group_names, include_sshkeys):
             "first": _str(e, "givenname") or name,
             "last": _str(e, "sn") or name,
             "email": _many(e, "mail"),
-            "groups": groups,
+            _GROUPS: groups,
         }
         if include_sshkeys:
             item["sshpubkey"] = _many(e, "ipasshpubkey")
@@ -163,7 +169,7 @@ def export_hostgroups(include_host_membership):
         name = _str(e, "cn")
         if not name:
             continue
-        item = {"name": name, "description": _str(e, "description")}
+        item = {"name": name, _DESCRIPTION: _str(e, _DESCRIPTION)}
         nested = [g for g in _many(e, "member_hostgroup") if g in names]
         if nested:
             item["hostgroup"] = nested
@@ -181,9 +187,9 @@ def export_hbac_rules():
             continue
         item = {
             "name": name,
-            "description": _str(e, "description"),
-            "usercategory": _str(e, "usercategory"),
-            "hostcategory": _str(e, "hostcategory"),
+            _DESCRIPTION: _str(e, _DESCRIPTION),
+            _USERCATEGORY: _str(e, _USERCATEGORY),
+            _HOSTCATEGORY: _str(e, _HOSTCATEGORY),
             "servicecategory": _str(e, "servicecategory"),
             "user": _many(e, "memberuser_user"),
             "group": _many(e, "memberuser_group"),
@@ -208,7 +214,7 @@ def export_hbacsvcs(stock):
         name = _str(e, "cn")
         if not name or name in stock:
             continue
-        out.append(_prune({"name": name, "description": _str(e, "description")}))
+        out.append(_prune({"name": name, _DESCRIPTION: _str(e, _DESCRIPTION)}))
     return out
 
 
@@ -218,7 +224,7 @@ def export_sudo_commands():
         name = _str(e, "sudocmd")
         if not name:
             continue
-        out.append(_prune({"name": name, "description": _str(e, "description")}))
+        out.append(_prune({"name": name, _DESCRIPTION: _str(e, _DESCRIPTION)}))
     return out
 
 
@@ -230,9 +236,9 @@ def export_sudo_rules():
             continue
         item = {
             "name": name,
-            "description": _str(e, "description"),
-            "usercategory": _str(e, "usercategory"),
-            "hostcategory": _str(e, "hostcategory"),
+            _DESCRIPTION: _str(e, _DESCRIPTION),
+            _USERCATEGORY: _str(e, _USERCATEGORY),
+            _HOSTCATEGORY: _str(e, _HOSTCATEGORY),
             "cmdcategory": _str(e, "cmdcategory"),
             "runasusercategory": _str(e, "ipasudorunasusercategory"),
             "runasgroupcategory": _str(e, "ipasudorunasgroupcategory"),
@@ -301,11 +307,66 @@ def export_automember_rules():
             out.append(_prune({
                 "name": name,
                 "automember_type": atype,
-                "description": _str(e, "description"),
+                _DESCRIPTION: _str(e, _DESCRIPTION),
                 "inclusive": inclusive,
                 "exclusive": exclusive,
             }))
     return out
+
+
+def _mineable(group, pairs):
+    return not any(rx.search(group) for _, rx in pairs)
+
+
+def _cooccurrence_roles(users, pairs, min_groups):
+    """Bundle mineable groups held by the same user-set into role-NN, keeping
+    only bundles of >= min_groups groups. Returns (roles, user_to_roles)."""
+    group_users = {}                      # mineable group -> set(users holding it)
+    for u in users:
+        for g in u.get(_GROUPS, []):
+            if _mineable(g, pairs):
+                group_users.setdefault(g, set()).add(u["name"])
+    bundles = {}                          # frozenset(users) -> [groups]
+    for g, us in group_users.items():
+        bundles.setdefault(frozenset(us), []).append(g)
+    qualifying = sorted(
+        (kv for kv in bundles.items() if len(kv[1]) >= max(1, min_groups)),
+        key=lambda kv: sorted(kv[1]),
+    )
+    pad = max(2, len(str(len(qualifying) or 1)))
+    roles, user_to_roles = [], {}
+    for i, (uset, groups) in enumerate(qualifying, 1):
+        name = f"role-{i:0{pad}d}"
+        roles.append({"name": name, _GROUPS: sorted(groups)})
+        for un in uset:
+            user_to_roles.setdefault(un, []).append(name)
+    return roles, user_to_roles
+
+
+def _native_users(users):
+    """Copy each user verbatim with an empty `roles: []` placeholder inserted
+    before `groups` — full real membership preserved, no auto-assigned roles."""
+    out = []
+    for u in users:
+        nu = {}
+        for key, value in u.items():
+            if key == _GROUPS and _ROLES not in nu:
+                nu[_ROLES] = []
+            nu[key] = value
+        nu.setdefault(_ROLES, [])
+        out.append(nu)
+    return out
+
+
+def _excluded_by_pattern(users, pairs):
+    """Diagnostic: the groups each exclude-pattern held out of mining."""
+    excluded = {}
+    for g in sorted({g for u in users for g in u.get(_GROUPS, [])}):
+        for pat, rx in pairs:
+            if rx.search(g):
+                excluded.setdefault(pat, []).append(g)
+                break
+    return excluded
 
 
 def mine_roles(users, exclude_patterns=None, min_groups=2):
@@ -334,59 +395,11 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
     """
     patterns = ["role"] if exclude_patterns is None else exclude_patterns
     pairs = [(p, re.compile(p, re.IGNORECASE)) for p in patterns if p]
-
-    def mineable(g):
-        return not any(rx.search(g) for _, rx in pairs)
-
-    group_users = {}                      # mineable group -> set(users holding it)
-    for u in users:
-        for g in u.get("groups", []):
-            if mineable(g):
-                group_users.setdefault(g, set()).add(u["name"])
-
-    bundles = {}                          # frozenset(users) -> [groups]
-    for g, us in group_users.items():
-        bundles.setdefault(frozenset(us), []).append(g)
-
-    # Only bundles of >= min_groups qualify as roles. Deterministic role-NN names.
-    qualifying = sorted(
-        (kv for kv in bundles.items() if len(kv[1]) >= max(1, min_groups)),
-        key=lambda kv: sorted(kv[1]),
-    )
-    pad = max(2, len(str(len(qualifying) or 1)))
-    roles, user_to_roles, in_a_role = [], {}, set()
-    for i, (uset, groups) in enumerate(qualifying, 1):
-        name = "role-%0*d" % (pad, i)
-        roles.append({"name": name, "groups": sorted(groups)})
-        in_a_role.update(groups)
-        for un in uset:
-            user_to_roles.setdefault(un, []).append(name)
-
-    # Users stay native: full groups preserved, an empty `roles: []` placeholder
-    # inserted before `groups`. We do NOT auto-assign roles — copy-paste-apply
-    # must reproduce real FreeIPA membership, never the synthetic suggestion.
-    new_users = []
-    for u in users:
-        nu = {}
-        for k, v in u.items():
-            if k == "groups" and "roles" not in nu:
-                nu["roles"] = []
-            nu[k] = v
-        nu.setdefault("roles", [])
-        new_users.append(nu)
-
-    # Advisory: which roles each user WOULD get if the suggestion were adopted.
+    roles, user_to_roles = _cooccurrence_roles(users, pairs, min_groups)
     user_role_map = {u["name"]: sorted(user_to_roles[u["name"]])
                      for u in users if user_to_roles.get(u["name"])}
-
-    # Diagnostic: which membership groups each pattern held out of mining.
-    excluded = {}
-    for g in sorted({g for u in users for g in u.get("groups", [])}):
-        for p, rx in pairs:
-            if rx.search(g):
-                excluded.setdefault(p, []).append(g)
-                break
-    return roles, new_users, excluded, user_role_map
+    return (roles, _native_users(users),
+            _excluded_by_pattern(users, pairs), user_role_map)
 
 
 def main():
