@@ -20,8 +20,14 @@ domain: "example.com"
 # never hand-types a group / role / host name and every tenant is consistent.
 #
 #   group       <tenant>-<app>-<tier>              acme-payments-admin
-#   role        <tenant>-<persona>                 acme-developer   (bundle of groups)
+#   role        role-<tenant>-<persona>            role-acme-developer  (bundle of groups)
 #   hostgroup   <tenant>-<app>                      acme-payments
+#
+# NOTE the type marker: roles are prefixed `role-` so the FIRST token tells you
+# the kind. In any list you can see `role-*` = a role and skip everything else,
+# without parsing segments to guess whether `admin` is an app tier or a role.
+# Permission groups keep the plain <tenant>-<app>-<tier> name. (`role-*` also
+# matches the export tool's default exclude, so roles are never re-mined.)
 #   host FQDN   <env>-<tenant>-<app>-<NN>.<domain>  prod-acme-payments-01.example.com
 #   service URL <app>.<tenant>.<env>.<domain>       payments.acme.prod.example.com
 #
@@ -29,7 +35,7 @@ domain: "example.com"
 # env in the NAME (not a DNS subdomain); the service URL keeps an env subdomain.
 identity_naming:
   group: "{tenant}-{app}-{tier}"
-  role: "{tenant}-{persona}"
+  role: "role-{tenant}-{persona}"
   hostgroup: "{tenant}-{app}"
   host_fqdn: "{env}-{tenant}-{app}-{nn}.{domain}"
   service_url: "{app}.{tenant}.{env}.{domain}"

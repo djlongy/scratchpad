@@ -41,8 +41,14 @@ multitenant-idam/
 | Layer | Pattern | Generated example | Defined in |
 |-------|---------|-------------------|-----------|
 | **group** (atomic permission) | `<tenant>-<app>-<tier>` | `acme-payments-admin` | `apps × tiers` |
-| **role** (persona; bundles groups) | `<tenant>-<persona>` | `acme-lead` → `[acme-payments-admin, acme-ledger-admin]` | tenant `roles:` |
-| **user** (assigned roles/groups) | — | `ann.lee` → role `acme-lead` | tenant `members:` |
+| **role** (persona; bundles groups) | `role-<tenant>-<persona>` | `role-acme-lead` → `[acme-payments-admin, acme-ledger-admin]` | tenant `roles:` |
+| **user** (assigned roles/groups) | — | `ann.lee` → role `role-acme-lead` | tenant `members:` |
+
+**Type marker:** roles are prefixed `role-` so the FIRST token tells you the kind.
+Scan any list and `role-*` = a role, everything else = a plain permission group —
+no parsing segments to guess whether `admin` is an app tier or a role. (`role-*`
+also matches the export tool's default exclude, so roles are never re-mined into
+groups.) Permission groups keep the plain `<tenant>-<app>-<tier>` name.
 
 Plus `hostgroup` (`<tenant>-<app>`), host FQDN (`<env>-<tenant>-<app>-<NN>.<domain>`),
 and service URL (`<app>.<tenant>.<env>.<domain>`). All patterns live in `00_naming.yml`.
@@ -58,13 +64,13 @@ line referencing a persona — no group math.
 tenants: [acme, globex]
 groups (8): acme-payments-{admin,operator,viewer}, acme-ledger-{admin,operator,viewer},
             globex-search-{admin,viewer}                 # globex narrowed its tiers
-roles:      acme-developer  -> [acme-payments-operator, acme-ledger-viewer]
-            acme-lead       -> [acme-payments-admin,    acme-ledger-admin]
-            globex-analyst  -> [globex-search-viewer]
-            globex-owner    -> [globex-search-admin]
-users:      ann.lee -> role acme-lead        bo.ng  -> role acme-developer
+roles:      role-acme-developer  -> [acme-payments-operator, acme-ledger-viewer]
+            role-acme-lead       -> [acme-payments-admin,    acme-ledger-admin]
+            role-globex-analyst  -> [globex-search-viewer]
+            role-globex-owner    -> [globex-search-admin]
+users:      ann.lee -> role-acme-lead        bo.ng  -> role-acme-developer
             cj.park -> group acme-payments-viewer (direct, no role)
-            dee.fox -> role globex-owner      eli.mak -> role globex-analyst
+            dee.fox -> role-globex-owner     eli.mak -> role-globex-analyst
 ```
 
 ## Run it

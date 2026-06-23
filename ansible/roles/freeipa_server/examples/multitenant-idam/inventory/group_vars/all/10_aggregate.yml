@@ -34,13 +34,15 @@ _idam_groups_yaml: |-
   {% endfor %}{% endfor %}{% endfor %}
 
 # ── LAYER 2 — roles: a persona that bundles several (app,tier) groups ────────
-# Each tenant role becomes "<code>-<persona>" whose groups are the rendered grants.
+# Each tenant role becomes "role-<code>-<persona>" whose groups are the rendered
+# grants. The `role-` prefix is a TYPE MARKER: the first token says "this is a
+# role", so roles are visually distinct from plain permission groups in any list.
 # Users reference these instead of long flat group lists; the role expands them.
 freeipa_idam_roles: "{{ _idam_roles_yaml | from_yaml }}"
 _idam_roles_yaml: |-
   {% for t in _tenant_specs %}
   {% for r in (t.roles | default([])) %}
-  - {name: "{{ t.code }}-{{ r.name }}", groups: [{% for g in r.grants %}"{{ t.code }}-{{ g.app }}-{{ g.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]}
+  - {name: "role-{{ t.code }}-{{ r.name }}", groups: [{% for g in r.grants %}"{{ t.code }}-{{ g.app }}-{{ g.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]}
   {% endfor %}{% endfor %}
 
 # ── hostgroups: every tenant × app ──────────────────────────────────────────
@@ -59,7 +61,7 @@ freeipa_idam_users: "{{ _idam_users_yaml | from_yaml }}"
 _idam_users_yaml: |-
   {% for t in _tenant_specs %}
   {% for m in t.members %}
-  - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
+  - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
   {% endfor %}{% endfor %}
 
 # ── safety: detect a tenant file that silently failed to load ───────────────
