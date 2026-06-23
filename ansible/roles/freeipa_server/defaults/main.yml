@@ -237,6 +237,15 @@ freeipa_server_export_include_sshkeys: false
 # Derive a roles matrix (freeipa_idam_roles) so users reference roles, not long
 # group lists. Set false to export a flat `groups` list per user instead.
 freeipa_server_export_roles: true
+# Groups whose name matches ANY of these case-insensitive regexes are NOT mined
+# into roles — they belong to a layer that already owns them (your role-* groups,
+# or an external PAM such as elegrant that manages its own groups). They stay as
+# direct group memberships. Add your own patterns; [] mines everything.
+freeipa_server_export_role_exclude:
+  - role
+# A co-occurrence bundle becomes a role only with at least this many groups;
+# smaller bundles stay as direct groups (no 1-group "roles").
+freeipa_server_export_role_min_groups: 2
 
 # ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
 # Runs ipa-migrate ON this (new-realm) primary, pulling identities from a source

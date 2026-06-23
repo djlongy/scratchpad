@@ -127,6 +127,15 @@ argument_specs:
         type: bool
         required: false
         description: Export task — derive a roles matrix so users reference roles (default true); false emits a flat per-user groups list.
+      freeipa_server_export_role_exclude:
+        type: list
+        elements: str
+        required: false
+        description: Export task — case-insensitive regexes; groups matching any are kept as direct memberships, not mined into roles (default ['role']; e.g. add 'elegrant'/'pam' for PAM-owned groups).
+      freeipa_server_export_role_min_groups:
+        type: int
+        required: false
+        description: Export task — minimum groups in a co-occurrence bundle for it to become a role (default 2); smaller bundles stay as direct groups.
       freeipa_server_setup_adtrust:
         type: bool
         required: false

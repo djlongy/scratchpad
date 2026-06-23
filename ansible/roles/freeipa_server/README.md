@@ -253,8 +253,21 @@ freeipa_idam_users:
 At reconcile each user's `roles` expand to the union of their groups (merged with
 any direct `groups`), so everything downstream is unchanged. Lossless. Distinct
 from `freeipa_rbac_roles` (which *generates* groups/hostgroups/HBAC/sudo) — this
-just bridges users to **existing** groups. The export builds this matrix
-automatically (see below); `freeipa_server_export_roles=false` for flat groups.
+just bridges users to **existing** groups.
+
+The export **derives** this matrix from live state by co-occurrence (groups
+always held by the same users bundle into one role). Two knobs keep it honest:
+
+- `freeipa_server_export_role_exclude` (default `[role]`) — a list of
+  case-insensitive regexes; groups matching any are kept as **direct** group
+  memberships, not mined. Add patterns for layers that own their own groups —
+  e.g. your `role-*` groups, or a PAM like `elegrant`/`pam_*`:
+  `[role, elegrant, pam, approver, eligible]`.
+- `freeipa_server_export_role_min_groups` (default `2`) — a bundle becomes a role
+  only with at least this many groups; smaller bundles stay direct (no 1-group
+  "roles").
+
+`freeipa_server_export_roles=false` skips mining entirely (flat per-user groups).
 
 ## Adopt an existing instance (config export / snapshot)
 

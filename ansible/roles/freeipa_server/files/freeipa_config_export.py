@@ -22,6 +22,7 @@ Deliberately NOT captured:
 import argparse
 import datetime
 import json
+import re
 import sys
 
 from ipalib import api
@@ -299,38 +300,68 @@ def export_automember_rules():
     return out
 
 
-def mine_roles(users):
+def mine_roles(users, exclude_patterns=None, min_groups=2):
     """Bridge users <-> groups with a roles matrix via co-occurrence bundling.
 
-    Groups that are held by the EXACT same set of (managed) users always travel
-    together, so they collapse into one role. Each user then references the few
-    roles that cover their groups instead of a long flat group list. Lossless:
-    a user's groups == the union of their roles' groups. Returns (roles, users)
-    where each user carries `roles` instead of `groups`.
+    Groups held by the EXACT same set of (managed) users always travel together,
+    so they collapse into one role and a user references that role instead of a
+    long group list. Two refinements keep the matrix honest:
+
+      * Groups whose name matches ANY of `exclude_patterns` (a list of case-
+        insensitive regexes, default ['role']) are NOT mined — they belong to a
+        layer that already owns them (your role-* groups, or an external PAM such
+        as elegrant that manages its own groups). Folding them into a synthetic
+        bundle just makes a "role made of roles", so they stay as direct `groups`
+        on the user. Pass [] to mine everything.
+      * A bundle becomes a role only when it has >= `min_groups` groups; smaller
+        bundles stay as direct groups, so you never get a 1-group "role" that is
+        just a renamed group.
+
+    Each user then carries the `roles` covering its mineable groups, plus any
+    `groups` left direct. Lossless: a user's groups == union(role groups) +
+    direct groups. Returns (roles, users).
     """
-    group_users = {}                      # group -> frozenset(users holding it)
+    patterns = ["role"] if exclude_patterns is None else exclude_patterns
+    rxs = [re.compile(p, re.IGNORECASE) for p in patterns if p]
+
+    def mineable(g):
+        return not any(rx.search(g) for rx in rxs)
+
+    group_users = {}                      # mineable group -> set(users holding it)
     for u in users:
         for g in u.get("groups", []):
-            group_users.setdefault(g, set()).add(u["name"])
+            if mineable(g):
+                group_users.setdefault(g, set()).add(u["name"])
 
     bundles = {}                          # frozenset(users) -> [groups]
     for g, us in group_users.items():
         bundles.setdefault(frozenset(us), []).append(g)
 
-    # Deterministic: order bundles by their (sorted) group list, name role-NN.
-    ordered = sorted(bundles.items(), key=lambda kv: sorted(kv[1]))
-    pad = max(2, len(str(len(ordered))))
-    roles, user_to_roles = [], {}
-    for i, (uset, groups) in enumerate(ordered, 1):
+    # Only bundles of >= min_groups qualify as roles. Deterministic role-NN names.
+    qualifying = sorted(
+        (kv for kv in bundles.items() if len(kv[1]) >= max(1, min_groups)),
+        key=lambda kv: sorted(kv[1]),
+    )
+    pad = max(2, len(str(len(qualifying) or 1)))
+    roles, user_to_roles, in_a_role = [], {}, set()
+    for i, (uset, groups) in enumerate(qualifying, 1):
         name = "role-%0*d" % (pad, i)
         roles.append({"name": name, "groups": sorted(groups)})
+        in_a_role.update(groups)
         for un in uset:
             user_to_roles.setdefault(un, []).append(name)
 
     new_users = []
     for u in users:
+        held = u.get("groups", [])
+        rs = sorted(user_to_roles.get(u["name"], []))
+        # Direct = excluded (role-named) groups + mineable groups not in any role.
+        direct = sorted(g for g in held if not mineable(g) or g not in in_a_role)
         nu = {k: v for k, v in u.items() if k != "groups"}
-        nu["roles"] = sorted(user_to_roles.get(u["name"], []))
+        if rs:
+            nu["roles"] = rs
+        if direct:
+            nu["groups"] = direct
         new_users.append(nu)
     return roles, new_users
 
@@ -345,6 +376,13 @@ def main():
     ap.add_argument("--flat-groups", action="store_true",
                     help="emit users with a flat `groups` list instead of the "
                          "roles matrix (default: derive roles)")
+    ap.add_argument("--role-exclude", default="role", metavar="REGEXES",
+                    help="comma-separated case-insensitive regexes; groups whose "
+                         "name matches ANY are kept as direct groups, not mined "
+                         "into roles (default: 'role'; '' to mine everything)")
+    ap.add_argument("--role-min-groups", type=int, default=2, metavar="N",
+                    help="a co-occurrence bundle becomes a role only with >= N "
+                         "groups; smaller bundles stay direct (default: 2)")
     args = ap.parse_args()
 
     api.bootstrap(context="cli", log=None)
@@ -366,7 +404,8 @@ def main():
     # Bridge users <-> groups with a roles matrix (unless --flat-groups).
     roles = []
     if not args.flat_groups:
-        roles, users = mine_roles(users)
+        exclude = [p.strip() for p in args.role_exclude.split(",") if p.strip()]
+        roles, users = mine_roles(users, exclude, args.role_min_groups)
 
     doc = {
         "meta": {
