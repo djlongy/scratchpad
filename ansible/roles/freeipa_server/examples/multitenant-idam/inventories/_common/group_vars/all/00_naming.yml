@@ -1,0 +1,33 @@
+---
+# _common/.../00_naming.yml — the ONE source of truth for identity naming, shared
+# by every tenant. Tenant inventories carry DATA only; this file (+ 10_generate.yml)
+# owns the PATTERN, so naming can never drift between teams.
+#
+# ── env / domain scaling ─────────────────────────────────────────────────────
+# Scale environments by keeping one _common per env (_common.dev / _common.test /
+# _common.prod) that changes only `env` + the host, and REUSE the same tenant dirs.
+env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
+domain: "example.com"
+
+# ── Naming patterns (documented convention — generators in 10_generate.yml) ───
+#   group       <tenant>-<app>-<tier>              acme-payments-admin
+#   role        role-<tenant>-<persona>            role-acme-developer  (bundle of groups)
+#   hostgroup   <tenant>-<app>                      acme-payments
+#   host FQDN   <env>-<tenant>-<app>-<NN>.<domain>  prod-acme-payments-01.example.com
+#   service URL <app>.<tenant>.<env>.<domain>       payments.acme.prod.example.com
+#
+# Type marker: roles are prefixed `role-` so the FIRST token tells you the kind —
+# scan any list and `role-*` = a role, everything else = a plain permission group,
+# without parsing segments to guess whether `admin` is an app tier or a role.
+# (`role-*` also matches the export tool's default exclude, so roles are never
+# re-mined into groups.) Permission groups keep the plain <tenant>-<app>-<tier> name.
+identity_naming:
+  group: "{tenant}-{app}-{tier}"
+  role: "role-{tenant}-{persona}"
+  hostgroup: "{tenant}-{app}"
+  host_fqdn: "{env}-{tenant}-{app}-{nn}.{domain}"
+  service_url: "{app}.{tenant}.{env}.{domain}"
+
+# Access tiers a tenant gets per app unless its spec overrides `tiers:`. These are
+# the ATOMIC permission groups; roles (personas) bundle them.
+identity_access_tiers: [admin, operator, viewer]

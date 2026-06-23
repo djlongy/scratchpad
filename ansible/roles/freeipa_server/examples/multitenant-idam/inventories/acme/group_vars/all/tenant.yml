@@ -1,0 +1,34 @@
+---
+# inventories/acme/ — this whole directory IS team ACME's inventory. Data only.
+# Run it:   ./apply.sh acme      (or -i inventories/_common -i inventories/acme)
+# It references no other team, and no other team references it.
+#
+# The var is named tenant_acme_spec (not tenant_spec) so a union/audit run can
+# load several tenants at once without them colliding — see _common/10_generate.yml.
+# `tiers:` is optional — omit to inherit identity_access_tiers (admin/operator/viewer).
+tenant_acme_spec:
+  code: acme
+  apps:
+    - payments
+    - ledger
+
+  # LAYER 2 — personas: a role bundles several (app, tier) groups. Name becomes
+  # "role-acme-<persona>"; users reference it instead of listing many groups.
+  roles:
+    - name: developer            # -> role-acme-developer
+      grants:
+        - {app: payments, tier: operator}
+        - {app: ledger, tier: viewer}
+    - name: lead                 # -> role-acme-lead
+      grants:
+        - {app: payments, tier: admin}
+        - {app: ledger, tier: admin}
+
+  # LAYER 3 — members reference the SHORT persona name; the generator adds role-.
+  #   ann.lee -> role-acme-lead       (acme-payments-admin + acme-ledger-admin)
+  #   bo.ng   -> role-acme-developer  (acme-payments-operator + acme-ledger-viewer)
+  #   cj.park -> direct group only    (acme-payments-viewer) — no role
+  members:
+    - {name: ann.lee, first: Ann, last: Lee, roles: [lead]}
+    - {name: bo.ng, first: Bo, last: Ng, roles: [developer]}
+    - {name: cj.park, first: CJ, last: Park, app: payments, tier: viewer}

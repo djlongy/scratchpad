@@ -1,0 +1,64 @@
+---
+# _common/.../10_generate.yml — turns whatever tenant specs are LOADED into the
+# role's flat IDAM lists. Shared by every tenant; never edited when adding a team.
+#
+# Selection is by INVENTORY COMPOSITION, not a flag:
+#   -i _common -i acme            → only tenant_acme_spec loaded  → ACME only
+#   -i _common -i acme -i globex  → both specs loaded             → union (audit)
+# Each tenant dir defines a DISTINCTLY-named tenant_<code>_spec, so passing several
+# -i dirs composes them; passing one isolates it. No idam_tenants selector, no
+# count, no registry — adding a team is a new inventory dir and nothing else.
+#
+# Three layers, smallest grain up:
+#   groups  = atomic permissions   <tenant>-<app>-<tier>
+#   roles   = personas bundling groups   role-<tenant>-<persona>
+#   users   = people assigned roles (and/or direct groups)
+
+# Every tenant spec currently loaded (one per tenant inventory passed via -i).
+_tenant_specs: >-
+  {{ q('varnames', '^tenant_[a-z0-9]+_spec$') | sort
+     | map('extract', vars) | list }}
+
+# ── per-tenant marker → makes the role's prune SAFE under isolation ─────────
+# The role reconciles ONE marker group, deleting managed users not in the desired
+# set. When exactly ONE tenant is loaded, scope the marker to it so the prune can
+# only ever touch THAT tenant. A union run (several loaded) uses the global marker,
+# which is correct there because the desired set IS everyone.
+freeipa_idam_managed_group: >-
+  {{ ('idam-managed-' ~ _tenant_specs[0].code)
+     if (_tenant_specs | length == 1) else 'idam-managed-users' }}
+
+# ── LAYER 1 — groups: every tenant × app × tier ─────────────────────────────
+freeipa_idam_groups: "{{ _gen_groups | from_yaml }}"
+_gen_groups: |-
+  {% for t in _tenant_specs %}
+  {% for app in t.apps %}
+  {% for tier in (t.tiers | default(identity_access_tiers)) %}
+  - {name: "{{ t.code }}-{{ app }}-{{ tier }}", description: "{{ t.code }} {{ app }} {{ tier }} (managed)"}
+  {% endfor %}{% endfor %}{% endfor %}
+
+# ── LAYER 2 — roles: a persona bundling several (app,tier) groups ────────────
+freeipa_idam_roles: "{{ _gen_roles | from_yaml }}"
+_gen_roles: |-
+  {% for t in _tenant_specs %}
+  {% for r in (t.roles | default([])) %}
+  - {name: "role-{{ t.code }}-{{ r.name }}", groups: [{% for g in r.grants %}"{{ t.code }}-{{ g.app }}-{{ g.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]}
+  {% endfor %}{% endfor %}
+
+# ── hostgroups: every tenant × app ──────────────────────────────────────────
+freeipa_idam_hostgroups: "{{ _gen_hostgroups | from_yaml }}"
+_gen_hostgroups: |-
+  {% for t in _tenant_specs %}
+  {% for app in t.apps %}
+  - {name: "{{ t.code }}-{{ app }}", description: "{{ t.code }} {{ app }} hosts"}
+  {% endfor %}{% endfor %}
+
+# ── LAYER 3 — users: assigned ROLES and/or direct GROUPS ────────────────────
+# A member lists `roles: [persona, ...]` (preferred, gets the role- prefix) and/or
+# a direct group via {app|apps, tier}. Names are generated, never hand-typed.
+freeipa_idam_users: "{{ _gen_users | from_yaml }}"
+_gen_users: |-
+  {% for t in _tenant_specs %}
+  {% for m in t.members %}
+  - {name: "{{ m.name }}", first: "{{ m.first }}", last: "{{ m.last }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.app is defined) or (m.apps is defined) %}, groups: [{% for a in (m.apps | default([m.app])) %}"{{ t.code }}-{{ a }}-{{ m.tier }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
+  {% endfor %}{% endfor %}

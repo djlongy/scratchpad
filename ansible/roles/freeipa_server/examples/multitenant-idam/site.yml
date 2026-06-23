@@ -1,32 +1,32 @@
 ---
-# site.yml — apply the composed multi-tenant IDAM to the realm.
+# site.yml — apply identity to the realm. WHICH tenants are applied is decided by
+# which inventories you pass (not a flag): one tenant dir = isolated, fast; several
+# = a union/audit run.
 #
-#   ansible-playbook -i inventory/hosts.yml site.yml --tags idam
-#
-# Scope to one team for a fast, isolated change (see README "the selector"):
-#   ansible-playbook -i inventory/hosts.yml site.yml --tags idam -e idam_tenants=acme
-#
-# The assert only catches a mistyped selector (a tenant name that matches no
-# tenant_*.yml). Adding a tenant is just dropping a new file — nothing to bump.
+#   ./apply.sh acme                 # team ACME only — seconds, GLOBEX untouched
+#   ./apply.sh acme globex          # union/audit — reconcile both at once
+#   ansible-playbook -i inventories/_common -i inventories/acme site.yml --tags idam
 - name: FreeIPA multi-tenant IDAM
   hosts: freeipa
   become: true
   tasks:
-    - name: Refuse to run if the selector names an unknown tenant
+    # The only foot-gun is forgetting to pass a tenant inventory (just _common),
+    # which would load zero specs. Catch it explicitly — no counts, no registry.
+    - name: Refuse to run without a tenant inventory
       ansible.builtin.assert:
-        that: identity_selector_ok
+        that: _tenant_specs | length > 0
         fail_msg: >-
-          idam_tenants names unknown tenant(s): {{ identity_unknown_tenants }} —
-          check the spelling against the tenant_*.yml files
-          ({{ identity_known_tenants }}).
+          No tenant specs loaded — pass at least one tenant inventory alongside
+          _common, e.g. `-i inventories/_common -i inventories/acme`
+          (or `./apply.sh acme`).
         success_msg: >-
           Applying {{ _tenant_specs | map(attribute='code') | list }}
-          (of {{ identity_known_tenants }}).
+          → marker {{ freeipa_idam_managed_group }}.
 
     - name: Apply declarative identity (groups, roles, users, hostgroups)
       ansible.builtin.import_role:
         name: freeipa_server
-      # Provide the realm admin/DM passwords via group_vars + HashiCorp Vault
-      # (freeipa_idam_vault_secret / freeipa_server_vault_secret) — see the
-      # role README and inventories/example/group_vars/freeipa.yml.
+      # Realm admin/DM passwords come from group_vars + HashiCorp Vault
+      # (freeipa_idam_vault_secret) — see the role README. Put shared secrets in
+      # _common/group_vars/freeipa.yml.
       tags: [idam]
