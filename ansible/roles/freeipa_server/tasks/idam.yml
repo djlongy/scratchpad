@@ -170,6 +170,33 @@
   when: freeipa_idam_groups | length > 0
   no_log: true
 
+# Build the two BULK ipagroup payloads — one `groups:` list to create the group
+# OBJECTS (name/description/gidnumber/posix), one to set MEMBERSHIP (user/group/
+# membermanager). Splitting create from member keeps the dependency order intact
+# (groups must exist before HBAC rules reference them; membership needs users to
+# exist) while collapsing two per-group LOOPS into two single module calls — the
+# speedup. gidnumber: a group's own value wins, else the freeipa_idam_group_gids
+# map (deterministic GIDs), else IPA auto-assigns.
+- name: Build bulk ipagroup create + membership payloads
+  ansible.builtin.set_fact:
+    _freeipa_idam_groups_create: "{{ (_fc_yaml | from_yaml) or [] }}"
+    _freeipa_idam_groups_members: "{{ (_fm_yaml | from_yaml) or [] }}"
+  vars:
+    _fc_yaml: |-
+      {% for g in (freeipa_idam_groups_effective | default([])) %}
+      {% if (g.state | default('present')) != 'absent' %}
+      {% set _gid = g.gidnumber | default(freeipa_idam_group_gids[g.name] | default('')) %}
+      - {name: "{{ g.name }}"{% if g.description is defined %}, description: "{{ g.description }}"{% endif %}{% if _gid | string | length > 0 %}, gidnumber: {{ _gid }}{% endif %}{% if g.posix is defined %}, posix: {{ g.posix | to_json }}{% endif %}{% if g.nonposix is defined %}, nonposix: {{ g.nonposix | to_json }}{% endif %}}
+      {% endif %}
+      {% endfor %}
+    _fm_yaml: |-
+      {% for g in (freeipa_idam_groups_effective | default([])) %}
+      {% if (g.state | default('present')) != 'absent' and ((g.user | default([]) | length > 0) or (g.group | default([]) | length > 0) or (g.membermanager_user | default([]) | length > 0) or (g.membermanager_group | default([]) | length > 0)) %}
+      - {name: "{{ g.name }}"{% if g.user | default([]) | length > 0 %}, user: {{ g.user | to_json }}{% endif %}{% if g.group | default([]) | length > 0 %}, group: {{ g.group | to_json }}{% endif %}{% if g.membermanager_user | default([]) | length > 0 %}, membermanager_user: {{ g.membermanager_user | to_json }}{% endif %}{% if g.membermanager_group | default([]) | length > 0 %}, membermanager_group: {{ g.membermanager_group | to_json }}{% endif %}}
+      {% endif %}
+      {% endfor %}
+  no_log: true
+
 # Protected/system users (admin) are EXCLUDED from the create/mod payload: the
 # `admin` entry lacks the inetOrgPerson objectClass, so FreeIPA refuses to set
 # givenName on it ("attribute givenName not allowed") and the whole ipauser task
@@ -178,7 +205,20 @@
 # admin to groups, you just never try to modify admin's identity attributes.
 - name: Build FreeIPA users payload without local-only keys (skip protected users)
   ansible.builtin.set_fact:
-    freeipa_idam_users_effective: "{{ (freeipa_idam_users_effective | default([])) + [item | dict2items | rejectattr('key', 'equalto', 'groups') | rejectattr('key', 'equalto', 'roles') | items2dict] }}"
+    freeipa_idam_users_effective: >-
+      {{ (freeipa_idam_users_effective | default([]))
+         + [ (item | dict2items | rejectattr('key', 'equalto', 'groups')
+                   | rejectattr('key', 'equalto', 'roles') | items2dict)
+             | combine(_freeipa_idam_email_default) | combine(_freeipa_idam_pw_default) ] }}
+  vars:
+    # Default email = <name>@<email_domain> only when the user gave no explicit one.
+    _freeipa_idam_email_default: >-
+      {{ {} if (item.email is defined)
+         else {'email': [item.name ~ '@' ~ freeipa_idam_email_domain]} }}
+    # Default create-time password (update_password: on_create never resets existing).
+    _freeipa_idam_pw_default: >-
+      {{ {} if (item.password is defined or (freeipa_idam_default_user_password | length == 0))
+         else {'password': freeipa_idam_default_user_password} }}
   loop: "{{ _freeipa_idam_users | rejectattr('name', 'in', freeipa_idam_protected_users) | list }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
@@ -195,21 +235,15 @@
   delegate_to: localhost
   become: false
 
-- name: Ensure declarative FreeIPA groups are present
+# BULK create — one ipagroup call for ALL groups (name/description/gidnumber/posix),
+# replacing the per-group loop. Runs before HBAC/sudo so rules can reference groups.
+- name: Ensure declarative FreeIPA groups are present (bulk create)
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ item.name }}"
-    description: "{{ item.description | default(omit) }}"
-    gidnumber: "{{ item.gidnumber | default(omit) }}"
-    posix: "{{ item.posix | default(omit) }}"
-    nonposix: "{{ item.nonposix | default(omit) }}"
-    external: "{{ item.external | default(omit) }}"
-    state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_groups_effective | default([]) }}"
-  loop_control:
-    label: "{{ item.name | default('missing-name') }}"
-  when: (freeipa_idam_groups_effective | default([])) | length > 0
+    groups: "{{ _freeipa_idam_groups_create }}"
+    state: present
+  when: (_freeipa_idam_groups_create | default([])) | length > 0
   no_log: true
 
 # Users are created HERE — before any HBAC/sudo rule-membership task that
@@ -416,26 +450,17 @@
     state: present
   no_log: true
 
-- name: Ensure declarative FreeIPA group memberships are present
+# BULK membership — one ipagroup `action: member` call for ALL groups (users +
+# nested groups + member managers), replacing the per-group loop. Runs AFTER user
+# creation so every member principal exists. Additive (action: member).
+- name: Ensure declarative FreeIPA group memberships are present (bulk)
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ item.name }}"
+    groups: "{{ _freeipa_idam_groups_members }}"
     action: member
-    user: "{{ item.user | default(omit) }}"
-    group: "{{ item.group | default(omit) }}"
-    service: "{{ item.service | default(omit) }}"
-    # Member managers (additive, like the other memberships) — e.g. a PAM/JIT
-    # toggler service allowed to manage this group's membership.
-    membermanager_user: "{{ item.membermanager_user | default(omit) }}"
-    membermanager_group: "{{ item.membermanager_group | default(omit) }}"
     state: present
-  loop: "{{ freeipa_idam_groups_effective | default([]) }}"
-  loop_control:
-    label: "{{ item.name | default('missing-name') }}"
-  when:
-    - (freeipa_idam_groups_effective | default([])) | length > 0
-    - (item.user is defined and (item.user | length > 0)) or (item.group is defined and (item.group | length > 0)) or (item.service is defined and (item.service | length > 0)) or (item.membermanager_user is defined and (item.membermanager_user | length > 0)) or (item.membermanager_group is defined and (item.membermanager_group | length > 0))
+  when: (_freeipa_idam_groups_members | default([])) | length > 0
   no_log: true
 
 - name: Ensure managed users are members of marker group
@@ -484,15 +509,16 @@
         | difference(freeipa_idam_protected_users)
       }}
 
-- name: Remove users deleted from declarative config
+# Archive (don't destroy) users removed from declarative config: bulk ipauser with
+# preserve=true → user-del --preserve (deactivated + retained, recoverable). Set
+# freeipa_idam_preserve_archived=false to hard-delete instead. One bulk call.
+- name: Archive (preserve) users removed from declarative config
   freeipa.ansible_freeipa.ipauser:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ item }}"
+    name: "{{ freeipa_idam_users_to_remove }}"
     state: absent
-  loop: "{{ freeipa_idam_users_to_remove }}"
-  loop_control:
-    label: "{{ item }}"
+    preserve: "{{ freeipa_idam_preserve_archived | bool }}"
   when: freeipa_idam_users_to_remove | length > 0
   no_log: true
 

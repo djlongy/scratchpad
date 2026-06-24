@@ -223,6 +223,30 @@ freeipa_idam_sudo_commands: []
 freeipa_idam_sudo_rules: []
 freeipa_idam_pwpolicies: []
 freeipa_idam_password_expiration_floors: []
+
+# Email is built as <name>@<freeipa_idam_email_domain> when a user has no explicit
+# `email:` — the mail domain is often NOT the realm domain, so it is its own var.
+# An explicit per-user email always overrides this.
+freeipa_idam_email_domain: "{{ domain }}"
+
+# Initial password set on user CREATE (update_password: on_create, so existing
+# users are never reset). Empty = create users with no password. Set this from
+# Vault in inventory (e.g. a lookup on freeipa_idam_vault_secret). A per-user
+# `password:` overrides it.
+freeipa_idam_default_user_password: ""
+
+# Deterministic group GIDs (Infrastructure-as-Code): name -> gidnumber. Groups
+# whose name is in this map are created with the fixed GID, so POSIX permissions
+# (/etc/group, SSSD/NSS) stay consistent across environments + DR rebuilds. A
+# group's own `gidnumber:` still wins if set; otherwise the map; otherwise IPA
+# auto-assigns. User UIDs stay auto-assigned (no cross-host constraint).
+freeipa_idam_group_gids: {}
+#  docker: 89600115
+#  ansible: 89600116
+
+# Archive (preserve) removed users instead of hard-deleting them. preserve=true →
+# user-del --preserve: account deactivated + retained (recoverable), not destroyed.
+freeipa_idam_preserve_archived: true
 # Users the reconcile must never DELETE (prune) and never user-mod. `admin` lacks
 # the inetOrgPerson objectClass so its givenName/sn cannot be set — listing it for
 # group management is fine, but the role skips modifying its attributes. Append any

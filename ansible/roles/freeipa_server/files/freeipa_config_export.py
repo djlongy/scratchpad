@@ -135,6 +135,10 @@ def export_groups():
         out.append(_prune({
             "name": name,
             _DESCRIPTION: _str(e, _DESCRIPTION),
+            # Capture the GID so a DR rebuild recreates the SAME gidnumber — group
+            # GIDs drive /etc/group + SSSD/NSS and must stay consistent across hosts
+            # (unlike user UIDs, which IPA may re-assign without cross-host impact).
+            "gidnumber": _int(e, "gidnumber"),
             "group": nested,  # nested member groups only; user membership lives on users
             # Member managers — users/groups allowed to manage THIS group's
             # membership without being admins (e.g. a PAM/JIT toggler service).
