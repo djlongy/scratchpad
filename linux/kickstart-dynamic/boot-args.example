@@ -1,0 +1,39 @@
+# =============================================================================
+# Boot arguments for the dynamic kickstart.
+#
+# Two ways to feed the kickstart to Anaconda:
+#
+#   A) OEMDRV ISO (recommended, zero boot-menu editing) — build a small ISO
+#      labelled OEMDRV containing the kickstart as `ks.cfg`, and attach it as a
+#      SECOND CD-ROM/USB next to the installer media. Anaconda auto-detects a
+#      volume labelled OEMDRV and runs /ks.cfg with no kernel args at all:
+#
+#        xorriso -as mkisofs -V OEMDRV -o oemdrv.iso -J -r ks.cfg
+#
+#   B) Explicit inst.ks= — edit the installer boot entry (press Tab/e at the
+#      boot menu, or set it in a PXE/grub config) and append inst.ks plus any
+#      per-host network override.
+# =============================================================================
+
+# --- B) installer kernel command line ---------------------------------------
+# Stock (uses the baked-in 192.0.2.250/24 staging IP):
+inst.ks=cdrom:/ks.cfg
+
+# Serve over HTTP instead of the ISO:
+inst.ks=http://192.0.2.10/ks/ks-rhel-family-dynamic.cfg
+
+# --- Per-host static-IP override (custom ks* args, NOT dracut's ip=) ---------
+# Any subset may be given; unspecified values fall back to the staging defaults
+# (ip 192.0.2.250/24, gw .1, dns .1, hostname staging).
+#
+#   ksip=<addr>[/<cidr>]   e.g. ksip=192.0.2.42/24   (cidr optional, default 24)
+#   ksgw=<gateway>         e.g. ksgw=192.0.2.1
+#   ksdns=<nameserver>     e.g. ksdns=192.0.2.1
+#   kshostname=<short>     e.g. kshostname=web-01     (domain appended in %pre)
+#
+# Full example (PXE/grub append line or typed at the boot menu):
+inst.ks=cdrom:/ks.cfg ksip=192.0.2.42/24 ksgw=192.0.2.1 ksdns=192.0.2.1 kshostname=web-01
+
+# --- Serial console (physical servers via iDRAC/iLO/IPMI) --------------------
+# Append to watch the install over serial. (Anaconda also honours inst.text.)
+console=tty0 console=ttyS0,115200 inst.ks=cdrom:/ks.cfg

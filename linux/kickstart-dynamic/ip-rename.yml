@@ -1,0 +1,95 @@
+---
+# ip-rename.yml
+# Promote a freshly kickstarted host from its staging IP (192.0.2.250) to its
+# permanent identity: set the hostname and switch the primary NIC to the target
+# static IP via community.general.nmcli, then reconnect on the new address.
+#
+# Run against the staging IP right after the kickstart install completes:
+#
+#   export ANSIBLE_HOST_KEY_CHECKING=False
+#   export ANSIBLE_PRIVATE_KEY_FILE=~/.ssh/ansible.pem
+#   ansible-playbook -i '192.0.2.250,' -u ansible ip-rename.yml \
+#     -e new_hostname=web-01 -e new_ip=192.0.2.55
+#
+# Requires: community.general (for the nmcli module) — `ansible-galaxy collection
+# install community.general`.
+#
+# Key design point: community.general.nmcli writes the new IP into the connection
+# PROFILE but does not reactivate the live link (verified on AlmaLinux 9 /
+# NetworkManager), so the staged IP only takes effect on the next boot. We
+# therefore (1) register the new IP as a play-2 target BEFORE we lose the session,
+# (2) stage the profile, then (3) reboot fire-and-forget to apply it, and
+# reconnect on the new IP in play 2.
+
+- name: Apply permanent IP + hostname to a kickstarted host
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    new_cidr: 24
+    new_gw: 192.0.2.1
+    new_dns: 192.0.2.1
+    domain: example.com
+  tasks:
+    - name: Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - new_hostname is defined and (new_hostname | length > 0)
+          - new_ip is defined and (new_ip | length > 0)
+        fail_msg: "Required: -e new_hostname=<short> -e new_ip=<addr> (optionally new_cidr/new_gw/new_dns)"
+
+    - name: Set permanent hostname
+      ansible.builtin.hostname:
+        name: "{{ new_hostname }}.{{ domain }}"
+
+    - name: Discover the primary active NetworkManager connection (skip loopback)
+      ansible.builtin.shell: |
+        set -o pipefail
+        nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2!="lo"{print $1; exit}'
+      args:
+        executable: /bin/bash
+      register: _nm_conn
+      changed_when: false
+
+    - name: Register the permanent IP for play 2 (BEFORE we lose this session)
+      ansible.builtin.add_host:
+        name: "{{ new_ip }}"
+        groups: _renamed
+        ansible_host: "{{ new_ip }}"
+        new_hostname: "{{ new_hostname }}"
+      changed_when: false
+
+    - name: Stage the permanent static IP into the connection profile
+      community.general.nmcli:
+        conn_name: "{{ _nm_conn.stdout }}"
+        type: ethernet
+        method4: manual
+        ip4: "{{ new_ip }}/{{ new_cidr }}"
+        gw4: "{{ new_gw }}"
+        dns4: ["{{ new_dns }}"]
+        state: present
+
+    - name: Reboot to apply the new IP (fire-and-forget — this session drops)
+      ansible.builtin.shell: "sleep 2 && systemctl reboot"
+      async: 1
+      poll: 0
+      changed_when: true
+
+- name: Confirm the host on its permanent IP
+  hosts: _renamed
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH on the new IP
+      ansible.builtin.wait_for_connection:
+        delay: 8
+        timeout: 240
+
+    - name: Gather network facts now that we're reconnected
+      ansible.builtin.setup:
+        gather_subset: [network, min]
+
+    - name: Report success
+      ansible.builtin.debug:
+        msg: >-
+          {{ new_hostname }} is up on {{ ansible_default_ipv4.address | default('?') }}
+          (hostname {{ ansible_hostname | default('?') }}) — ready for role-based provisioning.
