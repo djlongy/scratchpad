@@ -6,14 +6,32 @@ only reconciles `freeipa_idam_*` lists; it has no role generator inside it, so a
 to the role's internals can never alter your roles. All the generation lives **here, in
 your inventory**, where you can read and debug every line.
 
-## The three files you edit
+## The files you edit
 
 ```
 group_vars/all/
-├── 00_matrix.yml    # tenancy → { environments, apps: app → [privileges] }, name prefixes
-├── 10_access.yml    # what each (app, privilege) can do: login services + sudo
-└── 20_generate.yml  # the flatten: matrix + access → baseline freeipa_idam_* (read it!)
+├── 00_matrix.yml    # tenancy → { environments, apps: app → privileges }, name prefixes
+├── 10_access.yml    # the CATALOG: what each (app, privilege) can do — login + sudo
+├── 15_jobroles.yml  # job roles: named bundles of grants (assign people by role, not app)
+└── 20_generate.yml  # the flatten: matrix + access + jobroles → freeipa_idam_* (read it!)
+tenancy_rosters/<t>.yml  # the tenancy's people: name + jobroles/grants
 ```
+
+### One source of truth, references everywhere else (no freehand drift)
+
+`10_access.yml` (the **catalog**) is the ONE place app and privilege names are spelled.
+Everything else **references** it rather than re-typing — and anything you do spell by
+hand is validated against it, so a typo stops the run and names itself (it can never
+silently drop access). Three reference forms resolve at load time:
+
+| You write | resolves to | where |
+|---|---|---|
+| `docker: "*"` | every privilege the catalog gives docker | `00_matrix.yml` (app privileges) |
+| `apps: [postgres]` | every privilege the catalog gives postgres | `15_jobroles.yml` (a jobrole) |
+| `includes: [appdev]` | another jobrole's grants, by name | `15_jobroles.yml` (compose jobroles) |
+
+Add a privilege to the catalog and every `"*"` / `apps:` reference picks it up — you
+never hand-maintain the same privilege name in two places.
 
 **00_matrix.yml** — the source of truth. Each tenancy declares its **own environments**
 (they need not match), and apps differ per tenancy; the cross-product (tenancy's envs ×
@@ -66,16 +84,24 @@ you which environments that tenancy actually has.
 | cells with `sudo`/`sudo_all` | `freeipa_idam_sudo_rules` |
 | the access catalog | `freeipa_idam_hbacsvcs` (custom only) + `freeipa_idam_sudo_commands` — the **foundation**, derived so it's never out of sync |
 
-## People
+## People — assign by job role, not per app
 
 `tenancy_rosters/<tenancy>.yml` lists the tenancy's people once (shared across its
-environments). Each person's **abstract grants** `{app, privilege}` resolve to the
-scoped environment's concrete role group, so the same roster serves dev and prod:
+environments). You assign access by **job role** — "alice is a sysadmin" — not by
+re-listing apps per person:
 ```yaml
 freeipa_people:
-  - { name: alice.smith, first: Alice, last: Smith, email: ["alice.smith@acme.example.com"],
-      grants: [{app: docker, privilege: admin}, {app: postgres, privilege: dba}] }
+  - { name: alice.smith, first: Alice, last: Smith, email: [...], jobroles: [sysadmin] }
+  - { name: carol.jones, first: Carol, last: Jones, email: [...],
+      jobroles: [dba], grants: [{app: web, privilege: admin}] }   # job role + ad-hoc extra
 ```
+- `jobroles: [..]` — one or more named bundles from `15_jobroles.yml`.
+- `grants: [{app, privilege}]` — ad-hoc one-offs, still supported, **UNIONED** with jobroles.
+- Both resolve to the scoped environment's concrete role groups, so the same roster serves
+  dev and prod. A jobrole **auto-intersects**: the same `sysadmin` lands linux+docker+postgres
+  in acme but just linux+docker in globex (no postgres) — one definition, tenancy-correct.
+- A typo'd jobrole, or a grant for an app/privilege not in the catalog, **stops the run**
+  (caught by `freeipa_matrix_problems`).
 The per-tenancy **marker group** (`idam-<tenancy>-managed`) scopes the role's prune, so
 running `acme-dev` can never archive `globex`'s users on the shared realm.
 

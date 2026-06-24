@@ -5,19 +5,29 @@
 # (not in the role), so you can read and debug every line. The role just reconciles
 # whatever freeipa_idam_* these produce.
 #
+# ONE source of truth for app+privilege spelling: freeipa_access (the catalog).
+# The matrix and the jobroles never have to re-type privilege names — they REFERENCE
+# the catalog by key and the privileges resolve at load time (see "*" and `apps:`
+# below). Anything you DO spell by hand is validated against the catalog, so a typo
+# stops the run and names itself — it can never silently drop access.
+#
 # Step 1 builds one flat "cell" per (tenancy × environment × app × privilege),
 # scope-filtered, with names + access resolved. Steps 2+ are then trivial maps over
 # that flat list — no nested loops past step 1.
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── Step 1: the flat cell list (the cross-product, computed once) ────────────
+# An app's privileges in the matrix may be EITHER an explicit list (a subset, e.g.
+# [admin]) OR "*"/null → "every privilege the catalog defines for this app", read
+# straight from freeipa_access[app] at load time. So the common case re-types nothing.
 _matrix_cells: "{{ (_matrix_cells_yaml | from_yaml) or [] }}"
 _matrix_cells_yaml: |-
   {% for tenancy, tdef in freeipa_matrix.items() %}
   {% if (freeipa_scope_tenancy | default('')) in ['', tenancy] %}
   {% for env in tdef.environments %}
   {% if (freeipa_scope_environment | default('')) in ['', env] %}
-  {% for app, privileges in tdef.apps.items() %}
+  {% for app, privspec in tdef.apps.items() %}
+  {% set privileges = privspec if (privspec is iterable and privspec is not string) else (freeipa_access[app] | default({}) | list) %}
   {% for priv in privileges %}
   {% set acc = (freeipa_access[app] | default({}))[priv] | default({}) %}
   - tenancy: {{ tenancy | to_json }}
@@ -33,14 +43,43 @@ _matrix_cells_yaml: |-
     sudo_all: {{ acc.sudo_all | default(false) | to_json }}
   {% endfor %}{% endfor %}{% endif %}{% endfor %}{% endif %}{% endfor %}
 
-# A matrix privilege with no entry in the access catalog — site.yml fails on this.
+# ── Jobrole grants, fully resolved (own grants + apps:* + includes:), BY REFERENCE
+# Each jobrole's effective grants are derived from the catalog, never hand-duplicated:
+#   grants:   [{app, privilege}]  → explicit pairs (validated against the catalog)
+#   apps:     [postgres, ...]     → ALL privileges of each app, read from freeipa_access
+#   includes: [appdev, ...]       → inherit another jobrole's grants/apps (one level)
+# Result: _jobrole_grants[<jobrole>] = [{app, privilege}, ...] — what 20 resolves to groups.
+_jobrole_grants: "{{ (_jobrole_grants_yaml | from_yaml) or {} }}"
+_jobrole_grants_yaml: |-
+  {% for jr, jdef in (freeipa_jobroles | default({})).items() %}
+  {% set ns = namespace(g=(jdef.grants | default([]))) %}
+  {% for app in jdef.apps | default([]) %}
+  {% for priv in (freeipa_access[app] | default({}) | list) %}
+  {% set ns.g = ns.g + [{'app': app, 'privilege': priv}] %}
+  {% endfor %}{% endfor %}
+  {% for inc in jdef.includes | default([]) %}
+  {% set idef = freeipa_jobroles[inc] | default({}) %}
+  {% set ns.g = ns.g + (idef.grants | default([])) %}
+  {% for app in idef.apps | default([]) %}
+  {% for priv in (freeipa_access[app] | default({}) | list) %}
+  {% set ns.g = ns.g + [{'app': app, 'privilege': priv}] %}
+  {% endfor %}{% endfor %}
+  {% endfor %}
+  {{ jr | to_json }}: {{ ns.g | to_json }}
+  {% endfor %}
+
+# A reference that doesn't resolve against its source dict — site.yml fails on any of these.
 freeipa_matrix_problems: "{{ (_matrix_problems_yaml | from_yaml) or [] }}"
 _matrix_problems_yaml: |-
   {% for tenancy, tdef in freeipa_matrix.items() %}
-  {% for app, privileges in tdef.apps.items() %}
+  {% for app, privspec in tdef.apps.items() %}
+  {% if app not in (freeipa_access | default({})) %}
+  - "matrix {{ tenancy }}: app '{{ app }}' is not in freeipa_access"
+  {% endif %}
+  {% set privileges = privspec if (privspec is iterable and privspec is not string) else [] %}
   {% for priv in privileges %}
   {% if priv not in (freeipa_access[app] | default({})) %}
-  - "{{ app }}/{{ priv }} (in matrix, missing from freeipa_access)"
+  - "{{ app }}/{{ priv }} (in matrix {{ tenancy }}, missing from freeipa_access)"
   {% endif %}
   {% endfor %}{% endfor %}{% endfor %}
   {% if (freeipa_scope_tenancy | default('')) | length > 0 and (freeipa_scope_environment | default('')) | length > 0 %}
@@ -48,6 +87,37 @@ _matrix_problems_yaml: |-
   - "scope {{ freeipa_scope_tenancy }}/{{ freeipa_scope_environment }}: environment '{{ freeipa_scope_environment }}' is not in tenancy '{{ freeipa_scope_tenancy }}' (has {{ (freeipa_matrix[freeipa_scope_tenancy] | default({})).get('environments', []) }})"
   {% endif %}
   {% endif %}
+  {# jobroles reference the catalog (apps:/grants:) and each other (includes:) — all validated #}
+  {% for jr, jdef in (freeipa_jobroles | default({})).items() %}
+  {% for g in jdef.grants | default([]) %}
+  {% if g.privilege not in (freeipa_access[g.app] | default({})) %}
+  - "jobrole '{{ jr }}': grant {{ g.app }}/{{ g.privilege }} is not a real app/privilege (not in freeipa_access)"
+  {% endif %}
+  {% endfor %}
+  {% for app in jdef.apps | default([]) %}
+  {% if app not in (freeipa_access | default({})) %}
+  - "jobrole '{{ jr }}': app '{{ app }}' (in apps:) is not in freeipa_access"
+  {% endif %}
+  {% endfor %}
+  {% for inc in jdef.includes | default([]) %}
+  {% if inc not in (freeipa_jobroles | default({})) %}
+  - "jobrole '{{ jr }}': includes '{{ inc }}' which is not a defined jobrole"
+  {% endif %}
+  {% endfor %}
+  {% endfor %}
+  {# people reference jobroles by name and may add ad-hoc grants — both validated #}
+  {% for u in freeipa_people | default([]) %}
+  {% for jr in u.jobroles | default([]) %}
+  {% if jr not in (freeipa_jobroles | default({})) %}
+  - "person {{ u.name }}: jobrole '{{ jr }}' is not defined in freeipa_jobroles (15_jobroles.yml)"
+  {% endif %}
+  {% endfor %}
+  {% for g in u.grants | default([]) %}
+  {% if g.privilege not in (freeipa_access[g.app] | default({})) %}
+  - "person {{ u.name }}: grant {{ g.app }}/{{ g.privilege }} is not a real app/privilege (not in freeipa_access)"
+  {% endif %}
+  {% endfor %}
+  {% endfor %}
 
 # ── Step 2+: the baseline lists (simple flat maps over the cells) ────────────
 freeipa_idam_usergroups: "{{ (_g_yaml | from_yaml) or [] }}"
@@ -95,14 +165,23 @@ _cmds_yaml: |-
   {% endfor %}
 
 # ── Users — people from the per-tenancy roster (freeipa_people, loaded by site.yml).
-# Each person's abstract grants {app, privilege} resolve to the scoped tenancy's
-# group(s) via the cells, so one roster serves every environment of its tenancy.
+# A person gets groups two ways, UNIONED:
+#   jobroles : [sysadmin, ...]    → each resolves via _jobrole_grants (catalog references)
+#   grants   : [{app, privilege}] → ad-hoc one-offs, on TOP of (or instead of) jobroles.
+# Both expand to abstract {app, privilege} pairs, then resolve to the scoped tenancy's
+# group(s) via the cells. So one jobrole definition serves every tenancy and lands only
+# the apps that tenancy actually has (a sysadmin in a postgres-less tenancy just gets the
+# rest). One roster serves every environment of its tenancy.
 # (Requires a scoped run — freeipa_scope_tenancy set — so grants land in one tenancy.)
 freeipa_idam_users: "{{ (_users_yaml | from_yaml) or [] }}"
 _users_yaml: |-
   {% for u in freeipa_people | default([]) %}
+  {% set eff = namespace(grants=(u.grants | default([]))) %}
+  {% for jr in u.jobroles | default([]) %}
+  {% set eff.grants = eff.grants + (_jobrole_grants[jr] | default([])) %}
+  {% endfor %}
   {% set ns = namespace(grps=(u.groups | default([]))) %}
-  {% for g in u.grants | default([]) %}
+  {% for g in eff.grants %}
   {% for c in _matrix_cells if c.app == g.app and c.privilege == g.privilege %}
   {% set ns.grps = ns.grps + [c.group] %}
   {% endfor %}

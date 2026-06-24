@@ -1,8 +1,13 @@
 ---
 # GLOBEX's people — shared across globex's environments (globex runs dev/test/prod).
+# globex has only docker + linux (no postgres, no web).
 freeipa_idam_managed_group: idam-globex-managed
 freeipa_people:
-  - { name: dave.kim,  first: Dave, last: Kim,  email: ["dave.kim@globex.example.com"],  grants: [{app: linux, privilege: sysadmin}] }
+  # AUTO-INTERSECT demo: the SAME `sysadmin` job role as acme, but globex has no
+  # postgres — so dave lands just linux/sysadmin + docker/admin. One definition,
+  # tenancy-correct result; no per-tenancy copy of the job.
+  - { name: dave.kim,  first: Dave, last: Kim,  email: ["dave.kim@globex.example.com"],  jobroles: [sysadmin] }
+  # Bare grant still works.
   - { name: erin.park, first: Erin, last: Park, email: ["erin.park@globex.example.com"], grants: [{app: docker, privilege: admin}] }
   # sam.cross is ALSO in acme — same global identity, different groups per tenancy.
-  - { name: sam.cross, first: Sam,  last: Cross, email: ["sam.cross@corp.example.com"],   grants: [{app: linux, privilege: sysadmin}] }
+  - { name: sam.cross, first: Sam,  last: Cross, email: ["sam.cross@corp.example.com"],   jobroles: [sysadmin] }

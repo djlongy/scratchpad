@@ -1,12 +1,18 @@
 ---
 # ACME's people — shared across all of acme's environments (acme runs dev/qa/stg/
-# prod). grants are abstract {app, privilege}; 20_generate resolves them to the
-# scoped environment's role groups.
+# prod). Assign a job by NAME (`jobroles:`); 15_jobroles.yml says what each job grants,
+# and 20_generate resolves it to the scoped environment's role groups.
 freeipa_idam_managed_group: idam-acme-managed
 freeipa_people:
-  - { name: alice.smith, first: Alice, last: Smith, email: ["alice.smith@acme.example.com"], grants: [{app: docker, privilege: admin}, {app: postgres, privilege: dba}] }
-  - { name: bob.ng,      first: Bob,   last: Ng,    email: ["bob.ng@acme.example.com"],      grants: [{app: web, privilege: admin}] }
-  - { name: carol.jones, first: Carol, last: Jones, email: ["carol.jones@acme.example.com"], grants: [{app: docker, privilege: readonly}] }
+  # Pure job role — "alice is a sysadmin" → linux/sysadmin + docker/admin + postgres/dba.
+  - { name: alice.smith, first: Alice, last: Smith, email: ["alice.smith@acme.example.com"], jobroles: [sysadmin] }
+  # `lead` is composed via includes: [appdev, dba] + web/admin — bob inherits all three by
+  # reference (docker/readonly, web/admin, postgres dba+readonly). One word onboards him.
+  - { name: bob.ng,      first: Bob,   last: Ng,    email: ["bob.ng@acme.example.com"],      jobroles: [lead] }
+  # `dba` is defined as apps: [postgres] → every postgres privilege from the catalog,
+  # PLUS an ad-hoc web/admin just for carol. UNIONED.
+  - { name: carol.jones, first: Carol, last: Jones, email: ["carol.jones@acme.example.com"], jobroles: [dba], grants: [{app: web, privilege: admin}] }
+  # Bare grants STILL work (jobroles are additive sugar, not a replacement).
   # sam.cross is ALSO in globex (tenancy_rosters/globex.yml) — a person can belong to
   # multiple tenancies. FreeIPA has ONE global identity per username; each tenancy run
   # creates it idempotently and adds its own groups. Keep first/last/email identical

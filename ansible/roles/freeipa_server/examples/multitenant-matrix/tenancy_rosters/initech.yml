@@ -1,6 +1,12 @@
 ---
+# INITECH's people — initech runs just one environment (dev) and has web + linux +
+# postgres. Mix of job roles and a bare-grants person.
 freeipa_idam_managed_group: idam-initech-managed
 freeipa_people:
-  - { name: grace.lee,  first: Grace, last: Lee,  email: ["grace.lee@initech.example.com"],  grants: [{app: web, privilege: admin}] }
-  - { name: henry.cole, first: Henry, last: Cole, email: ["henry.cole@initech.example.com"], grants: [{app: linux, privilege: sysadmin}] }
+  # appdev = docker/readonly + web/admin; initech has no docker, so grace lands web/admin
+  # only (auto-intersect again).
+  - { name: grace.lee,  first: Grace, last: Lee,  email: ["grace.lee@initech.example.com"],  jobroles: [appdev] }
+  # sysadmin job role; initech has no docker, so henry lands linux/sysadmin + postgres/dba.
+  - { name: henry.cole, first: Henry, last: Cole, email: ["henry.cole@initech.example.com"], jobroles: [sysadmin] }
+  # Bare grants still work for a one-off who doesn't fit a named job.
   - { name: iris.fox,   first: Iris,  last: Fox,   email: ["iris.fox@initech.example.com"],   grants: [{app: postgres, privilege: dba}, {app: postgres, privilege: readonly}] }
