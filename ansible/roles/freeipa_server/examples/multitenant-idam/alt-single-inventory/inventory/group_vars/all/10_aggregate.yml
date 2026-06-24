@@ -10,7 +10,7 @@
 # Drop a new tenant_<code>.yml into group_vars/all/ → it is picked up
 # automatically. No edits here, ever. That is the scalability property.
 #
-# The freeipa_server role consumes freeipa_idam_groups / _roles / _users /
+# The freeipa_server role consumes freeipa_idam_usergroups / _roles / _users /
 # _hostgroups unchanged — so NO role change is required for this pattern.
 #
 # Three layers, smallest grain up:
@@ -52,7 +52,7 @@ freeipa_idam_managed_group: >-
 
 # ── LAYER 1 — groups: every tenant × app × tier ─────────────────────────────
 # Flow-style YAML per line keeps from_yaml robust regardless of loop indentation.
-freeipa_idam_groups: "{{ _idam_groups_yaml | from_yaml }}"
+freeipa_idam_usergroups: "{{ _idam_groups_yaml | from_yaml }}"
 _idam_groups_yaml: |-
   {% for t in _tenant_specs %}
   {% for app in t.apps %}

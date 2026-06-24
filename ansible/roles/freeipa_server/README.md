@@ -2,37 +2,15 @@
 
 Portable, multi-OS FreeIPA **server** role. Wraps the upstream
 `freeipa.ansible_freeipa` `ipaserver`/`ipareplica` roles for install, and layers
-cold-start resilience, Borg-readable backup, declarative IDAM reconciliation, an
-opt-in post-install hardening baseline, and an **IPA-to-IPA realm migration**
-(`ipa-migrate`) — all driven from inventory variables.
+bespoke cold-start resilience, Borg-readable backup, declarative IDAM
+reconciliation, and an opt-in post-install hardening baseline.
 
-> Sanitised reference copy. Replace the example domain/IPs/Vault paths with your
-> own. Pairs with a separate `freeipa_client` role for host enrolment (not included).
+Pairs with [`freeipa_client`](../freeipa_client/) for host enrolment.
 
 ## Supported platforms
 
 EL-family (RHEL/Rocky/Alma/CentOS/Fedora) and Debian/Ubuntu — the full FreeIPA
 *server* support matrix. Packaging and firewall are handled by the upstream roles.
-
-## Requirements
-
-- `freeipa.ansible_freeipa` collection (the role wraps its `ipaserver`/`ipareplica` roles)
-- `community.hashi_vault` (credentials are read from HashiCorp Vault)
-- `ansible.posix`, `community.general`
-- A reachable HashiCorp Vault with the admin/DM passwords stored (see below)
-
-## Quick start
-
-```bash
-# Build the realm (primary first, then replica — or all at once on a single host)
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml
-
-# Re-reconcile declarative IDAM only
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags idam
-
-# Re-apply just the cold-start resilience config
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags resilience
-```
 
 ## Phases (tags)
 
@@ -50,8 +28,15 @@ ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags r
 | `adtrust` (`trust`) | Active Directory trust(s) (primary only, opt-in) |
 | `restore` | Break-glass restore from a backup (`never` tag — explicit opt-in) |
 
-A no-tag run runs everything. Migration is **not** in the default flow — run it
-explicitly via `playbooks/freeipa_migrate.yml`.
+A no-tag run runs everything.
+
+```bash
+# Re-reconcile IDAM after editing data/freeipa/*.yml
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/L2_identity/freeipa.yml --tags idam
+
+# Re-apply just resilience
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/L2_identity/freeipa.yml --tags resilience
+```
 
 ## Credentials — declared vars first, HashiCorp Vault as fallback
 
@@ -78,27 +63,26 @@ Provide **one** column. Either set the password var(s), or set the
 | `idam` (reconcile identity) | admin password (declared or Vault) + the `freeipa_idam_*` data |
 | `install` (build a server) | admin **and** dm password (declared or Vault) + `freeipa_server_forwarders` |
 
-Other inventory variables:
+Other inventory vars:
 
 | Variable | Example | Purpose |
 |---|---|---|
-| `domain` | `example.com` | Base domain (in `group_vars/all.yml`); realm derives as upper-case |
-| `freeipa_server_forwarders` | `[10.0.0.1]` | Upstream DNS forwarders for the IPA zone (install) |
+| `freeipa_server_forwarders` | `[10.0.0.53]` | Upstream DNS forwarders (install) |
 
 Derived automatically (override only to break convention):
 `freeipa_server_domain` (`{{ domain }}`), `freeipa_server_realm`
 (`{{ domain | upper }}`), `freeipa_server_is_primary` /
 `freeipa_server_primary_host` / `freeipa_server_primary_ip` (from the
-`freeipa_primary` inventory group + each host's `ansible_host`).
+`freeipa_primary` inventory group + `ansible_host`).
 
 ## Single-server vs. cluster
 
 Topology comes from inventory — no code change between sizes:
 
 - **Single server:** put one host in the `freeipa` group. It is the primary; the
-  replica path never runs; backup/IDAM/hardening all run on it.
+  replica path never runs; backup/IDAM/hardening all run on it. Fully functional.
 - **Cluster:** add more hosts to `freeipa` (optionally `freeipa_primary` /
-  `freeipa_replica` groups). Non-primary hosts enrol as replicas.
+  `freeipa_replica` groups for clarity). Non-primary hosts enrol as replicas.
 
 `freeipa_server_has_replicas` reflects whether more than one server is defined.
 
@@ -115,8 +99,8 @@ Topology comes from inventory — no code change between sizes:
 
 `freeipa_server_ca_mode: external-ca` requires a CSR roundtrip: the first run
 emits `/root/ipa.csr`, which you sign with your external CA; supply the signed
-chain via `freeipa_server_external_cert_files` and re-run. Preflight asserts the
-files are present.
+chain via `freeipa_server_external_cert_files` and re-run. Preflight asserts
+the files are present.
 
 > `external-ca` makes the IPA CA itself a **subordinate** of your CA. To instead
 > **trust other CAs** (other domains/devices) *alongside* the IPA CA, see below.
@@ -225,11 +209,11 @@ freeipa_server_ad_trusts:
 `freeipa_server_disable_allow_all` (guarded — refuses unless a replacement HBAC
 rule exists), `freeipa_server_crypto_policy` (report-only).
 
-## IDAM data (declarative)
+## IDAM data
 
-`freeipa_idam_*` lists drive users/groups/hostgroups/HBAC/sudo/password-policy
-reconciliation; managed users removed from config are deleted (except
-`freeipa_idam_protected_users`).
+Declarative `freeipa_idam_*` lists drive users/groups/hostgroups/HBAC/sudo/
+password-policy reconciliation; managed users removed from config are deleted
+(except `freeipa_idam_protected_users`). Data lives in `data/freeipa/*.yml`.
 
 ### Roles matrix (cleaner user↔group RBAC)
 
@@ -290,12 +274,13 @@ via the on-server `ipalib`) and opt-in behind the `export` tag.
 ```bash
 # Option A — no HashiCorp Vault: pass the admin password directly.
 # (Best from an Ansible-Vault file: -e @secrets.yml, so it isn't in your shell history.)
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml \
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/L2_identity/freeipa.yml \
   --tags export \
   -e freeipa_server_admin_password='<ADMIN_PASSWORD>'
 
 # Option B — fall back to HashiCorp Vault (set freeipa_idam_vault_secret in group_vars):
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags export
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/L2_identity/freeipa.yml \
+  --tags export
 
 # Either way → writes freeipa.config.snapshot.yml on the control node; move it
 # into an inventory group_vars (rename to taste) to reapply.
@@ -316,43 +301,8 @@ hostgroup host rosters (enrolment + automember repopulate them — opt in with
 `global_policy`. SSH keys are off by default
 (`freeipa_server_export_include_sshkeys=true` to include).
 
-## IPA-to-IPA realm migration
+## See also
 
-Migrate identities from a source (old) realm into this realm — 100% Ansible,
-defaults to **dry-run**:
-
-```bash
-# dry-run (no writes) — review the planned counts
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_migrate.yml
-
-# apply
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_migrate.yml \
-  -e freeipa_migrate_dryrun=false
-```
-
-It pulls the source bind password + target admin password from Vault, slurps the
-source CA cert, `kinit`s, runs `ipa-migrate` (prod-mode), restarts SSSD, and
-cleans up staged secrets. Set the source via `freeipa_migrate_source`,
-`freeipa_migrate_source_host`, `freeipa_migrate_bind_pw_vault` (see the example
-`group_vars/freeipa.yml`). Passwords are **not** migrated (Kerberos keys are
-realm-salted) — users re-key via the migration web page, so migration mode is
-left ON unless `freeipa_migrate_disable_mode_after=true`.
-
-## Layout
-
-```
-freeipa_server/
-├── defaults/main.yml      # full freeipa_server_* + freeipa_migrate_* surface
-├── vars/main.yml          # derived constants (systemd names, backup paths)
-├── meta/{main,argument_specs}.yml
-├── tasks/
-│   ├── main.yml           # preflight→install→resilience→hardening→backup→idam
-│   ├── preflight.yml      # dependency-ordering guards (FIPS/time/FQDN/primary)
-│   ├── install.yml primary.yml replica.yml   # upstream ipaserver/ipareplica wrap
-│   ├── resilience.yml backup.yml             # cold-start timer + Borg backup
-│   ├── hardening.yml      # opt-in post-install hardening
-│   ├── idam*.yml          # declarative IDAM reconciliation
-│   └── migrate.yml        # ipa-migrate realm migration (via freeipa_migrate.yml)
-├── handlers/main.yml
-└── templates/
-```
+- [`freeipa_client`](../freeipa_client/) — host enrolment
+- [`hashicorp_vault`](../hashicorp_vault/) — credential source
+- Design spec: `docs/superpowers/specs/2026-06-16-freeipa-server-portable-role-design.md`

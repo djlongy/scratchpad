@@ -19,17 +19,23 @@
   delegate_to: localhost
   become: false
 
-- name: DNS | Manage hosted zones
+# Forward AND reverse zones in one task. Forward: set `name`. Reverse: set
+# `name_from_ip` to a CIDR (e.g. 10.0.0.0/24) and IPA derives the in-addr.arpa
+# zone name — pair with allow_sync_ptr (and create_reverse on records below) for
+# automatic PTRs. skip_overlap_check helps when a reverse zone overlaps a parent.
+- name: DNS | Manage hosted zones (forward + reverse)
   freeipa.ansible_freeipa.ipadnszone:
     ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
-    name: "{{ item.name }}"
+    name: "{{ item.name | default(omit) }}"
+    name_from_ip: "{{ item.name_from_ip | default(omit) }}"
     dynamic_update: "{{ item.dynamic_update | default(omit) }}"
     allow_sync_ptr: "{{ item.allow_sync_ptr | default(omit) }}"
     allow_transfer: "{{ item.allow_transfer | default(omit) }}"
+    skip_overlap_check: "{{ item.skip_overlap_check | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   loop: "{{ freeipa_server_dns_zones }}"
   loop_control:
-    label: "{{ item.name }}"
+    label: "{{ item.name | default(item.name_from_ip) | default('unnamed-zone') }}"
   no_log: true
 
 - name: DNS | Manage conditional forward zones
@@ -44,16 +50,27 @@
     label: "{{ item.name }}"
   no_log: true
 
-- name: DNS | Manage records
+# ONE task for every record shape — record_value is list-typed upstream, so a
+# single value and many values are the SAME field (no record_value/record_values
+# split): record_value: 10.0.0.5  OR  record_value: [10.0.0.5, 10.0.0.6]. Two ways
+# to drive it, pick per item (all optional via omit):
+#   * flat   — name + record_type + record_value (+ create_reverse for auto-PTR)
+#   * bulk   — zone_name + records: [ {record_name, a_record: [...], create_reverse}, ... ]
+#              (one call per zone; record fields are list-typed too)
+# create_reverse auto-builds the PTR — needs the matching reverse zone above +
+# allow_sync_ptr. Great for vCenter/ESXi hosts sourced from inventory hostvars.
+- name: DNS | Manage records (single, multi, or bulk — one task)
   freeipa.ansible_freeipa.ipadnsrecord:
     ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
     zone_name: "{{ item.zone_name }}"
-    name: "{{ item.name }}"
-    record_type: "{{ item.record_type }}"
-    record_value: "{{ item.record_value }}"
+    name: "{{ item.name | default(omit) }}"
+    record_type: "{{ item.record_type | default(omit) }}"
+    record_value: "{{ item.record_value | default(omit) }}"
     record_ttl: "{{ item.record_ttl | default(omit) }}"
+    create_reverse: "{{ item.create_reverse | default(omit) }}"
+    records: "{{ item.records | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   loop: "{{ freeipa_server_dns_records }}"
   loop_control:
-    label: "{{ item.zone_name }}/{{ item.name }} {{ item.record_type | default('') }}"
+    label: "{{ item.zone_name }}/{{ item.name | default('(bulk)') }} {{ item.record_type | default('') }}"
   no_log: true

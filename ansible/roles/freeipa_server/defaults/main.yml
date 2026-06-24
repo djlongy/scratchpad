@@ -120,7 +120,7 @@ freeipa_server_ad_trusts: []
 
 # ── DNS ─────────────────────────────────────────────────────────────────────
 freeipa_server_setup_dns: true
-freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["10.0.0.1"]
+freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["10.0.0.53"]
 freeipa_server_forward_policy: "only"    # only | first
 freeipa_server_no_forwarders: false
 freeipa_server_auto_reverse: true
@@ -129,14 +129,26 @@ freeipa_server_no_dnssec_validation: true
 freeipa_server_allow_zone_overlap: true
 
 # Declarative DNS (primary only; needs integrated DNS). Manages IPA-hosted zones,
-# conditional forward zones, and records via the upstream ipadns* modules.
-# Idempotent. Records use the generic record_type/record_value form.
+# conditional forward zones, and records via the upstream ipadns* modules. Idempotent.
+#
+# Zones — forward (name) OR reverse (name_from_ip: CIDR → IPA derives in-addr.arpa):
 freeipa_server_dns_zones: []
 #  - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
+#  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true, skip_overlap_check: true }  # reverse
+#    # NB: to REMOVE a reverse zone use its explicit name (state: absent +
+#    #     name: "0.0.10.in-addr.arpa."), not name_from_ip.
 freeipa_server_dns_forward_zones: []
 #  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
+#
+# Records — record_value is list-typed, so single and multiple values are the SAME
+# field (no record_value/record_values split). create_reverse auto-builds the PTR
+# (needs the reverse zone above + allow_sync_ptr). Or drive a whole zone in one call
+# via `records:`. Values commonly sourced from inventory hostvars (see example role).
 freeipa_server_dns_records: []
 #  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
+#  - { zone_name: "internal.example.com", name: "vip",  record_type: "A", record_value: ["10.0.0.21", "10.0.0.22"] }
+#  - { zone_name: "internal.example.com", name: "vcenter", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR
+#  - { zone_name: "internal.example.com", records: [ { record_name: "esx01", a_record: ["10.0.0.31"], create_reverse: true } ] }  # bulk per zone
 
 # ── Automember (auto group/hostgroup membership rules) ───────────────────────
 # Primary only. Each rule auto-assigns users/hosts to a group by attribute regex
@@ -206,7 +218,7 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 freeipa_idam_admin_principal: "admin"
 freeipa_idam_admin_password_field: "admin_password"
 freeipa_idam_managed_group: "idam-managed-users"
-freeipa_idam_groups: []
+freeipa_idam_usergroups: []
 # Roles matrix — a role is a named bundle of groups; users reference roles
 # (user `roles: [...]`) instead of long flat group lists. At reconcile, each
 # user's roles expand to the union of their groups (merged with any direct
@@ -217,11 +229,24 @@ freeipa_idam_roles: []
 #    groups: [app-gitlab-admin, app-harbor-admin]
 freeipa_idam_users: []
 freeipa_idam_hostgroups: []
-freeipa_idam_hbacsvcs: []                  # custom HBAC services (seeded before HBAC rule members)
+freeipa_idam_hbacsvcs: []                  # custom HBAC services (e.g. docker, xrdp-sesman)
+freeipa_idam_hbacsvcgroups: []             # bundle services → grant via servicegroup on a rule
+#  - { name: remote-access, description: "Interactive remote login", hbacsvc: [sshd, xrdp-sesman] }
 freeipa_idam_hbac_rules: []
 freeipa_idam_sudo_commands: []
+freeipa_idam_sudocmdgroups: []             # bundle sudo cmds → grant via cmdgroup on a rule
+#  - { name: pkg-mgmt, description: "Package management", sudocmd: ["/usr/bin/dnf", "/usr/bin/yum"] }
 freeipa_idam_sudo_rules: []
 freeipa_idam_pwpolicies: []
+
+# Custom RBAC building blocks for delegation roles (the permission → privilege →
+# role daisychain). Built-ins are never declared — only custom grants you define.
+# permission = atomic right; privilege = bundle of permissions; role (below) = bundle
+# of privileges assigned to members. Field names = ipapermission / ipaprivilege params.
+freeipa_idam_permissions: []
+#  - { name: "Read Docker Hostgroups", right: [read, search], object_type: hostgroup, attrs: [cn, member] }
+freeipa_idam_privileges: []
+#  - { name: "Docker Fleet Operators", description: "Manage docker hostgroups", permission: ["Read Docker Hostgroups"] }
 
 # Native FreeIPA RBAC DELEGATION roles (`ipa role`) — a different layer from the
 # group-bundle freeipa_idam_roles above. A native role bundles PRIVILEGES (manage
@@ -304,6 +329,26 @@ freeipa_idam_breakglass_group: "admins"
 # risk locking out interactive admin entirely.
 freeipa_idam_disable_admin_login: false
 
+# Names of existing HBAC rules to DISABLE (state: disabled — reversible, not deleted).
+# Agnostic + scalable: pass any rule names, e.g. the stock allow-all rules:
+#   freeipa_idam_hbac_rules_disable: [allow_all, allow_all_hosts]
+# Applied AFTER your declarative rules so required access exists first. Lockout
+# guard: refuses if no rules are declared in freeipa_idam_hbac_rules (disabling the
+# default allow rules on an empty policy locks everyone out). To EMPTY a rule's
+# members instead of disabling it, declare it with `user: []` in
+# freeipa_idam_hbac_rules — the HBAC task reconciles members declaratively.
+freeipa_idam_hbac_rules_disable: []
+
+# IDAM apply path. false = NATIVE (idam.yml, server-side ipalib) — the default and
+# the recommendation: benchmarked 2.67x FASTER than the API variant (native bulks
+# groups/users in one ipalib call; the API has none), manages the FULL object set
+# (community.general has no privilege/permission/hbacsvc/hbacsvcgroup/automember
+# modules), and bootstraps before DNS (connects by IP). true = API variant
+# (idam_api.yml, community.general over the API by freeipa_server_fqdn) — only for a
+# provisioned, DNS-resolvable server, and it refuses RBAC objects it can't manage.
+freeipa_idam_apply_via_api: false
+freeipa_idam_api_validate_certs: true   # API path only: verify the IPA server cert
+
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
 # Snapshot a LIVE FreeIPA into this role's declarative contract so you can adopt
 # an existing instance instead of rebuilding it. Read-only against FreeIPA.
@@ -359,9 +404,9 @@ freeipa_migrate_log: "/var/log/ipa-migrate.log"
 freeipa_migrate_restart_sssd: true
 freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
 # ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
-# freeipa_migrate_source: "idm01.example.com"   # source IPA FQDN (ipa-migrate arg)
-# freeipa_migrate_source_host: "idm01"       # inventory host for CA slurp
-# freeipa_migrate_bind_pw_vault: "kv/data/platform/freeipa/runtime"  # source DM pw path
+# freeipa_migrate_source: "ipa1.example.com"   # source IPA FQDN (ipa-migrate arg)
+# freeipa_migrate_source_host: "ipa1"       # inventory host for CA slurp
+# freeipa_migrate_bind_pw_vault: "kv-<env>/data/platform/freeipa/runtime"  # source DM pw path
 # Internal staged paths (behavioural):
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
 freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"

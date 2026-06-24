@@ -51,17 +51,49 @@
     that:
       - freeipa_idam_managed_group | length > 0
       - freeipa_idam_users is iterable
-      - freeipa_idam_groups is iterable
+      - freeipa_idam_usergroups is iterable
       - freeipa_idam_roles is iterable
       - freeipa_idam_hostgroups is iterable
       - freeipa_idam_hbacsvcs is iterable
+      - freeipa_idam_hbacsvcgroups is iterable
       - freeipa_idam_hbac_rules is iterable
       - freeipa_idam_sudo_commands is iterable
+      - freeipa_idam_sudocmdgroups is iterable
       - freeipa_idam_sudo_rules is iterable
+      - freeipa_idam_permissions is iterable
+      - freeipa_idam_privileges is iterable
       - freeipa_idam_iparoles is iterable
       - freeipa_idam_service_accounts is iterable
       - freeipa_idam_breakglass_accounts is iterable
     fail_msg: "freeipa_idam_* variables are not valid (expected lists)."
+
+# DEPRECATED-SCHEMA GUARD. The group/service/cmd field names were renamed to match
+# the (unambiguous) community module params, and the top-level list is now
+# freeipa_idam_usergroups. Fail LOUDLY on any old name so a stale snapshot can't
+# silently drop HBAC/sudo members and change access. Re-export to migrate (the
+# exporter now emits the new names), or rename in place per the fail_msg.
+- name: Reject deprecated IDAM field/var names (renamed for disambiguation)
+  ansible.builtin.assert:
+    that:
+      - freeipa_idam_groups is not defined
+      - freeipa_idam_hbac_rules | selectattr('group', 'defined') | list | length == 0
+      - freeipa_idam_hbac_rules | selectattr('hbacsvc', 'defined') | list | length == 0
+      - freeipa_idam_hbac_rules | selectattr('hbacsvcgroup', 'defined') | list | length == 0
+      - freeipa_idam_sudo_rules | selectattr('group', 'defined') | list | length == 0
+      - freeipa_idam_sudo_rules | selectattr('allow_sudocmd', 'defined') | list | length == 0
+      - freeipa_idam_sudo_rules | selectattr('deny_sudocmd', 'defined') | list | length == 0
+      - freeipa_idam_sudo_rules | selectattr('allow_sudocmdgroup', 'defined') | list | length == 0
+      - freeipa_idam_sudo_rules | selectattr('deny_sudocmdgroup', 'defined') | list | length == 0
+      - freeipa_idam_sudo_rules | selectattr('sudooption', 'defined') | list | length == 0
+      - freeipa_idam_iparoles | selectattr('group', 'defined') | list | length == 0
+    fail_msg: >-
+      Deprecated FreeIPA IDAM field/var names detected. Schema was renamed to match
+      the community module params (singular, unambiguous): top-level
+      freeipa_idam_groups -> freeipa_idam_usergroups; rule fields group -> usergroup,
+      hbacsvc -> service, hbacsvcgroup -> servicegroup, allow_sudocmd -> cmd,
+      deny_sudocmd -> deny_cmd, allow_sudocmdgroup -> cmdgroup,
+      deny_sudocmdgroup -> deny_cmdgroup, sudooption -> sudoopt. Re-export the
+      snapshot or rename in place.
 
 # SURGICAL VALIDATION: collect EVERY referential/structural problem in one pass and
 # report them all at once at the end — so a bad item 2000 lines into a large dict
@@ -73,7 +105,7 @@
   ansible.builtin.set_fact:
     _freeipa_idam_problems: "{{ (_freeipa_idam_problems_yaml | from_yaml) or [] }}"
   vars:
-    _gnames: "{{ freeipa_idam_groups | map(attribute='name') | list }}"
+    _gnames: "{{ freeipa_idam_usergroups | map(attribute='name') | list }}"
     _rnames: "{{ freeipa_idam_roles | map(attribute='name') | list }}"
     _unames: "{{ freeipa_idam_users | map(attribute='name', default='(unnamed)') | list }}"
     _freeipa_idam_problems_yaml: |-
@@ -113,7 +145,7 @@
       - "duplicate username '{{ n }}' ({{ _unames | select('equalto', n) | list | length }} entries)"
       {% endif %}
       {% endfor %}
-      {% for g in freeipa_idam_groups %}
+      {% for g in freeipa_idam_usergroups %}
       {% if (g.state | default('present')) == 'absent' and g.name in freeipa_idam_protected_groups %}
       - "group '{{ g.name }}' is a protected FreeIPA built-in — refusing state: absent (would delete core schema)"
       {% endif %}
@@ -151,8 +183,7 @@
 # outrank set_fact. role-expanded when roles are used, else the users as given.
 - name: Resolve effective users (role-expanded when roles are used)
   ansible.builtin.set_fact:
-    _freeipa_idam_users: >-
-      {{ _freeipa_users_roled if (freeipa_idam_roles | length > 0) else freeipa_idam_users }}
+    _freeipa_idam_users: "{{ _freeipa_users_roled | default(freeipa_idam_users) }}"
 
 - name: Build desired FreeIPA username list
   ansible.builtin.set_fact:
@@ -160,7 +191,7 @@
 
 - name: Build declarative FreeIPA group name list
   ansible.builtin.set_fact:
-    freeipa_idam_group_names: "{{ freeipa_idam_groups | map(attribute='name') | list | unique }}"
+    freeipa_idam_group_names: "{{ freeipa_idam_usergroups | map(attribute='name') | list | unique }}"
 
 - name: Build requested user->group memberships from user entries
   ansible.builtin.set_fact:
@@ -172,7 +203,7 @@
 
 - name: Build effective FreeIPA groups with merged memberships
   ansible.builtin.set_fact:
-    freeipa_idam_groups_effective: "{{ (freeipa_idam_groups_effective | default([])) + [item | combine(_freeipa_idam_group_user_block, recursive=True)] }}"
+    freeipa_idam_usergroups_effective: "{{ (freeipa_idam_usergroups_effective | default([])) + [item | combine(_freeipa_idam_group_user_block, recursive=True)] }}"
   vars:
     _freeipa_idam_users_from_group_entry: "{{ item.user | default([]) }}"
     _freeipa_idam_users_from_user_entries: >-
@@ -184,10 +215,10 @@
       }}
     _freeipa_idam_merged_users: "{{ (_freeipa_idam_users_from_group_entry + _freeipa_idam_users_from_user_entries) | unique }}"
     _freeipa_idam_group_user_block: "{{ {'user': _freeipa_idam_merged_users} if (_freeipa_idam_merged_users | length > 0) else {} }}"
-  loop: "{{ freeipa_idam_groups }}"
+  loop: "{{ freeipa_idam_usergroups }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_groups | length > 0
+  when: freeipa_idam_usergroups | length > 0
   no_log: true
 
 # Build the two BULK ipagroup payloads — one `groups:` list to create the group
@@ -199,18 +230,18 @@
 # map (deterministic GIDs), else IPA auto-assigns.
 - name: Build bulk ipagroup create + membership payloads
   ansible.builtin.set_fact:
-    _freeipa_idam_groups_create: "{{ (_fc_yaml | from_yaml) or [] }}"
-    _freeipa_idam_groups_members: "{{ (_fm_yaml | from_yaml) or [] }}"
+    _freeipa_idam_usergroups_create: "{{ (_fc_yaml | from_yaml) or [] }}"
+    _freeipa_idam_usergroups_members: "{{ (_fm_yaml | from_yaml) or [] }}"
   vars:
     _fc_yaml: |-
-      {% for g in (freeipa_idam_groups_effective | default([])) %}
+      {% for g in (freeipa_idam_usergroups_effective | default([])) %}
       {% if (g.state | default('present')) != 'absent' %}
       {% set _gid = g.gidnumber | default(freeipa_idam_group_gids[g.name] | default('')) %}
       - {name: "{{ g.name }}"{% if g.description is defined %}, description: "{{ g.description }}"{% endif %}{% if _gid | string | length > 0 %}, gidnumber: {{ _gid }}{% endif %}{% if g.posix is defined %}, posix: {{ g.posix | to_json }}{% endif %}{% if g.nonposix is defined %}, nonposix: {{ g.nonposix | to_json }}{% endif %}}
       {% endif %}
       {% endfor %}
     _fm_yaml: |-
-      {% for g in (freeipa_idam_groups_effective | default([])) %}
+      {% for g in (freeipa_idam_usergroups_effective | default([])) %}
       {% if (g.state | default('present')) != 'absent' and ((g.user | default([]) | length > 0) or (g.group | default([]) | length > 0) or (g.membermanager_user | default([]) | length > 0) or (g.membermanager_group | default([]) | length > 0)) %}
       - {name: "{{ g.name }}"{% if g.user | default([]) | length > 0 %}, user: {{ g.user | to_json }}{% endif %}{% if g.group | default([]) | length > 0 %}, group: {{ g.group | to_json }}{% endif %}{% if g.membermanager_user | default([]) | length > 0 %}, membermanager_user: {{ g.membermanager_user | to_json }}{% endif %}{% if g.membermanager_group | default([]) | length > 0 %}, membermanager_group: {{ g.membermanager_group | to_json }}{% endif %}}
       {% endif %}
@@ -261,9 +292,9 @@
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    groups: "{{ _freeipa_idam_groups_create }}"
+    groups: "{{ _freeipa_idam_usergroups_create }}"
     state: present
-  when: (_freeipa_idam_groups_create | default([])) | length > 0
+  when: (_freeipa_idam_usergroups_create | default([])) | length > 0
   no_log: true
 
 # Users are created HERE — before any HBAC/sudo rule-membership task that
@@ -334,7 +365,35 @@
   when: freeipa_idam_hbacsvcs | length > 0
   no_log: true
 
-- name: Ensure declarative HBAC rules are present
+# HBAC service GROUPS — bundle custom/stock services (e.g. docker + xrdp-sesman +
+# sshd → "remote-access") so an HBAC rule can grant a whole bundle via servicegroup
+# instead of listing each service. Created AFTER the services above, BEFORE the
+# rules below that reference them. Rich-dict: name + hbacsvc members in one call;
+# default action reconciles membership (declarative). Field names = ipahbacsvcgroup
+# params (hbacsvc).
+- name: Ensure declarative HBAC service groups are present (group + members in one pass)
+  freeipa.ansible_freeipa.ipahbacsvcgroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    hbacsvc: "{{ item.hbacsvc | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_hbacsvcgroups }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_hbacsvcgroups | length > 0
+  no_log: true
+
+# ONE rich-dict call per rule. With the default action ('hbacrule') and
+# state: present, the module creates the rule AND reconciles its members in the
+# same call — it builds add+del lists, so membership is fully declarative
+# (undeclared members are removed), exactly like the hostgroup task above.
+# Category rules (usercategory: all, …) simply omit the member lists. Member
+# principals (users/groups/hostgroups/hbacsvcs) are all created in earlier tasks,
+# so they resolve here. Operational state (enabled/disabled) is a separate pass
+# below: the module forbids member params alongside states enabled/disabled.
+- name: Ensure declarative HBAC rules are present (rule + members in one pass)
   freeipa.ansible_freeipa.ipahbacrule:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -343,33 +402,17 @@
     usercategory: "{{ item.usercategory | default(omit) }}"
     hostcategory: "{{ item.hostcategory | default(omit) }}"
     servicecategory: "{{ item.servicecategory | default(omit) }}"
+    user: "{{ item.user | default(omit) }}"
+    group: "{{ item.usergroup | default(omit) }}"
+    host: "{{ item.host | default(omit) }}"
+    hostgroup: "{{ item.hostgroup | default(omit) }}"
+    hbacsvc: "{{ item.service | default(omit) }}"
+    hbacsvcgroup: "{{ item.servicegroup | default(omit) }}"
     state: "{{ 'absent' if (item.state | default('present')) == 'absent' else 'present' }}"
   loop: "{{ freeipa_idam_hbac_rules }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_hbac_rules | length > 0
-  no_log: true
-
-- name: Ensure declarative HBAC rule memberships are present
-  freeipa.ansible_freeipa.ipahbacrule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ item.name }}"
-    action: member
-    user: "{{ item.user | default(omit) }}"
-    group: "{{ item.group | default(omit) }}"
-    host: "{{ item.host | default(omit) }}"
-    hostgroup: "{{ item.hostgroup | default(omit) }}"
-    hbacsvc: "{{ item.hbacsvc | default(omit) }}"
-    hbacsvcgroup: "{{ item.hbacsvcgroup | default(omit) }}"
-    state: present
-  loop: "{{ freeipa_idam_hbac_rules }}"
-  loop_control:
-    label: "{{ item.name | default('missing-name') }}"
-  when:
-    - freeipa_idam_hbac_rules | length > 0
-    - (item.state | default('present')) != 'absent'
-    - (item.user is defined) or (item.group is defined) or (item.host is defined) or (item.hostgroup is defined) or (item.hbacsvc is defined) or (item.hbacsvcgroup is defined)
   no_log: true
 
 - name: Ensure declarative HBAC rule operational states
@@ -387,6 +430,33 @@
     - item.state in ['enabled', 'disabled']
   no_log: true
 
+# Disable named HBAC rules (e.g. the stock allow_all / allow_all_hosts) — agnostic,
+# list-driven, reversible (state: disabled, not deleted). Runs AFTER the declarative
+# rules above so required access exists first. Lockout guard: refuses if no managed
+# policy is declared (disabling the default allow rules on an empty policy locks
+# everyone out). To EMPTY a rule's members instead, declare it with user: [] above.
+- name: Disable named HBAC rules (opt-in hardening)
+  when: freeipa_idam_hbac_rules_disable | length > 0
+  block:
+    - name: Refuse to disable HBAC rules without a declared access policy
+      ansible.builtin.assert:
+        that:
+          - freeipa_idam_hbac_rules | length > 0
+        fail_msg: >-
+          Refusing to disable {{ freeipa_idam_hbac_rules_disable | join(', ') }}:
+          no HBAC rules are declared in freeipa_idam_hbac_rules, so disabling the
+          stock allow rules would lock everyone out. Declare your access policy first.
+    - name: Disable each listed HBAC rule (reversible — state disabled)
+      freeipa.ansible_freeipa.ipahbacrule:
+        ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+        ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+        name: "{{ item }}"
+        state: disabled
+      loop: "{{ freeipa_idam_hbac_rules_disable }}"
+      loop_control:
+        label: "{{ item }}"
+      no_log: true
+
 - name: Ensure declarative sudo commands are present
   freeipa.ansible_freeipa.ipasudocmd:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
@@ -400,7 +470,31 @@
   when: freeipa_idam_sudo_commands | length > 0
   no_log: true
 
-- name: Ensure declarative sudo rules are present
+# Sudo command GROUPS — bundle commands so a sudo rule can grant a whole set via
+# cmdgroup/deny_cmdgroup instead of listing each. Created AFTER the commands above,
+# BEFORE the rules below that reference them. Rich-dict: name + sudocmd members in
+# one call (declarative reconcile). Field names = ipasudocmdgroup params (sudocmd).
+- name: Ensure declarative sudo command groups are present (group + members in one pass)
+  freeipa.ansible_freeipa.ipasudocmdgroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    sudocmd: "{{ item.sudocmd | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_sudocmdgroups }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_sudocmdgroups | length > 0
+  no_log: true
+
+# ONE rich-dict call per rule, same pattern as the HBAC rules above: the default
+# action ('sudorule') with state: present creates the rule AND reconciles its
+# members (hosts, users, allow/deny cmds, options, runas) in the same call —
+# declarative add+del. cmds referenced via allow/deny_sudocmd are created in the
+# sudo-commands task above, so they resolve here. Operational state
+# (enabled/disabled) is a separate pass below.
+- name: Ensure declarative sudo rules are present (rule + members in one pass)
   freeipa.ansible_freeipa.ipasudorule:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -411,39 +505,23 @@
     cmdcategory: "{{ item.cmdcategory | default(omit) }}"
     runasusercategory: "{{ item.runasusercategory | default(omit) }}"
     runasgroupcategory: "{{ item.runasgroupcategory | default(omit) }}"
+    host: "{{ item.host | default(omit) }}"
+    hostgroup: "{{ item.hostgroup | default(omit) }}"
+    user: "{{ item.user | default(omit) }}"
+    group: "{{ item.usergroup | default(omit) }}"
+    allow_sudocmd: "{{ item.cmd | default(omit) }}"
+    deny_sudocmd: "{{ item.deny_cmd | default(omit) }}"
+    allow_sudocmdgroup: "{{ item.cmdgroup | default(omit) }}"
+    deny_sudocmdgroup: "{{ item.deny_cmdgroup | default(omit) }}"
+    sudooption: "{{ item.sudoopt | default(omit) }}"
+    order: "{{ item.order | default(omit) }}"
+    runasuser: "{{ item.runasuser | default(omit) }}"
+    runasgroup: "{{ item.runasgroup | default(omit) }}"
     state: "{{ 'absent' if (item.state | default('present')) == 'absent' else 'present' }}"
   loop: "{{ freeipa_idam_sudo_rules }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_sudo_rules | length > 0
-  no_log: true
-
-- name: Ensure declarative sudo rule memberships are present
-  freeipa.ansible_freeipa.ipasudorule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ item.name }}"
-    action: member
-    host: "{{ item.host | default(omit) }}"
-    hostgroup: "{{ item.hostgroup | default(omit) }}"
-    user: "{{ item.user | default(omit) }}"
-    group: "{{ item.group | default(omit) }}"
-    allow_sudocmd: "{{ item.allow_sudocmd | default(omit) }}"
-    deny_sudocmd: "{{ item.deny_sudocmd | default(omit) }}"
-    allow_sudocmdgroup: "{{ item.allow_sudocmdgroup | default(omit) }}"
-    deny_sudocmdgroup: "{{ item.deny_sudocmdgroup | default(omit) }}"
-    sudooption: "{{ item.sudooption | default(omit) }}"
-    order: "{{ item.order | default(omit) }}"
-    runasuser: "{{ item.runasuser | default(omit) }}"
-    runasgroup: "{{ item.runasgroup | default(omit) }}"
-    state: present
-  loop: "{{ freeipa_idam_sudo_rules }}"
-  loop_control:
-    label: "{{ item.name | default('missing-name') }}"
-  when:
-    - freeipa_idam_sudo_rules | length > 0
-    - (item.state | default('present')) != 'absent'
-    - (item.host is defined) or (item.hostgroup is defined) or (item.user is defined) or (item.group is defined) or (item.allow_sudocmd is defined) or (item.deny_sudocmd is defined) or (item.allow_sudocmdgroup is defined) or (item.deny_sudocmdgroup is defined) or (item.sudooption is defined) or (item.order is defined) or (item.runasuser is defined) or (item.runasgroup is defined)
   no_log: true
 
 - name: Ensure declarative sudo rule operational states
@@ -477,10 +555,48 @@
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    groups: "{{ _freeipa_idam_groups_members }}"
+    groups: "{{ _freeipa_idam_usergroups_members }}"
     action: member
     state: present
-  when: (_freeipa_idam_groups_members | default([])) | length > 0
+  when: (_freeipa_idam_usergroups_members | default([])) | length > 0
+  no_log: true
+
+# RBAC daisychain bottom-up: permission → privilege → role. Custom PERMISSIONS
+# first (the atomic "can do X to Y" grants), then PRIVILEGES that bundle them, then
+# the delegation roles below reference the privileges. Field names = ipapermission /
+# ipaprivilege params. Built-in permissions/privileges are never declared here —
+# only custom ones you define.
+- name: Ensure declarative IPA permissions are present
+  freeipa.ansible_freeipa.ipapermission:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ item.name }}"
+    right: "{{ item.right | default(omit) }}"
+    attrs: "{{ item.attrs | default(omit) }}"
+    bindtype: "{{ item.bindtype | default(omit) }}"
+    object_type: "{{ item.object_type | default(omit) }}"
+    subtree: "{{ item.subtree | default(omit) }}"
+    extra_target_filter: "{{ item.extra_target_filter | default(omit) }}"
+    memberof: "{{ item.memberof | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_permissions }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_permissions | length > 0
+  no_log: true
+
+- name: Ensure declarative IPA privileges are present (privilege + permissions in one pass)
+  freeipa.ansible_freeipa.ipaprivilege:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    permission: "{{ item.permission | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_privileges }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_privileges | length > 0
   no_log: true
 
 # Native IPA DELEGATION roles (privileges + members) — distinct from the group-
@@ -494,7 +610,7 @@
     name: "{{ item.name }}"
     privilege: "{{ item.privilege | default(omit) }}"
     user: "{{ item.user | default(omit) }}"
-    group: "{{ item.group | default(omit) }}"
+    group: "{{ item.usergroup | default(omit) }}"
     host: "{{ item.host | default(omit) }}"
     hostgroup: "{{ item.hostgroup | default(omit) }}"
     service: "{{ item.service | default(omit) }}"
@@ -506,7 +622,7 @@
   no_log: true
 
 # Break-glass accounts join the break-glass group (default: admins) for full access.
-# Done as a direct membership add (the group is a built-in, not in freeipa_idam_groups)
+# Done as a direct membership add (the group is a built-in, not in freeipa_idam_usergroups)
 # so it bypasses the declared-group validation. They stay login-enabled + protected.
 - name: Add break-glass accounts to the break-glass group
   freeipa.ansible_freeipa.ipagroup:

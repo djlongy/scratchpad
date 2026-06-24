@@ -26,7 +26,7 @@ freeipa_idam_managed_group: >-
      if (_tenant_specs | length == 1) else 'idam-managed-users' }}
 
 # ── LAYER 1 — groups: every tenant × service × access-level ─────────────────
-freeipa_idam_groups: "{{ (_gen_groups | from_yaml) or [] }}"
+freeipa_idam_usergroups: "{{ (_gen_groups | from_yaml) or [] }}"
 _gen_groups: |-
   {% for t in _tenant_specs %}
   {% for svc in t.services %}
@@ -73,7 +73,7 @@ freeipa_idam_hbac_rules: "{{ (_gen_hbac | from_yaml) or [] }}"
 _gen_hbac: |-
   {% for t in _tenant_specs %}
   {% for svc in t.services %}
-  - {name: "hbac-{{ t.code }}-{{ env }}-{{ svc }}", description: "{{ t.code }} {{ env }} {{ svc }} SSH", group: [{% for lvl in (t.access_levels | default(identity_access_levels)) %}"{{ t.code }}-{{ env }}-{{ svc }}-{{ lvl }}"{% if not loop.last %}, {% endif %}{% endfor %}], hostgroup: ["{{ t.code }}-{{ env }}-{{ svc }}"], hbacsvc: ["sshd"]}
+  - {name: "hbac-{{ t.code }}-{{ env }}-{{ svc }}", description: "{{ t.code }} {{ env }} {{ svc }} SSH", usergroup: [{% for lvl in (t.access_levels | default(identity_access_levels)) %}"{{ t.code }}-{{ env }}-{{ svc }}-{{ lvl }}"{% if not loop.last %}, {% endif %}{% endfor %}], hostgroup: ["{{ t.code }}-{{ env }}-{{ svc }}"], service: ["sshd"]}
   {% endfor %}{% endfor %}
 
 # ── REFERENCE INDEX — refer to a generated group/role by INTENT, not a literal ─
@@ -105,7 +105,7 @@ _gen_users_by_tenant: |-
 # "Every" = all tenants you passed via -i (one, or several on a union run). There is
 # no realm-wide "all" var — a run only sees the inventories you pass. For the whole
 # realm regardless of inventory, query FreeIPA (`ipa user-find`).
-freeipa_all_group_names: "{{ freeipa_idam_groups | map(attribute='name') | list }}"
+freeipa_all_group_names: "{{ freeipa_idam_usergroups | map(attribute='name') | list }}"
 freeipa_all_role_names: "{{ freeipa_idam_roles | map(attribute='name') | list }}"
 freeipa_all_hostgroup_names: "{{ freeipa_idam_hostgroups | map(attribute='name') | list }}"
 freeipa_all_usernames: "{{ freeipa_idam_users | map(attribute='name') | list }}"

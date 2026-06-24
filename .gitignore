@@ -186,3 +186,6 @@ ansible/inventories/**/local.yml
 
 # the tool/superpowers planning artifacts — never publish prompts/plans/specs
 docs/superpowers/
+
+# Live FreeIPA export snapshots — REAL realm data, never commit to public repo
+*.live.yml

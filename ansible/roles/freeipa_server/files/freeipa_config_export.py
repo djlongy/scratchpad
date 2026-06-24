@@ -42,7 +42,11 @@ ROLE_DENYLIST = {
 }
 # pwpolicy owned by FreeIPA itself.
 PWPOLICY_DENYLIST = {"global_policy"}
+# Stock HBAC service groups shipped on every server — only CUSTOM ones are captured.
+STOCK_HBACSVCGROUPS = {"Sudo", "ftp"}
 DEFAULT_FALLBACK_GROUP = "ipausers"  # only used if a user has no other group
+# Login shells that mean "no interactive login" → the account is a SERVICE account.
+NOLOGIN_SHELLS = {"/sbin/nologin", "/usr/sbin/nologin", "/bin/false", "/usr/bin/false"}
 # Built-in fallback set of stock FreeIPA HBAC services — shipped on every server,
 # so they are excluded from the snapshot (only CUSTOM services are captured, then
 # seeded on a fresh server before the HBAC rule memberships that reference them).
@@ -153,8 +157,12 @@ def export_groups():
 
 
 def export_users(group_names, include_sshkeys):
+    """Split active accounts into human users vs SERVICE accounts (login disabled).
+    A user whose loginshell is a nologin shell is emitted under
+    freeipa_idam_service_accounts (so a re-apply forces shell=nologin), everyone
+    else under freeipa_idam_users. Returns (users, service_accounts, used_fallback)."""
     used_fallback = False
-    out = []
+    users, service_accounts = [], []
     for e in _find("user_find"):
         if str(_one(e, "preserved")).lower() == "true":
             continue  # staged/deleted-preserved entry, not active config
@@ -178,8 +186,13 @@ def export_users(group_names, include_sshkeys):
         }
         if include_sshkeys:
             item["sshpubkey"] = _many(e, "ipasshpubkey")
-        out.append(_prune(item))
-    return out, used_fallback
+        # Login disabled (nologin shell) -> service account. The role forces the
+        # nologin shell on apply, so it is not re-emitted on the item.
+        if _str(e, "loginshell") in NOLOGIN_SHELLS:
+            service_accounts.append(_prune(item))
+        else:
+            users.append(_prune(item))
+    return users, service_accounts, used_fallback
 
 
 def export_hostgroups(include_host_membership):
@@ -190,7 +203,9 @@ def export_hostgroups(include_host_membership):
         if not name:
             continue
         item = {"name": name, _DESCRIPTION: _str(e, _DESCRIPTION)}
-        nested = [g for g in _many(e, "member_hostgroup") if g in names]
+        # Exclude SELF — a hostgroup must never be a member of itself (bad state /
+        # would create a self-reference on re-apply). Only real nested hostgroups.
+        nested = [g for g in _many(e, "member_hostgroup") if g in names and g != name]
         if nested:
             item["hostgroup"] = nested
         if include_host_membership:
@@ -212,11 +227,11 @@ def export_hbac_rules():
             _HOSTCATEGORY: _str(e, _HOSTCATEGORY),
             "servicecategory": _str(e, "servicecategory"),
             "user": _many(e, "memberuser_user"),
-            "group": _many(e, "memberuser_group"),
+            "usergroup": _many(e, "memberuser_group"),
             "host": _many(e, "memberhost_host"),
             "hostgroup": _many(e, "memberhost_hostgroup"),
-            "hbacsvc": _many(e, "memberservice_hbacsvc"),
-            "hbacsvcgroup": _many(e, "memberservice_hbacsvcgroup"),
+            "service": _many(e, "memberservice_hbacsvc"),
+            "servicegroup": _many(e, "memberservice_hbacsvcgroup"),
         }
         # Capture operational state only when disabled (present-by-default = enabled).
         if not _enabled(e):
@@ -263,14 +278,14 @@ def export_sudo_rules():
             "runasusercategory": _str(e, "ipasudorunasusercategory"),
             "runasgroupcategory": _str(e, "ipasudorunasgroupcategory"),
             "user": _many(e, "memberuser_user"),
-            "group": _many(e, "memberuser_group"),
+            "usergroup": _many(e, "memberuser_group"),
             "host": _many(e, "memberhost_host"),
             "hostgroup": _many(e, "memberhost_hostgroup"),
-            "allow_sudocmd": _many(e, "memberallowcmd_sudocmd"),
-            "deny_sudocmd": _many(e, "memberdenycmd_sudocmd"),
-            "allow_sudocmdgroup": _many(e, "memberallowcmd_sudocmdgroup"),
-            "deny_sudocmdgroup": _many(e, "memberdenycmd_sudocmdgroup"),
-            "sudooption": _many(e, "ipasudoopt"),
+            "cmd": _many(e, "memberallowcmd_sudocmd"),
+            "deny_cmd": _many(e, "memberdenycmd_sudocmd"),
+            "cmdgroup": _many(e, "memberallowcmd_sudocmdgroup"),
+            "deny_cmdgroup": _many(e, "memberdenycmd_sudocmdgroup"),
+            "sudoopt": _many(e, "ipasudoopt"),
             "runasuser": _many(e, "ipasudorunas_user"),
             "runasgroup": _many(e, "ipasudorunasgroup_group"),
             "order": _int(e, "sudoorder"),
@@ -451,11 +466,182 @@ def export_iparoles():
             _DESCRIPTION: _str(e, _DESCRIPTION),
             "privilege": _many(e, "memberof_privilege"),
             "user": _many(e, "member_user"),
-            "group": _many(e, "member_group"),
+            "usergroup": _many(e, "member_group"),
             "host": _many(e, "member_host"),
             "hostgroup": _many(e, "member_hostgroup"),
             "service": _many(e, "member_service"),
         }))
+    return out
+
+
+def export_hbacsvcgroups():
+    """Custom HBAC service GROUPS — name + description + member services. Stock
+    groups that ship on every server ('Sudo', 'ftp') are skipped."""
+    out = []
+    for e in _find("hbacsvcgroup_find"):
+        name = _str(e, "cn")
+        if not name or name in STOCK_HBACSVCGROUPS:
+            continue
+        out.append(_prune({
+            "name": name,
+            _DESCRIPTION: _str(e, _DESCRIPTION),
+            "hbacsvc": _many(e, "member_hbacsvc"),
+        }))
+    return out
+
+
+def export_sudocmdgroups():
+    """Sudo command GROUPS — name + description + member sudo commands."""
+    out = []
+    for e in _find("sudocmdgroup_find"):
+        name = _str(e, "cn")
+        if not name:
+            continue
+        out.append(_prune({
+            "name": name,
+            _DESCRIPTION: _str(e, _DESCRIPTION),
+            "sudocmd": _many(e, "member_sudocmd"),
+        }))
+    return out
+
+
+def _system_permission_names():
+    """Names of FreeIPA-managed (built-in) permissions — ipapermissiontype contains
+    'MANAGED'. (Every permission carries SYSTEM+V2; only the built-in/default ones
+    are additionally MANAGED — user-created permissions are not.) These can't be
+    recreated on a rebuild, so they're excluded from the snapshot and used to detect
+    built-in privileges (a privilege holding ONLY managed permissions is built-in)."""
+    out = set()
+    for e in _find("permission_find"):
+        name = _str(e, "cn")
+        ptype = " ".join(_many(e, "ipapermissiontype")).upper()
+        if name and "MANAGED" in ptype:
+            out.add(name)
+    return out
+
+
+def export_privileges(wanted_names, system_perms):
+    """CUSTOM privileges referenced by exported roles. A privilege holding only
+    built-in (SYSTEM) permissions is itself built-in (e.g. 'Group Administrators')
+    and is skipped — the role still references it by name, but we never recreate it.
+    A kept privilege keeps its FULL permission list (system perms exist built-in;
+    only custom ones are emitted under freeipa_idam_permissions). Returns
+    (privileges, set_of_member_permission_names)."""
+    out, perm_names = [], set()
+    for e in _find("privilege_find"):
+        name = _str(e, "cn")
+        if not name or name not in wanted_names:
+            continue
+        perms = _many(e, "memberof_permission")
+        if not [p for p in perms if p not in system_perms]:
+            continue  # built-in privilege (only system permissions) — don't recreate
+        perm_names.update(perms)
+        out.append(_prune({
+            "name": name,
+            _DESCRIPTION: _str(e, _DESCRIPTION),
+            "permission": perms,
+        }))
+    return out, perm_names
+
+
+def export_permissions(wanted_names, system_perms):
+    """CUSTOM permissions held by the exported privileges. SYSTEM (FreeIPA-managed)
+    permissions are skipped — they exist on every server and cannot be recreated."""
+    out = []
+    for e in _find("permission_find"):
+        name = _str(e, "cn")
+        if not name or name not in wanted_names or name in system_perms:
+            continue
+        out.append(_prune({
+            "name": name,
+            "right": _many(e, "ipapermright"),
+            "attrs": _many(e, "attrs"),
+            "object_type": _str(e, "type"),
+            "subtree": _str(e, "subtree"),
+            "target": _str(e, "ipapermtargetto") or _str(e, "target"),
+            "extra_target_filter": _many(e, "extratargetfilter"),
+            "memberof": _many(e, "memberof"),
+        }))
+    return out
+
+
+def export_dns_zones():
+    """All DNS zones managed by this server (forward AND reverse). Includes the
+    realm's own primary zone — harmless to re-declare idempotently."""
+    out = []
+    for e in _find("dnszone_find"):
+        name = _str(e, "idnsname")
+        if not name:
+            continue
+        # idnsallowtransfer comes back as the raw BIND ACL string ("none;" = the
+        # default no-transfer). ipadnszone's allow_transfer param expects a LIST of
+        # IPs, NOT the "none;" keyword — feeding it back fails ("Invalid ip_address").
+        # So only emit allow_transfer when it's a real, non-default ACL; otherwise
+        # omit it (default = no transfer), which makes the zone round-trip cleanly.
+        xfer = (_str(e, "idnsallowtransfer") or "").strip()
+        allow_transfer = [] if xfer.rstrip(";").strip().lower() in ("", "none") \
+            else [a.strip() for a in xfer.rstrip(";").split(";") if a.strip()]
+        out.append(_prune({
+            "name": name,
+            "dynamic_update": _str(e, "idnsallowdynupdate") in ("TRUE", "True", "true"),
+            "allow_sync_ptr": _str(e, "idnsallowsyncptr") in ("TRUE", "True", "true"),
+            "allow_transfer": allow_transfer,
+        }))
+    return out
+
+
+def export_dns_forward_zones():
+    """Conditional forward zones (idnsforwardzone) — the role applies these via
+    freeipa_server_dns_forward_zones, so capture them for symmetry. Field names =
+    ipadnsforwardzone params (name, forwarders, forwardpolicy)."""
+    out = []
+    for e in _find("dnsforwardzone_find"):
+        name = _str(e, "idnsname")
+        if not name:
+            continue
+        out.append(_prune({
+            "name": name,
+            "forwarders": _many(e, "idnsforwarders"),
+            "forwardpolicy": _str(e, "idnsforwardpolicy"),
+        }))
+    return out
+
+
+def export_dns_records():
+    """Per-zone DNS records. SOA/NS-only and the apex '@' record are skipped —
+    they are owned by the zone definition itself, not declarative record state.
+    Returns [{zone_name, records: [...]}] for zones with at least one record."""
+    out = []
+    for z in _find("dnszone_find"):
+        zone = _str(z, "idnsname")
+        if not zone:
+            continue
+        records = []
+        for e in _find("dnsrecord_find", dnszoneidnsname=zone):
+            rn = _str(e, "idnsname")
+            if rn in ("@",):
+                continue
+            a = _many(e, "arecord")
+            aaaa = _many(e, "aaaarecord")
+            cname = _many(e, "cnamerecord")
+            ptr = _many(e, "ptrrecord")
+            # SOA/NS-only records are zone-owned, not declarative record state.
+            if (_many(e, "nsrecord") or _many(e, "soarecord")) and not (a or aaaa or cname or ptr):
+                continue
+            rec = _prune({
+                "record_name": rn,
+                "a_record": a,
+                "aaaa_record": aaaa,
+                "cname_record": cname,
+                "ptr_record": ptr,
+                "mx_record": _many(e, "mxrecord"),
+                "txt_record": _many(e, "txtrecord"),
+                "srv_record": _many(e, "srvrecord"),
+            })
+            if rec.get("record_name") and len(rec) > 1:
+                records.append(rec)
+        if records:
+            out.append({"zone_name": zone, "records": records})
     return out
 
 
@@ -490,7 +676,7 @@ def main():
     api.Backend.rpcclient.connect()
 
     groups, group_names = export_groups()
-    users, used_fallback = export_users(group_names, args.include_sshkeys)
+    users, service_accounts, used_fallback = export_users(group_names, args.include_sshkeys)
     dns_forwarders, dns_forward_policy = export_dns_forwarders()
 
     # Some accounts (typically service users) belong to no group other than the
@@ -510,6 +696,15 @@ def main():
         roles_suggested, users, roles_excluded, roles_user_map = mine_roles(
             users, exclude, args.role_min_groups)
 
+    # Custom delegation roles, plus exactly the privileges they reference and the
+    # permissions those privileges hold (built-ins are skipped to avoid dumping the
+    # ~80 stock privileges/permissions a fresh server already ships).
+    iparoles = export_iparoles()
+    wanted_privs = {p for r in iparoles for p in r.get("privilege", [])}
+    system_perms = _system_permission_names()
+    privs, perm_names = export_privileges(wanted_privs, system_perms)
+    perms = export_permissions(perm_names, system_perms)
+
     doc = {
         "meta": {
             "source": api.env.host,
@@ -524,24 +719,39 @@ def main():
         },
         "freeipa_server_domain": api.env.domain,
         "freeipa_server_realm": api.env.realm,
+        # This server's own FQDN (captured), emitted as an overridable var. Useful
+        # as module/DNS input — e.g. the IPA host a DNS record points at, or
+        # community.general's ipa_host. Override in inventory for a different target.
+        "freeipa_server_fqdn": api.env.host,
         # DNS forwarders for the IPA-managed zone (per-server; "" if no integrated
         # DNS). NOTE: connection_name (the NetworkManager connection, default eth0)
         # is host-level networking, NOT FreeIPA state — it cannot be exported; set
         # it per host in inventory. The snapshot template carries it as a comment.
         "freeipa_server_forwarders": dns_forwarders,
         "freeipa_server_forward_policy": dns_forward_policy or "only",
-        "freeipa_idam_groups": groups,
+        # DNS zones (forward + reverse) and their records — DR-recreatable state.
+        "freeipa_server_dns_zones": export_dns_zones(),
+        "freeipa_server_dns_forward_zones": export_dns_forward_zones(),
+        "freeipa_server_dns_records": export_dns_records(),
+        "freeipa_idam_usergroups": groups,
         # Advisory only — the role does NOT read this key (see template header).
         "freeipa_idam_roles_suggested": roles_suggested,
         "freeipa_idam_users": users,
+        # Accounts with a nologin shell — re-applied as service accounts (shell forced).
+        "freeipa_idam_service_accounts": service_accounts,
         "freeipa_idam_hostgroups": export_hostgroups(args.include_host_membership),
         "freeipa_idam_hbacsvcs": export_hbacsvcs(stock_hbacsvc),
+        "freeipa_idam_hbacsvcgroups": export_hbacsvcgroups(),
         "freeipa_idam_hbac_rules": export_hbac_rules(),
         "freeipa_idam_sudo_commands": export_sudo_commands(),
+        "freeipa_idam_sudocmdgroups": export_sudocmdgroups(),
         "freeipa_idam_sudo_rules": export_sudo_rules(),
         "freeipa_idam_pwpolicies": export_pwpolicies(),
         # CUSTOM native delegation roles (built-ins skipped) for DR.
-        "freeipa_idam_iparoles": export_iparoles(),
+        "freeipa_idam_iparoles": iparoles,
+        # Privileges referenced by those roles + the permissions they hold.
+        "freeipa_idam_privileges": privs,
+        "freeipa_idam_permissions": perms,
         "freeipa_server_automember_rules": export_automember_rules(),
     }
     counts = {k: len(v) for k, v in doc.items() if isinstance(v, list)}

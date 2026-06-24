@@ -2,12 +2,12 @@
 # Expand role-centric definitions into flat freeipa_idam_* variables.
 #
 # Input:  freeipa_rbac_roles (with users), freeipa_app_roles (with users), freeipa_users (identity)
-# Output: freeipa_idam_groups, freeipa_idam_hostgroups, freeipa_idam_hbac_rules,
+# Output: freeipa_idam_usergroups, freeipa_idam_hostgroups, freeipa_idam_hbac_rules,
 #         freeipa_idam_sudo_commands, freeipa_idam_sudo_rules, freeipa_idam_users
 
 - name: Build RBAC security groups
   ansible.builtin.set_fact:
-    freeipa_idam_groups: "{{ _rbac_groups + _app_groups }}"
+    freeipa_idam_usergroups: "{{ _rbac_groups + _app_groups }}"
   vars:
     _rbac_groups: >-
       [{% for role in (freeipa_rbac_roles | default([])) %}
@@ -120,7 +120,7 @@
     msg: >-
       RBAC expanded: {{ freeipa_rbac_roles | length }} roles,
       {{ freeipa_app_roles | default([]) | length }} app roles →
-      {{ freeipa_idam_groups | length }} groups,
+      {{ freeipa_idam_usergroups | length }} groups,
       {{ freeipa_idam_hostgroups | length }} hostgroups,
       {{ freeipa_idam_hbac_rules | length }} HBAC rules,
       {{ freeipa_idam_sudo_rules | length }} sudo rules,
