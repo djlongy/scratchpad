@@ -183,3 +183,6 @@ ansible/inventories/**/local.yml
 # FreeIPA config snapshots from `--tags export` (real usernames/emails — rename
 # into group_vars deliberately if you want to commit one)
 **/freeipa.config.snapshot.yml
+
+# the tool/superpowers planning artifacts — never publish prompts/plans/specs
+docs/superpowers/
