@@ -14,6 +14,23 @@
   tags: [freeipa_server, freeipa, idam, rbac]
   when: freeipa_rbac_roles is defined and freeipa_rbac_roles | length > 0
 
+# Fold the separate account-type lists into the working user set so they flow
+# through the SAME validation/create/group/marker pipeline — but with their
+# distinguishing attributes. Service accounts get the nologin shell. Break-glass
+# accounts stay login-enabled and are auto-added to freeipa_idam_protected_users
+# (never pruned/archived). Kept as separate INPUT lists purely for explicit intent.
+- name: Merge service + break-glass accounts into the working user set
+  ansible.builtin.set_fact:
+    freeipa_idam_users: >-
+      {{ freeipa_idam_users
+         + (freeipa_idam_service_accounts | map('combine', {'shell': freeipa_idam_nologin_shell}) | list)
+         + freeipa_idam_breakglass_accounts }}
+    freeipa_idam_protected_users: >-
+      {{ (freeipa_idam_protected_users
+          + (freeipa_idam_breakglass_accounts | map(attribute='name') | list)) | unique }}
+  when: (freeipa_idam_service_accounts | length > 0) or (freeipa_idam_breakglass_accounts | length > 0)
+  no_log: true
+
 # Roles matrix: a role is a named bundle of groups, and a user references the
 # roles it belongs to instead of a long flat group list. Here we expand each
 # user's `roles` into concrete group memberships (merged with any direct
@@ -41,6 +58,9 @@
       - freeipa_idam_hbac_rules is iterable
       - freeipa_idam_sudo_commands is iterable
       - freeipa_idam_sudo_rules is iterable
+      - freeipa_idam_iparoles is iterable
+      - freeipa_idam_service_accounts is iterable
+      - freeipa_idam_breakglass_accounts is iterable
     fail_msg: "freeipa_idam_* variables are not valid (expected lists)."
 
 # SURGICAL VALIDATION: collect EVERY referential/structural problem in one pass and
@@ -67,10 +87,10 @@
       {% if u.name is not defined %}
       - "a user entry is missing 'name'"
       {% else %}
-      {% if (u.name not in freeipa_idam_protected_users) and (u.first is not defined) and (u.givenname is not defined) %}
+      {% if (u.name not in freeipa_idam_unmodifiable_users) and (u.first is not defined) and (u.givenname is not defined) %}
       - "user '{{ u.name }}' is missing a first name (first/givenname)"
       {% endif %}
-      {% if (u.name not in freeipa_idam_protected_users) and (u.last is not defined) and (u.sn is not defined) %}
+      {% if (u.name not in freeipa_idam_unmodifiable_users) and (u.last is not defined) and (u.sn is not defined) %}
       - "user '{{ u.name }}' is missing a surname (last/sn)"
       {% endif %}
       {% if (u.groups | default([]) | length == 0) and (u.roles | default([]) | length == 0) %}
@@ -219,7 +239,7 @@
     _freeipa_idam_pw_default: >-
       {{ {} if (item.password is defined or (freeipa_idam_default_user_password | length == 0))
          else {'password': freeipa_idam_default_user_password} }}
-  loop: "{{ _freeipa_idam_users | rejectattr('name', 'in', freeipa_idam_protected_users) | list }}"
+  loop: "{{ _freeipa_idam_users | rejectattr('name', 'in', freeipa_idam_unmodifiable_users) | list }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   no_log: true
@@ -461,6 +481,56 @@
     action: member
     state: present
   when: (_freeipa_idam_groups_members | default([])) | length > 0
+  no_log: true
+
+# Native IPA DELEGATION roles (privileges + members) — distinct from the group-
+# bundle freeipa_idam_roles. One iparole call per role (the module has no bulk
+# `roles:` list), but delegation roles are few so the loop is cheap. Runs AFTER
+# users + groups so user/group members resolve.
+- name: Ensure native IPA delegation roles are present
+  freeipa.ansible_freeipa.iparole:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ item.name }}"
+    privilege: "{{ item.privilege | default(omit) }}"
+    user: "{{ item.user | default(omit) }}"
+    group: "{{ item.group | default(omit) }}"
+    host: "{{ item.host | default(omit) }}"
+    hostgroup: "{{ item.hostgroup | default(omit) }}"
+    service: "{{ item.service | default(omit) }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_iparoles }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_iparoles | length > 0
+  no_log: true
+
+# Break-glass accounts join the break-glass group (default: admins) for full access.
+# Done as a direct membership add (the group is a built-in, not in freeipa_idam_groups)
+# so it bypasses the declared-group validation. They stay login-enabled + protected.
+- name: Add break-glass accounts to the break-glass group
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ freeipa_idam_breakglass_group }}"
+    action: member
+    user: "{{ freeipa_idam_breakglass_accounts | map(attribute='name') | list }}"
+    state: present
+  when: freeipa_idam_breakglass_accounts | length > 0
+  no_log: true
+
+# Best practice (opt-in): disable INTERACTIVE login for the built-in admin by setting
+# its shell to nologin. admin keeps API/kinit powers; only shell login is removed.
+# loginshell IS settable on admin (unlike givenName), so this works on the protected
+# account. Enable only once break-glass accounts exist.
+- name: Disable interactive login for the built-in admin (opt-in best practice)
+  freeipa.ansible_freeipa.ipauser:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ freeipa_idam_admin_principal }}"
+    shell: "{{ freeipa_idam_nologin_shell }}"
+    state: present
+  when: freeipa_idam_disable_admin_login | bool
   no_log: true
 
 - name: Ensure managed users are members of marker group

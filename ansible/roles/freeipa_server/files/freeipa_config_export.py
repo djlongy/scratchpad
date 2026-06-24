@@ -27,15 +27,19 @@ import sys
 
 from ipalib import api, errors
 
-# Groups that are auto-managed, role-owned, or FreeIPA built-ins — never emit as
-# declarative config. The built-ins (admins/editors/trust admins) ship with every
-# realm; capturing them would re-apply membership to core groups. Drop one from this
-# set if you deliberately want to manage its membership declaratively.
-GROUP_DENYLIST = {"ipausers", "idam-managed-users", "admins", "editors", "trust admins"}
-# System users that must never be emitted as declarative config. `admin` lacks the
-# inetOrgPerson objectClass, so a re-apply that sets givenName/sn on it fails with
-# "attribute givenName not allowed" — it is a built-in account, not managed identity.
-USER_DENYLIST = {"admin"}
+# INTERNAL / auto-managed objects that are NOT declarative config and would be wrong
+# to re-declare — so they are skipped on export. This is NOT "protection": protected
+# objects (admin, admins, ipausers, trust admins) ARE exported (state stays complete
+# + auditable); protection is purely an APPLY-time delete/modify guard. Skipped here:
+#   * the role's own marker group (re-created by the role; circular to capture)
+#   * User Private Groups (one per user, mepManagedEntry — handled by _is_upg below)
+GROUP_EXPORT_SKIP = {"idam-managed-users"}
+# Built-in FreeIPA delegation roles (ipa role) — recreated on every install, so only
+# CUSTOM roles are exported. Extend if a newer FreeIPA ships more built-ins.
+ROLE_DENYLIST = {
+    "helpdesk", "User Administrator", "Enrollment Administrator", "IT Specialist",
+    "IT Security Specialist", "Security Architect", "Subordinate ID Selfservice User",
+}
 # pwpolicy owned by FreeIPA itself.
 PWPOLICY_DENYLIST = {"global_policy"}
 DEFAULT_FALLBACK_GROUP = "ipausers"  # only used if a user has no other group
@@ -124,7 +128,7 @@ def export_groups():
     groups, names = [], set()
     for e in _find("group_find"):
         name = _str(e, "cn")
-        if not name or name in GROUP_DENYLIST or _is_upg(e):
+        if not name or name in GROUP_EXPORT_SKIP or _is_upg(e):
             continue
         names.add(name)
         groups.append(e)
@@ -155,10 +159,13 @@ def export_users(group_names, include_sshkeys):
         if str(_one(e, "preserved")).lower() == "true":
             continue  # staged/deleted-preserved entry, not active config
         name = _str(e, "uid")
-        if not name or name in USER_DENYLIST:
-            continue  # absent uid, or a built-in system account (not declarative)
-        groups = [g for g in _many(e, "memberof_group")
-                  if g in group_names and g not in GROUP_DENYLIST]
+        if not name:
+            continue
+        # Keep ALL of the user's real memberships (admin, ipausers, admins, ...): the
+        # group set already excludes only internal/auto-managed groups, so this never
+        # strips a real, access-granting membership. "Protected" is an apply-time
+        # guard, NOT an export filter — admin and built-in groups are exported too.
+        groups = [g for g in _many(e, "memberof_group") if g in group_names]
         if not groups:
             groups = [DEFAULT_FALLBACK_GROUP]
             used_fallback = True
@@ -431,6 +438,27 @@ def export_dns_forwarders():
     return _many(entry, "idnsforwarders"), _one(entry, "idnsforwardpolicy")
 
 
+def export_iparoles():
+    """CUSTOM native IPA delegation roles (ipa role) — name + privileges + members.
+    Built-in roles (ROLE_DENYLIST) are skipped; they recreate on install."""
+    out = []
+    for e in _find("role_find"):
+        name = _str(e, "cn")
+        if not name or name in ROLE_DENYLIST:
+            continue
+        out.append(_prune({
+            "name": name,
+            _DESCRIPTION: _str(e, _DESCRIPTION),
+            "privilege": _many(e, "memberof_privilege"),
+            "user": _many(e, "member_user"),
+            "group": _many(e, "member_group"),
+            "host": _many(e, "member_host"),
+            "hostgroup": _many(e, "member_hostgroup"),
+            "service": _many(e, "member_service"),
+        }))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--include-host-membership", action="store_true",
@@ -512,6 +540,8 @@ def main():
         "freeipa_idam_sudo_commands": export_sudo_commands(),
         "freeipa_idam_sudo_rules": export_sudo_rules(),
         "freeipa_idam_pwpolicies": export_pwpolicies(),
+        # CUSTOM native delegation roles (built-ins skipped) for DR.
+        "freeipa_idam_iparoles": export_iparoles(),
         "freeipa_server_automember_rules": export_automember_rules(),
     }
     counts = {k: len(v) for k, v in doc.items() if isinstance(v, list)}

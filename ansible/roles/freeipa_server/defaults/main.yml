@@ -222,6 +222,18 @@ freeipa_idam_hbac_rules: []
 freeipa_idam_sudo_commands: []
 freeipa_idam_sudo_rules: []
 freeipa_idam_pwpolicies: []
+
+# Native FreeIPA RBAC DELEGATION roles (`ipa role`) — a different layer from the
+# group-bundle freeipa_idam_roles above. A native role bundles PRIVILEGES (manage
+# users, reset passwords, read schema, ...) and is assigned to members. Use this to
+# delegate IPA-management powers (helpdesk, operators), NOT app/host access (that's
+# groups + HBAC). Applied via freeipa.ansible_freeipa.iparole AFTER users + groups
+# exist so members resolve. Each item: { name, privilege: [...], user: [...],
+# group: [...], host: [...], hostgroup: [...], service: [...], state: present }.
+freeipa_idam_iparoles: []
+#  - name: helpdesk-l1
+#    privilege: ["Modify Users and Reset passwords", "Unlock user accounts"]
+#    group: [it-helpdesk]
 freeipa_idam_password_expiration_floors: []
 
 # Email is built as <name>@<freeipa_idam_email_domain> when a user has no explicit
@@ -247,11 +259,18 @@ freeipa_idam_group_gids: {}
 # Archive (preserve) removed users instead of hard-deleting them. preserve=true →
 # user-del --preserve: account deactivated + retained (recoverable), not destroyed.
 freeipa_idam_preserve_archived: true
-# Users the reconcile must never DELETE (prune) and never user-mod. `admin` lacks
-# the inetOrgPerson objectClass so its givenName/sn cannot be set — listing it for
-# group management is fine, but the role skips modifying its attributes. Append any
-# system/service accounts you want shielded from the prune.
+# Users the reconcile must never DELETE (prune/archive). Break-glass accounts are
+# auto-added to this list. Append any system/service accounts you want shielded from
+# removal. (These ARE still created/updated — see unmodifiable_users for the opposite.)
 freeipa_idam_protected_users:
+  - admin
+
+# Users the role must never CREATE or user-mod (their attributes can't be set):
+# `admin` lacks the inetOrgPerson objectClass so its givenName/sn are rejected.
+# These are skipped in the user-create payload (group membership is still applied,
+# and a dedicated task can still set admin's shell). Distinct from protected_users:
+# protected = never removed; unmodifiable = never have attributes written.
+freeipa_idam_unmodifiable_users:
   - admin
 
 # FreeIPA BUILT-IN groups the role must never delete (state: absent is refused for
@@ -262,6 +281,28 @@ freeipa_idam_protected_groups:
   - editors
   - ipausers
   - trust admins
+
+# ── Account types beyond human users ────────────────────────────────────────
+# SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user
+# (name, givenname, sn, groups, ...) but the role forces shell = the nologin shell.
+# Kept a SEPARATE list (not mixed into freeipa_idam_users) so intent is explicit;
+# they otherwise flow through the same create/group/marker/archive pipeline.
+freeipa_idam_service_accounts: []
+freeipa_idam_nologin_shell: "/sbin/nologin"
+
+# BREAK-GLASS — real named emergency accounts (NOT the built-in admin). Login STAYS
+# enabled (that is the point of break-glass); each is auto-added to
+# freeipa_idam_breakglass_group and auto-PROTECTED from the prune (never archived).
+# Pair with disable_admin_login below: day-to-day admin via named accounts, the
+# emergency path via these. Give each a strong password (per-account or the default).
+freeipa_idam_breakglass_accounts: []
+freeipa_idam_breakglass_group: "admins"
+
+# Best practice: disable INTERACTIVE login for the built-in `admin` by setting its
+# shell to the nologin shell (admin keeps its powers for API/kinit, just no shell
+# login). OPT-IN (default off) — only enable once break-glass accounts exist, or you
+# risk locking out interactive admin entirely.
+freeipa_idam_disable_admin_login: false
 
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
 # Snapshot a LIVE FreeIPA into this role's declarative contract so you can adopt
