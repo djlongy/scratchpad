@@ -40,6 +40,11 @@
     _vsphere_to_create: "{{ _vsphere_desired_present | rejectattr('name', 'in', _vsphere_existing) | list }}"
     _vsphere_present: "{{ _vsphere_desired_present | selectattr('name', 'in', _vsphere_existing) | list }}"
     _vsphere_to_destroy: "{{ _vsphere_desired_absent | selectattr('name', 'in', _vsphere_existing) | list }}"
+    # Every desired-present VM (freshly created AND already present) is a NIC
+    # reconnect target — so a plain re-run heals a NIC that an earlier run (or
+    # vSphere's async guest customization) left disconnected, not just fresh
+    # clones. This is what makes the reconnect self-healing.
+    _vsphere_to_connect: "{{ _vsphere_desired_present }}"
   run_once: true
   delegate_to: localhost
   become: false

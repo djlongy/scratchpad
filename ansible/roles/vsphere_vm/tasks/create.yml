@@ -57,8 +57,7 @@
   # and the task burns its retries. One pass total is correct and race-free.
   run_once: true
 
-# The clone+customize NIC-disconnect bug + bounded IP wait are handled here so a
-# disconnected NIC can never hang the play.
-- name: Create | Reconnect NICs and wait for IP
-  ansible.builtin.import_tasks: connect.yml
-  when: (_vsphere_to_create | length > 0)
+# NOTE: NIC reconnect + bounded IP wait is no longer done here. It is its own
+# phase (connect.yml, imported from main.yml) that runs over ALL desired-present
+# VMs — not just the ones created this run — so a re-run heals a NIC an earlier
+# run left disconnected.

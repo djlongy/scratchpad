@@ -1,0 +1,84 @@
+---
+# roles/vsphere_vm/tasks/connect_pass.yml
+# ONE NIC-reconcile pass over `_connect_targets` (a list of guest dicts):
+#   1. gather every adapter on each VM,
+#   2. force each NIC connected + start_connected (by MAC, so multi-NIC works),
+#   3. wait (bounded) for the guest IP, registering _vsphere_ipwait.
+# Idempotent: an already-connected NIC is a no-op. Included once per pass by
+# connect.yml (pass 1 = all targets; pass 2 = only the stragglers still lacking
+# an IP, which beats vSphere's async-customization race). All vCenter calls
+# delegate to localhost and run once for the whole list.
+
+- name: Connect | Reconcile NIC connection state ({{ _connect_targets | map(attribute='name') | list }})
+  when: (_connect_targets | default([]) | length) > 0
+  run_once: true
+  block:
+    - name: Connect | Gather network adapters
+      community.vmware.vmware_guest_network:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ item.name }}"
+        gather_network_info: true
+      register: _vsphere_nics
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_nics is succeeded
+      loop: "{{ _connect_targets }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Connect | Force every NIC connected + start-connected
+      community.vmware.vmware_guest_network:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ item.0.item.name }}"
+        mac_address: "{{ item.1.mac_address }}"
+        connected: true
+        start_connected: true
+        state: present
+      loop: "{{ _vsphere_nics.results | subelements('network_info', skip_missing=true) }}"
+      loop_control:
+        label: "{{ item.0.item.name }} / {{ item.1.mac_address }}"
+      delegate_to: localhost
+      become: false
+  rescue:
+    - name: Connect | Warn that NIC reconnect raised an error (continuing)
+      ansible.builtin.debug:
+        msg: >-
+          NIC reconnect raised an error on one or more VMs. Continuing — the
+          bounded IP wait below surfaces any real connectivity problem rather
+          than hanging the play.
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+- name: Connect | Wait for the guest IP (bounded — never hangs)
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ item.name }}"
+  register: _vsphere_ipwait
+  retries: "{{ vsphere_vm_ip_wait_retries }}"
+  delay: "{{ vsphere_vm_ip_wait_delay }}"
+  # default('', true) coerces a None ipv4 (not-yet-assigned) to '' — a bare
+  # default() leaves None in place and `None | length` then errors.
+  until: (_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0
+  failed_when: false
+  loop: "{{ _connect_targets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: vsphere_vm_wait_for_ip | bool
+  delegate_to: localhost
+  become: false
+  run_once: true

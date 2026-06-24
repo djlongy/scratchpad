@@ -28,6 +28,14 @@
   ansible.builtin.import_tasks: create.yml
   tags: [vsphere_vm, create]
 
+# Reconnect + verify NICs for ALL managed VMs (created this run AND already
+# present). Its own phase — not buried in create — so `--tags connect` can heal
+# a disconnected NIC on an existing VM without creating anything, and a full
+# create run (--tags create) still reconnects what it builds.
+- name: Reconnect and verify VM NICs
+  ansible.builtin.import_tasks: connect.yml
+  tags: [vsphere_vm, create, connect]
+
 - name: Destroy VMs marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml
   tags: [never, destroy]

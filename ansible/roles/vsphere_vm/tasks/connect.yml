@@ -1,106 +1,74 @@
 ---
 # roles/vsphere_vm/tasks/connect.yml
-# PERMANENT FIX for the clone+customize NIC-disconnect bug. After a VM is built,
-# vSphere frequently clears the NIC's "connect at power on", so the guest boots
-# with a dead NIC and never receives an IP — which is what makes a naive
-# wait_for_ip hang for 20+ minutes. Here we:
-#   1. gather every adapter on each newly built VM,
-#   2. force each one connected + start_connected (by MAC, so multi-NIC works),
-#   3. wait for the IP with a BOUNDED retry that never exceeds
-#      vsphere_vm_ip_wait_retries * vsphere_vm_ip_wait_delay seconds, and reports
-#      clearly instead of hanging if a NIC is genuinely misconfigured.
-# Everything is wrapped so a transient vCenter hiccup degrades gracefully.
+# PERMANENT, SELF-HEALING fix for the clone+customize NIC-disconnect bug. After a
+# VM is built, vSphere frequently clears the NIC's "connect at power on", so the
+# guest boots with a dead NIC and never gets an IP. Worse, guest customization is
+# applied ASYNCHRONOUSLY on first boot and can re-disconnect the vNIC AFTER a
+# naive one-shot reconnect — so a single connect+wait can still lose the race.
+#
+# This runs over EVERY desired-present VM (freshly created AND already present,
+# via _vsphere_to_connect), so a plain re-run heals any VM an earlier run left
+# disconnected — the reconnect is no longer limited to fresh clones. It makes two
+# passes:
+#   Pass 1 — reconcile NICs + bounded IP wait over all targets.
+#   Pass 2 — for any VM STILL without an IP, re-assert the NIC + wait again. By
+#            now async customization has settled, so this catches the race.
+# Both passes are idempotent (an already-connected NIC is a no-op) and bounded
+# (they never hang). Gated by vsphere_vm_connect_nics.
 
-- name: Connect | Reconnect NICs on newly built VMs
-  when: vsphere_vm_connect_nics | bool
-  # run_once: like create, this operates on the global guest list and delegates
-  # to localhost — without it a group-targeted play runs the whole NIC reconnect
-  # once per host, racing N identical vCenter calls. One pass total is correct.
+- name: Connect | Skip (vsphere_vm_connect_nics is false or no targets)
+  ansible.builtin.debug:
+    msg: "NIC reconnect skipped (connect_nics false or no managed VMs)."
+  when: >-
+    not (vsphere_vm_connect_nics | bool)
+    or (_vsphere_to_connect | default([]) | length) == 0
   run_once: true
-  block:
-    - name: Connect | Gather network adapters on newly built VMs
-      community.vmware.vmware_guest_network:
-        hostname: "{{ vsphere_vm_server }}"
-        username: "{{ vsphere_vm_username }}"
-        password: "{{ vsphere_vm_password }}"
-        validate_certs: "{{ vsphere_vm_validate_certs }}"
-        datacenter: "{{ vsphere_vm_datacenter }}"
-        name: "{{ item.name }}"
-        gather_network_info: true
-      register: _vsphere_nics
-      retries: "{{ vsphere_vm_create_retries }}"
-      delay: "{{ vsphere_vm_create_delay }}"
-      until: _vsphere_nics is succeeded
-      loop: "{{ _vsphere_to_create }}"
-      loop_control:
-        label: "{{ item.name }}"
-      delegate_to: localhost
-      become: false
+  delegate_to: localhost
+  become: false
 
-    - name: Connect | Force every NIC connected + start-connected
-      community.vmware.vmware_guest_network:
-        hostname: "{{ vsphere_vm_server }}"
-        username: "{{ vsphere_vm_username }}"
-        password: "{{ vsphere_vm_password }}"
-        validate_certs: "{{ vsphere_vm_validate_certs }}"
-        datacenter: "{{ vsphere_vm_datacenter }}"
-        name: "{{ item.0.item.name }}"
-        mac_address: "{{ item.1.mac_address }}"
-        connected: true
-        start_connected: true
-        state: present
-      loop: "{{ _vsphere_nics.results | subelements('network_info', skip_missing=true) }}"
-      loop_control:
-        label: "{{ item.0.item.name }} / {{ item.1.mac_address }}"
-      delegate_to: localhost
-      become: false
-  rescue:
-    - name: Connect | Warn that NIC reconnect raised an error (continuing)
-      ansible.builtin.debug:
-        msg: >-
-          NIC reconnect raised an error on the new VM(s). Continuing — the bounded
-          IP wait below will surface any real connectivity problem rather than
-          hanging the play.
+- name: Connect | Reconnect NICs for all managed VMs
+  when:
+    - vsphere_vm_connect_nics | bool
+    - (_vsphere_to_connect | default([]) | length) > 0
+  block:
+    - name: Connect | Pass 1 — reconcile NICs + wait for IP
+      ansible.builtin.include_tasks: connect_pass.yml
+      vars:
+        _connect_targets: "{{ _vsphere_to_connect }}"
+
+    - name: Connect | Identify VMs still without an IP after pass 1
+      ansible.builtin.set_fact:
+        # Keep the original guest dicts whose wait result reported no IPv4
+        # (None or ''). These are the customization-race / slow stragglers.
+        _vsphere_no_ip: >-
+          {{ _vsphere_ipwait.results | default([])
+             | rejectattr('instance.ipv4', 'truthy')
+             | map(attribute='item') | list }}
       run_once: true
       delegate_to: localhost
       become: false
+      when: vsphere_vm_wait_for_ip | bool
 
-- name: Connect | Wait for the guest IP (bounded — never hangs)
-  community.vmware.vmware_guest_info:
-    hostname: "{{ vsphere_vm_server }}"
-    username: "{{ vsphere_vm_username }}"
-    password: "{{ vsphere_vm_password }}"
-    validate_certs: "{{ vsphere_vm_validate_certs }}"
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ item.name }}"
-  register: _vsphere_ipwait
-  retries: "{{ vsphere_vm_ip_wait_retries }}"
-  delay: "{{ vsphere_vm_ip_wait_delay }}"
-  # default('', true) coerces a None ipv4 (not-yet-assigned) to '' — a bare
-  # default() leaves None in place and `None | length` then errors.
-  until: (_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0
-  failed_when: false
-  loop: "{{ _vsphere_to_create }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: vsphere_vm_wait_for_ip | bool
-  delegate_to: localhost
-  become: false
-  run_once: true
+    - name: Connect | Pass 2 — re-assert NICs for VMs still without an IP
+      ansible.builtin.include_tasks: connect_pass.yml
+      vars:
+        _connect_targets: "{{ _vsphere_no_ip }}"
+      when:
+        - vsphere_vm_wait_for_ip | bool
+        - (_vsphere_no_ip | default([]) | length) > 0
 
-- name: Connect | Report any VM that never reported an IP
-  ansible.builtin.debug:
-    msg: >-
-      {{ item.item.name }} did not report an IPv4 within
-      {{ vsphere_vm_ip_wait_retries * vsphere_vm_ip_wait_delay }}s. The VM is
-      built; check the NIC portgroup + guest customization (it may just need a
-      moment, or the NIC is on the wrong network).
-  loop: "{{ _vsphere_ipwait.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.name | default('') }}"
-  when:
-    - vsphere_vm_wait_for_ip | bool
-    - (item.instance.ipv4 | default('', true)) | length == 0
-  delegate_to: localhost
-  become: false
-  run_once: true
+    - name: Connect | Report any VM that never reported an IP (after both passes)
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.name }} did not report an IPv4 within the bounded wait
+          across two reconnect passes. The VM is built; check the NIC portgroup +
+          guest customization (wrong network, or the guest never DHCP/static-bound).
+      loop: "{{ _vsphere_ipwait.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name | default('') }}"
+      when:
+        - vsphere_vm_wait_for_ip | bool
+        - (item.instance.ipv4 | default('', true)) | length == 0
+      run_once: true
+      delegate_to: localhost
+      become: false
