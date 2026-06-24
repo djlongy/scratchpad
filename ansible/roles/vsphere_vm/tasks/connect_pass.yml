@@ -1,16 +1,19 @@
 ---
 # roles/vsphere_vm/tasks/connect_pass.yml
-# ONE NIC-reconcile pass over `_connect_targets` (a list of guest dicts):
-#   1. gather every adapter on each VM,
-#   2. force each NIC connected + start_connected (by MAC, so multi-NIC works),
-#   3. wait (bounded) for the guest IP, registering _vsphere_ipwait.
-# Idempotent: an already-connected NIC is a no-op. Included once per pass by
-# connect.yml (pass 1 = all targets; pass 2 = only the stragglers still lacking
-# an IP, which beats vSphere's async-customization race). All vCenter calls
-# delegate to localhost and run once for the whole list.
+# ONE pass of the bounded multi-pass poll-and-reconnect, operating on the current
+# straggler set `_vsphere_connect_remaining`:
+#   1. gather every adapter on each remaining VM,
+#   2. force each NIC connected + start_connected (by MAC — multi-NIC safe),
+#   3. briefly poll for the guest IP,
+#   4. shrink `_vsphere_connect_remaining` to the VMs that still have no IP.
+# connect.yml includes this once per pass. Whichever pass runs just AFTER guest
+# customization finishes makes the reconnect stick (the disconnect is a one-time
+# customization event), so the IP appears within ~one pass. Idempotent: an
+# already-connected NIC with an IP drops out of the set and is never touched
+# again. All vCenter calls delegate to localhost and run once for the whole set.
 
-- name: Connect | Reconcile NIC connection state ({{ _connect_targets | map(attribute='name') | list }})
-  when: (_connect_targets | default([]) | length) > 0
+- name: Connect | Reconcile NICs ({{ _vsphere_connect_remaining | map(attribute='name') | list }})
+  when: (_vsphere_connect_remaining | default([]) | length) > 0
   run_once: true
   block:
     - name: Connect | Gather network adapters
@@ -26,7 +29,7 @@
       retries: "{{ vsphere_vm_create_retries }}"
       delay: "{{ vsphere_vm_create_delay }}"
       until: _vsphere_nics is succeeded
-      loop: "{{ _connect_targets }}"
+      loop: "{{ _vsphere_connect_remaining }}"
       loop_control:
         label: "{{ item.name }}"
       delegate_to: localhost
@@ -53,14 +56,14 @@
     - name: Connect | Warn that NIC reconnect raised an error (continuing)
       ansible.builtin.debug:
         msg: >-
-          NIC reconnect raised an error on one or more VMs. Continuing — the
-          bounded IP wait below surfaces any real connectivity problem rather
+          NIC reconnect raised an error on one or more VMs this pass. Continuing —
+          the next pass / the bounded IP poll surfaces any real problem rather
           than hanging the play.
       run_once: true
       delegate_to: localhost
       become: false
 
-- name: Connect | Wait for the guest IP (bounded — never hangs)
+- name: Connect | Poll for the guest IP (short, bounded)
   community.vmware.vmware_guest_info:
     hostname: "{{ vsphere_vm_server }}"
     username: "{{ vsphere_vm_username }}"
@@ -69,16 +72,31 @@
     datacenter: "{{ vsphere_vm_datacenter }}"
     name: "{{ item.name }}"
   register: _vsphere_ipwait
-  retries: "{{ vsphere_vm_ip_wait_retries }}"
-  delay: "{{ vsphere_vm_ip_wait_delay }}"
+  retries: "{{ vsphere_vm_connect_pass_retries }}"
+  delay: "{{ vsphere_vm_connect_pass_delay }}"
   # default('', true) coerces a None ipv4 (not-yet-assigned) to '' — a bare
   # default() leaves None in place and `None | length` then errors.
   until: (_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0
   failed_when: false
-  loop: "{{ _connect_targets }}"
+  loop: "{{ _vsphere_connect_remaining }}"
   loop_control:
     label: "{{ item.name }}"
-  when: vsphere_vm_wait_for_ip | bool
+  when:
+    - vsphere_vm_wait_for_ip | bool
+    - (_vsphere_connect_remaining | default([]) | length) > 0
   delegate_to: localhost
   become: false
   run_once: true
+
+- name: Connect | Shrink the straggler set to VMs still without an IP
+  ansible.builtin.set_fact:
+    _vsphere_connect_remaining: >-
+      {{ _vsphere_ipwait.results | default([])
+         | rejectattr('instance.ipv4', 'truthy')
+         | map(attribute='item') | list }}
+  when:
+    - vsphere_vm_wait_for_ip | bool
+    - (_vsphere_connect_remaining | default([]) | length) > 0
+  run_once: true
+  delegate_to: localhost
+  become: false

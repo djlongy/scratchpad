@@ -38,14 +38,30 @@ vsphere_vm_wait_for_ip: true
 vsphere_vm_state: poweredon                      # default state for created guests
 
 # ── Robust spin-up (NIC reconnect + bounded waits) ───────────────────────────
-# After a clone+customize, vSphere often leaves the NIC disconnected (a known
-# bug), so the guest never gets an IP. The role reconnects every NIC after build,
-# then waits for the IP with a BOUNDED retry — so a misconfigured NIC reports a
-# clear error instead of hanging the play for 20+ minutes.
+# After a clone+customize, vSphere leaves the NIC disconnected (a known bug), so
+# the guest never gets an IP. Critically, the disconnect is a ONE-TIME event
+# applied during the guest's first-boot customization — which runs ASYNC and can
+# re-disconnect the NIC AFTER a single up-front reconnect. So one reconnect can
+# lose the race.
+#
+# The role therefore runs a bounded MULTI-PASS poll-and-reconnect: each pass
+# re-asserts every still-disconnected NIC, then briefly waits for an IP; it
+# repeats until every VM has an IP or the passes run out. Whichever pass lands
+# just after customization finishes makes the reconnect stick — so recovery is
+# ~one pass-interval, not a single long timeout. Bounded total =
+# connect_passes * connect_pass_retries * connect_pass_delay seconds.
 vsphere_vm_connect_nics: true                    # force NICs connected post-build
 vsphere_vm_create_retries: 3                     # retry transient vCenter create/gather errors
 vsphere_vm_create_delay: 15
-vsphere_vm_ip_wait_retries: 30                   # bounded IP wait: retries x delay = max seconds
+# Multi-pass reconnect cadence. Default: 8 passes x (5 polls x 10s) = up to 400s
+# total, re-asserting every disconnected NIC about once per ~60s — tight enough
+# to catch the customization re-disconnect quickly.
+vsphere_vm_connect_passes: 8                     # reconnect+wait cycles before giving up
+vsphere_vm_connect_pass_retries: 5               # IP polls per pass
+vsphere_vm_connect_pass_delay: 10                # seconds between polls within a pass
+# Deprecated (kept for back-compat; the connect path now uses the per-pass knobs
+# above). Left defined so any external override does not break.
+vsphere_vm_ip_wait_retries: 30
 vsphere_vm_ip_wait_delay: 10
 
 # ── Guests to manage ─────────────────────────────────────────────────────────
