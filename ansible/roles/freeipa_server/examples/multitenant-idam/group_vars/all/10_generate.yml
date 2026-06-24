@@ -55,15 +55,16 @@ _gen_hostgroups: |-
 #             a reliable function of a person's name)
 # givenname/sn/title = first name / surname / job title (ipauser accepts givenname &
 #             sn as aliases for first/last)
-# email     = ["<name>@<domain>"] (a list — ipauser's email is multi-valued; domain
-#             from the tenant inventory)
+# email     = entered EXPLICITLY per member (a human sets it after the fact — it is
+#             NOT built from name@domain). Emitted as a list (ipauser's email is
+#             multi-valued); omitted if the member has none yet.
 # A member lists `roles: [persona, ...]` and/or a direct group via {service|services,
 # level}. Loop freeipa_idam_users and use item.name / item.email / item.title / …
 freeipa_idam_users: "{{ (_gen_users | from_yaml) or [] }}"
 _gen_users: |-
   {% for t in _tenant_specs %}
   {% for m in t.members %}
-  - {name: "{{ m.name }}", givenname: "{{ m.givenname }}", sn: "{{ m.sn }}"{% if m.title is defined %}, title: "{{ m.title }}"{% endif %}, email: ["{{ m.name }}@{{ domain }}"]{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.service is defined) or (m.services is defined) %}, groups: [{% for s in (m.services | default([m.service])) %}"{{ t.code }}-{{ env }}-{{ s }}-{{ m.level }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
+  - {name: "{{ m.name }}", givenname: "{{ m.givenname }}", sn: "{{ m.sn }}"{% if m.title is defined %}, title: "{{ m.title }}"{% endif %}{% if m.email is defined %}, email: ["{{ m.email }}"]{% endif %}{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.service is defined) or (m.services is defined) %}, groups: [{% for s in (m.services | default([m.service])) %}"{{ t.code }}-{{ env }}-{{ s }}-{{ m.level }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
   {% endfor %}{% endfor %}
 
 # ── LAYER 4 — HBAC rules: per tenant × service, that service's access groups get

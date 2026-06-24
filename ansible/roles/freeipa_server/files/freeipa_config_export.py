@@ -25,10 +25,17 @@ import json
 import re
 import sys
 
-from ipalib import api
+from ipalib import api, errors
 
-# Groups that are auto-managed or role-owned — never emit as declarative config.
-GROUP_DENYLIST = {"ipausers", "idam-managed-users"}
+# Groups that are auto-managed, role-owned, or FreeIPA built-ins — never emit as
+# declarative config. The built-ins (admins/editors/trust admins) ship with every
+# realm; capturing them would re-apply membership to core groups. Drop one from this
+# set if you deliberately want to manage its membership declaratively.
+GROUP_DENYLIST = {"ipausers", "idam-managed-users", "admins", "editors", "trust admins"}
+# System users that must never be emitted as declarative config. `admin` lacks the
+# inetOrgPerson objectClass, so a re-apply that sets givenName/sn on it fails with
+# "attribute givenName not allowed" — it is a built-in account, not managed identity.
+USER_DENYLIST = {"admin"}
 # pwpolicy owned by FreeIPA itself.
 PWPOLICY_DENYLIST = {"global_policy"}
 DEFAULT_FALLBACK_GROUP = "ipausers"  # only used if a user has no other group
@@ -144,8 +151,8 @@ def export_users(group_names, include_sshkeys):
         if str(_one(e, "preserved")).lower() == "true":
             continue  # staged/deleted-preserved entry, not active config
         name = _str(e, "uid")
-        if not name:
-            continue
+        if not name or name in USER_DENYLIST:
+            continue  # absent uid, or a built-in system account (not declarative)
         groups = [g for g in _many(e, "memberof_group")
                   if g in group_names and g not in GROUP_DENYLIST]
         if not groups:
@@ -408,6 +415,18 @@ def mine_roles(users, exclude_patterns=None, min_groups=2):
             _excluded_by_pattern(users, pairs), user_role_map)
 
 
+def export_dns_forwarders():
+    """This server's DNS forwarders + forward policy. idnsforwarders live PER DNS
+    server (dnsserver-show), NOT in the global dnsconfig — so this reads the local
+    host's dnsserver entry. Returns ([], None) when this server runs no integrated
+    DNS (dnsserver entry absent)."""
+    try:
+        entry = api.Command.dnsserver_show(api.env.host)["result"]
+    except errors.NotFound:
+        return [], None
+    return _many(entry, "idnsforwarders"), _one(entry, "idnsforwardpolicy")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--include-host-membership", action="store_true",
@@ -440,6 +459,7 @@ def main():
 
     groups, group_names = export_groups()
     users, used_fallback = export_users(group_names, args.include_sshkeys)
+    dns_forwarders, dns_forward_policy = export_dns_forwarders()
 
     # Some accounts (typically service users) belong to no group other than the
     # default ipausers. The role requires every user to reference a declared
@@ -472,6 +492,12 @@ def main():
         },
         "freeipa_server_domain": api.env.domain,
         "freeipa_server_realm": api.env.realm,
+        # DNS forwarders for the IPA-managed zone (per-server; "" if no integrated
+        # DNS). NOTE: connection_name (the NetworkManager connection, default eth0)
+        # is host-level networking, NOT FreeIPA state — it cannot be exported; set
+        # it per host in inventory. The snapshot template carries it as a comment.
+        "freeipa_server_forwarders": dns_forwarders,
+        "freeipa_server_forward_policy": dns_forward_policy or "only",
         "freeipa_idam_groups": groups,
         # Advisory only — the role does NOT read this key (see template header).
         "freeipa_idam_roles_suggested": roles_suggested,

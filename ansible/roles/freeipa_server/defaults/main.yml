@@ -45,7 +45,7 @@ freeipa_server_dm_password: ""           # Directory Manager password
 
 # HashiCorp Vault fallback location (ENV-SPECIFIC — set in inventory group_vars).
 # Only needed when the passwords above are left empty.
-# freeipa_server_vault_secret: "kv/data/platform/freeipa/runtime"
+# freeipa_server_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
 freeipa_server_admin_password_field: "admin_password"
 freeipa_server_dm_password_field: "dm_password"
 
@@ -109,6 +109,7 @@ freeipa_server_no_pkinit: false
 # install passes --setup-adtrust) PLUS reachable AD DCs + working DNS both ways.
 # Each trust is established via the upstream ipatrust module; the IPA admin and
 # each AD admin password come from Vault. Opt-in, default off.
+# NOTE: not exercised in this lab (no AD); shipped as a capability.
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
 #  - realm: "AD.EXAMPLE.COM"
@@ -201,7 +202,7 @@ freeipa_server_ccache_max_age: "4h"
 freeipa_server_tmpfiles_clean_interval: "1h"
 
 # ── Declarative IDAM data contract (UNCHANGED names — see spec §5) ───────────
-# freeipa_idam_vault_secret: "kv/data/platform/freeipa/runtime"
+# freeipa_idam_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
 freeipa_idam_admin_principal: "admin"
 freeipa_idam_admin_password_field: "admin_password"
 freeipa_idam_managed_group: "idam-managed-users"
@@ -222,8 +223,21 @@ freeipa_idam_sudo_commands: []
 freeipa_idam_sudo_rules: []
 freeipa_idam_pwpolicies: []
 freeipa_idam_password_expiration_floors: []
+# Users the reconcile must never DELETE (prune) and never user-mod. `admin` lacks
+# the inetOrgPerson objectClass so its givenName/sn cannot be set — listing it for
+# group management is fine, but the role skips modifying its attributes. Append any
+# system/service accounts you want shielded from the prune.
 freeipa_idam_protected_users:
   - admin
+
+# FreeIPA BUILT-IN groups the role must never delete (state: absent is refused for
+# these, so an accidental `state: absent` can't tear down core schema). Membership
+# can still be managed if you list them; deletion is what's blocked.
+freeipa_idam_protected_groups:
+  - admins
+  - editors
+  - ipausers
+  - trust admins
 
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
 # Snapshot a LIVE FreeIPA into this role's declarative contract so you can adopt
@@ -280,8 +294,8 @@ freeipa_migrate_log: "/var/log/ipa-migrate.log"
 freeipa_migrate_restart_sssd: true
 freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
 # ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
-# freeipa_migrate_source: "freeipa01.example.com"   # source IPA FQDN (ipa-migrate arg)
-# freeipa_migrate_source_host: "freeipa01"       # inventory host for CA slurp
+# freeipa_migrate_source: "idm01.example.com"   # source IPA FQDN (ipa-migrate arg)
+# freeipa_migrate_source_host: "idm01"       # inventory host for CA slurp
 # freeipa_migrate_bind_pw_vault: "kv/data/platform/freeipa/runtime"  # source DM pw path
 # Internal staged paths (behavioural):
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"

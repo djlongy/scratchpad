@@ -30,6 +30,16 @@
 # Remove/change them if you are reapplying into a differently-named realm.
 freeipa_server_domain: {{ _freeipa_export.freeipa_server_domain }}
 freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
+
+# Upstream DNS forwarder(s) for the IPA-managed zone (captured from THIS server's
+# dnsserver config — forwarders live per-server, not in the global dnsconfig).
+# Empty list = no integrated DNS forwarding on this server.
+freeipa_server_forwarders: {{ _freeipa_export.freeipa_server_forwarders | to_json }}
+freeipa_server_forward_policy: {{ _freeipa_export.freeipa_server_forward_policy }}
+#
+# HOST-LEVEL networking — NOT FreeIPA state, so it cannot be captured here. Set it
+# per host in inventory (host_vars/group_vars), not in this snapshot:
+#   connection_name: eth0   # NetworkManager connection name (used by replica DNS prep)
 {% if _freeipa_export.meta.roles_excluded_from_mining %}
 # ── Held OUT of role-mining (matched freeipa_server_export_role_exclude) ─────
 # SANITY CHECK, not config (commented out, not loaded). These groups ARE still

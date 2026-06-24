@@ -19,10 +19,11 @@ tenant_acme_spec:
         - {service: payments, level: priv-access}
         - {service: ledger, level: priv-access}
 
-  # LAYER 3 — members. `name` is the UNIQUE username (explicit, not derived).
-  # givenname/sn/title are the person's details; email is built <name>@<domain>.
-  # Assign roles, and/or a direct group via {service|services, level}.
+  # LAYER 3 — members. `name` is the UNIQUE username (explicit, not derived);
+  # email is entered explicitly (a human sets it; not built from name). givenname/
+  # sn/title are the person's details. Assign roles, and/or a direct group via
+  # {service|services, level}.
   members:
-    - {name: alice.smith, title: "Payments Lead", givenname: Alice, sn: Smith, roles: [lead]}
-    - {name: bob.ng, title: "Ledger Clerk", givenname: Bob, sn: Ng, service: ledger, level: access}
-    - {name: carol.jones, title: "Analyst", givenname: Carol, sn: Jones, services: [payments, ledger], level: access}
+    - {name: alice.smith, title: "Payments Lead", givenname: Alice, sn: Smith, email: alice.smith@example.com, roles: [lead]}
+    - {name: bob.ng, title: "Ledger Clerk", givenname: Bob, sn: Ng, email: bob.ng@example.com, service: ledger, level: access}
+    - {name: carol.jones, title: "Analyst", givenname: Carol, sn: Jones, email: carol.jones@example.com, services: [payments, ledger], level: access}

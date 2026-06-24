@@ -16,5 +16,5 @@ tenant_globex_spec:
         - {service: search, level: access}
 
   members:
-    - {name: dee.fox, title: "Search Analyst", givenname: Dee, sn: Fox, roles: [analyst]}
-    - {name: eli.mak, title: "Search User", givenname: Eli, sn: Mak, service: search, level: access}
+    - {name: dee.fox, title: "Search Analyst", givenname: Dee, sn: Fox, email: dee.fox@example.com, roles: [analyst]}
+    - {name: eli.mak, title: "Search User", givenname: Eli, sn: Mak, email: eli.mak@example.com, service: search, level: access}
