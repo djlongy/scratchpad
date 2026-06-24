@@ -86,7 +86,7 @@ So a single-team run reconciles only that team's marker; the others are untouche
 |-------|---------|-------------------|-----------|
 | **group** (atomic permission) | `<tenant>-<env>-<service>-<level>` | `acme-prod-payments-access`, `…-priv-access` | `services × access_levels` |
 | **role** (persona; bundles groups) | `role-<tenant>-<persona>` | `role-acme-lead` → `[acme-prod-payments-priv-access, acme-prod-ledger-priv-access]` | tenant `roles:` |
-| **user** (rich: name/first/last/email + roles/groups) | name=`<first>.<last>`, email=`<name>@<domain>` | `ann.lee` / `ann.lee@example.com` → `role-acme-lead` | tenant `members:` |
+| **user** (rich: name/givenname/sn/title/email) | explicit `name`; email=`<name>@<domain>` | `alice.smith` / `alice.smith@example.com` → `role-acme-lead` | tenant `members:` |
 | **HBAC rule** (access) | `hbac-<tenant>-<env>-<service>` | `hbac-acme-prod-payments` → that service's access groups SSH to `acme-prod-payments` | `services` (generated) |
 
 The **access level** suffix is the point — `-access` = normal, `-priv-access` =
@@ -111,16 +111,16 @@ FreeIPA**. Three ways to refer to them:
 firewalld_allow_groups: "{{ [freeipa_group_ref['acme.payments.priv-access']] }}"  # -> acme-prod-payments-priv-access
 app_admin_role:         "{{ freeipa_role_ref['acme.lead'] }}"                      # -> role-acme-lead
 
-# 2. loop the RICH user list — each item has name/first/last/email + roles/groups:
+# 2. loop the RICH user list — each item has name/givenname/sn/title/email + roles/groups:
 - debug: { msg: "{{ item.name }} <{{ item.email }}>" }
   loop: "{{ freeipa_idam_users }}"
 
 # 3. flat name lists for bulk loops, or a whole team's users:
 loop: "{{ freeipa_all_group_names }}"            # every group in the loaded scope
-notify: "{{ freeipa_users_by_tenant['acme'] }}"  # -> ['ann.lee','bo.ng','cj.park']
+notify: "{{ freeipa_users_by_tenant['acme'] }}"  # -> ['alice.smith','bob.ng','carol.jones']
 ```
 
-A single **username** is just the literal (`ann.lee`) — it's explicit, not generated.
+A single **username** is just the literal (`alice.smith`) — it's explicit, not derived.
 If the convention ever changes, the `*_ref` *values* change and every reference
 follows; no estate-wide find/replace. "All" in the flat lists = all tenants LOADED
 this run (one, or several on a union run) — realm-wide is a FreeIPA query by design.
@@ -136,8 +136,8 @@ expands `user.roles` → groups at apply time, so a roles-only user is valid.
   groups(4): acme-prod-{payments,ledger}-{access,priv-access}
   roles:     role-acme-lead → [acme-prod-payments-priv-access, acme-prod-ledger-priv-access]
   hbac:      hbac-acme-prod-payments, hbac-acme-prod-ledger
-  users(3):  ann.lee <ann.lee@example.com> → role-acme-lead
-             bo.ng, cj.park → direct -access groups
+  users(3):  alice.smith <alice.smith@example.com> → role-acme-lead
+             bob.ng, carol.jones → direct -access groups
 
 -i inventories/acme -i inventories/globex → marker idam-managed-users  (union)
   + globex-prod-search-access            # globex overrides access_levels to [access] only
@@ -151,7 +151,7 @@ expands `user.roles` → groups at apply time, so a roles-only user is valid.
   `ansible-playbook -i inventories/<code> site.yml --tags idam`. No count/registry.
 - **Add a service** → one line in the tenant's `services:`; its groups/hostgroup/HBAC appear.
 - **Add a persona** → one entry in the tenant's `roles:`.
-- **Add a person** → one `members:` line (`{first, last, …}` — username + email derived).
+- **Add a person** → one `members:` line (`{name, givenname, sn, title, …}`; email is built from name).
 - **Add an environment (dev/test)** → a tenant inventory whose `hosts.yml` points at
   that environment's FreeIPA IP and whose `00_env.yml` sets `env`/`domain`.
 - **Restrict access levels for a team** → set `access_levels:` in that tenant's spec.

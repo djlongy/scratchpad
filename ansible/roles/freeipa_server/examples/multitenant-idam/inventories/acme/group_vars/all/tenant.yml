@@ -19,13 +19,10 @@ tenant_acme_spec:
         - {service: payments, level: priv-access}
         - {service: ledger, level: priv-access}
 
-  # LAYER 3 — members. username defaults to <first>.<last> lowercased (override with
-  # `name:`); email is <username>@<domain>. Assign roles, and/or a direct group via
-  # {service|services, level}.
-  #   Ann Lee -> ann.lee, role-acme-lead       (acme-prod-payments-priv-access + ledger)
-  #   Bo Ng   -> bo.ng,   direct access        (acme-prod-ledger-access)
-  #   CJ Park -> cj.park, direct access on two services
+  # LAYER 3 — members. `name` is the UNIQUE username (explicit, not derived).
+  # givenname/sn/title are the person's details; email is built <name>@<domain>.
+  # Assign roles, and/or a direct group via {service|services, level}.
   members:
-    - {first: Ann, last: Lee, roles: [lead]}
-    - {first: Bo, last: Ng, service: ledger, level: access}
-    - {first: CJ, last: Park, services: [payments, ledger], level: access}
+    - {name: alice.smith, title: "Payments Lead", givenname: Alice, sn: Smith, roles: [lead]}
+    - {name: bob.ng, title: "Ledger Clerk", givenname: Bob, sn: Ng, service: ledger, level: access}
+    - {name: carol.jones, title: "Analyst", givenname: Carol, sn: Jones, services: [payments, ledger], level: access}

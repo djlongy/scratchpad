@@ -50,18 +50,20 @@ _gen_hostgroups: |-
   - {name: "{{ t.code }}-{{ env }}-{{ svc }}", description: "{{ t.code }} {{ env }} {{ svc }} hosts"}
   {% endfor %}{% endfor %}
 
-# ── LAYER 3 — users: RICH dicts (name, first, last, email + roles/groups) ────
-# name  = explicit `name:`, else <first>.<last> lowercased  (ann.lee)
-# email = <name>@<domain>  (domain from the tenant inventory; swap for a mail_domain
-#         var if mail differs from the realm domain)
+# ── LAYER 3 — users: RICH dicts (name, givenname, sn, title, email + roles/groups)
+# name      = the UNIQUE username, set explicitly (NOT derived — usernames are not
+#             a reliable function of a person's name)
+# givenname/sn/title = first name / surname / job title (ipauser accepts givenname &
+#             sn as aliases for first/last)
+# email     = ["<name>@<domain>"] (a list — ipauser's email is multi-valued; domain
+#             from the tenant inventory)
 # A member lists `roles: [persona, ...]` and/or a direct group via {service|services,
-# level}. Loop freeipa_idam_users and use item.name / item.email / item.first / …
+# level}. Loop freeipa_idam_users and use item.name / item.email / item.title / …
 freeipa_idam_users: "{{ (_gen_users | from_yaml) or [] }}"
 _gen_users: |-
   {% for t in _tenant_specs %}
   {% for m in t.members %}
-  {% set uname = m.name | default((m.first ~ '.' ~ m.last) | lower) %}
-  - {name: "{{ uname }}", first: "{{ m.first }}", last: "{{ m.last }}", email: "{{ uname }}@{{ domain }}"{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.service is defined) or (m.services is defined) %}, groups: [{% for s in (m.services | default([m.service])) %}"{{ t.code }}-{{ env }}-{{ s }}-{{ m.level }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
+  - {name: "{{ m.name }}", givenname: "{{ m.givenname }}", sn: "{{ m.sn }}"{% if m.title is defined %}, title: "{{ m.title }}"{% endif %}, email: ["{{ m.name }}@{{ domain }}"]{% if m.roles is defined %}, roles: [{% for r in m.roles %}"role-{{ t.code }}-{{ r }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}{% if (m.service is defined) or (m.services is defined) %}, groups: [{% for s in (m.services | default([m.service])) %}"{{ t.code }}-{{ env }}-{{ s }}-{{ m.level }}"{% if not loop.last %}, {% endif %}{% endfor %}]{% endif %}}
   {% endfor %}{% endfor %}
 
 # ── LAYER 4 — HBAC rules: per tenant × service, that service's access groups get
@@ -95,7 +97,7 @@ _gen_role_ref: |-
 freeipa_users_by_tenant: "{{ (_gen_users_by_tenant | from_yaml) or {} }}"
 _gen_users_by_tenant: |-
   {% for t in _tenant_specs %}
-  "{{ t.code }}": [{% for m in t.members %}"{{ m.name | default((m.first ~ '.' ~ m.last) | lower) }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+  "{{ t.code }}": [{% for m in t.members %}"{{ m.name }}"{% if not loop.last %}, {% endif %}{% endfor %}]
   {% endfor %}
 
 # ── FLAT NAME LISTS — loop to act on EVERY object in the LOADED scope ────────
