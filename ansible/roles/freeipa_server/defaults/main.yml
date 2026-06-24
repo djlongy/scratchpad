@@ -213,6 +213,25 @@ freeipa_server_recovery_chrony_max_correction: "0.5"
 freeipa_server_ccache_max_age: "4h"
 freeipa_server_tmpfiles_clean_interval: "1h"
 
+# ── TWO "role"-like inputs (both OPTIONAL conveniences over the baseline) ─────
+#   1. freeipa_idam_roles    — GROUP-BUNDLE matrix (declared below). A role is a
+#                              named set of groups; a user's `roles: [...]` expand
+#                              to the union of those groups. Pure Ansible-side
+#                              convenience; creates NO IPA object of its own.
+#   2. freeipa_idam_iparoles — NATIVE IPA delegation role objects (`ipa role`):
+#                              bundles PRIVILEGES and assigns them to members.
+#                              Use to delegate IPA-management powers (helpdesk).
+#
+# ── Multi-tenant role matrix — generated in YOUR inventory, not in this role ──
+# This role has NO built-in role generator. It only reconciles the baseline
+# freeipa_idam_* lists below — a stable contract that a role-internals change can
+# never alter. To derive many (tenancy × environment × app × privilege) role groups
+# from a COMPACT matrix WITHOUT copy/paste, build the baseline lists in your INVENTORY
+# group_vars from a matrix YOU author and own — visible, debuggable, WYSIWYG. A
+# complete worked example (a matrix + an access catalog + a short, readable flatten
+# that emits freeipa_idam_usergroups/hostgroups/hbac_rules/sudo_rules with a
+# CONFIGURABLE role-name prefix) lives under examples/multitenant-matrix/.
+
 # ── Declarative IDAM data contract (UNCHANGED names — see spec §5) ───────────
 # freeipa_idam_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
 freeipa_idam_admin_principal: "admin"
@@ -222,8 +241,8 @@ freeipa_idam_usergroups: []
 # Roles matrix — a role is a named bundle of groups; users reference roles
 # (user `roles: [...]`) instead of long flat group lists. At reconcile, each
 # user's roles expand to the union of their groups (merged with any direct
-# `groups`). Distinct from freeipa_rbac_roles (which generates groups/hostgroups/
-# HBAC/sudo) — this just bridges users <-> existing groups for cleaner RBAC.
+# `groups`). Distinct from the inventory-side role matrix (which derives groups/
+# hostgroups/HBAC/sudo) — this just bridges users <-> existing groups for cleaner RBAC.
 freeipa_idam_roles: []
 #  - name: platform-admin
 #    groups: [app-gitlab-admin, app-harbor-admin]
@@ -284,6 +303,13 @@ freeipa_idam_group_gids: {}
 # Archive (preserve) removed users instead of hard-deleting them. preserve=true →
 # user-del --preserve: account deactivated + retained (recoverable), not destroyed.
 freeipa_idam_preserve_archived: true
+
+# HARD-PRUNE gate (tasks/prune.yml) — DESTRUCTIVE, default OFF. When true AND the run
+# is invoked with `--tags prune`, the role REMOVES (ipa *-del, not archive) every
+# object DECLARED in this run's freeipa_idam_* lists — protected users/groups excluded.
+# Intended ONLY for MOCK/test inventories (set it true there) so a demo run can create
+# real objects and then clean them up. NEVER set this true on a real inventory.
+freeipa_idam_prune: false
 # Users the reconcile must never DELETE (prune/archive). Break-glass accounts are
 # auto-added to this list. Append any system/service accounts you want shielded from
 # removal. (These ARE still created/updated — see unmodifiable_users for the opposite.)
@@ -358,18 +384,9 @@ freeipa_server_export_output: "freeipa.config.snapshot.yml"
 freeipa_server_export_include_host_membership: false
 # Emit per-user SSH public keys.
 freeipa_server_export_include_sshkeys: false
-# Derive a roles matrix (freeipa_idam_roles) so users reference roles, not long
-# group lists. Set false to export a flat `groups` list per user instead.
-freeipa_server_export_roles: true
-# Groups whose name matches ANY of these case-insensitive regexes are NOT mined
-# into roles — they belong to a layer that already owns them (your role-* groups,
-# or an external PAM/JIT that manages its own groups). They stay as
-# direct group memberships. Add your own patterns; [] mines everything.
-freeipa_server_export_role_exclude:
-  - role
-# A co-occurrence bundle becomes a role only with at least this many groups;
-# smaller bundles stay as direct groups (no 1-group "roles").
-freeipa_server_export_role_min_groups: 2
+# The export is a FAITHFUL MIRROR of the live directory: every user is captured with
+# its real, literal `groups` list — no roles matrix is inferred (role STRUCTURE is
+# authored forward via the RBAC template engine, not guessed from the export).
 # Stock HBAC services that ship with FreeIPA — skipped by the export (only CUSTOM
 # services are captured). APPEND to this list if a newer FreeIPA version ships
 # additional stock services, so they aren't mis-captured as custom.

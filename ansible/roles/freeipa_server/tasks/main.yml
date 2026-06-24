@@ -14,6 +14,19 @@
 #   adtrust    → Active Directory trust(s) (primary; opt-in)
 #   restore    → break-glass restore from backup (never tag; opt-in)
 
+# Make the role self-sufficient about facts. preflight.yml and hardening.yml key
+# on ansible_os_family; the deploy playbooks gather_facts, but the idam-only
+# playbook runs gather_facts: false and leans on the (smart/jsonfile) fact cache —
+# which fails the moment the cache is cold or expired (fresh control node, >TTL,
+# or any caller that simply forgot gather_facts). Gather a minimal fact set here
+# when it is missing, so no phase ever hits an undefined ansible_* fact. No-op when
+# facts are already present; tagged `always` so it still runs under --tags filters.
+- name: Gather minimal facts when the play skipped them (cold cache safety)
+  ansible.builtin.setup:
+    gather_subset: ["min"]
+  when: ansible_os_family is not defined
+  tags: [always]
+
 - name: Run FreeIPA dependency-ordering preflight guards
   ansible.builtin.import_tasks: preflight.yml
   tags: [preflight]
@@ -94,3 +107,14 @@
   ansible.builtin.import_tasks: export_config.yml
   when: freeipa_server_is_primary | bool
   tags: [never, export]
+
+# HARD-DELETE every declared freeipa_idam_* object (for mock/test runs). DOUBLE-
+# GATED: the `never` tag means it only runs with `--tags prune`, AND it does nothing
+# unless freeipa_idam_prune is true (default false; set it only in a mock inventory).
+# Real inventories therefore never prune, even if someone passes --tags prune.
+- name: Prune (HARD-DELETE) declared IDAM objects — mock/test cleanup only
+  ansible.builtin.import_tasks: prune.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_idam_prune | default(false) | bool
+  tags: [never, prune]

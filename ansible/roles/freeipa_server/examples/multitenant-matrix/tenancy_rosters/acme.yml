@@ -1,0 +1,14 @@
+---
+# ACME's people — shared across all of acme's environments (acme runs dev/qa/stg/
+# prod). grants are abstract {app, privilege}; 20_generate resolves them to the
+# scoped environment's role groups.
+freeipa_idam_managed_group: idam-acme-managed
+freeipa_people:
+  - { name: alice.smith, first: Alice, last: Smith, email: ["alice.smith@acme.example.com"], grants: [{app: docker, privilege: admin}, {app: postgres, privilege: dba}] }
+  - { name: bob.ng,      first: Bob,   last: Ng,    email: ["bob.ng@acme.example.com"],      grants: [{app: web, privilege: admin}] }
+  - { name: carol.jones, first: Carol, last: Jones, email: ["carol.jones@acme.example.com"], grants: [{app: docker, privilege: readonly}] }
+  # sam.cross is ALSO in globex (tenancy_rosters/globex.yml) — a person can belong to
+  # multiple tenancies. FreeIPA has ONE global identity per username; each tenancy run
+  # creates it idempotently and adds its own groups. Keep first/last/email identical
+  # in every roster they appear in (the last run to touch the account sets them).
+  - { name: sam.cross,   first: Sam,   last: Cross, email: ["sam.cross@corp.example.com"],   grants: [{app: docker, privilege: admin}] }

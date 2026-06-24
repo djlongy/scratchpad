@@ -6,29 +6,74 @@
       tags: [freeipa_server, freeipa, idam, health_check]
   tags: [freeipa_server, freeipa, idam, health_check]
 
-- name: Expand RBAC roles into flat IDAM structures
-  ansible.builtin.include_tasks:
-    file: idam_expand_rbac.yml
-    apply:
-      tags: [freeipa_server, freeipa, idam, rbac]
-  tags: [freeipa_server, freeipa, idam, rbac]
-  when: freeipa_rbac_roles is defined and freeipa_rbac_roles | length > 0
+# Fail fast on gross TYPE errors BEFORE any task consumes these vars — the RBAC
+# expander, the service/break-glass merge, the role lookup and the item-level scan
+# all iterate these and assume real lists. `is iterable` is NOT enough: a bare
+# string and a dict are both iterable in Python, so `freeipa_idam_users: "oops"`
+# (or a base list passed as `-e key=value`, which arrives as a STRING) would slip
+# through and then blow up later with a cryptic, no_log-censored error. Require an
+# actual list: a sequence that is neither a string nor a mapping. Runs BEFORE the
+# expander so malformed BASE input is caught with a clear message first; the RBAC
+# inputs are checked too (default([]) so undefined is fine). Reports all at once.
+- name: Validate IDAM list variables are well-formed (must be lists)
+  vars:
+    _idam_typed_vars:
+      freeipa_idam_users: "{{ freeipa_idam_users }}"
+      freeipa_idam_usergroups: "{{ freeipa_idam_usergroups }}"
+      freeipa_idam_roles: "{{ freeipa_idam_roles }}"
+      freeipa_idam_hostgroups: "{{ freeipa_idam_hostgroups }}"
+      freeipa_idam_hbacsvcs: "{{ freeipa_idam_hbacsvcs }}"
+      freeipa_idam_hbacsvcgroups: "{{ freeipa_idam_hbacsvcgroups }}"
+      freeipa_idam_hbac_rules: "{{ freeipa_idam_hbac_rules }}"
+      freeipa_idam_sudo_commands: "{{ freeipa_idam_sudo_commands }}"
+      freeipa_idam_sudocmdgroups: "{{ freeipa_idam_sudocmdgroups }}"
+      freeipa_idam_sudo_rules: "{{ freeipa_idam_sudo_rules }}"
+      freeipa_idam_permissions: "{{ freeipa_idam_permissions }}"
+      freeipa_idam_privileges: "{{ freeipa_idam_privileges }}"
+      freeipa_idam_iparoles: "{{ freeipa_idam_iparoles }}"
+      freeipa_idam_pwpolicies: "{{ freeipa_idam_pwpolicies }}"
+      freeipa_idam_service_accounts: "{{ freeipa_idam_service_accounts }}"
+      freeipa_idam_breakglass_accounts: "{{ freeipa_idam_breakglass_accounts }}"
+      freeipa_idam_password_expiration_floors: "{{ freeipa_idam_password_expiration_floors }}"
+    # A real list = sequence AND NOT string AND NOT mapping. Collect the names of
+    # any var that fails that (non-sequences via reject, strings + dicts via select).
+    _idam_bad_types: >-
+      {{ (
+           (_idam_typed_vars | dict2items | rejectattr('value', 'sequence') | map(attribute='key') | list)
+         + (_idam_typed_vars | dict2items | selectattr('value', 'string')   | map(attribute='key') | list)
+         + (_idam_typed_vars | dict2items | selectattr('value', 'mapping')  | map(attribute='key') | list)
+         ) | unique }}
+  ansible.builtin.assert:
+    that:
+      - freeipa_idam_managed_group | length > 0
+      - _idam_bad_types | length == 0
+    fail_msg: >-
+      These freeipa_idam_* variables must be LISTS but are not: {{ _idam_bad_types | join(', ') }}.
+      A bare string or a single dict is the usual cause — wrap single items in a list ([ ... ]).
+      Note: base lists passed via `-e key=value` arrive as strings; use group_vars/vars_files
+      or JSON extra-vars (`-e '{"var": [ ... ]}'`).
+    quiet: true
 
 # Fold the separate account-type lists into the working user set so they flow
 # through the SAME validation/create/group/marker pipeline — but with their
 # distinguishing attributes. Service accounts get the nologin shell. Break-glass
 # accounts stay login-enabled and are auto-added to freeipa_idam_protected_users
 # (never pruned/archived). Kept as separate INPUT lists purely for explicit intent.
+#
+# Writes the INTERNAL fact _freeipa_idam_users_base (never the public
+# freeipa_idam_users) so the merge holds even when users are supplied via
+# extra-vars, which outrank set_fact — same robustness contract as the role-
+# expanded _freeipa_idam_users below. Always defined (base == users when no
+# service/break-glass accounts), so every downstream reader can rely on it.
 - name: Merge service + break-glass accounts into the working user set
   ansible.builtin.set_fact:
-    freeipa_idam_users: >-
+    _freeipa_idam_users_base: >-
       {{ freeipa_idam_users
          + (freeipa_idam_service_accounts | map('combine', {'shell': freeipa_idam_nologin_shell}) | list)
          + freeipa_idam_breakglass_accounts }}
     freeipa_idam_protected_users: >-
       {{ (freeipa_idam_protected_users
           + (freeipa_idam_breakglass_accounts | map(attribute='name') | list)) | unique }}
-  when: (freeipa_idam_service_accounts | length > 0) or (freeipa_idam_breakglass_accounts | length > 0)
   no_log: true
 
 # Roles matrix: a role is a named bundle of groups, and a user references the
@@ -43,29 +88,6 @@
       {{ dict(freeipa_idam_roles | map(attribute='name')
               | zip(freeipa_idam_roles | map(attribute='groups'))) }}
   when: freeipa_idam_roles | length > 0
-
-# Fail fast on gross type errors (vars must be lists) BEFORE the item-level scan,
-# which assumes lists.
-- name: Validate IDAM variables are well-formed
-  ansible.builtin.assert:
-    that:
-      - freeipa_idam_managed_group | length > 0
-      - freeipa_idam_users is iterable
-      - freeipa_idam_usergroups is iterable
-      - freeipa_idam_roles is iterable
-      - freeipa_idam_hostgroups is iterable
-      - freeipa_idam_hbacsvcs is iterable
-      - freeipa_idam_hbacsvcgroups is iterable
-      - freeipa_idam_hbac_rules is iterable
-      - freeipa_idam_sudo_commands is iterable
-      - freeipa_idam_sudocmdgroups is iterable
-      - freeipa_idam_sudo_rules is iterable
-      - freeipa_idam_permissions is iterable
-      - freeipa_idam_privileges is iterable
-      - freeipa_idam_iparoles is iterable
-      - freeipa_idam_service_accounts is iterable
-      - freeipa_idam_breakglass_accounts is iterable
-    fail_msg: "freeipa_idam_* variables are not valid (expected lists)."
 
 # DEPRECATED-SCHEMA GUARD. The group/service/cmd field names were renamed to match
 # the (unambiguous) community module params, and the top-level list is now
@@ -107,7 +129,15 @@
   vars:
     _gnames: "{{ freeipa_idam_usergroups | map(attribute='name') | list }}"
     _rnames: "{{ freeipa_idam_roles | map(attribute='name') | list }}"
-    _unames: "{{ freeipa_idam_users | map(attribute='name', default='(unnamed)') | list }}"
+    _unames: "{{ _freeipa_idam_users_base | map(attribute='name', default='(unnamed)') | list }}"
+    # Foundation object names a rule may reference. HBAC services include the stock
+    # set (sshd, sudo, ...) that always exist; the rest must be declared. These are
+    # the dependencies FreeIPA HARD-REJECTS ("hbacsvc/sudocmd ...: no such entry"), so
+    # catch them here with a clear message instead of a cryptic module failure.
+    _hbacsvc_names: "{{ (freeipa_server_export_hbacsvc_stock | default([])) + (freeipa_idam_hbacsvcs | map(attribute='name') | list) }}"
+    _hbacsvcgrp_names: "{{ freeipa_idam_hbacsvcgroups | map(attribute='name') | list }}"
+    _sudocmd_names: "{{ freeipa_idam_sudo_commands | map(attribute='name') | list }}"
+    _sudocmdgrp_names: "{{ freeipa_idam_sudocmdgroups | map(attribute='name') | list }}"
     _freeipa_idam_problems_yaml: |-
       {% for r in freeipa_idam_roles %}
       {% for g in (r.groups | default([])) %}
@@ -115,7 +145,7 @@
       - "role '{{ r.name }}' references unknown group '{{ g }}'"
       {% endif %}
       {% endfor %}{% endfor %}
-      {% for u in freeipa_idam_users %}
+      {% for u in _freeipa_idam_users_base %}
       {% if u.name is not defined %}
       - "a user entry is missing 'name'"
       {% else %}
@@ -150,6 +180,28 @@
       - "group '{{ g.name }}' is a protected FreeIPA built-in — refusing state: absent (would delete core schema)"
       {% endif %}
       {% endfor %}
+      {% for h in freeipa_idam_hbac_rules %}
+      {% for s in (h.service | default([])) %}
+      {% if s not in _hbacsvc_names %}
+      - "HBAC rule '{{ h.name }}' references HBAC service '{{ s }}' that is not stock and not in freeipa_idam_hbacsvcs"
+      {% endif %}
+      {% endfor %}
+      {% for sg in (h.servicegroup | default([])) %}
+      {% if sg not in _hbacsvcgrp_names %}
+      - "HBAC rule '{{ h.name }}' references service group '{{ sg }}' not in freeipa_idam_hbacsvcgroups"
+      {% endif %}
+      {% endfor %}{% endfor %}
+      {% for s in freeipa_idam_sudo_rules %}
+      {% for c in (s.cmd | default([])) + (s.deny_cmd | default([])) %}
+      {% if c not in _sudocmd_names %}
+      - "sudo rule '{{ s.name }}' references sudo command '{{ c }}' not in freeipa_idam_sudo_commands"
+      {% endif %}
+      {% endfor %}
+      {% for cg in (s.cmdgroup | default([])) + (s.deny_cmdgroup | default([])) %}
+      {% if cg not in _sudocmdgrp_names %}
+      - "sudo rule '{{ s.name }}' references sudo command group '{{ cg }}' not in freeipa_idam_sudocmdgroups"
+      {% endif %}
+      {% endfor %}{% endfor %}
   no_log: true
 
 - name: Report all IDAM validation problems at once
@@ -172,7 +224,7 @@
                + (item.roles | default([]) | map('extract', _freeipa_role_groups) | flatten)
              ) | unique })
          ] }}
-  loop: "{{ freeipa_idam_users }}"
+  loop: "{{ _freeipa_idam_users_base }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_roles | length > 0
@@ -183,7 +235,7 @@
 # outrank set_fact. role-expanded when roles are used, else the users as given.
 - name: Resolve effective users (role-expanded when roles are used)
   ansible.builtin.set_fact:
-    _freeipa_idam_users: "{{ _freeipa_users_roled | default(freeipa_idam_users) }}"
+    _freeipa_idam_users: "{{ _freeipa_users_roled | default(_freeipa_idam_users_base) }}"
 
 - name: Build desired FreeIPA username list
   ansible.builtin.set_fact:

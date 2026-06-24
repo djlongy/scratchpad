@@ -22,7 +22,6 @@ Deliberately NOT captured:
 import argparse
 import datetime
 import json
-import re
 import sys
 
 from ipalib import api, errors
@@ -60,7 +59,7 @@ DEFAULT_HBACSVCS = {
 # repeated string literals. ("group"/"hostgroup" are deliberately NOT constants:
 # they double as automember type values, which is a different meaning.)
 _DESCRIPTION = "description"
-_GROUPS, _ROLES = "groups", "roles"
+_GROUPS = "groups"
 _USERCATEGORY, _HOSTCATEGORY = "usercategory", "hostcategory"
 
 
@@ -353,94 +352,6 @@ def export_automember_rules():
     return out
 
 
-def _mineable(group, pairs):
-    return not any(rx.search(group) for _, rx in pairs)
-
-
-def _cooccurrence_roles(users, pairs, min_groups):
-    """Bundle mineable groups held by the same user-set into role-NN, keeping
-    only bundles of >= min_groups groups. Returns (roles, user_to_roles)."""
-    group_users = {}                      # mineable group -> set(users holding it)
-    for u in users:
-        for g in u.get(_GROUPS, []):
-            if _mineable(g, pairs):
-                group_users.setdefault(g, set()).add(u["name"])
-    bundles = {}                          # frozenset(users) -> [groups]
-    for g, us in group_users.items():
-        bundles.setdefault(frozenset(us), []).append(g)
-    qualifying = sorted(
-        (kv for kv in bundles.items() if len(kv[1]) >= max(1, min_groups)),
-        key=lambda kv: sorted(kv[1]),
-    )
-    pad = max(2, len(str(len(qualifying) or 1)))
-    roles, user_to_roles = [], {}
-    for i, (uset, groups) in enumerate(qualifying, 1):
-        name = f"role-{i:0{pad}d}"
-        roles.append({"name": name, _GROUPS: sorted(groups)})
-        for un in uset:
-            user_to_roles.setdefault(un, []).append(name)
-    return roles, user_to_roles
-
-
-def _native_users(users):
-    """Copy each user verbatim with an empty `roles: []` placeholder inserted
-    before `groups` — full real membership preserved, no auto-assigned roles."""
-    out = []
-    for u in users:
-        nu = {}
-        for key, value in u.items():
-            if key == _GROUPS and _ROLES not in nu:
-                nu[_ROLES] = []
-            nu[key] = value
-        nu.setdefault(_ROLES, [])
-        out.append(nu)
-    return out
-
-
-def _excluded_by_pattern(users, pairs):
-    """Diagnostic: the groups each exclude-pattern held out of mining."""
-    excluded = {}
-    for g in sorted({g for u in users for g in u.get(_GROUPS, [])}):
-        for pat, rx in pairs:
-            if rx.search(g):
-                excluded.setdefault(pat, []).append(g)
-                break
-    return excluded
-
-
-def mine_roles(users, exclude_patterns=None, min_groups=2):
-    """Bridge users <-> groups with a roles matrix via co-occurrence bundling.
-
-    Groups held by the EXACT same set of (managed) users always travel together,
-    so they collapse into one role and a user references that role instead of a
-    long group list. Two refinements keep the matrix honest:
-
-      * Groups whose name matches ANY of `exclude_patterns` (a list of case-
-        insensitive regexes, default ['role']) are NOT mined — they belong to a
-        layer that already owns them (your role-* groups, or an external PAM/JIT
-        that manages its own groups). Folding them into a synthetic
-        bundle just makes a "role made of roles", so they stay as direct `groups`
-        on the user. Pass [] to mine everything.
-      * A bundle becomes a role only when it has >= `min_groups` groups; smaller
-        bundles stay as direct groups, so you never get a 1-group "role" that is
-        just a renamed group.
-
-    Users are left NATIVE — each keeps its full real `groups` plus an empty
-    `roles: []` placeholder. The matrix is a non-applied SUGGESTION only (the user
-    opts in by renaming it and wiring users' `roles:` themselves). Returns
-    (roles, users, excluded, user_role_map): `excluded` maps each matched pattern
-    -> the groups it held out of mining (diagnostic); `user_role_map` maps each
-    user -> the roles it WOULD get if the suggestion were adopted (also advisory).
-    """
-    patterns = ["role"] if exclude_patterns is None else exclude_patterns
-    pairs = [(p, re.compile(p, re.IGNORECASE)) for p in patterns if p]
-    roles, user_to_roles = _cooccurrence_roles(users, pairs, min_groups)
-    user_role_map = {u["name"]: sorted(user_to_roles[u["name"]])
-                     for u in users if user_to_roles.get(u["name"])}
-    return (roles, _native_users(users),
-            _excluded_by_pattern(users, pairs), user_role_map)
-
-
 def export_dns_forwarders():
     """This server's DNS forwarders + forward policy. idnsforwarders live PER DNS
     server (dnsserver-show), NOT in the global dnsconfig — so this reads the local
@@ -652,16 +563,6 @@ def main():
                          "enrolment + automember)")
     ap.add_argument("--include-sshkeys", action="store_true",
                     help="emit per-user ipasshpubkey values")
-    ap.add_argument("--flat-groups", action="store_true",
-                    help="emit users with a flat `groups` list instead of the "
-                         "roles matrix (default: derive roles)")
-    ap.add_argument("--role-exclude", default='["role"]', metavar="JSON",
-                    help="JSON array of case-insensitive regexes; groups whose "
-                         "name matches ANY are kept as direct groups, not mined "
-                         "into roles (default: '[\"role\"]'; '[]' mines everything)")
-    ap.add_argument("--role-min-groups", type=int, default=2, metavar="N",
-                    help="a co-occurrence bundle becomes a role only with >= N "
-                         "groups; smaller bundles stay direct (default: 2)")
     ap.add_argument("--stock-hbacsvc", default=None, metavar="JSON",
                     help="JSON array of stock HBAC service names to skip (already "
                          "exist on a fresh server); extend it for newer FreeIPA "
@@ -688,14 +589,6 @@ def main():
     if used_fallback and not any(g["name"] == DEFAULT_FALLBACK_GROUP for g in groups):
         groups.append({"name": DEFAULT_FALLBACK_GROUP})
 
-    # Suggest a roles matrix (unless --flat-groups). Users stay NATIVE; the matrix
-    # is advisory only and emitted under a key the role does NOT read.
-    roles_suggested, roles_excluded, roles_user_map = [], {}, {}
-    if not args.flat_groups:
-        exclude = json.loads(args.role_exclude)
-        roles_suggested, users, roles_excluded, roles_user_map = mine_roles(
-            users, exclude, args.role_min_groups)
-
     # Custom delegation roles, plus exactly the privileges they reference and the
     # permissions those privileges hold (built-ins are skipped to avoid dumping the
     # ~80 stock privileges/permissions a fresh server already ships).
@@ -714,8 +607,6 @@ def main():
                 datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "host_membership_included": args.include_host_membership,
             "fallback_group_used": used_fallback,
-            "roles_excluded_from_mining": roles_excluded,
-            "roles_suggested_user_map": roles_user_map,
         },
         "freeipa_server_domain": api.env.domain,
         "freeipa_server_realm": api.env.realm,
@@ -734,8 +625,9 @@ def main():
         "freeipa_server_dns_forward_zones": export_dns_forward_zones(),
         "freeipa_server_dns_records": export_dns_records(),
         "freeipa_idam_usergroups": groups,
-        # Advisory only — the role does NOT read this key (see template header).
-        "freeipa_idam_roles_suggested": roles_suggested,
+        # Users are exported VERBATIM — each with its real, literal `groups` list
+        # exactly as held in FreeIPA. No roles matrix is synthesised (the snapshot is
+        # a faithful mirror of the directory, not an inferred refactor).
         "freeipa_idam_users": users,
         # Accounts with a nologin shell — re-applied as service accounts (shell forced).
         "freeipa_idam_service_accounts": service_accounts,

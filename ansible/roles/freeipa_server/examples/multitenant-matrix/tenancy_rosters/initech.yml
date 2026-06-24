@@ -1,0 +1,6 @@
+---
+freeipa_idam_managed_group: idam-initech-managed
+freeipa_people:
+  - { name: grace.lee,  first: Grace, last: Lee,  email: ["grace.lee@initech.example.com"],  grants: [{app: web, privilege: admin}] }
+  - { name: henry.cole, first: Henry, last: Cole, email: ["henry.cole@initech.example.com"], grants: [{app: linux, privilege: sysadmin}] }
+  - { name: iris.fox,   first: Iris,  last: Fox,   email: ["iris.fox@initech.example.com"],   grants: [{app: postgres, privilege: dba}, {app: postgres, privilege: readonly}] }

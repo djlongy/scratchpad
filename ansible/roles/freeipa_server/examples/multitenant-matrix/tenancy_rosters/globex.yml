@@ -1,0 +1,8 @@
+---
+# GLOBEX's people — shared across globex's environments (globex runs dev/test/prod).
+freeipa_idam_managed_group: idam-globex-managed
+freeipa_people:
+  - { name: dave.kim,  first: Dave, last: Kim,  email: ["dave.kim@globex.example.com"],  grants: [{app: linux, privilege: sysadmin}] }
+  - { name: erin.park, first: Erin, last: Park, email: ["erin.park@globex.example.com"], grants: [{app: docker, privilege: admin}] }
+  # sam.cross is ALSO in acme — same global identity, different groups per tenancy.
+  - { name: sam.cross, first: Sam,  last: Cross, email: ["sam.cross@corp.example.com"],   grants: [{app: linux, privilege: sysadmin}] }

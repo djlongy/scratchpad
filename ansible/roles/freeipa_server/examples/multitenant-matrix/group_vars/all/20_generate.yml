@@ -1,0 +1,111 @@
+---
+# ═════════════════════════════════════════════════════════════════════════════
+# THE FLATTEN — derive the baseline freeipa_idam_* lists from the matrix + access.
+# This is the ONLY logic in the whole setup, and it lives HERE in your inventory
+# (not in the role), so you can read and debug every line. The role just reconciles
+# whatever freeipa_idam_* these produce.
+#
+# Step 1 builds one flat "cell" per (tenancy × environment × app × privilege),
+# scope-filtered, with names + access resolved. Steps 2+ are then trivial maps over
+# that flat list — no nested loops past step 1.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── Step 1: the flat cell list (the cross-product, computed once) ────────────
+_matrix_cells: "{{ (_matrix_cells_yaml | from_yaml) or [] }}"
+_matrix_cells_yaml: |-
+  {% for tenancy, tdef in freeipa_matrix.items() %}
+  {% if (freeipa_scope_tenancy | default('')) in ['', tenancy] %}
+  {% for env in tdef.environments %}
+  {% if (freeipa_scope_environment | default('')) in ['', env] %}
+  {% for app, privileges in tdef.apps.items() %}
+  {% for priv in privileges %}
+  {% set acc = (freeipa_access[app] | default({}))[priv] | default({}) %}
+  - tenancy: {{ tenancy | to_json }}
+    environment: {{ env | to_json }}
+    app: {{ app | to_json }}
+    privilege: {{ priv | to_json }}
+    group: {{ (freeipa_role_prefix ~ tenancy ~ '-' ~ env ~ '-' ~ app ~ '-' ~ priv) | to_json }}
+    hostgroup: {{ (freeipa_hostgroup_prefix ~ tenancy ~ '-' ~ env ~ '-' ~ app) | to_json }}
+    hbac: {{ (freeipa_hbac_prefix ~ tenancy ~ '-' ~ env ~ '-' ~ app ~ '-' ~ priv) | to_json }}
+    sudo: {{ (freeipa_sudo_prefix ~ tenancy ~ '-' ~ env ~ '-' ~ app ~ '-' ~ priv) | to_json }}
+    login: {{ acc.login | default([]) | to_json }}
+    sudo_cmds: {{ acc.sudo | default([]) | to_json }}
+    sudo_all: {{ acc.sudo_all | default(false) | to_json }}
+  {% endfor %}{% endfor %}{% endif %}{% endfor %}{% endif %}{% endfor %}
+
+# A matrix privilege with no entry in the access catalog — site.yml fails on this.
+freeipa_matrix_problems: "{{ (_matrix_problems_yaml | from_yaml) or [] }}"
+_matrix_problems_yaml: |-
+  {% for tenancy, tdef in freeipa_matrix.items() %}
+  {% for app, privileges in tdef.apps.items() %}
+  {% for priv in privileges %}
+  {% if priv not in (freeipa_access[app] | default({})) %}
+  - "{{ app }}/{{ priv }} (in matrix, missing from freeipa_access)"
+  {% endif %}
+  {% endfor %}{% endfor %}{% endfor %}
+  {% if (freeipa_scope_tenancy | default('')) | length > 0 and (freeipa_scope_environment | default('')) | length > 0 %}
+  {% if freeipa_scope_environment not in (freeipa_matrix[freeipa_scope_tenancy] | default({})).get('environments', []) %}
+  - "scope {{ freeipa_scope_tenancy }}/{{ freeipa_scope_environment }}: environment '{{ freeipa_scope_environment }}' is not in tenancy '{{ freeipa_scope_tenancy }}' (has {{ (freeipa_matrix[freeipa_scope_tenancy] | default({})).get('environments', []) }})"
+  {% endif %}
+  {% endif %}
+
+# ── Step 2+: the baseline lists (simple flat maps over the cells) ────────────
+freeipa_idam_usergroups: "{{ (_g_yaml | from_yaml) or [] }}"
+_g_yaml: |-
+  {% for c in _matrix_cells %}
+  - {name: {{ c.group | to_json }}, description: {{ (c.app ~ ' ' ~ c.privilege ~ ' (' ~ c.tenancy ~ '/' ~ c.environment ~ ')') | to_json }}}
+  {% endfor %}
+
+# Hostgroups are per (tenancy, env, app) — shared across privileges → DEDUPED.
+freeipa_idam_hostgroups: "{{ ((_hg_yaml | from_yaml) or []) | unique }}"
+_hg_yaml: |-
+  {% for c in _matrix_cells %}
+  - {name: {{ c.hostgroup | to_json }}, description: {{ (c.app ~ ' hosts (' ~ c.tenancy ~ '/' ~ c.environment ~ ')') | to_json }}}
+  {% endfor %}
+
+freeipa_idam_hbac_rules: "{{ (_hbac_yaml | from_yaml) or [] }}"
+_hbac_yaml: |-
+  {% for c in _matrix_cells %}
+  {% if c.login | length > 0 %}
+  - {name: {{ c.hbac | to_json }}, description: {{ ('HBAC ' ~ c.app ~ ' ' ~ c.privilege ~ ' (' ~ c.tenancy ~ '/' ~ c.environment ~ ')') | to_json }}, usergroup: {{ [c.group] | to_json }}, hostgroup: {{ [c.hostgroup] | to_json }}, service: {{ c.login | to_json }}, state: "enabled"}
+  {% endif %}
+  {% endfor %}
+
+freeipa_idam_sudo_rules: "{{ (_sudo_yaml | from_yaml) or [] }}"
+_sudo_yaml: |-
+  {% for c in _matrix_cells %}
+  {% if c.sudo_all %}
+  - {name: {{ c.sudo | to_json }}, description: {{ ('Full sudo ' ~ c.app ~ ' ' ~ c.privilege ~ ' (' ~ c.tenancy ~ '/' ~ c.environment ~ ')') | to_json }}, usergroup: {{ [c.group] | to_json }}, hostgroup: {{ [c.hostgroup] | to_json }}, cmdcategory: "all", runasusercategory: "all", runasgroupcategory: "all", state: "enabled"}
+  {% elif c.sudo_cmds | length > 0 %}
+  - {name: {{ c.sudo | to_json }}, description: {{ ('Sudo ' ~ c.app ~ ' ' ~ c.privilege ~ ' (' ~ c.tenancy ~ '/' ~ c.environment ~ ')') | to_json }}, usergroup: {{ [c.group] | to_json }}, hostgroup: {{ [c.hostgroup] | to_json }}, cmd: {{ c.sudo_cmds | to_json }}, runasusercategory: "all", runasgroupcategory: "all", state: "enabled"}
+  {% endif %}
+  {% endfor %}
+
+# ── Foundation, DERIVED from the access catalog (so it's never out of sync) ──
+# Custom (non-stock) HBAC services used by any login, and every sudo command object.
+freeipa_idam_hbacsvcs: "{{ (_svcs_yaml | from_yaml) or [] }}"
+_svcs_yaml: |-
+  {% for svc in (_matrix_cells | map(attribute='login') | flatten | unique | difference(freeipa_stock_hbacsvcs | default([]))) %}
+  - {name: {{ svc | to_json }}, description: {{ (svc ~ ' (custom HBAC service)') | to_json }}}
+  {% endfor %}
+freeipa_idam_sudo_commands: "{{ (_cmds_yaml | from_yaml) or [] }}"
+_cmds_yaml: |-
+  {% for cmd in (_matrix_cells | selectattr('sudo_cmds') | map(attribute='sudo_cmds') | flatten | unique) %}
+  - {name: {{ cmd | to_json }}}
+  {% endfor %}
+
+# ── Users — people from the per-tenancy roster (freeipa_people, loaded by site.yml).
+# Each person's abstract grants {app, privilege} resolve to the scoped tenancy's
+# group(s) via the cells, so one roster serves every environment of its tenancy.
+# (Requires a scoped run — freeipa_scope_tenancy set — so grants land in one tenancy.)
+freeipa_idam_users: "{{ (_users_yaml | from_yaml) or [] }}"
+_users_yaml: |-
+  {% for u in freeipa_people | default([]) %}
+  {% set ns = namespace(grps=(u.groups | default([]))) %}
+  {% for g in u.grants | default([]) %}
+  {% for c in _matrix_cells if c.app == g.app and c.privilege == g.privilege %}
+  {% set ns.grps = ns.grps + [c.group] %}
+  {% endfor %}
+  {% endfor %}
+  - {name: {{ u.name | to_json }}, first: {{ u.first | to_json }}, last: {{ u.last | to_json }}{% if u.email is defined %}, email: {{ u.email | to_json }}{% endif %}, groups: {{ ns.grps | unique | to_json }}}
+  {% endfor %}
