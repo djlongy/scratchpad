@@ -25,7 +25,14 @@
     validate_certs: "{{ vsphere_vm_validate_certs }}"
     datacenter: "{{ vsphere_vm_datacenter }}"
     name: "{{ item.name }}"
-    folder: "{{ item.folder | default(vsphere_vm_folder) }}"
+    # Match by NAME across the datacenter (folder omitted unless the guest pins
+    # one). Defaulting to vsphere_vm_folder — the CREATE placement folder — meant
+    # a VM living anywhere else (e.g. the datacenter root, or moved after build)
+    # silently failed to match: vmware_guest treats it as already-absent and
+    # returns changed=0 instead of deleting it. Names are unique in this role's
+    # model (create refuses "already exists"), so name alone is a safe,
+    # folder-drift-proof match.
+    folder: "{{ item.folder | default(omit) }}"
     state: absent
     force: true
   loop: "{{ _vsphere_to_destroy }}"

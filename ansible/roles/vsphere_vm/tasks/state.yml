@@ -58,3 +58,18 @@
   run_once: true
   delegate_to: localhost
   become: false
+
+# Make the destroy CONTRACT explicit when something is marked absent — otherwise
+# a plain run silently no-ops (the destroy phase is `never`-tagged) and the
+# operator just sees changed=0 with no clue why.
+- name: State | Advise how to remove VMs marked absent
+  ansible.builtin.debug:
+    msg: >-
+      {{ _vsphere_to_destroy | length }} VM(s) marked state:absent still exist
+      ({{ _vsphere_to_destroy | map(attribute='name') | list }}). They are removed
+      ONLY when you run with --tags destroy AND set vsphere_vm_allow_destroy=true.
+      A normal run leaves them untouched (changed=0) by design.
+  when: _vsphere_to_destroy | length > 0
+  run_once: true
+  delegate_to: localhost
+  become: false
