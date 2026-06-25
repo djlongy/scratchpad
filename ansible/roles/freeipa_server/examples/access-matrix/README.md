@@ -34,6 +34,60 @@ user ──member──▶ role-…  (grant group)
 - **HBAC + sudo target `ug-…`**, scoped to `hg-…`. Want a break-glass group on a
   policy? Add it to that one `ug-…`; no rule is touched.
 
+## Prerequisites — what must already exist (almost nothing)
+
+The matrix **creates** the groups, the policy groups, the hostgroups, the HBAC rules,
+the sudo rules and the users. The only things it assumes already exist:
+
+1. **The FreeIPA server + admin credentials** (`freeipa_idam_admin_principal` /
+   `freeipa_idam_admin_password`).
+2. **Stock HBAC services** (`sshd`, `sudo`, …) — these ship with every FreeIPA. The
+   matrix auto-creates any *non-stock* service you reference (e.g. `cockpit`); it does
+   not re-create the stock ones. So a `privileges.*.hbac_services` entry is always
+   satisfied: stock already exists, custom is generated.
+3. **Enrolled hosts** — but *only* if you want the rules to actually match a machine
+   (see "Hosts" below). Nothing in the matrix needs a host to exist to be created.
+
+**Users do NOT need to pre-exist.** List a person in `freeipa_people` with their identity
+(`name` + `first`/`last`/`email`) and `grants:`; the role creates the account
+(`ipauser state: present`) and then adds their memberships. An already-existing or
+protected account (e.g. `admin`) is never recreated — only its memberships are added.
+
+So the minimum to go from nothing → working access is: a FreeIPA server, admin creds,
+and the matrix + people. Everything else is generated.
+
+## What it creates, and what it does NOT
+
+**Creates**, per cell: `role-…` grant group, `ug-…` policy group (nesting the role
+group), `hg-…` hostgroup (empty), the `hbac-…` rule, the `sudo-…` rule (skipped when the
+privilege has no sudo), and any custom hbacsvc / sudo-command objects referenced.
+
+**Does NOT create** FreeIPA permissions / privileges / delegation **roles** (`ipapermission`
+/ `ipaprivilege` / `iparole`). The "role group" here is a **user group**, not an IPA
+`role`. Access is enforced by **HBAC** (who may log in, with which services) and **sudo**
+rules — there is no RBAC-permission layer in this model.
+
+## Lifecycle — membership is ADDITIVE
+
+Users are added to their `role-…` groups with `ipagroup action: member`, which is
+**additive** — it never strips memberships it didn't add. Consequences for the operator:
+
+- A person is a member of their `role-…` group(s) **and** every group they were already
+  in (baseline-snapshot groups, hand-added groups) — both are kept. (The user-grant
+  compiler also *unions* a person's existing `groups` with the matrix-granted ones, so
+  the declarative user object stays complete.)
+- **Removing a grant from `freeipa_people` does NOT revoke it on the next run** (additive
+  never removes). To actually revoke access, remove the membership directly, or use the
+  gated `--tags prune` (hard-delete) on a throwaway realm.
+
+## Hosts — the one thing you wire yourself
+
+Generated hostgroups (`hg-…`) are created **empty**. The HBAC and sudo rules are scoped
+to them, so until a host is **enrolled** in FreeIPA **and** placed in the matching `hg-…`
+hostgroup (manually, or via an automember rule), the rules match no machine. The matrix
+builds the *policy skeleton*; populating hostgroups with hosts is out of band (enrolment
++ automember).
+
 ## The matrix (`00_access_matrix.yml`)
 
 | section | what it is |
