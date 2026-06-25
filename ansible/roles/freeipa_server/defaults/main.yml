@@ -304,6 +304,28 @@ freeipa_idam_group_gids: {}
 # user-del --preserve: account deactivated + retained (recoverable), not destroyed.
 freeipa_idam_preserve_archived: true
 
+# ── ONE authoritative switch (spec §8) — the recommended control for ALL pruning ─────
+# false (default) = additive-safe: create/update declared objects + memberships and add
+# users/groups, but do NOT strip undeclared members or delete undeclared objects. true =
+# the COMPILED desired-state is authoritative: undeclared group members are removed,
+# undeclared matrix-managed objects in scope (groups, hostgroups, HBAC + sudo + automember
+# rules) are deleted, and users dropped from config are archived. REALM-SCOPED: only ever
+# run authoritative against a COMPLETE assembled desired-state (never a partial tenant
+# file), or it will prune another tenant's objects — see spec §9.
+#
+# Supersedes the three legacy flags below. It can only ADD pruning (OR semantics): turning
+# it on never un-prunes, and turning it off never overrides a legacy flag an inventory
+# still sets — so existing inventories keep their exact behaviour. New inventories should
+# set ONLY this and leave the legacy flags unset.
+freeipa_server_authoritative: false
+
+# Effective per-mechanism booleans = the switch OR the (deprecated) legacy flag. Every
+# reconcile task keys on THESE, so the single switch and the old flags both work during
+# migration. (Defined here so the OR is evaluated once, lazily, with full var context.)
+freeipa_idam_authoritative_membership: "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_membership_declarative | bool) }}"
+freeipa_idam_authoritative_groups:     "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_groups | bool) }}"
+freeipa_idam_authoritative_objects:    "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_objects | bool) }}"
+
 # DECLARATIVE group membership — default OFF (additive). When false, the role only ADDS
 # declared members to groups (never strips), so out-of-band/system memberships are safe.
 # Set true to reconcile membership to EXACTLY what is declared: a user/nested-group no
@@ -312,7 +334,7 @@ freeipa_idam_preserve_archived: true
 # groups in freeipa_idam_protected_groups stay additive and are never stripped); undeclared
 # groups are never touched. Less aggressive than delete (which deletes objects); this only
 # reconciles MEMBERSHIP of groups you already declare.
-freeipa_idam_membership_declarative: false
+freeipa_idam_membership_declarative: false   # DEPRECATED — prefer freeipa_server_authoritative
 
 # DECLARATIVE OBJECT reconcile — default OFF (DESTRUCTIVE). When true, after the apply the
 # role DELETES matrix-managed OBJECTS (groups, hostgroups, HBAC + sudo rules) in this scope
@@ -321,7 +343,11 @@ freeipa_idam_membership_declarative: false
 # eligible, and only those NOT in this run's freeipa_idam_* lists and NOT in
 # freeipa_idam_protected_groups are removed. The matrix playbook sets the match to
 # '<tenant>-<environment>'; a blank match deletes NOTHING (fail-safe).
-freeipa_idam_reconcile_objects: false
+freeipa_idam_reconcile_objects: false   # DEPRECATED — prefer freeipa_server_authoritative
+# Scope marker for object pruning — only objects whose NAME contains this string are
+# eligible for deletion (the matrix sets it to '<tenant>-<environment>'). Blank = object
+# pruning deletes NOTHING even when authoritative, and the object-reconcile phase is
+# skipped (fail-safe). Still consumed under freeipa_server_authoritative.
 freeipa_idam_reconcile_match: ""
 
 # DECLARATIVE GROUP-EXISTENCE reconcile — default OFF (DESTRUCTIVE). The container-marker
@@ -335,7 +361,7 @@ freeipa_idam_reconcile_match: ""
 # protected built-ins are never considered. NOTE: the first run only ENROLLS — it cannot
 # retroactively catch groups removed from the dict before the container existed (clean those
 # up once with `ipa group-del`). Hard-delete only (groups can't be preserve-archived).
-freeipa_idam_reconcile_groups: false
+freeipa_idam_reconcile_groups: false   # DEPRECATED — prefer freeipa_server_authoritative
 freeipa_idam_managed_groups_group: "idam-managed-groups"
 
 # HARD-DELETE gate (tasks/delete.yml) — DESTRUCTIVE, default OFF. When true AND the run

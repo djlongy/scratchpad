@@ -14,9 +14,11 @@
     that:
       - (freeipa_idam_reconcile_match | default('')) | length > 0
     fail_msg: >-
-      freeipa_idam_reconcile_objects is true but freeipa_idam_reconcile_match is empty.
-      The matrix playbook sets it to '<tenant>-<environment>'; refusing to reconcile
-      without a scope marker (would consider the WHOLE realm).
+      Object reconcile is active (freeipa_server_authoritative or the deprecated
+      freeipa_idam_reconcile_objects) but freeipa_idam_reconcile_match is empty. The matrix
+      sets it to '<tenant>-<environment>'; refusing to reconcile without a scope marker
+      (would consider the WHOLE realm). NB: main.yml already skips this phase on a blank
+      match — this assert is belt-and-suspenders.
 
 - name: Reconcile | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
@@ -54,13 +56,22 @@
   loop_control:
     label: "{{ item.item }}"
 
+# Protected set = the built-in protected groups PLUS this role's own marker containers
+# (the user marker + the group-existence container). Without excluding the markers, an
+# object reconcile whose scope marker happens to be a substring of a marker name (e.g. a
+# test scope "test-" vs a "test-idam-managed-*" marker) would delete the role's own
+# bookkeeping groups. Real deployments don't collide (markers don't contain the tenant-env
+# scope), but excluding them is correct defense regardless.
 - name: Reconcile | Compute orphans (managed-but-undeclared, scoped, protected-safe)
   ansible.builtin.set_fact:
     _reconcile_orphans: >-
       {{ _reconcile_found
          | freeipa_idam_orphans(_reconcile_desired, freeipa_idam_reconcile_match,
-                                freeipa_idam_protected_groups | default([])) }}
+                                _reconcile_protected) }}
   vars:
+    _reconcile_protected: >-
+      {{ (freeipa_idam_protected_groups | default([]))
+         + [freeipa_idam_managed_group, freeipa_idam_managed_groups_group] }}
     _reconcile_desired:
       sudorule:  "{{ freeipa_idam_sudo_rules  | default([]) | map(attribute='name') | list }}"
       hbacrule:  "{{ freeipa_idam_hbac_rules  | default([]) | map(attribute='name') | list }}"
@@ -75,6 +86,53 @@
       hbac: {{ _reconcile_orphans.hbacrule | default([]) }},
       hostgroups: {{ _reconcile_orphans.hostgroup | default([]) }},
       groups: {{ _reconcile_orphans.group | default([]) }}
+
+# Automember rules are reconciled separately — `ipa automember-find/-del` are TYPE-scoped
+# (--type group|hostgroup) and keyed by the rule name (= its target group/hostgroup name),
+# so they don't fit the generic <type>-del loop. Same scope-marker + protected guards via
+# the shared freeipa_idam_orphans filter. Deleted BEFORE the groups below so a rule never
+# outlives its target group. Desired set comes from freeipa_server_automember_rules.
+- name: Reconcile | Find managed automember rules in this scope (per type)
+  ansible.builtin.command: "ipa automember-find {{ freeipa_idam_reconcile_match }} --type={{ item }} --pkey-only"
+  register: _reconcile_am_find
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  loop: [group, hostgroup]
+
+- name: Reconcile | Parse found automember rule names per type
+  ansible.builtin.set_fact:
+    _reconcile_am_found: "{{ _reconcile_am_found | default({}) | combine({item.item: _names}) }}"
+  vars:
+    _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
+  loop: "{{ _reconcile_am_find.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Reconcile | Compute automember orphans (scoped, protected-safe)
+  ansible.builtin.set_fact:
+    _reconcile_am_orphans: >-
+      {{ _reconcile_am_found
+         | freeipa_idam_orphans(_reconcile_am_desired, freeipa_idam_reconcile_match,
+                                freeipa_idam_protected_groups | default([])) }}
+  vars:
+    _reconcile_am_desired:
+      group:     "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'group')     | map(attribute='name') | list }}"
+      hostgroup: "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'hostgroup') | map(attribute='name') | list }}"
+
+- name: Reconcile | Report automember rules to delete
+  ansible.builtin.debug:
+    msg: >-
+      Reconcile [{{ freeipa_idam_reconcile_match }}] automember orphans to delete —
+      group: {{ _reconcile_am_orphans.group | default([]) }},
+      hostgroup: {{ _reconcile_am_orphans.hostgroup | default([]) }}
+
+- name: Reconcile | Delete orphaned automember rules (no longer in the matrix)
+  ansible.builtin.command: "ipa automember-del {{ item.1 | quote }} --type={{ item.0.key }}"
+  loop: "{{ _reconcile_am_orphans | dict2items | subelements('value') }}"
+  loop_control:
+    label: "{{ item.0.key }} → {{ item.1 }}"
+  changed_when: true
 
 - name: Reconcile | Delete orphaned objects (no longer in the matrix)
   ansible.builtin.command: "ipa {{ item.0.key }}-del {{ item.1 | quote }}"

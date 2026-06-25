@@ -247,9 +247,15 @@
 # Downstream tasks consume this internal fact (never the public freeipa_idam_users)
 # so that role expansion holds even when users are supplied via extra-vars, which
 # outrank set_fact. role-expanded when roles are used, else the users as given.
+# Pick the role-expanded set ONLY when roles are actually used. NB: must test
+# freeipa_idam_roles length, NOT `_freeipa_users_roled | default(...)` — the re-entry
+# guard resets _freeipa_users_roled to [] (defined-but-empty), and default() only
+# substitutes on UNDEFINED, so the old default() form collapsed users to [] whenever no
+# roles were declared (the common case, incl. every matrix run) and silently processed
+# zero users.
 - name: Resolve effective users (role-expanded when roles are used)
   ansible.builtin.set_fact:
-    _freeipa_idam_users: "{{ _freeipa_users_roled | default(_freeipa_idam_users_base) }}"
+    _freeipa_idam_users: "{{ _freeipa_users_roled if (freeipa_idam_roles | length > 0) else _freeipa_idam_users_base }}"
 
 - name: Build desired FreeIPA username list
   ansible.builtin.set_fact:
@@ -627,7 +633,7 @@
     name: "{{ freeipa_idam_managed_groups_group }}"
     description: "Container marker — groups managed declaratively from Git (group-existence reconcile)"
     state: present
-  when: freeipa_idam_reconcile_groups | bool
+  when: freeipa_idam_authoritative_groups | bool
   no_log: true
 
 - name: Enroll declared groups into the managed-groups container (membership marker)
@@ -641,7 +647,7 @@
   vars:
     _freeipa_idam_enrollable_groups: "{{ freeipa_idam_group_names | difference(freeipa_idam_protected_groups) }}"
   when:
-    - freeipa_idam_reconcile_groups | bool
+    - freeipa_idam_authoritative_groups | bool
     - _freeipa_idam_enrollable_groups | length > 0
   no_log: true
 
@@ -680,7 +686,7 @@
     action: member
     state: present
   vars:
-    _members_additive: "{{ (freeipa_idam_membership_declarative | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+    _members_additive: "{{ (freeipa_idam_authoritative_membership | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
   when: _members_additive | length > 0
   no_log: true
 
@@ -692,7 +698,7 @@
     # default action (group) → gen_add_del_lists reconciles user + nested-group membership
     state: present
   when:
-    - freeipa_idam_membership_declarative | bool
+    - freeipa_idam_authoritative_membership | bool
     - _freeipa_members_declarative | length > 0
   no_log: true
 
@@ -854,7 +860,7 @@
   changed_when: false
   failed_when: false                     # container may not exist yet on a first --check
   check_mode: false
-  when: freeipa_idam_reconcile_groups | bool
+  when: freeipa_idam_authoritative_groups | bool
 
 # Members come back as raw `member: cn=<group>,cn=groups,...` DN lines (user members
 # are `uid=...` and are skipped). `^member: cn=` excludes the container's own
@@ -870,7 +876,7 @@
          | difference(freeipa_idam_group_names)
          | difference(freeipa_idam_protected_groups)
          | difference([freeipa_idam_managed_groups_group, freeipa_idam_managed_group]) }}
-  when: freeipa_idam_reconcile_groups | bool
+  when: freeipa_idam_authoritative_groups | bool
 
 - name: Report groups to delete (declarative group-existence reconcile)
   ansible.builtin.debug:
@@ -878,7 +884,7 @@
       Group reconcile → deleting {{ _freeipa_idam_groups_to_remove | length }}
       orphaned managed group(s): {{ _freeipa_idam_groups_to_remove }}
   when:
-    - freeipa_idam_reconcile_groups | bool
+    - freeipa_idam_authoritative_groups | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
 
 # Hard-delete (groups can't be preserve-archived). One bulk ipagroup call; state: absent
@@ -891,7 +897,7 @@
     name: "{{ _freeipa_idam_groups_to_remove }}"
     state: absent
   when:
-    - freeipa_idam_reconcile_groups | bool
+    - freeipa_idam_authoritative_groups | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
   no_log: true
 
