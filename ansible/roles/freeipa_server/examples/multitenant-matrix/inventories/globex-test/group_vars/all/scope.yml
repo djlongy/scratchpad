@@ -1,7 +1,0 @@
----
-# SCOPE — one tenancy + one of ITS environments (see 00_matrix.yml).
-freeipa_scope_tenancy: globex
-freeipa_scope_environment: test
-# Uncomment ONLY on a throwaway/mock realm to allow `--tags prune` to HARD-DELETE
-# everything this scope declared (real realms must never set this):
-# freeipa_idam_prune: true

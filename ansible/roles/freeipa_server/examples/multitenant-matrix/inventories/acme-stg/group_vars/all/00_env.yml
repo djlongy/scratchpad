@@ -1,3 +1,0 @@
----
-domain: "example.com"
-# freeipa_idam_vault_secret: "kv-<env>/data/platform/freeipa/runtime"

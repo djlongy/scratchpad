@@ -127,6 +127,34 @@ def _find(cmd, **kw):
     return api.Command[cmd](**kw)["result"]
 
 
+# Sections skipped because their capability is not available on THIS server
+# (recorded into meta["skipped"] so a partial snapshot is self-documenting).
+_SKIPPED = []
+
+# Errors that mean "this plugin/command isn't installed or configured here" — skip the
+# section rather than aborting the whole export. The common case is a server built
+# WITHOUT the integrated DNS plugin: dnszone_find / dnsrecord_find / dnsserver_show then
+# raise NotFound ("DNS is not configured") or CommandError, or the command isn't even
+# registered client-side (KeyError on api.Command[cmd] / AttributeError on api.Command.x).
+# errors.PublicError is the base class for every IPA error returned over the wire, so it
+# covers NotFound/CommandError without masking genuine local bugs (TypeError etc. still
+# propagate — those are not in this tuple).
+_UNAVAILABLE = (errors.PublicError, KeyError, AttributeError)
+
+
+def _safe(label, fn, default):
+    """Run an export section; if its capability is unavailable on this server, log a
+    skip to stderr, record it in meta["skipped"], and substitute `default` so the rest
+    of the export still succeeds (partial config beats no config)."""
+    try:
+        return fn()
+    except _UNAVAILABLE as exc:
+        reason = "%s: %s" % (type(exc).__name__, exc)
+        sys.stderr.write("[freeipa-export] skipping '%s' — %s\n" % (label, reason))
+        _SKIPPED.append({"section": label, "reason": reason})
+        return default
+
+
 def export_groups():
     groups, names = [], set()
     for e in _find("group_find"):
@@ -518,6 +546,31 @@ def export_dns_forward_zones():
     return out
 
 
+def _dns_record_entry(e):
+    """One dnsrecord_find entry → a declarative record dict, or None to skip it.
+    Skips the apex '@' and SOA/NS-only records (zone-owned, not record state)."""
+    rn = _str(e, "idnsname")
+    if rn in ("@",):
+        return None
+    a = _many(e, "arecord")
+    aaaa = _many(e, "aaaarecord")
+    cname = _many(e, "cnamerecord")
+    ptr = _many(e, "ptrrecord")
+    if (_many(e, "nsrecord") or _many(e, "soarecord")) and not (a or aaaa or cname or ptr):
+        return None
+    rec = _prune({
+        "record_name": rn,
+        "a_record": a,
+        "aaaa_record": aaaa,
+        "cname_record": cname,
+        "ptr_record": ptr,
+        "mx_record": _many(e, "mxrecord"),
+        "txt_record": _many(e, "txtrecord"),
+        "srv_record": _many(e, "srvrecord"),
+    })
+    return rec if (rec.get("record_name") and len(rec) > 1) else None
+
+
 def export_dns_records():
     """Per-zone DNS records. SOA/NS-only and the apex '@' record are skipped —
     they are owned by the zone definition itself, not declarative record state.
@@ -527,30 +580,8 @@ def export_dns_records():
         zone = _str(z, "idnsname")
         if not zone:
             continue
-        records = []
-        for e in _find("dnsrecord_find", dnszoneidnsname=zone):
-            rn = _str(e, "idnsname")
-            if rn in ("@",):
-                continue
-            a = _many(e, "arecord")
-            aaaa = _many(e, "aaaarecord")
-            cname = _many(e, "cnamerecord")
-            ptr = _many(e, "ptrrecord")
-            # SOA/NS-only records are zone-owned, not declarative record state.
-            if (_many(e, "nsrecord") or _many(e, "soarecord")) and not (a or aaaa or cname or ptr):
-                continue
-            rec = _prune({
-                "record_name": rn,
-                "a_record": a,
-                "aaaa_record": aaaa,
-                "cname_record": cname,
-                "ptr_record": ptr,
-                "mx_record": _many(e, "mxrecord"),
-                "txt_record": _many(e, "txtrecord"),
-                "srv_record": _many(e, "srvrecord"),
-            })
-            if rec.get("record_name") and len(rec) > 1:
-                records.append(rec)
+        records = [r for r in (_dns_record_entry(e)
+                               for e in _find("dnsrecord_find", dnszoneidnsname=zone)) if r]
         if records:
             out.append({"zone_name": zone, "records": records})
     return out
@@ -576,9 +607,12 @@ def main():
     api.finalize()
     api.Backend.rpcclient.connect()
 
-    groups, group_names = export_groups()
-    users, service_accounts, used_fallback = export_users(group_names, args.include_sshkeys)
-    dns_forwarders, dns_forward_policy = export_dns_forwarders()
+    _SKIPPED.clear()
+    groups, group_names = _safe("usergroups", export_groups, ([], set()))
+    users, service_accounts, used_fallback = _safe(
+        "users", lambda: export_users(group_names, args.include_sshkeys), ([], [], False))
+    dns_forwarders, dns_forward_policy = _safe(
+        "dns_forwarders", export_dns_forwarders, ([], None))
 
     # Some accounts (typically service users) belong to no group other than the
     # default ipausers. The role requires every user to reference a declared
@@ -592,11 +626,12 @@ def main():
     # Custom delegation roles, plus exactly the privileges they reference and the
     # permissions those privileges hold (built-ins are skipped to avoid dumping the
     # ~80 stock privileges/permissions a fresh server already ships).
-    iparoles = export_iparoles()
+    iparoles = _safe("iparoles", export_iparoles, [])
     wanted_privs = {p for r in iparoles for p in r.get("privilege", [])}
-    system_perms = _system_permission_names()
-    privs, perm_names = export_privileges(wanted_privs, system_perms)
-    perms = export_permissions(perm_names, system_perms)
+    system_perms = _safe("system_permissions", _system_permission_names, set())
+    privs, perm_names = _safe(
+        "privileges", lambda: export_privileges(wanted_privs, system_perms), ([], set()))
+    perms = _safe("permissions", lambda: export_permissions(perm_names, system_perms), [])
 
     doc = {
         "meta": {
@@ -621,9 +656,10 @@ def main():
         "freeipa_server_forwarders": dns_forwarders,
         "freeipa_server_forward_policy": dns_forward_policy or "only",
         # DNS zones (forward + reverse) and their records — DR-recreatable state.
-        "freeipa_server_dns_zones": export_dns_zones(),
-        "freeipa_server_dns_forward_zones": export_dns_forward_zones(),
-        "freeipa_server_dns_records": export_dns_records(),
+        # All three skip gracefully (→ []) on a server without the integrated DNS plugin.
+        "freeipa_server_dns_zones": _safe("dns_zones", export_dns_zones, []),
+        "freeipa_server_dns_forward_zones": _safe("dns_forward_zones", export_dns_forward_zones, []),
+        "freeipa_server_dns_records": _safe("dns_records", export_dns_records, []),
         "freeipa_idam_usergroups": groups,
         # Users are exported VERBATIM — each with its real, literal `groups` list
         # exactly as held in FreeIPA. No roles matrix is synthesised (the snapshot is
@@ -631,21 +667,24 @@ def main():
         "freeipa_idam_users": users,
         # Accounts with a nologin shell — re-applied as service accounts (shell forced).
         "freeipa_idam_service_accounts": service_accounts,
-        "freeipa_idam_hostgroups": export_hostgroups(args.include_host_membership),
-        "freeipa_idam_hbacsvcs": export_hbacsvcs(stock_hbacsvc),
-        "freeipa_idam_hbacsvcgroups": export_hbacsvcgroups(),
-        "freeipa_idam_hbac_rules": export_hbac_rules(),
-        "freeipa_idam_sudo_commands": export_sudo_commands(),
-        "freeipa_idam_sudocmdgroups": export_sudocmdgroups(),
-        "freeipa_idam_sudo_rules": export_sudo_rules(),
-        "freeipa_idam_pwpolicies": export_pwpolicies(),
+        "freeipa_idam_hostgroups": _safe(
+            "hostgroups", lambda: export_hostgroups(args.include_host_membership), []),
+        "freeipa_idam_hbacsvcs": _safe("hbacsvcs", lambda: export_hbacsvcs(stock_hbacsvc), []),
+        "freeipa_idam_hbacsvcgroups": _safe("hbacsvcgroups", export_hbacsvcgroups, []),
+        "freeipa_idam_hbac_rules": _safe("hbac_rules", export_hbac_rules, []),
+        "freeipa_idam_sudo_commands": _safe("sudo_commands", export_sudo_commands, []),
+        "freeipa_idam_sudocmdgroups": _safe("sudocmdgroups", export_sudocmdgroups, []),
+        "freeipa_idam_sudo_rules": _safe("sudo_rules", export_sudo_rules, []),
+        "freeipa_idam_pwpolicies": _safe("pwpolicies", export_pwpolicies, []),
         # CUSTOM native delegation roles (built-ins skipped) for DR.
         "freeipa_idam_iparoles": iparoles,
         # Privileges referenced by those roles + the permissions they hold.
         "freeipa_idam_privileges": privs,
         "freeipa_idam_permissions": perms,
-        "freeipa_server_automember_rules": export_automember_rules(),
+        "freeipa_server_automember_rules": _safe("automember_rules", export_automember_rules, []),
     }
+    # Record which sections were skipped (empty list = a complete capture).
+    doc["meta"]["skipped"] = list(_SKIPPED)
     counts = {k: len(v) for k, v in doc.items() if isinstance(v, list)}
     doc["meta"]["counts"] = counts
     json.dump(doc, sys.stdout, indent=2, default=str)

@@ -76,5 +76,5 @@ The compilers raise (failing the run, naming the culprit) on: an access_set with
 unknown app/privilege/tenant, a person granting an undefined access_set, or a naming
 template with an unknown placeholder. Nothing drops silently.
 
-> This supersedes the Jinja-based [`../multitenant-matrix`](../multitenant-matrix) example
-> (single dict + Python compiler instead of three dicts + a `20_generate.yml` flatten).
+> This is the single-dict + Python-compiler model (one matrix + two filter plugins),
+> replacing the earlier three-dict + `20_generate.yml` Jinja-flatten approach.
