@@ -116,6 +116,18 @@ def _expand_environments(env_spec, tenant_envs):
     return [e for e in chosen if e in declared and e not in exclude]
 
 
+def _scoped_tenants(sname, aset, matrix, scope_tenant):
+    """Yield (tenant, tdef, tenant_envs) for an access_set, honouring the tenant scope."""
+    tenants = matrix.get("tenants") or {}
+    for tenant, tdef in (aset.get("tenants") or {}).items():
+        if tenant not in tenants:
+            raise AnsibleFilterError(
+                "access_set '%s': tenant '%s' is not defined in tenants" % (sname, tenant))
+        if scope_tenant and tenant != scope_tenant:
+            continue
+        yield tenant, tdef, (tenants.get(tenant) or {}).get("environments") or []
+
+
 def _cells_for_access_set(sname, aset, matrix, scope_tenant, scope_environment):
     """Expand one access_set into concrete (tenant, env, app, privilege) cells."""
     app = aset.get("app")
@@ -123,19 +135,11 @@ def _cells_for_access_set(sname, aset, matrix, scope_tenant, scope_environment):
     if not app or not priv:
         raise AnsibleFilterError(
             "access_set '%s' must define both 'app' and 'privilege'" % sname)
-    tenants = matrix.get("tenants") or {}
     cells = []
-    for tenant, tdef in (aset.get("tenants") or {}).items():
-        if tenant not in tenants:
-            raise AnsibleFilterError(
-                "access_set '%s': tenant '%s' is not defined in tenants" % (sname, tenant))
-        if scope_tenant and tenant != scope_tenant:
-            continue
-        tenant_envs = (tenants.get(tenant) or {}).get("environments") or []
+    for tenant, tdef, tenant_envs in _scoped_tenants(sname, aset, matrix, scope_tenant):
         for env in _expand_environments((tdef or {}).get("environments"), tenant_envs):
-            if scope_environment and env != scope_environment:
-                continue
-            cells.append((tenant, env, app, priv))
+            if not scope_environment or env == scope_environment:
+                cells.append((tenant, env, app, priv))
     return cells
 
 
@@ -155,6 +159,45 @@ def _effective_access(matrix, app, priv):
 
 
 # ── filter 1: access objects ─────────────────────────────────────────────────
+def _register_groups(usergroups, names, tag):
+    """role group (membership) + policy ug group that NESTS it."""
+    usergroups.setdefault(names["role"], {
+        "name": names["role"], "description": "Grant group %s" % tag})
+    ug = usergroups.setdefault(names["ug"], {
+        "name": names["ug"], "description": "Policy group %s" % tag, "group": []})
+    if names["role"] not in ug["group"]:
+        ug["group"].append(names["role"])
+
+
+def _register_hbac(hbac_rules, hbacsvcs, names, tag, hbac_services, stock):
+    if not hbac_services:
+        return
+    hbac_rules.setdefault(names["hbac"], {
+        "name": names["hbac"], "description": "HBAC %s" % tag,
+        "usergroup": [names["ug"]], "hostgroup": [names["hg"]],
+        "service": list(hbac_services), "state": "enabled"})
+    for svc in hbac_services:
+        if svc not in stock:
+            hbacsvcs.setdefault(svc, {
+                "name": svc, "description": "%s (custom HBAC service)" % svc})
+
+
+def _register_sudo(sudo_rules, sudo_commands, names, tag, sudo_cmds):
+    if not sudo_cmds:                       # [] → no sudo rule for this cell
+        return
+    rule = {
+        "name": names["sudo"], "description": "Sudo %s" % tag,
+        "usergroup": [names["ug"]], "hostgroup": [names["hg"]],
+        "runasusercategory": "all", "runasgroupcategory": "all", "state": "enabled"}
+    if [c.upper() for c in sudo_cmds] == ["ALL"]:
+        rule["cmdcategory"] = "all"
+    else:
+        rule["cmd"] = list(sudo_cmds)
+        for cmd in sudo_cmds:
+            sudo_commands.setdefault(cmd, {"name": cmd})
+    sudo_rules.setdefault(names["sudo"], rule)
+
+
 def freeipa_idam_access_objects(matrix, scope_tenant=None, scope_environment=None):
     matrix = matrix or {}
     naming = matrix.get("naming") or {}
@@ -162,10 +205,8 @@ def freeipa_idam_access_objects(matrix, scope_tenant=None, scope_environment=Non
     privileges = matrix.get("privileges") or {}
     access_sets = matrix.get("access_sets") or {}
     stock = set(matrix.get("stock_hbacsvcs") or DEFAULT_STOCK_HBACSVCS)
-
-    usergroups, hostgroups = {}, {}
-    hbac_rules, sudo_rules = {}, {}
-    hbacsvcs, sudo_commands = {}, {}
+    acc = {key: {} for key in (
+        "usergroups", "hostgroups", "hbac_rules", "sudo_rules", "hbacsvcs", "sudo_commands")}
 
     for sname, aset in access_sets.items():
         app, priv = aset.get("app"), aset.get("privilege")
@@ -179,54 +220,34 @@ def freeipa_idam_access_objects(matrix, scope_tenant=None, scope_environment=Non
 
         for tenant, env, app, priv in _cells_for_access_set(
                 sname, aset, matrix, scope_tenant, scope_environment):
-            n = _names(naming, tenant, env, app, priv)
+            names = _names(naming, tenant, env, app, priv)
             tag = "%s/%s/%s/%s" % (tenant, env, app, priv)
+            _register_groups(acc["usergroups"], names, tag)
+            acc["hostgroups"].setdefault(names["hg"], {
+                "name": names["hg"], "description": "Hostgroup %s" % tag})
+            _register_hbac(acc["hbac_rules"], acc["hbacsvcs"], names, tag, hbac_services, stock)
+            _register_sudo(acc["sudo_rules"], acc["sudo_commands"], names, tag, sudo_cmds)
 
-            usergroups.setdefault(n["role"], {
-                "name": n["role"], "description": "Grant group %s" % tag})
-            ug = usergroups.setdefault(n["ug"], {
-                "name": n["ug"], "description": "Policy group %s" % tag, "group": []})
-            if n["role"] not in ug["group"]:
-                ug["group"].append(n["role"])
-
-            hostgroups.setdefault(n["hg"], {
-                "name": n["hg"], "description": "Hostgroup %s" % tag})
-
-            if hbac_services:
-                hbac_rules.setdefault(n["hbac"], {
-                    "name": n["hbac"], "description": "HBAC %s" % tag,
-                    "usergroup": [n["ug"]], "hostgroup": [n["hg"]],
-                    "service": list(hbac_services), "state": "enabled"})
-                for svc in hbac_services:
-                    if svc not in stock:
-                        hbacsvcs.setdefault(svc, {
-                            "name": svc, "description": "%s (custom HBAC service)" % svc})
-
-            if sudo_cmds:
-                rule = {
-                    "name": n["sudo"], "description": "Sudo %s" % tag,
-                    "usergroup": [n["ug"]], "hostgroup": [n["hg"]],
-                    "runasusercategory": "all", "runasgroupcategory": "all",
-                    "state": "enabled"}
-                if [c.upper() for c in sudo_cmds] == ["ALL"]:
-                    rule["cmdcategory"] = "all"
-                else:
-                    rule["cmd"] = list(sudo_cmds)
-                    for cmd in sudo_cmds:
-                        sudo_commands.setdefault(cmd, {"name": cmd})
-                sudo_rules.setdefault(n["sudo"], rule)
-
-    return {
-        "usergroups": list(usergroups.values()),
-        "hostgroups": list(hostgroups.values()),
-        "hbac_rules": list(hbac_rules.values()),
-        "sudo_rules": list(sudo_rules.values()),
-        "hbacsvcs": list(hbacsvcs.values()),
-        "sudo_commands": list(sudo_commands.values()),
-    }
+    return {key: list(val.values()) for key, val in acc.items()}
 
 
 # ── filter 2: user grants ────────────────────────────────────────────────────
+def _resolve_user_groups(user, matrix, naming, access_sets, scope_tenant, scope_environment):
+    """Union of a user's pre-existing groups and the role groups from its grants."""
+    groups = list(user.get("groups") or [])
+    for sname in user.get("grants") or []:
+        aset = access_sets.get(sname)
+        if aset is None:
+            raise AnsibleFilterError(
+                "user '%s': grant '%s' is not a defined access_set" % (user["name"], sname))
+        for tenant, env, app, priv in _cells_for_access_set(
+                sname, aset, matrix, scope_tenant, scope_environment):
+            role = _names(naming, tenant, env, app, priv)["role"]
+            if role not in groups:
+                groups.append(role)
+    return groups
+
+
 def freeipa_idam_user_grants(users, matrix, scope_tenant=None, scope_environment=None):
     matrix = matrix or {}
     naming = matrix.get("naming") or {}
@@ -236,23 +257,9 @@ def freeipa_idam_user_grants(users, matrix, scope_tenant=None, scope_environment
     for user in users or []:
         if not isinstance(user, dict) or not user.get("name"):
             raise AnsibleFilterError("each user must be a mapping with a 'name'")
-        groups = list(user.get("groups") or [])
-
-        for sname in user.get("grants") or []:
-            aset = access_sets.get(sname)
-            if aset is None:
-                raise AnsibleFilterError(
-                    "user '%s': grant '%s' is not a defined access_set"
-                    % (user["name"], sname))
-            app, priv = aset.get("app"), aset.get("privilege")
-            for tenant, env, app, priv in _cells_for_access_set(
-                    sname, aset, matrix, scope_tenant, scope_environment):
-                role = _names(naming, tenant, env, app, priv)["role"]
-                if role not in groups:
-                    groups.append(role)
-
         clean = {k: v for k, v in user.items() if k not in ("grants", "assignments")}
-        clean["groups"] = groups
+        clean["groups"] = _resolve_user_groups(
+            user, matrix, naming, access_sets, scope_tenant, scope_environment)
         compiled.append(clean)
     return compiled
 
