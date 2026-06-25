@@ -209,7 +209,7 @@ def _fqdn_regex(pattern, domain, instance, tenant, env, app):
     values = {"tenant": tenant, "environment": env, "app": app, "domain": domain or ""}
     out = []
     for part in re.split(r"(\{[a-z_]+\})", pattern):
-        if part[:1] == "{" and part[-1:] == "}":
+        if part.startswith("{") and part.endswith("}"):
             name = part[1:-1]
             if name == "instance":
                 out.append(instance)
