@@ -12,6 +12,19 @@
   hosts: ipaserver
   gather_facts: false
   tasks:
+    - name: Validate the inventory scope against the matrix (drift fails loudly)
+      ansible.builtin.assert:
+        that:
+          - freeipa_scope_tenancy | default('') | length > 0
+          - freeipa_scope_environment | default('') | length > 0
+          - freeipa_scope_tenancy in (freeipa_idam_access_matrix.tenants | default({}))
+          - freeipa_scope_environment in ((freeipa_idam_access_matrix.tenants | default({}))[freeipa_scope_tenancy] | default({})).environments | default([])
+        fail_msg: >-
+          scope '{{ freeipa_scope_tenancy | default('?') }}/{{ freeipa_scope_environment | default('?') }}'
+          is not declared in the matrix. Tenants: {{ (freeipa_idam_access_matrix.tenants | default({})).keys() | list }};
+          '{{ freeipa_scope_tenancy | default('?') }}' environments:
+          {{ ((freeipa_idam_access_matrix.tenants | default({}))[freeipa_scope_tenancy] | default({})).environments | default([]) }}
+
     - name: Compile generated access objects + matrix user grants (scoped)
       ansible.builtin.set_fact:
         _freeipa_generated: >-

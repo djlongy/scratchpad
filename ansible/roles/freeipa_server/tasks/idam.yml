@@ -600,17 +600,55 @@
     state: present
   no_log: true
 
-# BULK membership — one ipagroup `action: member` call for ALL groups (users +
-# nested groups + member managers), replacing the per-group loop. Runs AFTER user
-# creation so every member principal exists. Additive (action: member).
-- name: Ensure declarative FreeIPA group memberships are present (bulk)
+# Membership reconcile. Default = ADDITIVE (ipagroup action: member) for ALL groups —
+# adds declared members, never strips, so out-of-band/system memberships (e.g. admin's)
+# are safe. Opt in to DECLARATIVE with freeipa_idam_membership_declarative: true, which
+# (for non-protected managed groups only) reconciles membership to EXACTLY what is
+# declared — a user/nested-group no longer in code is REMOVED, a group with zero declared
+# members is emptied. Protected/built-in groups always stay additive (never stripped).
+#
+# Split the desired members into the two modes. The DECLARATIVE payload is built straight
+# from freeipa_idam_usergroups_effective so it includes every non-protected managed group
+# (even with empty member lists → those get fully cleared); the default ipagroup action
+# (group) then uses gen_add_del_lists to remove undeclared user + nested-group members
+# (membermanager is left out of this payload → managers are not stripped).
+- name: Build membership reconcile payloads (additive / declarative)
+  ansible.builtin.set_fact:
+    _freeipa_members_protected: >-
+      {{ _freeipa_idam_usergroups_members
+         | selectattr('name', 'in', freeipa_idam_protected_groups | default([])) | list }}
+    _freeipa_members_declarative: "{{ (_mdecl_yaml | from_yaml) or [] }}"
+  vars:
+    _mdecl_yaml: |-
+      {% for g in (freeipa_idam_usergroups_effective | default([])) %}
+      {% if (g.state | default('present')) != 'absent' and g.name not in (freeipa_idam_protected_groups | default([])) %}
+      - {name: "{{ g.name }}", user: {{ g.user | default([]) | to_json }}, group: {{ g.group | default([]) | to_json }}}
+      {% endif %}
+      {% endfor %}
+  no_log: true
+
+- name: Ensure group memberships present — ADDITIVE (protected always; all when not declarative)
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    groups: "{{ _freeipa_idam_usergroups_members }}"
+    groups: "{{ _members_additive }}"
     action: member
     state: present
-  when: (_freeipa_idam_usergroups_members | default([])) | length > 0
+  vars:
+    _members_additive: "{{ (freeipa_idam_membership_declarative | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+  when: _members_additive | length > 0
+  no_log: true
+
+- name: Reconcile group memberships DECLARATIVELY — non-protected managed groups (removes undeclared)
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    groups: "{{ _freeipa_members_declarative }}"
+    # default action (group) → gen_add_del_lists reconciles user + nested-group membership
+    state: present
+  when:
+    - freeipa_idam_membership_declarative | bool
+    - _freeipa_members_declarative | length > 0
   no_log: true
 
 # RBAC daisychain bottom-up: permission → privilege → role. Custom PERMISSIONS

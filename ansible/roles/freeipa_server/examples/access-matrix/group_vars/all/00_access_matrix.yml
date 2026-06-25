@@ -4,47 +4,58 @@
 # into the role's baseline freeipa_idam_* object lists (see ../../filter_plugins/
 # freeipa_idam.py). You edit this; the relationships + naming are handled in Python.
 #
-# Object model per cell (tenant/env/app/privilege):
-#   role-…  grant group     ← users are members of THIS
-#   ug-…    policy group     ← nests the role group; HBAC/sudo target THIS
-#   hg-…    hostgroup        ← scope for HBAC/sudo
-#   hbac-…  HBAC rule        sudo-…  sudo rule
-# Every name comes from naming.templates below — rearrange the tokens freely.
+# Vocabulary (every key says what it is):
+#   object_naming    – names of the 5 generated object types (prefixes + templates)
+#   tenants          – tenant → environments         (the single source of truth)
+#   applications     – the apps you protect
+#   privilege_levels – the access tiers (admins / readers / …) + what they can do
+#   host_automember  – optional: auto-wire hosts into hostgroups by FQDN
+#   access_grants    – a named, scoped grant: an application + privilege_level + where
+#   role_sets        – a role = a named set of access_grants (a super-set)
 # ═════════════════════════════════════════════════════════════════════════════
 freeipa_idam_access_matrix:
 
-  # ── naming: prefixes + templates. Reorder the {placeholders} however you like;
-  #    the compiler resolves each at load time. e.g. "{tenant}-{app}-{environment}-…"
-  naming:
-    prefixes: { role: role, usergroup: ug, hostgroup: hg, hbac: hbac, sudo: sudo }
+  # ── object_naming: the FIVE generated object types. The keys are a FIXED set
+  #    (you can't add new types — the compiler emits exactly these five); you edit
+  #    the prefix VALUE (the literal string prepended to names) and/or the template.
+  object_naming:
+    prefixes:
+      role_group: role        # the grant group users are members of
+      user_group: ug          # the policy group (nests the role group; HBAC/sudo target it)
+      host_group: hg          # the hostgroup the rules are scoped to
+      hbac_rule:  hbac        # the HBAC (login) rule
+      sudo_rule:  sudo        # the sudo rule
+    # How each name is assembled — rearrange the {placeholders} freely. Available:
+    #   {role_group_prefix} {user_group_prefix} {host_group_prefix} {hbac_rule_prefix}
+    #   {sudo_rule_prefix} {tenant} {environment} {application} {privilege_level}
     templates:
-      role_group: "{role_prefix}-{tenant}-{environment}-{app}-{privilege}"
-      usergroup:  "{usergroup_prefix}-{tenant}-{environment}-{app}-{privilege}"
-      hostgroup:  "{hostgroup_prefix}-{tenant}-{environment}-{app}-{privilege}"
-      hbacrule:   "{hbac_prefix}-{tenant}-{environment}-{app}-{privilege}"
-      sudorule:   "{sudo_prefix}-{tenant}-{environment}-{app}-{privilege}"
+      role_group: "{role_group_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
+      user_group: "{user_group_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
+      host_group: "{host_group_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
+      hbac_rule:  "{hbac_rule_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
+      sudo_rule:  "{sudo_rule_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
 
-  # ── tenants → their environments (differ per tenant) ────────────────────────
+  # ── tenants → their environments (the SINGLE source of truth for what exists).
+  #    An inventory's freeipa_scope_* SELECTS one slice; it never re-declares these.
   tenants:
     acme:    { environments: [dev, qa, stg, prod] }
     globex:  { environments: [dev, test, prod] }
     initech: { environments: [dev] }
 
-  # ── apps. An app may OVERRIDE a privilege's hbac/sudo for app-specific needs ─
-  apps:
+  # ── applications. An app may OVERRIDE a privilege_level's hbac/sudo for app needs.
+  applications:
     grafana:  { description: Grafana access }
     docker:   { description: Docker host access }
     postgres:
       description: PostgreSQL access
-      privileges:                         # per-app override of the global tiers
+      privilege_overrides:                # override the global tier for THIS app
         admins:
           sudo_commands:
             - "/usr/bin/systemctl restart postgresql"
             - "/usr/bin/su - postgres"
 
-  # ── privileges: global access tiers (hbac services + sudo). "ALL" → full sudo;
-  #    [] → no sudo rule generated. Apps can override above. ─────────────────────
-  privileges:
+  # ── privilege_levels: the global access tiers. "ALL" → full sudo; [] → no sudo rule.
+  privilege_levels:
     admins:
       description: Administrator access
       hbac_services: [sshd]
@@ -58,40 +69,45 @@ freeipa_idam_access_matrix:
       hbac_services: [sshd]
       sudo_commands: ["/usr/bin/systemctl", "/usr/bin/journalctl"]
 
-  # ── OPTIONAL automember: auto-generate one hostgroup automember rule per hg-… so
-  #    enrolled hosts wire THEMSELVES in by FQDN. Omit this block to manage host
-  #    membership yourself. fqdn_pattern placeholders: {tenant} {environment} {app}
-  #    {domain} (literal, escaped) + {instance} (raw regex, default [0-9]+). The compiler
-  #    anchors ^…$ and escapes dots for you. Put {environment} in the pattern to split
-  #    hg- by env; a flat pattern (no {environment}) only works one-realm-per-env.
-  automember:
-    fqdn_pattern: "{tenant}-{app}-{instance}.{environment}.example.com"
+  # ── OPTIONAL host_automember: auto-generate one hostgroup automember rule per hg-…
+  #    so enrolled hosts wire THEMSELVES in by FQDN. Omit to manage hosts yourself.
+  #    Placeholders: {tenant} {environment} {application} {domain} (literal, escaped)
+  #    + {instance} (raw regex, default [0-9]+). The compiler anchors ^…$ + escapes dots.
+  host_automember:
+    fqdn_pattern: "{tenant}-{application}-{instance}.{environment}.example.com"
     # domain: example.com        # only if you use the {domain} placeholder
     # instance: "[0-9]+"         # regex for the {instance} token (default)
 
-  # ── access_sets: reusable bundles of (app, privilege) scoped to tenants/envs.
-  #    People are granted these by NAME. include: all | [list]; optional exclude. ─
-  access_sets:
+  # ── access_grants: a named, scoped grant = application + privilege_level + where.
+  #    People are granted these by NAME. include: all | [list]; optional exclude.
+  access_grants:
     grafana_admins:
-      app: grafana
-      privilege: admins
+      application: grafana
+      privilege_level: admins
       tenants:
         acme: { environments: { include: all } }
     grafana_readers:
-      app: grafana
-      privilege: readers
+      application: grafana
+      privilege_level: readers
       tenants:
         acme:   { environments: { include: all, exclude: [prod] } }
         globex: { environments: { include: [dev, test] } }
     postgres_admins:
-      app: postgres
-      privilege: admins
+      application: postgres
+      privilege_level: admins
       tenants:
         acme: { environments: { include: [stg, prod] } }
     docker_deployers:
-      app: docker
-      privilege: deployers
+      application: docker
+      privilege_level: deployers
       tenants:
         acme:    { environments: { include: [dev, qa] } }
         globex:  { environments: { include: [dev, test] } }
         initech: { environments: { include: all } }
+
+  # ── role_sets: a ROLE is a named super-set of access_grants. People grant the role
+  #    by name and get all its access_grants at once. (grants: may mix role_sets and
+  #    loose access_grants.) Each member keeps its own tenant/env scope.
+  role_sets:
+    platform_admin: [grafana_admins, postgres_admins, docker_deployers]
+    observability:  [grafana_readers]

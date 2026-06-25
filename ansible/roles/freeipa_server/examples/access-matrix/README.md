@@ -7,10 +7,11 @@ relationship-building and naming are handled in tested Python — no Jinja flatt
 ```
 access-matrix/
 ├── group_vars/all/
-│   ├── 00_access_matrix.yml   # the ONE matrix: naming, tenants, apps, privileges, access_sets
-│   └── 10_people.yml          # freeipa_people: identity + grants:[access_set]
+│   ├── 00_access_matrix.yml   # the ONE matrix: object_naming, tenants, applications,
+│   │                          #   privilege_levels, host_automember, access_grants, role_sets
+│   └── 10_people.yml          # freeipa_people: identity + grants:[role_set | access_grant]
 ├── inventories/<tenant>-<env>/ # scope.yml pins one tenant+env per run
-├── site.yml                   # compile (2 filters) → layer onto baseline → reconcile
+├── site.yml                   # validate scope → compile (2 filters) → merge onto baseline → reconcile
 └── ansible.cfg                # finds the role + loads its filter_plugins
 ```
 
@@ -67,18 +68,27 @@ privilege has no sudo), and any custom hbacsvc / sudo-command objects referenced
 `role`. Access is enforced by **HBAC** (who may log in, with which services) and **sudo**
 rules — there is no RBAC-permission layer in this model.
 
-## Lifecycle — membership is ADDITIVE
+## Lifecycle — membership is ADDITIVE by default (declarative is a toggle)
 
-Users are added to their `role-…` groups with `ipagroup action: member`, which is
-**additive** — it never strips memberships it didn't add. Consequences for the operator:
+By default users are added to their `role-…` groups with `ipagroup action: member`, which
+is **additive** — it never strips memberships it didn't add:
 
 - A person is a member of their `role-…` group(s) **and** every group they were already
   in (baseline-snapshot groups, hand-added groups) — both are kept. (The user-grant
-  compiler also *unions* a person's existing `groups` with the matrix-granted ones, so
-  the declarative user object stays complete.)
-- **Removing a grant from `freeipa_people` does NOT revoke it on the next run** (additive
-  never removes). To actually revoke access, remove the membership directly, or use the
-  gated `--tags prune` (hard-delete) on a throwaway realm.
+  compiler also *unions* a person's existing `groups` with the matrix-granted ones.)
+- **Removing a grant does NOT revoke it on the next run.**
+
+**To make it declarative, set `freeipa_idam_membership_declarative: true`** (role var,
+default off). Then — for the **declared, non-protected** groups only — membership is
+reconciled to *exactly* what's in code: a user/nested-group no longer granted is
+**removed**, and a managed group with zero grants is **emptied**. So deleting a grant
+actually revokes it next run. Guard rails:
+
+- **Protected/built-in groups** (`admin`, `ipausers`, break-glass — `freeipa_idam_protected_groups`)
+  always stay **additive**; they are never stripped.
+- **Undeclared groups** are never touched.
+- It's the surgical sibling of `prune`: this reconciles *membership* of groups you declare;
+  `prune` deletes the *objects* themselves.
 
 ## Hosts — the one thing you wire yourself
 
@@ -97,17 +107,17 @@ membership wires itself and stays consistent with the names:
 
 ```yaml
 freeipa_idam_access_matrix:
-  automember:
-    fqdn_pattern: "{tenant}-{app}-{instance}.{environment}.example.com"
+  host_automember:
+    fqdn_pattern: "{tenant}-{application}-{instance}.{environment}.example.com"
     # domain: example.com     # only if you use the {domain} placeholder
     # instance: "[0-9]+"      # regex for {instance} (default)
 ```
 
-Placeholders `{tenant}` `{environment}` `{app}` `{domain}` are substituted (regex-escaped);
+Placeholders `{tenant}` `{environment}` `{application}` `{domain}` are substituted (regex-escaped);
 `{instance}` is a raw regex fragment; every literal (dots, dashes) is escaped and the whole
 thing anchored `^…$`. `hg-acme-dev-grafana-admins` → `^acme\-grafana\-[0-9]+\.dev\.example\.com$`.
 `site.yml` merges these into `freeipa_server_automember_rules` (onto any you wrote by hand).
-Omit the `automember` block and nothing is generated — you keep full manual control below.
+Omit the `host_automember` block and nothing is generated — you keep full manual control below.
 Put `{environment}` in the pattern to split `hg-` by env; a flat pattern (no `{environment}`)
 only disambiguates when each environment is its own realm.
 
@@ -180,14 +190,15 @@ automember for **coarse base groups** matched on a user attribute (`uid`, `mail`
 
 | section | what it is |
 |---|---|
-| `naming.prefixes` + `naming.templates` | every object name; **rearrange the `{placeholders}`** freely — the compiler resolves them |
-| `tenants` | tenant → its environments (differ per tenant) |
-| `apps` | app → description; may **override** a privilege's hbac/sudo for app-specific commands |
-| `privileges` | global access tiers: `hbac_services` + `sudo_commands` (`[ALL]` → full sudo, `[]` → no sudo rule) |
-| `access_sets` | reusable `(app, privilege)` bundles scoped to tenants/envs (`include: all`/list, optional `exclude`) |
-| `automember` *(optional)* | auto-generate one hostgroup automember rule per `hg-…` from a `fqdn_pattern` — host membership wires itself (see below) |
+| `object_naming.prefixes` + `.templates` | names of the **five** generated object types. Keys are a **fixed set** (`role_group`, `user_group`, `host_group`, `hbac_rule`, `sudo_rule`) — you can't add types; edit the prefix **value** and/or rearrange the template `{placeholders}` |
+| `tenants` | tenant → its environments (the **single source of truth** for what exists) |
+| `applications` | app → description; may **override** a level's hbac/sudo via `privilege_overrides` |
+| `privilege_levels` | the access tiers (admins/readers/…): `hbac_services` + `sudo_commands` (`[ALL]` → full sudo, `[]` → no sudo rule) |
+| `access_grants` | a named, **scoped grant** = `application` + `privilege_level` + which tenants/envs (`include: all`/list, optional `exclude`) |
+| `role_sets` | a **role** = a named super-set of `access_grants` (e.g. `platform_admin: [grafana_admins, postgres_admins]`) |
+| `host_automember` *(optional)* | auto-generate one hostgroup automember rule per `hg-…` from a `fqdn_pattern` — host membership wires itself (see above) |
 
-People reference access_sets by name in `grants:`. That's the whole grant surface.
+A person's `grants:` holds **role_set or access_grant** names — that's the whole grant surface.
 
 ## Run it (one tenant × env per run)
 
@@ -197,7 +208,10 @@ ansible-playbook -i inventories/globex-dev site.yml
 ```
 
 Each inventory's `scope.yml` sets `freeipa_scope_tenancy`/`freeipa_scope_environment`,
-so a run compiles only that slice. `site.yml` passes the run's scope into both filters.
+so a run compiles only that slice. This is a **selection**, not a second declaration — the
+matrix `tenants:` is the single source of truth. `site.yml` **asserts the scope exists in
+the matrix** first, so a typo or drift (`acme/staging` when acme has no `staging`) stops the
+run and lists the valid tenants/envs, instead of silently doing nothing.
 
 ## Baseline + matrix overlay (brownfield)
 
@@ -221,16 +235,19 @@ matrix-managed access on top — the role is handed one combined, deduped set.
 
 ## Add capacity
 
-- New app/privilege/tenant/env → edit `00_access_matrix.yml`; every derived object appears.
-- New access bundle → add an `access_set`.
+- New application / privilege_level / tenant / env → edit `00_access_matrix.yml`; every
+  derived object appears.
+- New scoped grant → add an `access_grant`. New role → add a `role_set`.
 - New person → add to `freeipa_people` with `grants:[…]`.
-- Rearrange naming → edit `naming.templates` (one place, applies everywhere).
+- Rearrange naming → edit `object_naming.templates` (one place, applies everywhere).
 
 ## Validation
 
-The compilers raise (failing the run, naming the culprit) on: an access_set with an
-unknown app/privilege/tenant, a person granting an undefined access_set, or a naming
-template with an unknown placeholder. Nothing drops silently.
+The compilers raise (failing the run, naming the culprit) on: an `access_grant` with an
+unknown `application`/`privilege_level`/`tenant`, a `role_set` referencing an undefined
+`access_grant`, a person granting an undefined role_set/access_grant, or a naming template
+with an unknown placeholder. `site.yml` additionally asserts the inventory **scope** exists
+in the matrix. Nothing drops silently.
 
 > This is the single-dict + Python-compiler model (one matrix + two filter plugins),
 > replacing the earlier three-dict + `20_generate.yml` Jinja-flatten approach.

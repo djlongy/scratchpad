@@ -1,15 +1,16 @@
 ---
-# People — one flat list. Each person carries identity + a list of access_set names
-# in `grants`. The freeipa_idam_user_grants filter resolves those to the scoped
-# environment's role-… groups and strips the matrix-only keys, leaving a clean,
+# People — one flat list. Each person carries identity + a list of grant names in
+# `grants`. A grant is either a role_set (expands to its access_grants) or a single
+# access_grant. The freeipa_idam_user_grants filter resolves them to the scoped
+# environment's role-… groups and strips matrix-only keys, leaving a clean,
 # module-safe user object ({name, first, last, email, groups}).
 #
-# An access_set already carries its own tenant/env scope, so a grant lands wherever
-# that set is defined (and only within the run's scope). One list serves the estate.
+# Each access_grant carries its own tenant/env scope, so a grant lands wherever it is
+# defined (and only within the run's scope). One list serves the estate.
 freeipa_people:
-  - { name: alice.smith,  first: Alice,  last: Smith, email: ["alice.smith@example.com"],  grants: [grafana_admins, postgres_admins] }
-  - { name: bob.ng,       first: Bob,    last: Ng,    email: ["bob.ng@example.com"],        grants: [grafana_readers] }
-  - { name: charlie.fox,  first: Charlie, last: Fox,  email: ["charlie.fox@example.com"],   grants: [docker_deployers, grafana_readers] }
+  - { name: alice.smith,  first: Alice,  last: Smith, email: ["alice.smith@example.com"],  grants: [platform_admin] }              # a role_set (3 grants)
+  - { name: bob.ng,       first: Bob,    last: Ng,    email: ["bob.ng@example.com"],        grants: [observability] }               # a role_set (1 grant)
+  - { name: charlie.fox,  first: Charlie, last: Fox,  email: ["charlie.fox@example.com"],   grants: [docker_deployers, grafana_readers] }  # loose access_grants
 
 # BASELINE: put any hand-written or EXPORTED objects directly under their native
 # freeipa_idam_* keys (here, or in a snapshot group_vars file). site.yml MERGES the

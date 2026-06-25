@@ -304,6 +304,16 @@ freeipa_idam_group_gids: {}
 # user-del --preserve: account deactivated + retained (recoverable), not destroyed.
 freeipa_idam_preserve_archived: true
 
+# DECLARATIVE group membership — default OFF (additive). When false, the role only ADDS
+# declared members to groups (never strips), so out-of-band/system memberships are safe.
+# Set true to reconcile membership to EXACTLY what is declared: a user/nested-group no
+# longer in the freeipa_idam_* lists is REMOVED from its group, and a managed group with
+# zero declared members is emptied. Scoped to NON-protected groups only (protected/built-in
+# groups in freeipa_idam_protected_groups stay additive and are never stripped); undeclared
+# groups are never touched. Less aggressive than prune (which deletes objects); this only
+# reconciles MEMBERSHIP of groups you already declare.
+freeipa_idam_membership_declarative: false
+
 # HARD-PRUNE gate (tasks/prune.yml) — DESTRUCTIVE, default OFF. When true AND the run
 # is invoked with `--tags prune`, the role REMOVES (ipa *-del, not archive) every
 # object DECLARED in this run's freeipa_idam_* lists — protected users/groups excluded.
