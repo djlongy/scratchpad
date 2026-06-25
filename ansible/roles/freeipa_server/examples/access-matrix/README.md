@@ -90,7 +90,29 @@ builds the *policy skeleton*; populating hostgroups with hosts is out of band (e
 
 ### Automember — populating hostgroups (and base user groups) by regex
 
-The role applies `freeipa_server_automember_rules` (one ipaautomember rule each). Shape:
+**Let the matrix generate the host rules for you (optional).** Add an `automember` block
+to `00_access_matrix.yml` and the compiler emits one `hostgroup` automember rule per
+generated `hg-…`, with an anchored fqdn regex derived from the same tokens — so host
+membership wires itself and stays consistent with the names:
+
+```yaml
+freeipa_idam_access_matrix:
+  automember:
+    fqdn_pattern: "{tenant}-{app}-{instance}.{environment}.example.com"
+    # domain: example.com     # only if you use the {domain} placeholder
+    # instance: "[0-9]+"      # regex for {instance} (default)
+```
+
+Placeholders `{tenant}` `{environment}` `{app}` `{domain}` are substituted (regex-escaped);
+`{instance}` is a raw regex fragment; every literal (dots, dashes) is escaped and the whole
+thing anchored `^…$`. `hg-acme-dev-grafana-admins` → `^acme\-grafana\-[0-9]+\.dev\.example\.com$`.
+`site.yml` merges these into `freeipa_server_automember_rules` (onto any you wrote by hand).
+Omit the `automember` block and nothing is generated — you keep full manual control below.
+Put `{environment}` in the pattern to split `hg-` by env; a flat pattern (no `{environment}`)
+only disambiguates when each environment is its own realm.
+
+The role applies `freeipa_server_automember_rules` (one ipaautomember rule each). To write
+them by hand instead (or in addition), the shape is:
 
 ```yaml
 freeipa_server_automember_rules:
@@ -163,6 +185,7 @@ automember for **coarse base groups** matched on a user attribute (`uid`, `mail`
 | `apps` | app → description; may **override** a privilege's hbac/sudo for app-specific commands |
 | `privileges` | global access tiers: `hbac_services` + `sudo_commands` (`[ALL]` → full sudo, `[]` → no sudo rule) |
 | `access_sets` | reusable `(app, privilege)` bundles scoped to tenants/envs (`include: all`/list, optional `exclude`) |
+| `automember` *(optional)* | auto-generate one hostgroup automember rule per `hg-…` from a `fqdn_pattern` — host membership wires itself (see below) |
 
 People reference access_sets by name in `grants:`. That's the whole grant surface.
 

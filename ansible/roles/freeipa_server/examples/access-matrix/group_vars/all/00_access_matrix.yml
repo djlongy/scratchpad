@@ -58,6 +58,17 @@ freeipa_idam_access_matrix:
       hbac_services: [sshd]
       sudo_commands: ["/usr/bin/systemctl", "/usr/bin/journalctl"]
 
+  # ── OPTIONAL automember: auto-generate one hostgroup automember rule per hg-… so
+  #    enrolled hosts wire THEMSELVES in by FQDN. Omit this block to manage host
+  #    membership yourself. fqdn_pattern placeholders: {tenant} {environment} {app}
+  #    {domain} (literal, escaped) + {instance} (raw regex, default [0-9]+). The compiler
+  #    anchors ^…$ and escapes dots for you. Put {environment} in the pattern to split
+  #    hg- by env; a flat pattern (no {environment}) only works one-realm-per-env.
+  automember:
+    fqdn_pattern: "{tenant}-{app}-{instance}.{environment}.example.com"
+    # domain: example.com        # only if you use the {domain} placeholder
+    # instance: "[0-9]+"         # regex for the {instance} token (default)
+
   # ── access_sets: reusable bundles of (app, privilege) scoped to tenants/envs.
   #    People are granted these by NAME. include: all | [list]; optional exclude. ─
   access_sets:

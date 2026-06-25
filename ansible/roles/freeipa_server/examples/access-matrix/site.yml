@@ -33,6 +33,8 @@
         freeipa_idam_hbacsvcs:      "{{ freeipa_idam_hbacsvcs      | default([]) | freeipa_idam_merge(_freeipa_generated.hbacsvcs) }}"
         freeipa_idam_sudo_commands: "{{ freeipa_idam_sudo_commands | default([]) | freeipa_idam_merge(_freeipa_generated.sudo_commands) }}"
         freeipa_idam_users:         "{{ freeipa_idam_users         | default([]) | freeipa_idam_merge(_freeipa_matrix_users, union_fields=['groups']) }}"
+        # Generated hostgroup automember rules (empty unless the matrix declares automember).
+        freeipa_server_automember_rules: "{{ freeipa_server_automember_rules | default([]) | freeipa_idam_merge(_freeipa_generated.automember_rules) }}"
 
     - name: Reconcile IDAM
       ansible.builtin.include_role:

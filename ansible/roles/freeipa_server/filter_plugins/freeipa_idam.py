@@ -24,6 +24,8 @@ token ORDER is yours to rearrange; nothing here hard-codes the layout.
 """
 from __future__ import annotations
 
+import re
+
 try:                                          # real Ansible at runtime …
     from ansible.errors import AnsibleFilterError
 except ImportError:                           # … plain Python under pytest
@@ -198,15 +200,56 @@ def _register_sudo(sudo_rules, sudo_commands, names, tag, sudo_cmds):
     sudo_rules.setdefault(names["sudo"], rule)
 
 
+def _fqdn_regex(pattern, domain, instance, tenant, env, app):
+    """Build an anchored fqdn regex from a host-naming pattern. Placeholders {tenant},
+    {environment}, {app}, {domain} are substituted with regex-ESCAPED literal values;
+    {instance} is a raw regex fragment (default [0-9]+); every other character of the
+    pattern (dots, dashes) is escaped. e.g. "{tenant}-{app}-{instance}.{environment}.x.io"
+    → "^acme\\-grafana\\-[0-9]+\\.dev\\.x\\.io$"."""
+    values = {"tenant": tenant, "environment": env, "app": app, "domain": domain or ""}
+    out = []
+    for part in re.split(r"(\{[a-z_]+\})", pattern):
+        if part[:1] == "{" and part[-1:] == "}":
+            name = part[1:-1]
+            if name == "instance":
+                out.append(instance)
+            elif name in values:
+                out.append(re.escape(values[name]))
+            else:
+                raise AnsibleFilterError(
+                    "automember.fqdn_pattern: unknown placeholder %s "
+                    "(valid: tenant, environment, app, domain, instance)" % part)
+        elif part:
+            out.append(re.escape(part))
+    return "^" + "".join(out) + "$"
+
+
+def _register_automember(rules, am, names, tag, tenant, env, app):
+    """Optionally emit one hostgroup automember rule (fqdn regex) per hostgroup, so
+    enrolled hosts wire themselves into the hg-… group. No-op unless the matrix declares
+    automember.fqdn_pattern. Deduped by hostgroup (shared across privileges)."""
+    pattern = am.get("fqdn_pattern")
+    if not pattern:
+        return
+    rules.setdefault(names["hg"], {
+        "name": names["hg"],
+        "automember_type": "hostgroup",
+        "description": "Auto-membership for %s" % tag,
+        "inclusive": [{"key": "fqdn", "expression": _fqdn_regex(
+            pattern, am.get("domain"), am.get("instance", "[0-9]+"), tenant, env, app)}]})
+
+
 def freeipa_idam_access_objects(matrix, scope_tenant=None, scope_environment=None):
     matrix = matrix or {}
     naming = matrix.get("naming") or {}
     apps = matrix.get("apps") or {}
     privileges = matrix.get("privileges") or {}
     access_sets = matrix.get("access_sets") or {}
+    automember = matrix.get("automember") or {}
     stock = set(matrix.get("stock_hbacsvcs") or DEFAULT_STOCK_HBACSVCS)
     acc = {key: {} for key in (
-        "usergroups", "hostgroups", "hbac_rules", "sudo_rules", "hbacsvcs", "sudo_commands")}
+        "usergroups", "hostgroups", "hbac_rules", "sudo_rules",
+        "hbacsvcs", "sudo_commands", "automember_rules")}
 
     for sname, aset in access_sets.items():
         app, priv = aset.get("app"), aset.get("privilege")
@@ -227,6 +270,7 @@ def freeipa_idam_access_objects(matrix, scope_tenant=None, scope_environment=Non
                 "name": names["hg"], "description": "Hostgroup %s" % tag})
             _register_hbac(acc["hbac_rules"], acc["hbacsvcs"], names, tag, hbac_services, stock)
             _register_sudo(acc["sudo_rules"], acc["sudo_commands"], names, tag, sudo_cmds)
+            _register_automember(acc["automember_rules"], automember, names, tag, tenant, env, app)
 
     return {key: list(val.values()) for key, val in acc.items()}
 
