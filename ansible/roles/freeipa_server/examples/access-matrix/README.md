@@ -56,12 +56,25 @@ ansible-playbook -i inventories/globex-dev site.yml
 Each inventory's `scope.yml` sets `freeipa_scope_tenancy`/`freeipa_scope_environment`,
 so a run compiles only that slice. `site.yml` passes the run's scope into both filters.
 
-## How the baseline stays sovereign
+## Baseline + matrix overlay (brownfield)
 
-`site.yml` hands the role **`(your hand-written *_extra baseline) + (generated overlay)`**
-for each list. With no matrix at all the role still works on pure baseline — the matrix
-only ever *adds*. Uncomment `freeipa_idam_usergroups_extra` etc. in `10_people.yml` to
-keep hand-managed objects alongside generated ones.
+The **baseline is the role's own native keys** — `freeipa_idam_usergroups`,
+`freeipa_idam_hbac_rules`, `freeipa_idam_users`, … — exactly as an exported snapshot
+drops them into group_vars. `site.yml` MERGES the matrix-generated objects onto that
+baseline with the `freeipa_idam_merge` filter:
+
+```yaml
+freeipa_idam_usergroups: "{{ freeipa_idam_usergroups | default([]) | freeipa_idam_merge(_freeipa_generated.usergroups) }}"
+freeipa_idam_users:      "{{ freeipa_idam_users      | default([]) | freeipa_idam_merge(_freeipa_matrix_users, union_fields=['groups']) }}"
+```
+
+- **Unique by name** — the matrix only adds objects the baseline doesn't already have.
+- **Baseline wins** on a name collision (it's the base); for **users** the `groups`
+  lists are **unioned**, so a person in both the snapshot and the matrix keeps both.
+- **Greenfield** = the native keys are simply empty, so you get just the generated set.
+
+So you can `export` an existing realm, drop the snapshot into group_vars, and layer
+matrix-managed access on top — the role is handed one combined, deduped set.
 
 ## Add capacity
 

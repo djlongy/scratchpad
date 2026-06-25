@@ -264,9 +264,47 @@ def freeipa_idam_user_grants(users, matrix, scope_tenant=None, scope_environment
     return compiled
 
 
+# ── filter 3: merge generated objects onto the baseline (native keys) ─────────
+def _union_into(target, item, fields):
+    """Union each of `fields` (list values) from `item` into `target` in place."""
+    for field in fields:
+        combined = list(target.get(field) or [])
+        for value in (item.get(field) or []):
+            if value not in combined:
+                combined.append(value)
+        target[field] = combined
+
+
+def freeipa_idam_merge(base, extra, key="name", union_fields=None):
+    """Append `extra` onto `base`, deduped by `key` — so the matrix-generated objects
+    layer onto the EXISTING baseline list (e.g. an exported snapshot already sitting in
+    group_vars under its native freeipa_idam_* key), not a separate var.
+
+    Order: every base item first (baseline is the base), then the genuinely-new extra
+    items. On a `key` collision the base item is authoritative and the extra is dropped —
+    UNLESS union_fields is given, in which case those list fields are unioned into the
+    base item (used for users: a person present in both keeps the union of their groups).
+    """
+    union_fields = union_fields or []
+    merged = [dict(x) if isinstance(x, dict) else x for x in (base or [])]
+    index = {x.get(key): i for i, x in enumerate(merged) if isinstance(x, dict)}
+    for item in (extra or []):
+        if not isinstance(item, dict):
+            merged.append(item)
+            continue
+        name = item.get(key)
+        if name not in index:
+            index[name] = len(merged)
+            merged.append(item)
+            continue
+        _union_into(merged[index[name]], item, union_fields)
+    return merged
+
+
 class FilterModule:
     def filters(self):
         return {
             "freeipa_idam_access_objects": freeipa_idam_access_objects,
             "freeipa_idam_user_grants": freeipa_idam_user_grants,
+            "freeipa_idam_merge": freeipa_idam_merge,
         }

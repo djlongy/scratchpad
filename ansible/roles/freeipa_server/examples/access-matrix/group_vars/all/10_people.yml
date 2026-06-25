@@ -11,6 +11,10 @@ freeipa_people:
   - { name: bob.ng,       first: Bob,    last: Ng,    email: ["bob.ng@example.com"],        grants: [grafana_readers] }
   - { name: charlie.fox,  first: Charlie, last: Fox,  email: ["charlie.fox@example.com"],   grants: [docker_deployers, grafana_readers] }
 
-# Optional hand-written BASELINE that the matrix is layered ON TOP of — the role
-# still works with pure baseline (no matrix) or both. Left empty here.
-# freeipa_idam_usergroups_extra: [{ name: legacy-admins, description: hand-managed }]
+# BASELINE: put any hand-written or EXPORTED objects directly under their native
+# freeipa_idam_* keys (here, or in a snapshot group_vars file). site.yml MERGES the
+# matrix-generated objects onto them, unique by name — the baseline wins on a name
+# collision, and users keep the union of their groups. Greenfield = leave them unset.
+# Example baseline (uncomment to see it survive alongside the generated groups):
+# freeipa_idam_usergroups:
+#   - { name: legacy-admins, description: hand-managed, kept alongside the matrix }

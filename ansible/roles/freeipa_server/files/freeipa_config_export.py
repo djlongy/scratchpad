@@ -14,7 +14,9 @@ Deliberately NOT captured:
   * POSIX uid/gid numbers              — let IPA assign on a rebuild (avoids
                                          ID-range collisions); membership, not
                                          numbering, is what matters
-  * User Private Groups (mepManagedEntry) and `ipausers` — auto-managed
+  * User Private Groups (mepManagedEntry) — auto-managed, one per user (handled by
+                                         _is_upg). NOTE: `ipausers` IS captured (it is
+                                         a real, declarable group) — WYSIWYG.
   * hostgroup host rosters             — populated by enrolment + automember
                                          (opt in with --include-host-membership)
   * global_policy pwpolicy             — owned by FreeIPA itself
