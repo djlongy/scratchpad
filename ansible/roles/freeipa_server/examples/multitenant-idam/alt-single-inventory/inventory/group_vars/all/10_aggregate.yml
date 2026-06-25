@@ -22,7 +22,7 @@
 # By default a run composes EVERY tenant (the full, slow reconcile). Pass
 # idam_tenants to scope the run to one (or a few) teams so the role only iterates
 # those items — "someone joined team A" goes from minutes to seconds, and the
-# other tenants are never composed, queried, or pruned:
+# other tenants are never composed, queried, or deleted:
 #
 #   ansible-playbook ... site.yml --tags idam -e '{"idam_tenants":["acme"]}'
 #
@@ -38,11 +38,11 @@ _tenant_specs: >-
   {{ _all_tenant_specs if (_idam_tenant_filter | length == 0)
      else (_all_tenant_specs | selectattr('code', 'in', _idam_tenant_filter) | list) }}
 
-# ── per-tenant marker group — makes the prune SAFE when scoping to one team ──
+# ── per-tenant marker group — makes the delete SAFE when scoping to one team ──
 # The role reconciles ONE marker group (freeipa_idam_managed_group): it deletes
 # managed users not in the desired list. With a single global marker, running
 # only team A would treat every OTHER team's users as "removed" and delete them.
-# Deriving the marker per selected tenant isolates the prune: an acme run only
+# Deriving the marker per selected tenant isolates the delete: an acme run only
 # reconciles idam-managed-acme; globex's marker is never read or touched.
 # (For a full run over all tenants, see README — loop the role per tenant so each
 #  gets its own marker; a single run cannot carry multiple markers.)

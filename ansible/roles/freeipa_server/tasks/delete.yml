@@ -1,27 +1,27 @@
 ---
-# tasks/prune.yml — HARD-DELETE every object DECLARED in this run's freeipa_idam_*
+# tasks/delete.yml — HARD-DELETE every object DECLARED in this run's freeipa_idam_*
 # lists. This is REMOVAL (ipa *-del), NOT the archive/preserve that the normal
 # reconcile uses. It exists so a MOCK run can create real objects, show them, then
 # clean up — leaving real tenancies untouched.
 #
 # ── SAFETY — this is destructive, so it is DOUBLE-GATED ──────────────────────
-#   1. boolean  freeipa_idam_prune: true   (default false; set ONLY in a mock inventory)
-#   2. tag      --tags prune                (this file is tagged `never` in main.yml)
+#   1. boolean  freeipa_idam_delete: true   (default false; set ONLY in a mock inventory)
+#   2. tag      --tags delete                (this file is tagged `never` in main.yml)
 # Neither alone does anything; you need BOTH. It only ever deletes the objects that
 # are DECLARED in the CURRENT run (so with a scoped matrix it removes just that
 # tenancy/environment's objects), and it NEVER deletes protected users/groups.
 
-- name: Prune | Refuse to run unless explicitly gated
+- name: Delete | Refuse to run unless explicitly gated
   ansible.builtin.assert:
     that:
-      - freeipa_idam_prune | default(false) | bool
+      - freeipa_idam_delete | default(false) | bool
     fail_msg: >-
-      prune.yml ran without freeipa_idam_prune=true. This is a hard-delete of every
+      delete.yml ran without freeipa_idam_delete=true. This is a hard-delete of every
       declared freeipa_idam_* object — it must be explicitly enabled (set
-      freeipa_idam_prune: true in the mock inventory) AND invoked with --tags prune.
+      freeipa_idam_delete: true in the mock inventory) AND invoked with --tags delete.
     quiet: true
 
-- name: Prune | Resolve admin password (declared var first, Vault fallback)
+- name: Delete | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
     freeipa_idam_admin_password: >-
       {{ freeipa_server_admin_password
@@ -32,23 +32,23 @@
   delegate_to: localhost
   become: false
 
-# Build the delete lists. Users + groups EXCLUDE protected entries so the prune can
+# Build the delete lists. Users + groups EXCLUDE protected entries so the delete can
 # never remove admin / admins / ipausers / etc. even if they were declared.
-- name: Prune | Build delete name lists (protected entries excluded)
+- name: Delete | Build delete name lists (protected entries excluded)
   ansible.builtin.set_fact:
-    _prune_users: >-
+    _delete_users: >-
       {{ ((freeipa_idam_users | default([]) | map(attribute='name') | list)
           + (freeipa_idam_service_accounts | default([]) | map(attribute='name') | list)
           + (freeipa_idam_breakglass_accounts | default([]) | map(attribute='name') | list))
          | unique | difference(freeipa_idam_protected_users | default([])) }}
-    _prune_groups: >-
+    _delete_groups: >-
       {{ (freeipa_idam_usergroups | default([]) | map(attribute='name') | list)
          | difference(freeipa_idam_protected_groups | default([])) }}
 
-- name: Prune | Announce what will be removed
+- name: Delete | Announce what will be removed
   ansible.builtin.debug:
     msg: >-
-      PRUNE (hard-delete): {{ _prune_users | length }} users, {{ _prune_groups | length }} groups,
+      DELETE (hard-delete): {{ _delete_users | length }} users, {{ _delete_groups | length }} groups,
       {{ freeipa_idam_hostgroups | default([]) | length }} hostgroups,
       {{ freeipa_idam_hbac_rules | default([]) | length }} HBAC,
       {{ freeipa_idam_sudo_rules | default([]) | length }} sudo,
@@ -56,7 +56,7 @@
       {{ freeipa_idam_sudo_commands | default([]) | length }} sudocmds + marker {{ freeipa_idam_managed_group }}.
 
 # Delete in reverse-dependency order: things that REFERENCE others go first.
-- name: Prune | Remove native IPA delegation roles
+- name: Delete | Remove native IPA delegation roles
   freeipa.ansible_freeipa.iparole:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -65,7 +65,7 @@
   when: (freeipa_idam_iparoles | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove privileges
+- name: Delete | Remove privileges
   freeipa.ansible_freeipa.ipaprivilege:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -74,7 +74,7 @@
   when: (freeipa_idam_privileges | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove permissions
+- name: Delete | Remove permissions
   freeipa.ansible_freeipa.ipapermission:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -83,7 +83,7 @@
   when: (freeipa_idam_permissions | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove sudo rules
+- name: Delete | Remove sudo rules
   freeipa.ansible_freeipa.ipasudorule:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -94,7 +94,7 @@
   when: (freeipa_idam_sudo_rules | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove HBAC rules
+- name: Delete | Remove HBAC rules
   freeipa.ansible_freeipa.ipahbacrule:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -105,7 +105,7 @@
   when: (freeipa_idam_hbac_rules | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove sudo command groups
+- name: Delete | Remove sudo command groups
   freeipa.ansible_freeipa.ipasudocmdgroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -116,7 +116,7 @@
   when: (freeipa_idam_sudocmdgroups | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove HBAC service groups
+- name: Delete | Remove HBAC service groups
   freeipa.ansible_freeipa.ipahbacsvcgroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -127,7 +127,7 @@
   when: (freeipa_idam_hbacsvcgroups | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove sudo commands
+- name: Delete | Remove sudo commands
   freeipa.ansible_freeipa.ipasudocmd:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -138,7 +138,7 @@
   when: (freeipa_idam_sudo_commands | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove custom HBAC services
+- name: Delete | Remove custom HBAC services
   freeipa.ansible_freeipa.ipahbacsvc:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -149,7 +149,7 @@
   when: (freeipa_idam_hbacsvcs | default([])) | length > 0
   no_log: true
 
-- name: Prune | Remove password policies
+- name: Delete | Remove password policies
   freeipa.ansible_freeipa.ipapwpolicy:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -161,26 +161,26 @@
   no_log: true
 
 # HARD delete the users (preserve: false → user-del, NOT user-del --preserve).
-- name: Prune | Hard-delete declared users (not protected)
+- name: Delete | Hard-delete declared users (not protected)
   freeipa.ansible_freeipa.ipauser:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ _prune_users }}"
+    name: "{{ _delete_users }}"
     preserve: false
     state: absent
-  when: _prune_users | length > 0
+  when: _delete_users | length > 0
   no_log: true
 
-- name: Prune | Remove declared groups (not protected)
+- name: Delete | Remove declared groups (not protected)
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ _prune_groups }}"
+    name: "{{ _delete_groups }}"
     state: absent
-  when: _prune_groups | length > 0
+  when: _delete_groups | length > 0
   no_log: true
 
-- name: Prune | Remove hostgroups
+- name: Delete | Remove hostgroups
   freeipa.ansible_freeipa.ipahostgroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"
@@ -193,7 +193,7 @@
 
 # The marker group last (it has no members left once users are gone). Skipped if it
 # is a protected/built-in name.
-- name: Prune | Remove the marker group
+- name: Delete | Remove the marker group
   freeipa.ansible_freeipa.ipagroup:
     ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
     ipaadmin_password: "{{ freeipa_idam_admin_password }}"

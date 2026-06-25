@@ -87,8 +87,8 @@ actually revokes it next run. Guard rails:
 - **Protected/built-in groups** (`admin`, `ipausers`, break-glass — `freeipa_idam_protected_groups`)
   always stay **additive**; they are never stripped.
 - **Undeclared groups** are never touched.
-- It's the surgical sibling of `prune`: this reconciles *membership* of groups you declare;
-  `prune` deletes the *objects* themselves.
+- It's the surgical sibling of `delete`: this reconciles *membership* of groups you declare;
+  `delete` deletes the *objects* themselves.
 
 ## Hosts — the one thing you wire yourself
 

@@ -73,6 +73,20 @@
   when: freeipa_server_is_primary | bool
   tags: [idam, users, groups, hbac, sudo]
 
+# DECLARATIVE OBJECT reconcile (opt-in) — DELETE matrix-managed objects in this scope that
+# are no longer declared (orphans left after removing an app/grant). Runs AFTER idam so the
+# desired object set is fully applied before orphans are computed. Tightly scoped + safe:
+# only objects whose NAME contains freeipa_idam_reconcile_match are eligible, and only those
+# not in this run's freeipa_idam_* lists / not protected are removed. A blank match deletes
+# NOTHING (fail-safe asserted in reconcile.yml). Sibling of the group-existence reconcile
+# inside idam.yml (which uses the container marker for the baseline groups).
+- name: Reconcile orphaned matrix-managed objects (primary only; opt-in)
+  ansible.builtin.import_tasks: reconcile.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_idam_reconcile_objects | default(false) | bool
+  tags: [idam, reconcile]
+
 - name: Manage declarative DNS zones/records (primary only)
   ansible.builtin.import_tasks: dns_records.yml
   when:
@@ -109,12 +123,12 @@
   tags: [never, export]
 
 # HARD-DELETE every declared freeipa_idam_* object (for mock/test runs). DOUBLE-
-# GATED: the `never` tag means it only runs with `--tags prune`, AND it does nothing
-# unless freeipa_idam_prune is true (default false; set it only in a mock inventory).
-# Real inventories therefore never prune, even if someone passes --tags prune.
-- name: Prune (HARD-DELETE) declared IDAM objects — mock/test cleanup only
-  ansible.builtin.import_tasks: prune.yml
+# GATED: the `never` tag means it only runs with `--tags delete`, AND it does nothing
+# unless freeipa_idam_delete is true (default false; set it only in a mock inventory).
+# Real inventories therefore never delete, even if someone passes --tags delete.
+- name: Delete (HARD-DELETE) declared IDAM objects — mock/test cleanup only
+  ansible.builtin.import_tasks: delete.yml
   when:
     - freeipa_server_is_primary | bool
-    - freeipa_idam_prune | default(false) | bool
-  tags: [never, prune]
+    - freeipa_idam_delete | default(false) | bool
+  tags: [never, delete]

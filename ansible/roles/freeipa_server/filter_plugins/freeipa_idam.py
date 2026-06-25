@@ -410,10 +410,41 @@ def freeipa_idam_merge(base, extra, key="name", union_fields=None):
     return merged
 
 
+# ── filter 4: orphan reconcile — what to DELETE (matrix-managed, no longer declared) ──
+def _is_orphan(name, match, want, protected):
+    """A name is an orphan iff it carries the scope marker, isn't desired, isn't protected."""
+    return bool(name) and match in name and name not in want and name not in protected
+
+
+def freeipa_idam_orphans(found, desired, match, protected=None):
+    """Compute the orphan object names to delete, per object type.
+
+    `found`    : {type: [names currently in the realm]} (from `ipa <type>-find <match>`)
+    `desired`  : {type: [names the matrix declares this run]}
+    `match`    : the scope marker that EVERY managed name contains (e.g. "example-mgt") —
+                 a name is only ever eligible for deletion if it CONTAINS this, so other
+                 tenants/environments and unrelated objects are never touched.
+    `protected`: names that must never be deleted (e.g. freeipa_idam_protected_groups).
+
+    Returns {type: [orphan names]} = found names that contain `match`, are NOT desired,
+    and are NOT protected. An empty/blank `match` yields NOTHING (fail-safe: never delete
+    the whole realm because the scope marker was unset).
+    """
+    if not match:
+        return {otype: [] for otype in (found or {})}
+    protected = set(protected or [])
+    out = {}
+    for otype, names in (found or {}).items():
+        want = set((desired or {}).get(otype) or [])
+        out[otype] = [n for n in (names or []) if _is_orphan(n, match, want, protected)]
+    return out
+
+
 class FilterModule:
     def filters(self):
         return {
             "freeipa_idam_access_objects": freeipa_idam_access_objects,
             "freeipa_idam_user_grants": freeipa_idam_user_grants,
             "freeipa_idam_merge": freeipa_idam_merge,
+            "freeipa_idam_orphans": freeipa_idam_orphans,
         }

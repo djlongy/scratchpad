@@ -4,7 +4,7 @@ One FreeIPA realm (or one *per* environment), many teams. The **logic is global*
 (the naming convention + generators sit next to the playbook, auto-loaded every
 run), and **each team is its own self-contained inventory directory** — its own
 FreeIPA host plus only that team's data. You change a team by running *that team's
-inventory* — nothing else is loaded, queried, or pruned.
+inventory* — nothing else is loaded, queried, or deleted.
 
 Groups, roles, and users are **generated from a single naming convention**, so every
 tenant is consistent by construction and you never hand-type a group or role name.
@@ -60,7 +60,7 @@ ansible-playbook -i inventories/acme -i inventories/globex site.yml --tags idam
 aren't in the inventory, so they can't be iterated (fast) or deleted (safe). No
 flag, no wrapper.
 
-## Why this is fast — and why the prune is safe
+## Why this is fast — and why the delete is safe
 
 A monolithic users/groups list is slow because the role applies groups, hostgroups,
 and memberships **one item per API round-trip, every run** — so a full reconcile
@@ -98,7 +98,7 @@ pattern lives in ONE place and a typo fails fast (see referencing below).
 *rules*. The **realm/auth tenant** (the FreeIPA realm itself) owns the
 infrastructure baseline (`freeipa_server_*` install/config) and the **global** bits:
 HBAC *services* (`sshd`, custom svcs — one per realm), automember, DNS. Rules are
-per-tenant; services are shared. HBAC rules are additive (not pruned) — remove
+per-tenant; services are shared. HBAC rules are additive (not deleted) — remove
 access with `state: absent`.
 
 ### Referencing generated objects from elsewhere

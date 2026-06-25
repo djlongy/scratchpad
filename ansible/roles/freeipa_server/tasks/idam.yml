@@ -6,6 +6,20 @@
       tags: [freeipa_server, freeipa, idam, health_check]
   tags: [freeipa_server, freeipa, idam, health_check]
 
+# Re-entry guard. The facts below are built with loop accumulators
+# (set_fact: x = "{{ (x | default([])) + [item] }}"). If idam.yml is ever included
+# twice in one play, a second pass would APPEND onto the first pass's list instead of
+# rebuilding — duplicating every group/user and tripping the module's "X used more than
+# once" check. Reset them to [] up front so each invocation rebuilds from empty; harmless
+# on the normal single-include path. (The playbook should not include idam.yml twice;
+# this makes the task file self-defending.)
+- name: Reset IDAM accumulator facts (re-entry safe)
+  ansible.builtin.set_fact:
+    _freeipa_users_roled: []
+    freeipa_idam_user_group_pairs: []
+    freeipa_idam_usergroups_effective: []
+    freeipa_idam_users_effective: []
+
 # Fail fast on gross TYPE errors BEFORE any task consumes these vars — the RBAC
 # expander, the service/break-glass merge, the role lookup and the item-level scan
 # all iterate these and assume real lists. `is iterable` is NOT enough: a bare
@@ -58,7 +72,7 @@
 # through the SAME validation/create/group/marker pipeline — but with their
 # distinguishing attributes. Service accounts get the nologin shell. Break-glass
 # accounts stay login-enabled and are auto-added to freeipa_idam_protected_users
-# (never pruned/archived). Kept as separate INPUT lists purely for explicit intent.
+# (never deleted/archived). Kept as separate INPUT lists purely for explicit intent.
 #
 # Writes the INTERNAL fact _freeipa_idam_users_base (never the public
 # freeipa_idam_users) so the merge holds even when users are supplied via
@@ -600,6 +614,37 @@
     state: present
   no_log: true
 
+# DECLARATIVE GROUP-EXISTENCE reconcile (opt-in: freeipa_idam_reconcile_groups). The
+# additive `ipagroup state: present` create above never deletes a group you remove from
+# freeipa_idam_usergroups. To make group existence declarative we nest every declared
+# group into a CONTAINER marker group here; later (in the kinit window below) we read the
+# container's members and delete any that are no longer declared — exactly mirroring the
+# user-marker archival. Enrollment excludes protected built-ins (never tracked/deleted).
+- name: Ensure managed-groups container exists (group-existence reconcile marker)
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ freeipa_idam_managed_groups_group }}"
+    description: "Container marker — groups managed declaratively from Git (group-existence reconcile)"
+    state: present
+  when: freeipa_idam_reconcile_groups | bool
+  no_log: true
+
+- name: Enroll declared groups into the managed-groups container (membership marker)
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ freeipa_idam_managed_groups_group }}"
+    action: member
+    group: "{{ _freeipa_idam_enrollable_groups }}"
+    state: present
+  vars:
+    _freeipa_idam_enrollable_groups: "{{ freeipa_idam_group_names | difference(freeipa_idam_protected_groups) }}"
+  when:
+    - freeipa_idam_reconcile_groups | bool
+    - _freeipa_idam_enrollable_groups | length > 0
+  no_log: true
+
 # Membership reconcile. Default = ADDITIVE (ipagroup action: member) for ALL groups —
 # adds declared members, never strips, so out-of-band/system memberships (e.g. admin's)
 # are safe. Opt in to DECLARATIVE with freeipa_idam_membership_declarative: true, which
@@ -764,7 +809,7 @@
 
 # `ipa group-show --all --raw` returns members as raw LDAP `member:` DN lines
 # (member: uid=<user>,cn=users,...), NOT a friendly `member_user:` attribute — so
-# the old `member_user:` regex matched nothing and the prune was a silent no-op.
+# the old `member_user:` regex matched nothing and the delete was a silent no-op.
 # Select the user-DN lines by the literal `uid=` (skips nested group members,
 # which are cn=...,cn=groups) and pull out the uid. NB: avoid `\s`/`\d`-style
 # regex classes here — in a folded (>-) scalar YAML does not unescape them, so they
@@ -796,6 +841,58 @@
     state: absent
     preserve: "{{ freeipa_idam_preserve_archived | bool }}"
   when: freeipa_idam_users_to_remove | length > 0
+  no_log: true
+
+# ── Declarative GROUP-EXISTENCE reconcile (opt-in) ───────────────────────────
+# Same ticket as the user-marker discovery above. Read the container's nested-group
+# members, then DELETE any that are no longer declared in freeipa_idam_usergroups —
+# the group-level twin of the user archival. check_mode: false on the read so --check
+# still PREVIEWS (the delete below honours check mode → reports, deletes nothing).
+- name: Read current nested groups of the managed-groups container
+  ansible.builtin.command: "ipa group-show {{ freeipa_idam_managed_groups_group }} --all --raw"
+  register: _freeipa_idam_managed_groups_show
+  changed_when: false
+  failed_when: false                     # container may not exist yet on a first --check
+  check_mode: false
+  when: freeipa_idam_reconcile_groups | bool
+
+# Members come back as raw `member: cn=<group>,cn=groups,...` DN lines (user members
+# are `uid=...` and are skipped). `^member: cn=` excludes the container's own
+# `memberof:` lines. Orphan = enrolled in the container but NOT declared, NOT protected,
+# and never the container/user-marker themselves. Same regex caveats as the user list
+# above (folded scalar: literal text + [^,], no \s/\d classes).
+- name: Build declarative group delete list (container orphans)
+  ansible.builtin.set_fact:
+    _freeipa_idam_groups_to_remove: >-
+      {{ (_freeipa_idam_managed_groups_show.stdout_lines | default([]) | map('trim')
+          | select('match', '^member: cn=')
+          | map('regex_replace', '^member: cn=([^,]+),.*', '\1') | list)
+         | difference(freeipa_idam_group_names)
+         | difference(freeipa_idam_protected_groups)
+         | difference([freeipa_idam_managed_groups_group, freeipa_idam_managed_group]) }}
+  when: freeipa_idam_reconcile_groups | bool
+
+- name: Report groups to delete (declarative group-existence reconcile)
+  ansible.builtin.debug:
+    msg: >-
+      Group reconcile → deleting {{ _freeipa_idam_groups_to_remove | length }}
+      orphaned managed group(s): {{ _freeipa_idam_groups_to_remove }}
+  when:
+    - freeipa_idam_reconcile_groups | bool
+    - (_freeipa_idam_groups_to_remove | default([])) | length > 0
+
+# Hard-delete (groups can't be preserve-archived). One bulk ipagroup call; state: absent
+# honours check mode so --check previews. Deleting a group auto-removes it from the
+# container, so the marker self-heals.
+- name: Delete groups removed from declarative config (no longer in freeipa_idam_usergroups)
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    name: "{{ _freeipa_idam_groups_to_remove }}"
+    state: absent
+  when:
+    - freeipa_idam_reconcile_groups | bool
+    - (_freeipa_idam_groups_to_remove | default([])) | length > 0
   no_log: true
 
 - name: Enforce password-expiration floor for listed users

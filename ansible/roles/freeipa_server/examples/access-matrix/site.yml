@@ -1,17 +1,28 @@
 ---
-# Compile the access matrix → objects, APPEND them onto the baseline dicts, reconcile.
+# Compile the access matrix → freeipa_idam_* objects (pre_tasks), then apply them with the
+# freeipa_server role.
 #
 # The baseline is the role's native freeipa_idam_* keys themselves — e.g. an exported
 # snapshot already sitting in group_vars under freeipa_idam_usergroups /
 # freeipa_idam_hbac_rules / freeipa_idam_users / … (greenfield: those are just empty).
-# The matrix-generated objects are MERGED onto that baseline, unique by name: the
-# baseline is authoritative on a name collision, and for users the groups lists are
-# UNIONED (a person in both the snapshot and the matrix keeps the union of their groups).
-# So the role is handed one combined set; it never sees the matrix.
+# The matrix-generated objects are MERGED onto that baseline, unique by name: the baseline
+# is authoritative on a name collision, and for users the groups lists are UNIONED (a person
+# in both the snapshot and the matrix keeps the union of their groups). The role is handed
+# one combined set; it never sees the matrix.
+#
+# Structure (ansible-design §1.2–1.3): pre_tasks COMPILE + merge the matrix (orchestration
+# that must precede the role, keeping freeipa_server matrix-agnostic); `roles:` then applies
+# it. The role gates idam / object-reconcile / export / delete on its own tags +
+# `freeipa_server_is_primary`, so only the primary mutates the realm (it replicates) — no
+# `include_role tasks_from` grab-bag and no run_once needed.
 - name: FreeIPA IDAM from the access matrix
   hosts: ipaserver
   gather_facts: false
-  tasks:
+  vars:
+    # Scopes the role's object-reconcile pass to THIS tenant×environment; blank → deletes nothing.
+    freeipa_idam_reconcile_match: "{{ freeipa_scope_tenancy }}-{{ freeipa_scope_environment }}"
+
+  pre_tasks:
     - name: Validate the inventory scope against the matrix (drift fails loudly)
       ansible.builtin.assert:
         that:
@@ -24,6 +35,7 @@
           is not declared in the matrix. Tenants: {{ (freeipa_idam_access_matrix.tenants | default({})).keys() | list }};
           '{{ freeipa_scope_tenancy | default('?') }}' environments:
           {{ ((freeipa_idam_access_matrix.tenants | default({}))[freeipa_scope_tenancy] | default({})).environments | default([]) }}
+      tags: [always]
 
     - name: Compile generated access objects + matrix user grants (scoped)
       ansible.builtin.set_fact:
@@ -36,6 +48,7 @@
              | freeipa_idam_user_grants(freeipa_idam_access_matrix,
                                         freeipa_scope_tenancy | default(none),
                                         freeipa_scope_environment | default(none)) }}
+      tags: [always]
 
     - name: Append the matrix overlay onto the baseline dicts (unique by name)
       ansible.builtin.set_fact:
@@ -48,8 +61,10 @@
         freeipa_idam_users:         "{{ freeipa_idam_users         | default([]) | freeipa_idam_merge(_freeipa_matrix_users, union_fields=['groups']) }}"
         # Generated hostgroup automember rules (empty unless the matrix declares automember).
         freeipa_server_automember_rules: "{{ freeipa_server_automember_rules | default([]) | freeipa_idam_merge(_freeipa_generated.automember_rules) }}"
+      tags: [always]
 
-    - name: Reconcile IDAM
-      ansible.builtin.include_role:
-        name: freeipa_server
-        tasks_from: idam.yml
+  roles:
+    # Applies the compiled freeipa_idam_* state. --tags idam → identity reconcile (incl. the
+    # group-existence + object reconcile, both opt-in); --tags export → snapshot; --tags delete
+    # → hard-delete (mock only). Install/DNS/etc. are skipped under the IDAM tags.
+    - role: freeipa_server

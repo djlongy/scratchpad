@@ -310,17 +310,41 @@ freeipa_idam_preserve_archived: true
 # longer in the freeipa_idam_* lists is REMOVED from its group, and a managed group with
 # zero declared members is emptied. Scoped to NON-protected groups only (protected/built-in
 # groups in freeipa_idam_protected_groups stay additive and are never stripped); undeclared
-# groups are never touched. Less aggressive than prune (which deletes objects); this only
+# groups are never touched. Less aggressive than delete (which deletes objects); this only
 # reconciles MEMBERSHIP of groups you already declare.
 freeipa_idam_membership_declarative: false
 
-# HARD-PRUNE gate (tasks/prune.yml) — DESTRUCTIVE, default OFF. When true AND the run
-# is invoked with `--tags prune`, the role REMOVES (ipa *-del, not archive) every
+# DECLARATIVE OBJECT reconcile — default OFF (DESTRUCTIVE). When true, after the apply the
+# role DELETES matrix-managed OBJECTS (groups, hostgroups, HBAC + sudo rules) in this scope
+# that are no longer declared (orphans). Object-level sibling of membership_declarative.
+# Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_match are
+# eligible, and only those NOT in this run's freeipa_idam_* lists and NOT in
+# freeipa_idam_protected_groups are removed. The matrix playbook sets the match to
+# '<tenant>-<environment>'; a blank match deletes NOTHING (fail-safe).
+freeipa_idam_reconcile_objects: false
+freeipa_idam_reconcile_match: ""
+
+# DECLARATIVE GROUP-EXISTENCE reconcile — default OFF (DESTRUCTIVE). The container-marker
+# sibling of reconcile_objects, but for the BASELINE groups in freeipa_idam_usergroups —
+# the ones the additive `ipagroup state: present` create NEVER deletes. When true, every
+# declared group is nested into the freeipa_idam_managed_groups_group container during the
+# apply; on each run any group that is a member of that container but NO LONGER in
+# freeipa_idam_usergroups (and not protected) is DELETED. So removing a group from the dict
+# deletes it from IPA — true declarative group existence, mirroring the user-marker archival.
+# Only ever touches groups WE enrolled (container members); unmanaged/out-of-band groups and
+# protected built-ins are never considered. NOTE: the first run only ENROLLS — it cannot
+# retroactively catch groups removed from the dict before the container existed (clean those
+# up once with `ipa group-del`). Hard-delete only (groups can't be preserve-archived).
+freeipa_idam_reconcile_groups: false
+freeipa_idam_managed_groups_group: "idam-managed-groups"
+
+# HARD-DELETE gate (tasks/delete.yml) — DESTRUCTIVE, default OFF. When true AND the run
+# is invoked with `--tags delete`, the role REMOVES (ipa *-del, not archive) every
 # object DECLARED in this run's freeipa_idam_* lists — protected users/groups excluded.
 # Intended ONLY for MOCK/test inventories (set it true there) so a demo run can create
 # real objects and then clean them up. NEVER set this true on a real inventory.
-freeipa_idam_prune: false
-# Users the reconcile must never DELETE (prune/archive). Break-glass accounts are
+freeipa_idam_delete: false
+# Users the reconcile must never DELETE (delete/archive). Break-glass accounts are
 # auto-added to this list. Append any system/service accounts you want shielded from
 # removal. (These ARE still created/updated — see unmodifiable_users for the opposite.)
 freeipa_idam_protected_users:
@@ -353,7 +377,7 @@ freeipa_idam_nologin_shell: "/sbin/nologin"
 
 # BREAK-GLASS — real named emergency accounts (NOT the built-in admin). Login STAYS
 # enabled (that is the point of break-glass); each is auto-added to
-# freeipa_idam_breakglass_group and auto-PROTECTED from the prune (never archived).
+# freeipa_idam_breakglass_group and auto-PROTECTED from the delete (never archived).
 # Pair with disable_admin_login below: day-to-day admin via named accounts, the
 # emergency path via these. Give each a strong password (per-account or the default).
 freeipa_idam_breakglass_accounts: []

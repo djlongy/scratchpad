@@ -20,7 +20,7 @@ _tenant_specs: >-
   {{ q('varnames', '^tenant_[a-z0-9]+_spec$') | sort
      | map('extract', vars) | list }}
 
-# ── per-tenant marker → makes the role's prune SAFE under isolation ─────────
+# ── per-tenant marker → makes the role's delete SAFE under isolation ─────────
 freeipa_idam_managed_group: >-
   {{ ('idam-managed-' ~ _tenant_specs[0].code)
      if (_tenant_specs | length == 1) else 'idam-managed-users' }}

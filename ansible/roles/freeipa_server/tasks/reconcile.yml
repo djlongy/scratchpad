@@ -1,0 +1,90 @@
+---
+# Declarative OBJECT reconcile — DELETE matrix-managed objects in THIS scope that are no
+# longer declared (orphans). Imported from idam.yml only when
+# freeipa_idam_reconcile_objects is true (default false). DESTRUCTIVE but tightly scoped:
+#   * only objects whose NAME contains freeipa_idam_reconcile_match (the scope marker,
+#     e.g. "example-mgt") are eligible — other tenants/environments are never touched;
+#   * an object is deleted only if it is NOT in this run's freeipa_idam_* lists (orphan)
+#     AND not in freeipa_idam_protected_groups;
+#   * a blank marker deletes NOTHING (fail-safe), enforced by the assert below.
+# Deletes in reverse-dependency order: sudo rules → HBAC rules → hostgroups → groups.
+
+- name: Reconcile | Refuse to run without a scope marker (fail-safe)
+  ansible.builtin.assert:
+    that:
+      - (freeipa_idam_reconcile_match | default('')) | length > 0
+    fail_msg: >-
+      freeipa_idam_reconcile_objects is true but freeipa_idam_reconcile_match is empty.
+      The matrix playbook sets it to '<tenant>-<environment>'; refusing to reconcile
+      without a scope marker (would consider the WHOLE realm).
+
+- name: Reconcile | Resolve admin password (declared var first, Vault fallback)
+  ansible.builtin.set_fact:
+    _reconcile_admin_pw: >-
+      {{ freeipa_server_admin_password
+         if (freeipa_server_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_idam_vault_secret + ':' + freeipa_idam_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Reconcile | Acquire Kerberos ticket
+  ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+  args:
+    stdin: "{{ _reconcile_admin_pw }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Reconcile | Find managed objects in this scope (one query per type)
+  ansible.builtin.command: "ipa {{ item }}-find {{ freeipa_idam_reconcile_match }} --pkey-only --sizelimit=0"
+  register: _reconcile_find
+  changed_when: false
+  check_mode: false                      # run the read-only find even in --check (preview)
+  failed_when: false                     # ipa *-find returns rc=1 on zero matches
+  loop: [sudorule, hbacrule, hostgroup, group]
+
+- name: Reconcile | Parse found object names per type
+  ansible.builtin.set_fact:
+    _reconcile_found: "{{ _reconcile_found | default({}) | combine({item.item: _names}) }}"
+  vars:
+    _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
+  loop: "{{ _reconcile_find.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Reconcile | Compute orphans (managed-but-undeclared, scoped, protected-safe)
+  ansible.builtin.set_fact:
+    _reconcile_orphans: >-
+      {{ _reconcile_found
+         | freeipa_idam_orphans(_reconcile_desired, freeipa_idam_reconcile_match,
+                                freeipa_idam_protected_groups | default([])) }}
+  vars:
+    _reconcile_desired:
+      sudorule:  "{{ freeipa_idam_sudo_rules  | default([]) | map(attribute='name') | list }}"
+      hbacrule:  "{{ freeipa_idam_hbac_rules  | default([]) | map(attribute='name') | list }}"
+      hostgroup: "{{ freeipa_idam_hostgroups  | default([]) | map(attribute='name') | list }}"
+      group:     "{{ freeipa_idam_usergroups  | default([]) | map(attribute='name') | list }}"
+
+- name: Reconcile | Report what will be deleted
+  ansible.builtin.debug:
+    msg: >-
+      Reconcile [{{ freeipa_idam_reconcile_match }}] orphans to delete —
+      sudo: {{ _reconcile_orphans.sudorule | default([]) }},
+      hbac: {{ _reconcile_orphans.hbacrule | default([]) }},
+      hostgroups: {{ _reconcile_orphans.hostgroup | default([]) }},
+      groups: {{ _reconcile_orphans.group | default([]) }}
+
+- name: Reconcile | Delete orphaned objects (no longer in the matrix)
+  ansible.builtin.command: "ipa {{ item.0.key }}-del {{ item.1 | quote }}"
+  loop: "{{ _reconcile_orphans | dict2items | subelements('value') }}"
+  loop_control:
+    label: "{{ item.0.key }} → {{ item.1 }}"
+  changed_when: true
+
+- name: Reconcile | Destroy Kerberos ticket
+  ansible.builtin.command: kdestroy
+  changed_when: false
+  check_mode: false
+  failed_when: false

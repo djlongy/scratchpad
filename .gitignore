@@ -125,6 +125,12 @@ htmlcov/
 .ansible/
 inventory/host_vars/*/vault*
 group_vars/*/vault*
+# Installed Ansible collections — vendored into collections_path (./collections) by
+# `ansible-galaxy collection install -r requirements.yml`. Thousands of files, fully
+# re-installable. requirements.yml is the tracked source of truth; the install dir is not.
+ansible/collections/ansible_collections/
+# Galaxy-installed roles, if a requirements.yml pulls any into ./collections too.
+**/ansible_collections/
 
 # ── Terraform ─────────────────────────────────────────────────────────────────────
 .terraform/
