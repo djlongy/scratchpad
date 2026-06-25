@@ -1,0 +1,32 @@
+---
+# Compile the access matrix → baseline freeipa_idam_* objects, then reconcile.
+# The two filters live in the role (../../filter_plugins/freeipa_idam.py). The role
+# itself is untouched: it just consumes the baseline lists we hand it below, which
+# are (optional hand-written *_extra baseline) + (matrix-generated objects).
+- name: FreeIPA IDAM from the access matrix
+  hosts: ipaserver
+  gather_facts: false
+  tasks:
+    - name: Compile generated access objects + user grants (scoped to this inventory)
+      ansible.builtin.set_fact:
+        _freeipa_generated: >-
+          {{ freeipa_idam_access_matrix
+             | freeipa_idam_access_objects(freeipa_scope_tenancy | default(none),
+                                           freeipa_scope_environment | default(none)) }}
+        freeipa_idam_users: >-
+          {{ freeipa_people
+             | freeipa_idam_user_grants(freeipa_idam_access_matrix,
+                                        freeipa_scope_tenancy | default(none),
+                                        freeipa_scope_environment | default(none)) }}
+
+    - name: Reconcile IDAM (baseline *_extra + generated overlay)
+      ansible.builtin.include_role:
+        name: freeipa_server
+        tasks_from: idam.yml
+      vars:
+        freeipa_idam_usergroups:    "{{ (freeipa_idam_usergroups_extra    | default([])) + _freeipa_generated.usergroups }}"
+        freeipa_idam_hostgroups:    "{{ (freeipa_idam_hostgroups_extra    | default([])) + _freeipa_generated.hostgroups }}"
+        freeipa_idam_hbac_rules:    "{{ (freeipa_idam_hbac_rules_extra    | default([])) + _freeipa_generated.hbac_rules }}"
+        freeipa_idam_sudo_rules:    "{{ (freeipa_idam_sudo_rules_extra    | default([])) + _freeipa_generated.sudo_rules }}"
+        freeipa_idam_hbacsvcs:      "{{ (freeipa_idam_hbacsvcs_extra      | default([])) + _freeipa_generated.hbacsvcs }}"
+        freeipa_idam_sudo_commands: "{{ (freeipa_idam_sudo_commands_extra | default([])) + _freeipa_generated.sudo_commands }}"

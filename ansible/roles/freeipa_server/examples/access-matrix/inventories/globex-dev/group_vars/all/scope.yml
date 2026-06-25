@@ -1,0 +1,3 @@
+---
+freeipa_scope_tenancy: globex
+freeipa_scope_environment: dev

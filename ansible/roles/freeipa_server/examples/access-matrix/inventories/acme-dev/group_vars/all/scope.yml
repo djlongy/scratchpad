@@ -1,0 +1,5 @@
+---
+# Scope this run to ONE tenant + environment, so it only touches acme/dev cells.
+# Set per inventory (never in the playbook's group_vars/all, which would outrank it).
+freeipa_scope_tenancy: acme
+freeipa_scope_environment: dev

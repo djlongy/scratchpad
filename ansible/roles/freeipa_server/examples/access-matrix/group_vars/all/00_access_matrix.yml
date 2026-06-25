@@ -1,0 +1,86 @@
+---
+# ═════════════════════════════════════════════════════════════════════════════
+# THE ACCESS MATRIX — one declarative dict. Two Python filter plugins compile it
+# into the role's baseline freeipa_idam_* object lists (see ../../filter_plugins/
+# freeipa_idam.py). You edit this; the relationships + naming are handled in Python.
+#
+# Object model per cell (tenant/env/app/privilege):
+#   role-…  grant group     ← users are members of THIS
+#   ug-…    policy group     ← nests the role group; HBAC/sudo target THIS
+#   hg-…    hostgroup        ← scope for HBAC/sudo
+#   hbac-…  HBAC rule        sudo-…  sudo rule
+# Every name comes from naming.templates below — rearrange the tokens freely.
+# ═════════════════════════════════════════════════════════════════════════════
+freeipa_idam_access_matrix:
+
+  # ── naming: prefixes + templates. Reorder the {placeholders} however you like;
+  #    the compiler resolves each at load time. e.g. "{tenant}-{app}-{environment}-…"
+  naming:
+    prefixes: { role: role, usergroup: ug, hostgroup: hg, hbac: hbac, sudo: sudo }
+    templates:
+      role_group: "{role_prefix}-{tenant}-{environment}-{app}-{privilege}"
+      usergroup:  "{usergroup_prefix}-{tenant}-{environment}-{app}-{privilege}"
+      hostgroup:  "{hostgroup_prefix}-{tenant}-{environment}-{app}-{privilege}"
+      hbacrule:   "{hbac_prefix}-{tenant}-{environment}-{app}-{privilege}"
+      sudorule:   "{sudo_prefix}-{tenant}-{environment}-{app}-{privilege}"
+
+  # ── tenants → their environments (differ per tenant) ────────────────────────
+  tenants:
+    acme:    { environments: [dev, qa, stg, prod] }
+    globex:  { environments: [dev, test, prod] }
+    initech: { environments: [dev] }
+
+  # ── apps. An app may OVERRIDE a privilege's hbac/sudo for app-specific needs ─
+  apps:
+    grafana:  { description: Grafana access }
+    docker:   { description: Docker host access }
+    postgres:
+      description: PostgreSQL access
+      privileges:                         # per-app override of the global tiers
+        admins:
+          sudo_commands:
+            - "/usr/bin/systemctl restart postgresql"
+            - "/usr/bin/su - postgres"
+
+  # ── privileges: global access tiers (hbac services + sudo). "ALL" → full sudo;
+  #    [] → no sudo rule generated. Apps can override above. ─────────────────────
+  privileges:
+    admins:
+      description: Administrator access
+      hbac_services: [sshd]
+      sudo_commands: [ALL]
+    readers:
+      description: Read-only access
+      hbac_services: [sshd, cockpit]      # cockpit is non-stock → created as custom
+      sudo_commands: []
+    deployers:
+      description: Deployment access
+      hbac_services: [sshd]
+      sudo_commands: ["/usr/bin/systemctl", "/usr/bin/journalctl"]
+
+  # ── access_sets: reusable bundles of (app, privilege) scoped to tenants/envs.
+  #    People are granted these by NAME. include: all | [list]; optional exclude. ─
+  access_sets:
+    grafana_admins:
+      app: grafana
+      privilege: admins
+      tenants:
+        acme: { environments: { include: all } }
+    grafana_readers:
+      app: grafana
+      privilege: readers
+      tenants:
+        acme:   { environments: { include: all, exclude: [prod] } }
+        globex: { environments: { include: [dev, test] } }
+    postgres_admins:
+      app: postgres
+      privilege: admins
+      tenants:
+        acme: { environments: { include: [stg, prod] } }
+    docker_deployers:
+      app: docker
+      privilege: deployers
+      tenants:
+        acme:    { environments: { include: [dev, qa] } }
+        globex:  { environments: { include: [dev, test] } }
+        initech: { environments: { include: all } }

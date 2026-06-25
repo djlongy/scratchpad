@@ -1,0 +1,16 @@
+---
+# People — one flat list. Each person carries identity + a list of access_set names
+# in `grants`. The freeipa_idam_user_grants filter resolves those to the scoped
+# environment's role-… groups and strips the matrix-only keys, leaving a clean,
+# module-safe user object ({name, first, last, email, groups}).
+#
+# An access_set already carries its own tenant/env scope, so a grant lands wherever
+# that set is defined (and only within the run's scope). One list serves the estate.
+freeipa_people:
+  - { name: alice.smith,  first: Alice,  last: Smith, email: ["alice.smith@example.com"],  grants: [grafana_admins, postgres_admins] }
+  - { name: bob.ng,       first: Bob,    last: Ng,    email: ["bob.ng@example.com"],        grants: [grafana_readers] }
+  - { name: charlie.fox,  first: Charlie, last: Fox,  email: ["charlie.fox@example.com"],   grants: [docker_deployers, grafana_readers] }
+
+# Optional hand-written BASELINE that the matrix is layered ON TOP of — the role
+# still works with pure baseline (no matrix) or both. Left empty here.
+# freeipa_idam_usergroups_extra: [{ name: legacy-admins, description: hand-managed }]

@@ -1,5 +1,11 @@
 # Multi-tenant RBAC from a matrix
 
+> **Newer approach available:** [`../access-matrix`](../access-matrix) does the same job
+> with **one** dict + two Python filter plugins (instead of three dicts + a Jinja
+> `20_generate.yml` flatten), adds a two-tier role/policy group model, configurable
+> naming templates, and per-app sudo overrides. Prefer it for new work; this Jinja
+> version remains as a dependency-free reference.
+
 Define your whole estate as one compact **matrix** and let a short, readable flatten
 derive every FreeIPA object. The `freeipa_server` role stays a **pure baseline** — it
 only reconciles `freeipa_idam_*` lists; it has no role generator inside it, so a change
