@@ -88,6 +88,72 @@ hostgroup (manually, or via an automember rule), the rules match no machine. The
 builds the *policy skeleton*; populating hostgroups with hosts is out of band (enrolment
 + automember).
 
+### Automember — populating hostgroups (and base user groups) by regex
+
+The role applies `freeipa_server_automember_rules` (one ipaautomember rule each). Shape:
+
+```yaml
+freeipa_server_automember_rules:
+  - name: hg-acme-dev-artifactory   # the target group/hostgroup (must already exist)
+    automember_type: hostgroup      # hostgroup | group
+    inclusive:
+      - { key: "fqdn", expression: "<regex>" }   # OR'd if multiple
+    exclusive: []                   # optional; an exclusive match wins over inclusive
+```
+
+**Regex hygiene (FreeIPA-specific):**
+- **Always anchor `^…$`.** IPA matches as a *substring search* — unanchored `acme` also
+  hits `acme2`, `notacme`, …
+- **Escape dots:** `\.` in the regex → `\\.` inside a YAML double-quoted string.
+- Use `[0-9]+`, not `\d` (safer across IPA's engine). Inclusive entries are **OR'd**.
+- Automember fires at **host/user create time**; pre-existing entries are only (re)placed
+  by a rebuild — the role runs one automatically when a rule changes (or set
+  `freeipa_server_automember_rebuild: true` for a one-off).
+
+#### Hosts → `hg-…` (fqdn)
+
+> **Caveat:** a host's environment must be **in the FQDN** for automember to split
+> `hg-<tenant>-<env>-<app>` by env. A flat `<tenant>-<service>-<N>.<domain>` (no env
+> label) can only be matched by tenant+app — so use it when **each environment is its own
+> realm** (env implicit), or move the env into the FQDN (recommended, below).
+
+Flat domain `auth.team.dev`, host `acme-artifactory-1.auth.team.dev` (env from realm):
+```yaml
+  - name: hg-acme-dev-artifactory
+    automember_type: hostgroup
+    inclusive:
+      - { key: "fqdn", expression: "^acme-artifactory-[0-9]+\\.auth\\.team\\.dev$" }
+# generic:  ^{tenant}-{app}-[0-9]+\.auth\.team\.dev$
+```
+
+Env-as-subdomain `acme-artifactory-1.dev.mydomain.internal` (full tenant/env/app split):
+```yaml
+  - name: hg-acme-dev-artifactory
+    automember_type: hostgroup
+    inclusive:
+      - { key: "fqdn", expression: "^acme-artifactory-[0-9]+\\.dev\\.mydomain\\.internal$" }
+# generic:  ^{tenant}-{app}-[0-9]+\.{env}\.{domain}$
+```
+
+#### Users → base groups (attribute)
+
+A person's `role-…` membership is set **explicitly** by their matrix grants — **do not**
+automember those (no user attribute encodes tenant/env/app/privilege). Reserve user
+automember for **coarse base groups** matched on a user attribute (`uid`, `mail`, `title`,
+`employeetype`, …):
+```yaml
+  - name: acme-users                      # a tenant base group
+    automember_type: group
+    inclusive:
+      - { key: "mail", expression: "@acme\\.example\\.com$" }   # by email domain
+      # or by uid prefix:  { key: "uid", expression: "^acme-" }
+  - name: contractors
+    automember_type: group
+    inclusive:
+      - { key: "title", expression: "^Contractor$" }
+```
+(`mail` is multivalued — the rule matches if *any* value matches.)
+
 ## The matrix (`00_access_matrix.yml`)
 
 | section | what it is |
