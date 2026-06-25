@@ -35,6 +35,19 @@ freeipa_idam_access_matrix:
       hbac_rule:  "{hbac_rule_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
       sudo_rule:  "{sudo_rule_prefix}-{tenant}-{environment}-{application}-{privilege_level}"
 
+  # ── OPTIONAL descriptions — enriched object descriptions. Omit this block to use the
+  #    enriched DEFAULTS (which already pull in the application + privilege_level
+  #    descriptions, e.g. "Grafana — Read-only (login + dashboards) [acme/dev]"). Override
+  #    any of the six object types here. Placeholders: {tenant} {environment} {application}
+  #    {privilege_level} {application_description} {privilege_level_description}.
+  # descriptions:
+  #   role_group: "{application_description} — {privilege_level_description} [{tenant}/{environment}]"
+  #   user_group: "Policy group: {application_description} / {privilege_level} [{tenant}/{environment}]"
+  #   host_group: "Hosts for {application_description} [{tenant}/{environment}]"
+  #   hbac_rule:  "HBAC — {privilege_level} login to {application_description} [{tenant}/{environment}]"
+  #   sudo_rule:  "Sudo — {privilege_level} on {application_description} [{tenant}/{environment}]"
+  #   automember: "Auto-membership: {application_description} hosts [{tenant}/{environment}]"
+
   # ── tenants → their environments (the SINGLE source of truth for what exists).
   #    An inventory's freeipa_scope_* SELECTS one slice; it never re-declares these.
   tenants:

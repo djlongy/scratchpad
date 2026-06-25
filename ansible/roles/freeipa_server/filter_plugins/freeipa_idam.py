@@ -64,8 +64,40 @@ DEFAULT_TEMPLATES = {
     "sudo_rule":  "{sudo_rule_prefix}-{tenant}-{environment}-{application}-{privilege_level}",
 }
 
+# Enriched, configurable object DESCRIPTIONS. Override per object type via the matrix
+# `descriptions:` mapping. Placeholders: {tenant} {environment} {application}
+# {privilege_level} plus {application_description} (from applications.<app>.description)
+# and {privilege_level_description} (from privilege_levels.<level>.description).
+DEFAULT_DESCRIPTIONS = {
+    "role_group": "{application_description} — {privilege_level_description} [{tenant}/{environment}]",
+    "user_group": "Policy group: {application_description} / {privilege_level} [{tenant}/{environment}]",
+    "host_group": "Hosts for {application_description} [{tenant}/{environment}]",
+    "hbac_rule":  "HBAC — {privilege_level} login to {application_description} [{tenant}/{environment}]",
+    "sudo_rule":  "Sudo — {privilege_level} on {application_description} [{tenant}/{environment}]",
+    "automember": "Auto-membership: {application_description} hosts [{tenant}/{environment}]",
+}
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+def _descriptions(matrix, tenant, env, app, level):
+    """Resolve the enriched description for each object type from the (overridable)
+    description templates, pulling in the application + privilege_level descriptions."""
+    templates = dict(DEFAULT_DESCRIPTIONS, **((matrix.get("descriptions")) or {}))
+    appdesc = ((matrix.get("applications") or {}).get(app) or {}).get("description") or app
+    leveldesc = ((matrix.get("privilege_levels") or {}).get(level) or {}).get("description") or level
+    tokens = {
+        "tenant": tenant, "environment": env, "application": app, "privilege_level": level,
+        "application_description": appdesc, "privilege_level_description": leveldesc,
+    }
+    out = {}
+    for key, tmpl in templates.items():
+        try:
+            out[key] = tmpl.format(**tokens)
+        except KeyError as exc:
+            raise AnsibleFilterError(
+                "descriptions template for %r references unknown placeholder %s; "
+                "valid placeholders: %s" % (key, exc, sorted(tokens)))
+    return out
 def _names(naming, tenant, env, app, level):
     """Resolve every object name for one cell from object_naming.templates."""
     prefixes = dict(DEFAULT_PREFIXES, **((naming or {}).get("prefixes") or {}))
@@ -171,21 +203,21 @@ def _effective_access(matrix, app, level):
 
 
 # ── filter 1: access objects ─────────────────────────────────────────────────
-def _register_groups(usergroups, names, tag):
+def _register_groups(usergroups, names, descs):
     """role group (membership) + policy user group that NESTS it."""
     usergroups.setdefault(names["role"], {
-        "name": names["role"], "description": "Grant group %s" % tag})
+        "name": names["role"], "description": descs["role_group"]})
     ug = usergroups.setdefault(names["ug"], {
-        "name": names["ug"], "description": "Policy group %s" % tag, "group": []})
+        "name": names["ug"], "description": descs["user_group"], "group": []})
     if names["role"] not in ug["group"]:
         ug["group"].append(names["role"])
 
 
-def _register_hbac(hbac_rules, hbacsvcs, names, tag, hbac_services, stock):
+def _register_hbac(hbac_rules, hbacsvcs, names, descs, hbac_services, stock):
     if not hbac_services:
         return
     hbac_rules.setdefault(names["hbac"], {
-        "name": names["hbac"], "description": "HBAC %s" % tag,
+        "name": names["hbac"], "description": descs["hbac_rule"],
         "usergroup": [names["ug"]], "hostgroup": [names["hg"]],
         "service": list(hbac_services), "state": "enabled"})
     for svc in hbac_services:
@@ -194,11 +226,11 @@ def _register_hbac(hbac_rules, hbacsvcs, names, tag, hbac_services, stock):
                 "name": svc, "description": "%s (custom HBAC service)" % svc})
 
 
-def _register_sudo(sudo_rules, sudo_commands, names, tag, sudo_cmds):
+def _register_sudo(sudo_rules, sudo_commands, names, descs, sudo_cmds):
     if not sudo_cmds:                       # [] → no sudo rule for this cell
         return
     rule = {
-        "name": names["sudo"], "description": "Sudo %s" % tag,
+        "name": names["sudo"], "description": descs["sudo_rule"],
         "usergroup": [names["ug"]], "hostgroup": [names["hg"]],
         "runasusercategory": "all", "runasgroupcategory": "all", "state": "enabled"}
     if [c.upper() for c in sudo_cmds] == ["ALL"]:
@@ -233,7 +265,7 @@ def _fqdn_regex(pattern, domain, instance, tenant, env, app):
     return "^" + "".join(out) + "$"
 
 
-def _register_automember(rules, am, names, tag, tenant, env, app):
+def _register_automember(rules, am, names, descs, tenant, env, app):
     """Optionally emit one hostgroup automember rule (fqdn regex) per hostgroup, so
     enrolled hosts wire themselves into the host group. No-op unless the matrix declares
     host_automember.fqdn_pattern. Deduped by hostgroup (shared across privilege levels)."""
@@ -243,7 +275,7 @@ def _register_automember(rules, am, names, tag, tenant, env, app):
     rules.setdefault(names["hg"], {
         "name": names["hg"],
         "automember_type": "hostgroup",
-        "description": "Auto-membership for %s" % tag,
+        "description": descs["automember"],
         "inclusive": [{"key": "fqdn", "expression": _fqdn_regex(
             pattern, am.get("domain"), am.get("instance", "[0-9]+"), tenant, env, app)}]})
 
@@ -274,13 +306,13 @@ def freeipa_idam_access_objects(matrix, scope_tenant=None, scope_environment=Non
         for tenant, env, app, level in _cells_for_access_grant(
                 gname, grant, matrix, scope_tenant, scope_environment):
             names = _names(naming, tenant, env, app, level)
-            tag = "%s/%s/%s/%s" % (tenant, env, app, level)
-            _register_groups(acc["usergroups"], names, tag)
+            descs = _descriptions(matrix, tenant, env, app, level)
+            _register_groups(acc["usergroups"], names, descs)
             acc["hostgroups"].setdefault(names["hg"], {
-                "name": names["hg"], "description": "Hostgroup %s" % tag})
-            _register_hbac(acc["hbac_rules"], acc["hbacsvcs"], names, tag, hbac_services, stock)
-            _register_sudo(acc["sudo_rules"], acc["sudo_commands"], names, tag, sudo_cmds)
-            _register_automember(acc["automember_rules"], host_automember, names, tag,
+                "name": names["hg"], "description": descs["host_group"]})
+            _register_hbac(acc["hbac_rules"], acc["hbacsvcs"], names, descs, hbac_services, stock)
+            _register_sudo(acc["sudo_rules"], acc["sudo_commands"], names, descs, sudo_cmds)
+            _register_automember(acc["automember_rules"], host_automember, names, descs,
                                  tenant, env, app)
 
     return {key: list(val.values()) for key, val in acc.items()}

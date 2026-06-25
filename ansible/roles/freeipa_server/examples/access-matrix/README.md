@@ -191,6 +191,7 @@ automember for **coarse base groups** matched on a user attribute (`uid`, `mail`
 | section | what it is |
 |---|---|
 | `object_naming.prefixes` + `.templates` | names of the **five** generated object types. Keys are a **fixed set** (`role_group`, `user_group`, `host_group`, `hbac_rule`, `sudo_rule`) — you can't add types; edit the prefix **value** and/or rearrange the template `{placeholders}` |
+| `descriptions` *(optional)* | enriched object **descriptions** (defaults already pull in the app + privilege-level descriptions, e.g. *"Grafana — Read-only … [acme/dev]"*). Override per object type; placeholders add `{application_description}` + `{privilege_level_description}` |
 | `tenants` | tenant → its environments (the **single source of truth** for what exists) |
 | `applications` | app → description; may **override** a level's hbac/sudo via `privilege_overrides` |
 | `privilege_levels` | the access tiers (admins/readers/…): `hbac_services` + `sudo_commands` (`[ALL]` → full sudo, `[]` → no sudo rule) |
