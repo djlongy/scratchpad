@@ -64,7 +64,9 @@
 
 - name: Export | Parse captured configuration
   ansible.builtin.set_fact:
-    _freeipa_export: "{{ _freeipa_export_raw.stdout | from_json }}"
+    # Slice from the first '{' so any stray preamble on stdout (e.g. a library warning)
+    # can never break from_json — the script emits one JSON object as its real output.
+    _freeipa_export: "{{ _freeipa_export_raw.stdout[_freeipa_export_raw.stdout.find('{'):] | from_json }}"
 
 - name: Export | Render the snapshot group_vars file on the control node
   ansible.builtin.template:

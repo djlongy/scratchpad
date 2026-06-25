@@ -145,15 +145,17 @@ _UNAVAILABLE = (errors.PublicError, KeyError, AttributeError)
 
 
 def _safe(label, fn, default):
-    """Run an export section; if its capability is unavailable on this server, log a
-    skip to stderr, record it in meta["skipped"], and substitute `default` so the rest
-    of the export still succeeds (partial config beats no config)."""
+    """Run an export section; if its capability is unavailable on this server, record
+    the skip in meta["skipped"] and substitute `default` so the rest of the export still
+    succeeds (partial config beats no config).
+
+    The skip is recorded ONLY in the JSON (meta["skipped"]) — nothing is written to
+    stdout/stderr, so the captured output stays pure JSON for the consuming task's
+    from_json (stray log lines at the top would break the parse)."""
     try:
         return fn()
     except _UNAVAILABLE as exc:
-        reason = "%s: %s" % (type(exc).__name__, exc)
-        sys.stderr.write("[freeipa-export] skipping '%s' — %s\n" % (label, reason))
-        _SKIPPED.append({"section": label, "reason": reason})
+        _SKIPPED.append({"section": label, "reason": "%s: %s" % (type(exc).__name__, exc)})
         return default
 
 
