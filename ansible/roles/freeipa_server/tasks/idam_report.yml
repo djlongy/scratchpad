@@ -1,0 +1,56 @@
+---
+# roles/freeipa_server/tasks/idam_report.yml
+#
+# End-of-run IDAM summary: what this run MANAGED (declared users/groups), whether each
+# phase CHANGED anything, and the EXACT set it REMOVED/PRUNED. Reads facts set earlier in
+# idam.yml (always, on the primary) and reconcile.yml (only when authoritative object
+# reconcile ran) — every reference is defaulted so it is safe whether or not reconcile ran.
+#
+# Granularity note: the bulk freeipa.ansible_freeipa group/user calls report an AGGREGATE
+# `changed` (not a per-item created/modified diff), so "changed" is a yes/no per phase. The
+# REMOVED/PRUNED lists, by contrast, are computed exactly by the role and are itemised.
+
+- name: IDAM report | Assemble run summary
+  ansible.builtin.set_fact:
+    _freeipa_idam_summary:
+      realm: "{{ freeipa_server_realm | default((freeipa_server_domain | default('')) | upper) }}"
+      authoritative: "{{ freeipa_server_authoritative | default(false) | bool }}"
+      # MANAGED this run (the declared desired set the role is responsible for)
+      users_managed: "{{ freeipa_idam_desired_usernames | default([]) }}"
+      groups_managed: "{{ freeipa_idam_group_names | default([]) }}"
+      # CHANGED this run (aggregate per phase — was anything created/updated?)
+      users_changed: "{{ (_freeipa_idam_changed_users | default({})) is changed }}"
+      groups_changed: "{{ (_freeipa_idam_changed_groups | default({})) is changed }}"
+      members_changed: "{{ ((_freeipa_idam_changed_members_add | default({})) is changed)
+                           or ((_freeipa_idam_changed_members_decl | default({})) is changed) }}"
+      # REMOVED / PRUNED this run (itemised, exact)
+      users_archived: "{{ freeipa_idam_users_to_remove | default([]) }}"
+      groups_deleted: "{{ _freeipa_idam_groups_to_remove | default([]) }}"
+      pruned_hbac: "{{ (_reconcile_orphans | default({})).hbacrule | default([]) }}"
+      pruned_sudo: "{{ (_reconcile_orphans | default({})).sudorule | default([]) }}"
+      pruned_hostgroups: "{{ (_reconcile_orphans | default({})).hostgroup | default([]) }}"
+      pruned_groups_obj: "{{ (_reconcile_orphans | default({})).group | default([]) }}"
+      pruned_automember: "{{ ((_reconcile_am_orphans | default({})).group | default([]))
+                             + ((_reconcile_am_orphans | default({})).hostgroup | default([])) }}"
+
+- name: IDAM report | Print run summary
+  ansible.builtin.debug:
+    msg: "{{ _lines }}"
+  vars:
+    _s: "{{ _freeipa_idam_summary }}"
+    # Groups deleted across BOTH mechanisms (group-existence container + object reconcile).
+    _groups_removed: "{{ (_s.groups_deleted + _s.pruned_groups_obj) | unique }}"
+    # Total removed/pruned this run (so the footer reflects deletions, not just creates).
+    _removed_count: "{{ (_s.users_archived | length) + (_groups_removed | length)
+                        + (_s.pruned_hbac | length) + (_s.pruned_sudo | length)
+                        + (_s.pruned_hostgroups | length) + (_s.pruned_automember | length) }}"
+    _chg: "{{ '✚ changed' if (_s.users_changed or _s.groups_changed or _s.members_changed or (_removed_count | int > 0)) else '· no change' }}"
+    _lines:
+      - "════════ FreeIPA IDAM run summary — {{ _s.realm }} ({{ 'AUTHORITATIVE' if _s.authoritative else 'additive' }}) ════════"
+      - "USERS   managed {{ _s.users_managed | length }}: {{ _s.users_managed | sort | join(', ') | default('—', true) }}"
+      - "        created/updated: {{ 'yes' if _s.users_changed else 'no' }}    archived (removed): {{ _s.users_archived | length }}{{ (' → ' + (_s.users_archived | sort | join(', '))) if (_s.users_archived | length > 0) else '' }}"
+      - "GROUPS  managed {{ _s.groups_managed | length }}: {{ _s.groups_managed | sort | join(', ') | default('—', true) }}"
+      - "        objects created/updated: {{ 'yes' if _s.groups_changed else 'no' }}    membership changed: {{ 'yes' if _s.members_changed else 'no' }}"
+      - "        deleted (no longer declared): {{ _groups_removed | length }}{{ (' → ' + (_groups_removed | sort | join(', '))) if (_groups_removed | length > 0) else '' }}"
+      - "PRUNED  hbac: {{ _s.pruned_hbac | default([]) }}  sudo: {{ _s.pruned_sudo | default([]) }}  hostgroups: {{ _s.pruned_hostgroups | default([]) }}  automember: {{ _s.pruned_automember | default([]) }}"
+      - "═════════════════════════════════════════════════════════════ {{ _chg }} ═"

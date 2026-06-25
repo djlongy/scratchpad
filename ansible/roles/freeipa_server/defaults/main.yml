@@ -326,6 +326,10 @@ freeipa_idam_authoritative_membership: "{{ (freeipa_server_authoritative | bool)
 freeipa_idam_authoritative_groups:     "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_groups | bool) }}"
 freeipa_idam_authoritative_objects:    "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_objects | bool) }}"
 
+# Print an end-of-run IDAM summary (managed users/groups, what changed, what was
+# archived/deleted/pruned). On by default; set false to silence.
+freeipa_idam_report: true
+
 # DECLARATIVE group membership — default OFF (additive). When false, the role only ADDS
 # declared members to groups (never strips), so out-of-band/system memberships are safe.
 # Set true to reconcile membership to EXACTLY what is declared: a user/nested-group no

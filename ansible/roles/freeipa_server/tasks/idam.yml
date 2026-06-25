@@ -367,6 +367,7 @@
     groups: "{{ _freeipa_idam_usergroups_create }}"
     state: present
   when: (_freeipa_idam_usergroups_create | default([])) | length > 0
+  register: _freeipa_idam_changed_groups
   no_log: true
 
 # Users are created HERE — before any HBAC/sudo rule-membership task that
@@ -381,6 +382,7 @@
     update_password: on_create
     state: present
   when: (freeipa_idam_users_effective | default([])) | length > 0
+  register: _freeipa_idam_changed_users
   no_log: true
 
 - name: Ensure declarative FreeIPA password policies are present
@@ -688,6 +690,7 @@
   vars:
     _members_additive: "{{ (freeipa_idam_authoritative_membership | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
   when: _members_additive | length > 0
+  register: _freeipa_idam_changed_members_add
   no_log: true
 
 - name: Reconcile group memberships DECLARATIVELY — non-protected managed groups (removes undeclared)
@@ -700,6 +703,7 @@
   when:
     - freeipa_idam_authoritative_membership | bool
     - _freeipa_members_declarative | length > 0
+  register: _freeipa_idam_changed_members_decl
   no_log: true
 
 # RBAC daisychain bottom-up: permission → privilege → role. Custom PERMISSIONS

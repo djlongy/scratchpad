@@ -91,6 +91,16 @@
     - (freeipa_idam_reconcile_match | default('')) | length > 0
   tags: [idam, reconcile]
 
+# End-of-run summary of what IDAM managed/changed/removed. Runs AFTER idam + reconcile so it
+# can report the object-reconcile prunes too. Reads facts from both (all defaulted), primary
+# only, on by default (set freeipa_idam_report: false to silence).
+- name: Report IDAM run summary (primary only)
+  ansible.builtin.import_tasks: idam_report.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_idam_report | default(true) | bool
+  tags: [idam, report]
+
 - name: Manage declarative DNS zones/records (primary only)
   ansible.builtin.import_tasks: dns_records.yml
   when:
