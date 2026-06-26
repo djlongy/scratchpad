@@ -210,8 +210,8 @@ def export_users(group_names, include_sshkeys):
             used_fallback = True
         item = {
             "name": name,
-            "first": _str(e, "givenname") or name,
-            "last": _str(e, "sn") or name,
+            "givenname": _str(e, "givenname") or name,
+            "sn": _str(e, "sn") or name,
             "email": _many(e, "mail"),
             _GROUPS: groups,
         }

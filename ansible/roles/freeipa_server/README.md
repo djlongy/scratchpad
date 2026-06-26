@@ -174,7 +174,7 @@ in `defaults/main.yml`):
 | Var | Holds |
 |---|---|
 | `freeipa_idam_usergroups` | groups: `{ name, description?, gidnumber?, group: [nested], user: [members] }` |
-| `freeipa_idam_users` | users: `{ name, first, last, email?, groups: [...], shell?, password? }` |
+| `freeipa_idam_users` | users: `{ name, givenname, sn, email?, groups: [...], shell?, password? }` (`first`/`last` accepted as aliases) |
 | `freeipa_idam_hostgroups` | `{ name, description?, host: [...], hostgroup: [...] }` |
 | `freeipa_idam_hbacsvcs` / `_hbacsvcgroups` | custom HBAC services + service bundles |
 | `freeipa_idam_hbac_rules` | `{ name, usergroup: [...], hostgroup: [...], service: [...] }` (or `*category: all`) |
@@ -207,7 +207,7 @@ applies. (The nesting direction is load-bearing — the reverse does not work.)
   freeipa_idam_roles:
     - { name: platform-admin, groups: [ug-gitlab-admins, ug-docker-operators] }
   freeipa_idam_users:
-    - { name: alice, first: A, last: Smith, roles: [platform-admin] }   # alice → both groups directly
+    - { name: alice, givenname: A, sn: Smith, roles: [platform-admin] }   # alice → both groups directly
   ```
 
 - **The thin RBAC overlay** (`freeipa_server_rbac_*`) — generates a `role-*` group, nests it

@@ -52,7 +52,7 @@ freeipa_idam_sudo_rules:
 
 # ── Users (identity only — their role-group membership is added by the overlay). ──
 freeipa_idam_users:
-  - { name: alice.smith, first: Alice, last: Smith, email: ["alice.smith@example.com"] }
-  - { name: bob.ng,      first: Bob,   last: Ng,    email: ["bob.ng@example.com"] }
-  - { name: carol.fox,   first: Carol, last: Fox,   email: ["carol.fox@example.com"] }
-  - { name: dana.li,     first: Dana,  last: Li,    email: ["dana.li@example.com"] }
+  - { name: alice.smith, givenname: Alice, sn: Smith, email: ["alice.smith@example.com"] }
+  - { name: bob.ng,      givenname: Bob,   sn: Ng,    email: ["bob.ng@example.com"] }
+  - { name: carol.fox,   givenname: Carol, sn: Fox,   email: ["carol.fox@example.com"] }
+  - { name: dana.li,     givenname: Dana,  sn: Li,    email: ["dana.li@example.com"] }
