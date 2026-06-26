@@ -21,7 +21,7 @@
     # BEFORE the role runs. One reusable file (next to freeipa_rbac.py); include it from every
     # playbook instead of copy-pasting. It reads the in-scope group_vars; nothing is passed in.
     - name: Compile the RBAC overlay into the native dicts
-      ansible.builtin.import_tasks: compile_overlay.yml
+      ansible.builtin.import_tasks: freeipa_server_rbac_compile.yml
 
   roles:
     # The baseline role — consumes ONLY native freeipa_idam_*; no overlay knowledge.

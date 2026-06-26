@@ -12,8 +12,8 @@ pieces** — drop them and the role runs from raw dicts unchanged:
    existing `ug-*` groups, and user→role-group membership — nothing else.)
 2. **The group_vars** `group_vars/all/10_rbac.yml` — `freeipa_server_rbac_*`, the overlay
    data you author.
-3. **A pre_task** — `compile_overlay.yml`, one reusable tasks file the playbook includes from
-   its `pre_tasks` (`import_tasks: compile_overlay.yml`). It validates + compiles + merges the
+3. **A pre_task** — `freeipa_server_rbac_compile.yml`, one reusable tasks file the playbook includes from
+   its `pre_tasks` (`import_tasks: freeipa_server_rbac_compile.yml`). It validates + compiles + merges the
    overlay into the native `freeipa_idam_*` dicts **before** the role runs. It reads the
    in-scope group_vars (nothing is passed in), and is null-safe + gated: no `role_sets`
    declared ⇒ every task no-ops ⇒ pure baseline. Include it from *every* playbook instead of
@@ -25,16 +25,16 @@ of a live realm.
 
 ```
 rbac-overlay/
-├── inventory.yml                 # the IPA primary (one realm hosts all tenants)
-├── ansible.cfg                   # loads the role + its filter_plugins (the compiler)
-├── site.yml                      # pre_tasks: import compile_overlay.yml, then the role
-├── compile_overlay.yml           # the reusable compile (set_facts merging overlay → native)
+├── inventory.yml                    # the IPA primary (one realm hosts all tenants)
+├── ansible.cfg                      # loads the role + its filter_plugins (the compiler)
+├── site.yml                         # pre_tasks import the compile, then the role
+├── freeipa_server_rbac_compile.yml  # the reusable compile (set_facts merging overlay → native)
 └── group_vars/all/
-    ├── 00_native.yml             # NATIVE ug-* policy groups + HBAC/sudo/hostgroups + users
-    └── 10_rbac.yml               # the overlay data: freeipa_server_rbac_role_sets + assignments
+    ├── 00_native.yml                # NATIVE ug-* policy groups + HBAC/sudo/hostgroups + users
+    └── 10_rbac.yml                  # the overlay data: freeipa_server_rbac_role_sets + assignments
 ```
 
-> **Fall back to raw dicts any time:** drop `10_rbac.yml` and the `compile_overlay.yml` include
+> **Fall back to raw dicts any time:** drop `10_rbac.yml` and the `freeipa_server_rbac_compile.yml` include
 > from `site.yml` and you have a plain native-dict deployment — the role is identical either way.
 
 ## The model

@@ -12,7 +12,7 @@
 # task no-ops, leaving a pure baseline run.
 #
 #   pre_tasks:
-#     - ansible.builtin.import_tasks: compile_overlay.yml
+#     - ansible.builtin.import_tasks: freeipa_server_rbac_compile.yml
 
 - name: RBAC overlay — validate input (fail fast, before the role runs)
   ansible.builtin.set_fact:
