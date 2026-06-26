@@ -239,14 +239,22 @@ membership:
 A user in `role-x` is an **indirect** member of `ug-x`, so every rule pointing at `ug-x`
 applies. (Verified live; the reverse nesting does not work.)
 
-### The thin RBAC overlay (`freeipa_server_rbac_*`)
+### The thin RBAC overlay (optional, **external** to the role)
 
-Optional. Instead of hand-adding a person to dozens of granular policy groups, assign them
-an abstract **role**. A small compiler (`filter_plugins/freeipa_rbac.py`) generates **only**
-role groups, their nesting into **existing** `ug-*` policy groups, and user→role-group
-membership — and merges that into the native `freeipa_idam_usergroups` + `freeipa_idam_users`.
-It invents nothing else: HBAC, sudo, hostgroups, DNS, automember, permissions/privileges/
-iparoles all stay plain native entries.
+Instead of hand-adding a person to dozens of granular policy groups, assign them an abstract
+**role**. The overlay generates **only** role groups, their nesting into **existing** `ug-*`
+policy groups, and user→role-group membership — nothing else (HBAC, sudo, hostgroups, DNS,
+automember, permissions/privileges/iparoles all stay plain native entries).
+
+**The role itself has no knowledge of any of this.** The overlay is three external, decoupled
+pieces, so the role works on any native baseline out of the box (and you can drop the overlay
+and run from raw dicts):
+
+1. **`filter_plugins/freeipa_rbac.py`** — the compiler (a Jinja filter).
+2. **group_vars `freeipa_server_rbac_*`** — the overlay data you author.
+3. **a playbook `pre_task`** — validates + compiles + merges the overlay into the native
+   `freeipa_idam_usergroups` + `freeipa_idam_users` **before** the role runs (null-safe + gated;
+   no `role_sets` ⇒ no-op ⇒ pure baseline). See `examples/rbac-overlay/site.yml`.
 
 ```yaml
 freeipa_server_rbac_role_sets:

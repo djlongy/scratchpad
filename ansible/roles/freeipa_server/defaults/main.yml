@@ -226,38 +226,16 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 #                              bundles PRIVILEGES and assigns them to members.
 #                              Use to delegate IPA-management powers (helpdesk).
 #
-# ── RBAC overlay (THIN) — abstract role → role group nested into policy groups ──
-# A small compiler (filter_plugins/freeipa_rbac.py) that lets you assign a user to an
-# abstract ROLE instead of hand-adding them to many granular ug-* policy groups. It
-# generates ONLY: role groups (role-<tenant>-<env>-<name>), their NESTING into EXISTING
-# ug-* policy groups, and user→role-group membership — and merges those into the native
-# freeipa_idam_usergroups below. It invents NOTHING else: HBAC, sudo, hostgroups, DNS,
-# automember, permissions/privileges/iparoles all stay plain native entries. Policy groups
-# (ug-*) must already exist natively (that is where the HBAC/sudo point) — the overlay only
-# nests the role group onto them. Leave the lists empty to skip the overlay entirely and run
-# from raw native dicts. A worked 3-tenant × 3-env example lives under examples/rbac-overlay/.
-freeipa_server_rbac_naming:
-  role_prefix: role
-  usergroup_prefix: ug
-  role_template: "{role_prefix}-{tenant}-{environment}-{name}"
-  policy_group_template: "{usergroup_prefix}-{tenant}-{environment}-{service}-{privilege}"
-# Reusable role bundles: a role = a named set of EXISTING granular policy groups.
-freeipa_server_rbac_role_sets: []
-#  - name: platform-admin
-#    tenant: acme
-#    environment: prod
-#    description: Platform admin role bundle
-#    policy_groups:                      # point at EXISTING native ug-* groups
-#      - { service: gitlab, privilege: admins }
-#      - { service: docker, privilege: operators }
-# Map users to abstract role names (NOT raw ug-* groups). A role name grants membership
-# in every role_set entry of that name (i.e. across the tenant/envs it is defined in).
-freeipa_server_rbac_user_assignments: {}
-#  alice: { roles: [platform-admin] }
-# Loosen validation (default strict): permit assignments to users not in freeipa_idam_users,
-# or role_sets that nest into policy groups not yet declared natively.
-freeipa_server_rbac_allow_unknown_users: false
-freeipa_server_rbac_allow_missing_policy_groups: false
+# ── Optional THIN RBAC overlay — NOT a role feature (kept external on purpose) ──
+# This role consumes ONLY the native freeipa_idam_* dicts below and has NO knowledge of any
+# overlay. An OPTIONAL "assign a user to an abstract role instead of many granular groups"
+# overlay lives entirely OUTSIDE the role — three external, decoupled pieces:
+#   1. filter_plugins/freeipa_rbac.py   — the compiler (a Jinja filter; usable from anywhere)
+#   2. group_vars  freeipa_server_rbac_* — the overlay data you author (NOT defined here)
+#   3. a playbook PRE_TASK              — compiles + merges the overlay into freeipa_idam_*
+#                                         BEFORE this role runs
+# So the role works on ANY native FreeIPA baseline out of the box; the overlay sits on top,
+# and dropping it leaves you running from raw dicts. Worked example: examples/rbac-overlay/.
 
 # ── Declarative IDAM data contract ───────────────────────────────────────────
 # Admin credentials come from the consolidated freeipa_server_admin_* / vault vars above —
