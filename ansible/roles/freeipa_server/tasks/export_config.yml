@@ -21,10 +21,10 @@
   ansible.builtin.assert:
     that:
       - (freeipa_server_admin_password | default('') | length > 0) or
-        (freeipa_idam_vault_secret | default('') | length > 0)
+        (freeipa_server_vault_secret | default('') | length > 0)
     fail_msg: >-
       No admin credential available. Either set freeipa_server_admin_password
-      (no HashiCorp Vault needed), or configure freeipa_idam_vault_secret for the
+      (no HashiCorp Vault needed), or configure freeipa_server_vault_secret for the
       Vault fallback.
 
 - name: Export | Resolve admin password (declared var first, Vault fallback)
@@ -33,13 +33,13 @@
       {{ freeipa_server_admin_password
          if (freeipa_server_admin_password | default('') | length > 0)
          else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_idam_vault_secret + ':' + freeipa_idam_admin_password_field) }}
+            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false
 
 - name: Export | Acquire Kerberos ticket
-  ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
   args:
     stdin: "{{ _freeipa_export_admin_pw }}\n"
   changed_when: false

@@ -40,6 +40,7 @@ freeipa_server_ip_addresses:
 # Supplying the password(s) directly means NO HashiCorp Vault is required — e.g.
 # you can run `--tags export` with just freeipa_server_admin_password. The Vault
 # lookup is evaluated lazily, so it never fires when the password is provided.
+freeipa_server_admin_principal: "admin"  # IPA admin user/principal for kinit + ipaadmin ops
 freeipa_server_admin_password: ""        # IPA admin password (used for kinit/admin ops)
 freeipa_server_dm_password: ""           # Directory Manager password
 
@@ -48,6 +49,9 @@ freeipa_server_dm_password: ""           # Directory Manager password
 # freeipa_server_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
 freeipa_server_admin_password_field: "admin_password"
 freeipa_server_dm_password_field: "dm_password"
+# NOTE: these freeipa_server_admin_* / freeipa_server_vault_secret vars are the SINGLE
+# source of admin credentials for the ENTIRE role — install, IDAM, reconcile, automember,
+# export, delete. There are no separate freeipa_idam_* credential vars; set only these.
 
 # ── Packaging / firewall (upstream owns these) ──────────────────────────────
 freeipa_server_install_packages: true
@@ -232,10 +236,9 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 # that emits freeipa_idam_usergroups/hostgroups/hbac_rules/sudo_rules with a
 # CONFIGURABLE role-name prefix) lives under examples/multitenant-matrix/.
 
-# ── Declarative IDAM data contract (UNCHANGED names — see spec §5) ───────────
-# freeipa_idam_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
-freeipa_idam_admin_principal: "admin"
-freeipa_idam_admin_password_field: "admin_password"
+# ── Declarative IDAM data contract ───────────────────────────────────────────
+# Admin credentials come from the consolidated freeipa_server_admin_* / vault vars above —
+# there are NO freeipa_idam_admin_* / freeipa_idam_vault_secret vars (removed for consistency).
 freeipa_idam_managed_group: "idam-managed-users"
 freeipa_idam_usergroups: []
 # Roles matrix — a role is a named bundle of groups; users reference roles
@@ -287,7 +290,7 @@ freeipa_idam_email_domain: "{{ domain }}"
 
 # Initial password set on user CREATE (update_password: on_create, so existing
 # users are never reset). Empty = create users with no password. Set this from
-# Vault in inventory (e.g. a lookup on freeipa_idam_vault_secret). A per-user
+# Vault in inventory (e.g. a lookup on freeipa_server_vault_secret). A per-user
 # `password:` overrides it.
 freeipa_idam_default_user_password: ""
 
@@ -313,60 +316,26 @@ freeipa_idam_preserve_archived: true
 # run authoritative against a COMPLETE assembled desired-state (never a partial tenant
 # file), or it will prune another tenant's objects — see spec §9.
 #
-# Supersedes the three legacy flags below. It can only ADD pruning (OR semantics): turning
-# it on never un-prunes, and turning it off never overrides a legacy flag an inventory
-# still sets — so existing inventories keep their exact behaviour. New inventories should
-# set ONLY this and leave the legacy flags unset.
+# This is the SOLE pruning control — there are NO legacy per-mechanism flags
+# (membership_declarative / reconcile_objects / reconcile_groups were removed). New
+# inventories set only this one var.
 freeipa_server_authoritative: false
-
-# Effective per-mechanism booleans = the switch OR the (deprecated) legacy flag. Every
-# reconcile task keys on THESE, so the single switch and the old flags both work during
-# migration. (Defined here so the OR is evaluated once, lazily, with full var context.)
-freeipa_idam_authoritative_membership: "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_membership_declarative | bool) }}"
-freeipa_idam_authoritative_groups:     "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_groups | bool) }}"
-freeipa_idam_authoritative_objects:    "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_objects | bool) }}"
 
 # Print an end-of-run IDAM summary (managed users/groups, what changed, what was
 # archived/deleted/pruned). On by default; set false to silence.
 freeipa_idam_report: true
 
-# DECLARATIVE group membership — default OFF (additive). When false, the role only ADDS
-# declared members to groups (never strips), so out-of-band/system memberships are safe.
-# Set true to reconcile membership to EXACTLY what is declared: a user/nested-group no
-# longer in the freeipa_idam_* lists is REMOVED from its group, and a managed group with
-# zero declared members is emptied. Scoped to NON-protected groups only (protected/built-in
-# groups in freeipa_idam_protected_groups stay additive and are never stripped); undeclared
-# groups are never touched. Less aggressive than delete (which deletes objects); this only
-# reconciles MEMBERSHIP of groups you already declare.
-freeipa_idam_membership_declarative: false   # DEPRECATED — prefer freeipa_server_authoritative
-
-# DECLARATIVE OBJECT reconcile — default OFF (DESTRUCTIVE). When true, after the apply the
-# role DELETES matrix-managed OBJECTS (groups, hostgroups, HBAC + sudo rules) in this scope
-# that are no longer declared (orphans, e.g. left over after you removed an app/grant). This
-# is the object-level sibling of membership_declarative (which only reconciles group MEMBERS).
-# Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_scope are
-# eligible, and only those NOT in this run's freeipa_idam_* lists and NOT in
-# freeipa_idam_protected_groups are removed. The matrix playbook sets the match to
-# '<tenant>-<environment>'; a blank match deletes NOTHING (fail-safe).
-freeipa_idam_reconcile_objects: false   # DEPRECATED — prefer freeipa_server_authoritative
-# Scope marker for object pruning — only objects whose NAME contains this string are
-# eligible for deletion (the matrix sets it to '<tenant>-<environment>'). Blank = object
-# pruning deletes NOTHING even when authoritative, and the object-reconcile phase is
-# skipped (fail-safe). Still consumed under freeipa_server_authoritative.
+# Scope marker for object pruning under freeipa_server_authoritative — only objects whose
+# NAME contains this literal substring are eligible for deletion (the matrix sets it to
+# '<tenant>-<environment>'). Blank = object pruning deletes NOTHING and the object-reconcile
+# phase is skipped (fail-safe — it never considers the whole realm).
 freeipa_idam_reconcile_scope: ""
 
-# DECLARATIVE GROUP-EXISTENCE reconcile — default OFF (DESTRUCTIVE). The container-marker
-# sibling of reconcile_objects, but for the BASELINE groups in freeipa_idam_usergroups —
-# the ones the additive `ipagroup state: present` create NEVER deletes. When true, every
-# declared group is nested into the freeipa_idam_managed_groups_group container during the
-# apply; on each run any group that is a member of that container but NO LONGER in
-# freeipa_idam_usergroups (and not protected) is DELETED. So removing a group from the dict
-# deletes it from IPA — true declarative group existence, mirroring the user-marker archival.
-# Only ever touches groups WE enrolled (container members); unmanaged/out-of-band groups and
-# protected built-ins are never considered. NOTE: the first run only ENROLLS — it cannot
-# retroactively catch groups removed from the dict before the container existed (clean those
-# up once with `ipa group-del`). Hard-delete only (groups can't be preserve-archived).
-freeipa_idam_reconcile_groups: true   # DEPRECATED — prefer freeipa_server_authoritative
+# Container-marker group for declarative GROUP-EXISTENCE reconcile: every declared group is
+# nested into this container during apply; under freeipa_server_authoritative any container
+# member NO LONGER in freeipa_idam_usergroups (and not protected) is DELETED — so removing a
+# group from the dict deletes it from IPA. Only ever touches groups WE enrolled (container
+# members); unmanaged/out-of-band groups and protected built-ins are never considered.
 freeipa_idam_managed_groups_group: "idam-managed-groups"
 
 # HARD-DELETE gate (tasks/delete.yml) — DESTRUCTIVE, default OFF. When true AND the run
@@ -427,10 +396,6 @@ freeipa_idam_breakglass_group: "admins"
 # guard: setting 'admin' to nologin requires at least one freeipa_idam_breakglass_account.
 freeipa_idam_nologin_accounts: []
 freeipa_idam_disabled_accounts: []
-
-# DEPRECATED alias — prefer freeipa_idam_nologin_accounts. true just appends 'admin' to the
-# nologin set (with the same break-glass lockout guard).
-freeipa_idam_disable_admin_login: false
 
 # Reactivate (undel) a DECLARED user that currently exists only as a PRESERVED/archived
 # entry, so re-adding a previously-removed user RESTORES them instead of failing the run

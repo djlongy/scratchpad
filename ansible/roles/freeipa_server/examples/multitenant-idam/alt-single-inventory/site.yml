@@ -27,6 +27,6 @@
       ansible.builtin.import_role:
         name: freeipa_server
       # Provide the realm admin/DM passwords via group_vars + HashiCorp Vault
-      # (freeipa_idam_vault_secret / freeipa_server_vault_secret) — see the
+      # (freeipa_server_vault_secret) — see the
       # role README and inventories/example/group_vars/freeipa.yml.
       tags: [idam]

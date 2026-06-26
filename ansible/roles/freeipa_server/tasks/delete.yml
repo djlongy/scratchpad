@@ -23,11 +23,11 @@
 
 - name: Delete | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
-    freeipa_idam_admin_password: >-
+    _freeipa_server_admin_password: >-
       {{ freeipa_server_admin_password
          if (freeipa_server_admin_password | default('') | length > 0)
          else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_idam_vault_secret + ':' + freeipa_idam_admin_password_field) }}
+            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false
@@ -58,8 +58,8 @@
 # Delete in reverse-dependency order: things that REFERENCE others go first.
 - name: Delete | Remove native IPA delegation roles
   freeipa.ansible_freeipa.iparole:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_iparoles | map(attribute='name') | list }}"
     state: absent
   when: (freeipa_idam_iparoles | default([])) | length > 0
@@ -67,8 +67,8 @@
 
 - name: Delete | Remove privileges
   freeipa.ansible_freeipa.ipaprivilege:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_privileges | map(attribute='name') | list }}"
     state: absent
   when: (freeipa_idam_privileges | default([])) | length > 0
@@ -76,8 +76,8 @@
 
 - name: Delete | Remove permissions
   freeipa.ansible_freeipa.ipapermission:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_permissions | map(attribute='name') | list }}"
     state: absent
   when: (freeipa_idam_permissions | default([])) | length > 0
@@ -85,8 +85,8 @@
 
 - name: Delete | Remove sudo rules
   freeipa.ansible_freeipa.ipasudorule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_sudo_rules | default([]) }}"
@@ -96,8 +96,8 @@
 
 - name: Delete | Remove HBAC rules
   freeipa.ansible_freeipa.ipahbacrule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_hbac_rules | default([]) }}"
@@ -107,8 +107,8 @@
 
 - name: Delete | Remove sudo command groups
   freeipa.ansible_freeipa.ipasudocmdgroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_sudocmdgroups | default([]) }}"
@@ -118,8 +118,8 @@
 
 - name: Delete | Remove HBAC service groups
   freeipa.ansible_freeipa.ipahbacsvcgroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_hbacsvcgroups | default([]) }}"
@@ -129,8 +129,8 @@
 
 - name: Delete | Remove sudo commands
   freeipa.ansible_freeipa.ipasudocmd:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_sudo_commands | default([]) }}"
@@ -140,8 +140,8 @@
 
 - name: Delete | Remove custom HBAC services
   freeipa.ansible_freeipa.ipahbacsvc:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_hbacsvcs | default([]) }}"
@@ -151,8 +151,8 @@
 
 - name: Delete | Remove password policies
   freeipa.ansible_freeipa.ipapwpolicy:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_pwpolicies | default([]) }}"
@@ -163,8 +163,8 @@
 # HARD delete the users (preserve: false → user-del, NOT user-del --preserve).
 - name: Delete | Hard-delete declared users (not protected)
   freeipa.ansible_freeipa.ipauser:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ _delete_users }}"
     preserve: false
     state: absent
@@ -173,8 +173,8 @@
 
 - name: Delete | Remove declared groups (not protected)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ _delete_groups }}"
     state: absent
   when: _delete_groups | length > 0
@@ -182,8 +182,8 @@
 
 - name: Delete | Remove hostgroups
   freeipa.ansible_freeipa.ipahostgroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: absent
   loop: "{{ freeipa_idam_hostgroups | default([]) }}"
@@ -195,8 +195,8 @@
 # is a protected/built-in name.
 - name: Delete | Remove the marker group
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_managed_group }}"
     state: absent
   when: freeipa_idam_managed_group not in (freeipa_idam_protected_groups | default([]))

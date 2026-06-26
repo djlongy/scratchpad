@@ -24,7 +24,7 @@
 #   ansible-playbook -i inventories/acme -i inventories/globex site.yml --tags idam
 #
 # Realm admin/DM passwords come from group_vars + HashiCorp Vault
-# (freeipa_idam_vault_secret) — see the role README. If your group_vars are
+# (freeipa_server_vault_secret) — see the role README. If your group_vars are
 # Ansible-Vault encrypted, add --ask-vault-pass (or --vault-password-file ...).
 - name: FreeIPA multi-tenant IDAM
   hosts: freeipa

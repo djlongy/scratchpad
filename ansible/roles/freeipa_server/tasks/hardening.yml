@@ -4,7 +4,7 @@
 # idempotent, and runs on the primary only. Requires an admin Kerberos ticket.
 
 - name: Acquire Kerberos ticket for hardening operations
-  ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
   args:
     stdin: "{{ freeipa_server_admin_password }}\n"
   changed_when: false
@@ -47,7 +47,7 @@
 
 - name: Require OTP for hardened admin groups
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
     ipaadmin_password: "{{ freeipa_server_admin_password }}"
     name: "{{ item }}"
     action: member
@@ -79,7 +79,7 @@
 
 - name: Disable the permissive allow_all HBAC rule
   freeipa.ansible_freeipa.ipahbacrule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
     ipaadmin_password: "{{ freeipa_server_admin_password }}"
     name: allow_all
     state: disabled

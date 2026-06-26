@@ -7,7 +7,7 @@
 
 - name: Automember | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
-    _freeipa_automember_admin_pw: >-
+    _freeipa_server_admin_password: >-
       {{ freeipa_server_admin_password
          if (freeipa_server_admin_password | default('') | length > 0)
          else lookup('community.hashi_vault.hashi_vault',
@@ -19,7 +19,7 @@
 
 - name: Automember | Reconcile rules
   freeipa.ansible_freeipa.ipaautomember:
-    ipaadmin_password: "{{ _freeipa_automember_admin_pw }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     automember_type: "{{ item.automember_type }}"
     description: "{{ item.description | default(omit) }}"
@@ -40,7 +40,7 @@
 # directory-wide re-evaluation, not something to run every play.
 - name: Automember | Rebuild membership after rule changes
   freeipa.ansible_freeipa.ipaautomember:
-    ipaadmin_password: "{{ _freeipa_automember_admin_pw }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     automember_type: "{{ item }}"
     state: rebuilt
   loop: "{{ freeipa_server_automember_rules | map(attribute='automember_type') | unique | list }}"

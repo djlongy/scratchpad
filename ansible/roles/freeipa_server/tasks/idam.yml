@@ -349,11 +349,11 @@
 
 - name: Resolve FreeIPA admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
-    freeipa_idam_admin_password: >-
+    _freeipa_server_admin_password: >-
       {{ freeipa_server_admin_password
          if (freeipa_server_admin_password | default('') | length > 0)
          else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_idam_vault_secret + ':' + freeipa_idam_admin_password_field) }}
+            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false
@@ -369,9 +369,9 @@
     - freeipa_idam_desired_usernames | length > 0
   block:
     - name: Acquire Kerberos ticket to find preserved users
-      ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
       args:
-        stdin: "{{ freeipa_idam_admin_password }}"
+        stdin: "{{ _freeipa_server_admin_password }}"
       changed_when: false
       check_mode: false
       no_log: true
@@ -408,8 +408,8 @@
 # replacing the per-group loop. Runs before HBAC/sudo so rules can reference groups.
 - name: Ensure declarative FreeIPA groups are present (bulk create)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     groups: "{{ _freeipa_idam_usergroups_create }}"
     state: present
   when: (_freeipa_idam_usergroups_create | default([])) | length > 0
@@ -422,8 +422,8 @@
 # still applied later (once both users and groups exist).
 - name: Ensure declarative users are present
   freeipa.ansible_freeipa.ipauser:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     users: "{{ freeipa_idam_users_effective | default([]) }}"
     update_password: on_create
     state: present
@@ -433,8 +433,8 @@
 
 - name: Ensure declarative FreeIPA password policies are present
   freeipa.ansible_freeipa.ipapwpolicy:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     maxlife: "{{ item.maxlife | default(omit) }}"
     minlife: "{{ item.minlife | default(omit) }}"
@@ -455,8 +455,8 @@
 
 - name: Ensure declarative FreeIPA hostgroups are present
   freeipa.ansible_freeipa.ipahostgroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     host: "{{ item.host | default(omit) }}"
@@ -474,8 +474,8 @@
 # entry". Idempotent — re-declaring an existing service is a no-op.
 - name: Ensure custom HBAC services are present
   freeipa.ansible_freeipa.ipahbacsvc:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     state: "{{ item.state | default('present') }}"
@@ -493,8 +493,8 @@
 # params (hbacsvc).
 - name: Ensure declarative HBAC service groups are present (group + members in one pass)
   freeipa.ansible_freeipa.ipahbacsvcgroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     hbacsvc: "{{ item.hbacsvc | default(omit) }}"
@@ -515,8 +515,8 @@
 # below: the module forbids member params alongside states enabled/disabled.
 - name: Ensure declarative HBAC rules are present (rule + members in one pass)
   freeipa.ansible_freeipa.ipahbacrule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     usercategory: "{{ item.usercategory | default(omit) }}"
@@ -537,8 +537,8 @@
 
 - name: Ensure declarative HBAC rule operational states
   freeipa.ansible_freeipa.ipahbacrule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: "{{ item.state }}"
   loop: "{{ freeipa_idam_hbac_rules }}"
@@ -568,8 +568,8 @@
           stock allow rules would lock everyone out. Declare your access policy first.
     - name: Disable each listed HBAC rule (reversible — state disabled)
       freeipa.ansible_freeipa.ipahbacrule:
-        ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-        ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+        ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+        ipaadmin_password: "{{ _freeipa_server_admin_password }}"
         name: "{{ item }}"
         state: disabled
       loop: "{{ freeipa_idam_hbac_rules_disable }}"
@@ -579,8 +579,8 @@
 
 - name: Ensure declarative sudo commands are present
   freeipa.ansible_freeipa.ipasudocmd:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     state: "{{ item.state | default('present') }}"
@@ -596,8 +596,8 @@
 # one call (declarative reconcile). Field names = ipasudocmdgroup params (sudocmd).
 - name: Ensure declarative sudo command groups are present (group + members in one pass)
   freeipa.ansible_freeipa.ipasudocmdgroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     sudocmd: "{{ item.sudocmd | default(omit) }}"
@@ -616,8 +616,8 @@
 # (enabled/disabled) is a separate pass below.
 - name: Ensure declarative sudo rules are present (rule + members in one pass)
   freeipa.ansible_freeipa.ipasudorule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     usercategory: "{{ item.usercategory | default(omit) }}"
@@ -646,8 +646,8 @@
 
 - name: Ensure declarative sudo rule operational states
   freeipa.ansible_freeipa.ipasudorule:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     state: "{{ item.state }}"
   loop: "{{ freeipa_idam_sudo_rules }}"
@@ -661,14 +661,14 @@
 
 - name: Ensure managed marker group exists
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_managed_group }}"
     description: "Users managed declaratively from Git"
     state: present
   no_log: true
 
-# DECLARATIVE GROUP-EXISTENCE reconcile (opt-in: freeipa_idam_reconcile_groups). The
+# DECLARATIVE GROUP-EXISTENCE reconcile (opt-in: freeipa_server_authoritative). The
 # additive `ipagroup state: present` create above never deletes a group you remove from
 # freeipa_idam_usergroups. To make group existence declarative we nest every declared
 # group into a CONTAINER marker group here; later (in the kinit window below) we read the
@@ -676,18 +676,18 @@
 # user-marker archival. Enrollment excludes protected built-ins (never tracked/deleted).
 - name: Ensure managed-groups container exists (group-existence reconcile marker)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_managed_groups_group }}"
     description: "Container marker — groups managed declaratively from Git (group-existence reconcile)"
     state: present
-  when: freeipa_idam_authoritative_groups | bool
+  when: freeipa_server_authoritative | bool
   no_log: true
 
 - name: Enroll declared groups into the managed-groups container (membership marker)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_managed_groups_group }}"
     action: member
     group: "{{ _freeipa_idam_enrollable_groups }}"
@@ -695,13 +695,13 @@
   vars:
     _freeipa_idam_enrollable_groups: "{{ freeipa_idam_group_names | difference(freeipa_idam_protected_groups) }}"
   when:
-    - freeipa_idam_authoritative_groups | bool
+    - freeipa_server_authoritative | bool
     - _freeipa_idam_enrollable_groups | length > 0
   no_log: true
 
 # Membership reconcile. Default = ADDITIVE (ipagroup action: member) for ALL groups —
 # adds declared members, never strips, so out-of-band/system memberships (e.g. admin's)
-# are safe. Opt in to DECLARATIVE with freeipa_idam_membership_declarative: true, which
+# are safe. Opt in to DECLARATIVE with freeipa_server_authoritative: true, which
 # (for non-protected managed groups only) reconciles membership to EXACTLY what is
 # declared — a user/nested-group no longer in code is REMOVED, a group with zero declared
 # members is emptied. Protected/built-in groups always stay additive (never stripped).
@@ -728,26 +728,26 @@
 
 - name: Ensure group memberships present — ADDITIVE (protected always; all when not declarative)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     groups: "{{ _members_additive }}"
     action: member
     state: present
   vars:
-    _members_additive: "{{ (freeipa_idam_authoritative_membership | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+    _members_additive: "{{ (freeipa_server_authoritative | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
   when: _members_additive | length > 0
   register: _freeipa_idam_changed_members_add
   no_log: true
 
 - name: Reconcile group memberships DECLARATIVELY — non-protected managed groups (removes undeclared)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     groups: "{{ _freeipa_members_declarative }}"
     # default action (group) → gen_add_del_lists reconciles user + nested-group membership
     state: present
   when:
-    - freeipa_idam_authoritative_membership | bool
+    - freeipa_server_authoritative | bool
     - _freeipa_members_declarative | length > 0
   register: _freeipa_idam_changed_members_decl
   no_log: true
@@ -759,8 +759,8 @@
 # only custom ones you define.
 - name: Ensure declarative IPA permissions are present
   freeipa.ansible_freeipa.ipapermission:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     right: "{{ item.right | default(omit) }}"
     attrs: "{{ item.attrs | default(omit) }}"
@@ -778,8 +778,8 @@
 
 - name: Ensure declarative IPA privileges are present (privilege + permissions in one pass)
   freeipa.ansible_freeipa.ipaprivilege:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     permission: "{{ item.permission | default(omit) }}"
@@ -796,8 +796,8 @@
 # users + groups so user/group members resolve.
 - name: Ensure native IPA delegation roles are present
   freeipa.ansible_freeipa.iparole:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     privilege: "{{ item.privilege | default(omit) }}"
     user: "{{ item.user | default(omit) }}"
@@ -817,8 +817,8 @@
 # so it bypasses the declared-group validation. They stay login-enabled + protected.
 - name: Add break-glass accounts to the break-glass group
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_breakglass_group }}"
     action: member
     user: "{{ freeipa_idam_breakglass_accounts | map(attribute='name') | list }}"
@@ -832,15 +832,12 @@
 #       just no shell login). freeipa_idam_nologin_shell is the shell VALUE applied.
 #   freeipa_idam_disabled_accounts → ipa user-disable: the account is fully OFF and cannot
 #       authenticate at all.
-# Back-compat: the deprecated freeipa_idam_disable_admin_login: true just appends 'admin'
-# to the nologin set. Lockout guards: never fully DISABLE admin (you'd lose API admin), and
-# only set admin to nologin once a break-glass account exists (else interactive admin is
-# locked out with no alternative).
+# Lockout guards: never fully DISABLE admin (you'd lose API admin), and only set admin to
+# nologin once a break-glass account exists (else interactive admin is locked out with no
+# alternative).
 - name: Manage account login / enabled state (opt-in, list-driven)
   vars:
-    _freeipa_idam_nologin_effective: >-
-      {{ ((freeipa_idam_nologin_accounts | default([]))
-          + (['admin'] if (freeipa_idam_disable_admin_login | default(false) | bool) else [])) | unique }}
+    _freeipa_idam_nologin_effective: "{{ freeipa_idam_nologin_accounts | default([]) | unique }}"
   when: (_freeipa_idam_nologin_effective | length > 0)
         or ((freeipa_idam_disabled_accounts | default([])) | length > 0)
   block:
@@ -860,8 +857,8 @@
 
     - name: Force existing accounts to a nologin shell (login off, account active)
       freeipa.ansible_freeipa.ipauser:
-        ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-        ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+        ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+        ipaadmin_password: "{{ _freeipa_server_admin_password }}"
         name: "{{ item }}"
         shell: "{{ freeipa_idam_nologin_shell }}"
         state: present
@@ -873,8 +870,8 @@
 
     - name: Disable accounts entirely (cannot authenticate)
       freeipa.ansible_freeipa.ipauser:
-        ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-        ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+        ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+        ipaadmin_password: "{{ _freeipa_server_admin_password }}"
         name: "{{ item }}"
         state: disabled
       loop: "{{ freeipa_idam_disabled_accounts | default([]) }}"
@@ -885,8 +882,8 @@
 
 - name: Ensure managed users are members of marker group
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_managed_group }}"
     action: member
     user: "{{ freeipa_idam_desired_usernames }}"
@@ -895,9 +892,9 @@
   no_log: true
 
 - name: Acquire Kerberos ticket for current membership discovery
-  ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
   args:
-    stdin: "{{ freeipa_idam_admin_password }}\n"
+    stdin: "{{ _freeipa_server_admin_password }}\n"
   changed_when: false
   no_log: true
 
@@ -934,8 +931,8 @@
 # freeipa_idam_preserve_archived=false to hard-delete instead. One bulk call.
 - name: Archive (preserve) users removed from declarative config
   freeipa.ansible_freeipa.ipauser:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ freeipa_idam_users_to_remove }}"
     state: absent
     preserve: "{{ freeipa_idam_preserve_archived | bool }}"
@@ -953,7 +950,7 @@
   changed_when: false
   failed_when: false                     # container may not exist yet on a first --check
   check_mode: false
-  when: freeipa_idam_authoritative_groups | bool
+  when: freeipa_server_authoritative | bool
 
 # Members come back as raw `member: cn=<group>,cn=groups,...` DN lines (user members
 # are `uid=...` and are skipped). `^member: cn=` excludes the container's own
@@ -969,7 +966,7 @@
          | difference(freeipa_idam_group_names)
          | difference(freeipa_idam_protected_groups)
          | difference([freeipa_idam_managed_groups_group, freeipa_idam_managed_group]) }}
-  when: freeipa_idam_authoritative_groups | bool
+  when: freeipa_server_authoritative | bool
 
 - name: Report groups to delete (declarative group-existence reconcile)
   ansible.builtin.debug:
@@ -977,7 +974,7 @@
       Group reconcile → deleting {{ _freeipa_idam_groups_to_remove | length }}
       orphaned managed group(s): {{ _freeipa_idam_groups_to_remove }}
   when:
-    - freeipa_idam_authoritative_groups | bool
+    - freeipa_server_authoritative | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
 
 # Hard-delete (groups can't be preserve-archived). One bulk ipagroup call; state: absent
@@ -985,12 +982,12 @@
 # container, so the marker self-heals.
 - name: Delete groups removed from declarative config (no longer in freeipa_idam_usergroups)
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ _freeipa_idam_groups_to_remove }}"
     state: absent
   when:
-    - freeipa_idam_authoritative_groups | bool
+    - freeipa_server_authoritative | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
   no_log: true
 

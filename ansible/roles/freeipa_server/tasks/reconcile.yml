@@ -1,7 +1,7 @@
 ---
 # Declarative OBJECT reconcile — DELETE matrix-managed objects in THIS scope that are no
 # longer declared (orphans). Imported from idam.yml only when
-# freeipa_idam_reconcile_objects is true (default false). DESTRUCTIVE but tightly scoped:
+# freeipa_server_authoritative is true. DESTRUCTIVE but tightly scoped:
 #   * only objects whose NAME contains freeipa_idam_reconcile_scope (the scope marker,
 #     e.g. "example-mgt") are eligible — other tenants/environments are never touched;
 #   * an object is deleted only if it is NOT in this run's freeipa_idam_* lists (orphan)
@@ -14,27 +14,26 @@
     that:
       - (freeipa_idam_reconcile_scope | default('')) | length > 0
     fail_msg: >-
-      Object reconcile is active (freeipa_server_authoritative or the deprecated
-      freeipa_idam_reconcile_objects) but freeipa_idam_reconcile_scope is empty. The matrix
-      sets it to '<tenant>-<environment>'; refusing to reconcile without a scope marker
-      (would consider the WHOLE realm). NB: main.yml already skips this phase on a blank
-      match — this assert is belt-and-suspenders.
+      Object reconcile is active (freeipa_server_authoritative) but freeipa_idam_reconcile_scope
+      is empty. The matrix sets it to '<tenant>-<environment>'; refusing to reconcile without a
+      scope marker (would consider the WHOLE realm). NB: main.yml already skips this phase on a
+      blank scope — this assert is belt-and-suspenders.
 
 - name: Reconcile | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
-    _reconcile_admin_pw: >-
+    _freeipa_server_admin_password: >-
       {{ freeipa_server_admin_password
          if (freeipa_server_admin_password | default('') | length > 0)
          else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_idam_vault_secret + ':' + freeipa_idam_admin_password_field) }}
+            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
   no_log: true
   delegate_to: localhost
   become: false
 
 - name: Reconcile | Acquire Kerberos ticket
-  ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
   args:
-    stdin: "{{ _reconcile_admin_pw }}"
+    stdin: "{{ _freeipa_server_admin_password }}"
   changed_when: false
   check_mode: false
   no_log: true
