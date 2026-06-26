@@ -358,6 +358,52 @@
   delegate_to: localhost
   become: false
 
+# Reactivate (undel) any DECLARED user that currently exists only as a PRESERVED (archived)
+# entry. Without this, re-declaring a previously-removed user is a no-op at create time (the
+# name still "exists" in cn=deleted), and the later membership add fails hard with
+# "no such entry" — blocking the whole run. Bounded + idempotent: only undeletes preserved
+# users whose name is back in the desired set. Needs the IPA CLI, so a short kinit window.
+- name: Reactivate declared-but-preserved users (re-onboard safety)
+  when:
+    - freeipa_idam_reactivate_preserved | bool
+    - freeipa_idam_desired_usernames | length > 0
+  block:
+    - name: Acquire Kerberos ticket to find preserved users
+      ansible.builtin.command: "kinit {{ freeipa_idam_admin_principal }}"
+      args:
+        stdin: "{{ freeipa_idam_admin_password }}"
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Find currently-preserved (archived) users
+      ansible.builtin.command: "ipa user-find --preserved=true --pkey-only --sizelimit=0"
+      register: _freeipa_idam_preserved_find
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Compute declared users that are currently preserved
+      ansible.builtin.set_fact:
+        _freeipa_idam_to_reactivate: >-
+          {{ (_freeipa_idam_preserved_find.stdout_lines | default([]) | map('trim')
+              | select('match', '^User login:')
+              | map('regex_replace', '^User login: ', '') | list)
+             | intersect(freeipa_idam_desired_usernames) }}
+
+    - name: Reactivate (undel) preserved users that are re-declared
+      ansible.builtin.command: "ipa user-undel {{ item | quote }}"
+      loop: "{{ _freeipa_idam_to_reactivate }}"
+      loop_control:
+        label: "{{ item }}"
+      changed_when: true
+
+    - name: Destroy reactivation Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
 # BULK create — one ipagroup call for ALL groups (name/description/gidnumber/posix),
 # replacing the per-group loop. Runs before HBAC/sudo so rules can reference groups.
 - name: Ensure declarative FreeIPA groups are present (bulk create)
@@ -780,19 +826,62 @@
   when: freeipa_idam_breakglass_accounts | length > 0
   no_log: true
 
-# Best practice (opt-in): disable INTERACTIVE login for the built-in admin by setting
-# its shell to nologin. admin keeps API/kinit powers; only shell login is removed.
-# loginshell IS settable on admin (unlike givenName), so this works on the protected
-# account. Enable only once break-glass accounts exist.
-- name: Disable interactive login for the built-in admin (opt-in best practice)
-  freeipa.ansible_freeipa.ipauser:
-    ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_idam_admin_password }}"
-    name: "{{ freeipa_idam_admin_principal }}"
-    shell: "{{ freeipa_idam_nologin_shell }}"
-    state: present
-  when: freeipa_idam_disable_admin_login | bool
-  no_log: true
+# Account state controls (opt-in, list-driven, agnostic — broad over single-purpose):
+#   freeipa_idam_nologin_accounts  → force an EXISTING account to the nologin shell:
+#       interactive login OFF, account stays ACTIVE for API/kinit (admin keeps its powers,
+#       just no shell login). freeipa_idam_nologin_shell is the shell VALUE applied.
+#   freeipa_idam_disabled_accounts → ipa user-disable: the account is fully OFF and cannot
+#       authenticate at all.
+# Back-compat: the deprecated freeipa_idam_disable_admin_login: true just appends 'admin'
+# to the nologin set. Lockout guards: never fully DISABLE admin (you'd lose API admin), and
+# only set admin to nologin once a break-glass account exists (else interactive admin is
+# locked out with no alternative).
+- name: Manage account login / enabled state (opt-in, list-driven)
+  vars:
+    _freeipa_idam_nologin_effective: >-
+      {{ ((freeipa_idam_nologin_accounts | default([]))
+          + (['admin'] if (freeipa_idam_disable_admin_login | default(false) | bool) else [])) | unique }}
+  when: (_freeipa_idam_nologin_effective | length > 0)
+        or ((freeipa_idam_disabled_accounts | default([])) | length > 0)
+  block:
+    - name: Guard account-state changes against admin lockout
+      ansible.builtin.assert:
+        that:
+          - "'admin' not in (freeipa_idam_disabled_accounts | default([]))"
+          - >-
+            ('admin' not in _freeipa_idam_nologin_effective)
+            or ((freeipa_idam_breakglass_accounts | default([])) | length > 0)
+        fail_msg: >-
+          Refusing account-state change — never fully DISABLE 'admin' (you'd lose API
+          admin), and only set 'admin' to nologin once at least one
+          freeipa_idam_breakglass_account is declared (else interactive admin is locked
+          out with no alternative).
+        quiet: true
+
+    - name: Force existing accounts to a nologin shell (login off, account active)
+      freeipa.ansible_freeipa.ipauser:
+        ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+        ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+        name: "{{ item }}"
+        shell: "{{ freeipa_idam_nologin_shell }}"
+        state: present
+      loop: "{{ _freeipa_idam_nologin_effective }}"
+      loop_control:
+        label: "{{ item }}"
+      when: _freeipa_idam_nologin_effective | length > 0
+      no_log: true
+
+    - name: Disable accounts entirely (cannot authenticate)
+      freeipa.ansible_freeipa.ipauser:
+        ipaadmin_principal: "{{ freeipa_idam_admin_principal }}"
+        ipaadmin_password: "{{ freeipa_idam_admin_password }}"
+        name: "{{ item }}"
+        state: disabled
+      loop: "{{ freeipa_idam_disabled_accounts | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (freeipa_idam_disabled_accounts | default([])) | length > 0
+      no_log: true
 
 - name: Ensure managed users are members of marker group
   freeipa.ansible_freeipa.ipagroup:

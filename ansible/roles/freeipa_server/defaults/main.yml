@@ -120,7 +120,7 @@ freeipa_server_ad_trusts: []
 
 # ── DNS ─────────────────────────────────────────────────────────────────────
 freeipa_server_setup_dns: true
-freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["10.0.0.53"]
+freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["192.168.10.1"]
 freeipa_server_forward_policy: "only"    # only | first
 freeipa_server_no_forwarders: false
 freeipa_server_auto_reverse: true
@@ -342,7 +342,8 @@ freeipa_idam_membership_declarative: false   # DEPRECATED — prefer freeipa_ser
 
 # DECLARATIVE OBJECT reconcile — default OFF (DESTRUCTIVE). When true, after the apply the
 # role DELETES matrix-managed OBJECTS (groups, hostgroups, HBAC + sudo rules) in this scope
-# that are no longer declared (orphans). Object-level sibling of membership_declarative.
+# that are no longer declared (orphans, e.g. left over after you removed an app/grant). This
+# is the object-level sibling of membership_declarative (which only reconciles group MEMBERS).
 # Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_scope are
 # eligible, and only those NOT in this run's freeipa_idam_* lists and NOT in
 # freeipa_idam_protected_groups are removed. The matrix playbook sets the match to
@@ -365,7 +366,7 @@ freeipa_idam_reconcile_scope: ""
 # protected built-ins are never considered. NOTE: the first run only ENROLLS — it cannot
 # retroactively catch groups removed from the dict before the container existed (clean those
 # up once with `ipa group-del`). Hard-delete only (groups can't be preserve-archived).
-freeipa_idam_reconcile_groups: false   # DEPRECATED — prefer freeipa_server_authoritative
+freeipa_idam_reconcile_groups: true   # DEPRECATED — prefer freeipa_server_authoritative
 freeipa_idam_managed_groups_group: "idam-managed-groups"
 
 # HARD-DELETE gate (tasks/delete.yml) — DESTRUCTIVE, default OFF. When true AND the run
@@ -413,11 +414,29 @@ freeipa_idam_nologin_shell: "/sbin/nologin"
 freeipa_idam_breakglass_accounts: []
 freeipa_idam_breakglass_group: "admins"
 
-# Best practice: disable INTERACTIVE login for the built-in `admin` by setting its
-# shell to the nologin shell (admin keeps its powers for API/kinit, just no shell
-# login). OPT-IN (default off) — only enable once break-glass accounts exist, or you
-# risk locking out interactive admin entirely.
+# ── Account login / enabled state (agnostic, list-driven) ────────────────────
+# Two distinct, explicit controls for EXISTING accounts (default empty → no change):
+#
+#   freeipa_idam_nologin_accounts  — force these to the nologin shell. Interactive login
+#       is OFF, but the account stays ACTIVE (API/kinit still work — e.g. admin keeps its
+#       powers, just no shell login). The shell applied is freeipa_idam_nologin_shell.
+#   freeipa_idam_disabled_accounts — `ipa user-disable` these. The account is fully OFF
+#       and cannot authenticate at all. ('admin' is refused here — you'd lose API admin.)
+#
+# Append admin/any account as needed, e.g. freeipa_idam_nologin_accounts: [admin]. Lockout
+# guard: setting 'admin' to nologin requires at least one freeipa_idam_breakglass_account.
+freeipa_idam_nologin_accounts: []
+freeipa_idam_disabled_accounts: []
+
+# DEPRECATED alias — prefer freeipa_idam_nologin_accounts. true just appends 'admin' to the
+# nologin set (with the same break-glass lockout guard).
 freeipa_idam_disable_admin_login: false
+
+# Reactivate (undel) a DECLARED user that currently exists only as a PRESERVED/archived
+# entry, so re-adding a previously-removed user RESTORES them instead of failing the run
+# (a preserved name is in cn=deleted; create no-ops and the membership add would otherwise
+# fail with "no such entry"). Bounded to declared names; default on.
+freeipa_idam_reactivate_preserved: true
 
 # Names of existing HBAC rules to DISABLE (state: disabled — reversible, not deleted).
 # Agnostic + scalable: pass any rule names, e.g. the stock allow-all rules:
@@ -485,9 +504,9 @@ freeipa_migrate_log: "/var/log/ipa-migrate.log"
 freeipa_migrate_restart_sssd: true
 freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
 # ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
-# freeipa_migrate_source: "ipa1.example.com"   # source IPA FQDN (ipa-migrate arg)
-# freeipa_migrate_source_host: "ipa1"       # inventory host for CA slurp
-# freeipa_migrate_bind_pw_vault: "kv-<env>/data/platform/freeipa/runtime"  # source DM pw path
+# freeipa_migrate_source: "mgta-freeipa-01.example.au"   # source IPA FQDN (ipa-migrate arg)
+# freeipa_migrate_source_host: "mgta-freeipa-01"       # inventory host for CA slurp
+# freeipa_migrate_bind_pw_vault: "kv-mgt/data/platform/freeipa/runtime"  # source DM pw path
 # Internal staged paths (behavioural):
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
 freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
