@@ -78,7 +78,7 @@
 # groups, AND automember rules. Runs AFTER idam so the desired set is fully applied before
 # orphans are computed. Driven by the ONE authoritative switch (freeipa_idam_authoritative_
 # objects = freeipa_server_authoritative OR the deprecated freeipa_idam_reconcile_objects).
-# Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_match are
+# Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_scope are
 # eligible, and only those not in this run's freeipa_idam_* lists / not protected are
 # removed. Gated on a NON-blank match, so an authoritative run without a scope marker
 # simply skips object pruning (never considers the whole realm). Sibling of the group-
@@ -88,7 +88,7 @@
   when:
     - freeipa_server_is_primary | bool
     - freeipa_idam_authoritative_objects | bool
-    - (freeipa_idam_reconcile_match | default('')) | length > 0
+    - (freeipa_idam_reconcile_scope | default('')) | length > 0
   tags: [idam, reconcile]
 
 # End-of-run summary of what IDAM managed/changed/removed. Runs AFTER idam + reconcile so it

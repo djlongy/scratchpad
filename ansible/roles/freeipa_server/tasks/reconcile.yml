@@ -2,7 +2,7 @@
 # Declarative OBJECT reconcile — DELETE matrix-managed objects in THIS scope that are no
 # longer declared (orphans). Imported from idam.yml only when
 # freeipa_idam_reconcile_objects is true (default false). DESTRUCTIVE but tightly scoped:
-#   * only objects whose NAME contains freeipa_idam_reconcile_match (the scope marker,
+#   * only objects whose NAME contains freeipa_idam_reconcile_scope (the scope marker,
 #     e.g. "example-mgt") are eligible — other tenants/environments are never touched;
 #   * an object is deleted only if it is NOT in this run's freeipa_idam_* lists (orphan)
 #     AND not in freeipa_idam_protected_groups;
@@ -12,10 +12,10 @@
 - name: Reconcile | Refuse to run without a scope marker (fail-safe)
   ansible.builtin.assert:
     that:
-      - (freeipa_idam_reconcile_match | default('')) | length > 0
+      - (freeipa_idam_reconcile_scope | default('')) | length > 0
     fail_msg: >-
       Object reconcile is active (freeipa_server_authoritative or the deprecated
-      freeipa_idam_reconcile_objects) but freeipa_idam_reconcile_match is empty. The matrix
+      freeipa_idam_reconcile_objects) but freeipa_idam_reconcile_scope is empty. The matrix
       sets it to '<tenant>-<environment>'; refusing to reconcile without a scope marker
       (would consider the WHOLE realm). NB: main.yml already skips this phase on a blank
       match — this assert is belt-and-suspenders.
@@ -40,7 +40,7 @@
   no_log: true
 
 - name: Reconcile | Find managed objects in this scope (one query per type)
-  ansible.builtin.command: "ipa {{ item }}-find {{ freeipa_idam_reconcile_match }} --pkey-only --sizelimit=0"
+  ansible.builtin.command: "ipa {{ item }}-find {{ freeipa_idam_reconcile_scope }} --pkey-only --sizelimit=0"
   register: _reconcile_find
   changed_when: false
   check_mode: false                      # run the read-only find even in --check (preview)
@@ -66,7 +66,7 @@
   ansible.builtin.set_fact:
     _reconcile_orphans: >-
       {{ _reconcile_found
-         | freeipa_idam_orphans(_reconcile_desired, freeipa_idam_reconcile_match,
+         | freeipa_idam_orphans(_reconcile_desired, freeipa_idam_reconcile_scope,
                                 _reconcile_protected) }}
   vars:
     _reconcile_protected: >-
@@ -81,7 +81,7 @@
 - name: Reconcile | Report what will be deleted
   ansible.builtin.debug:
     msg: >-
-      Reconcile [{{ freeipa_idam_reconcile_match }}] orphans to delete —
+      Reconcile [{{ freeipa_idam_reconcile_scope }}] orphans to delete —
       sudo: {{ _reconcile_orphans.sudorule | default([]) }},
       hbac: {{ _reconcile_orphans.hbacrule | default([]) }},
       hostgroups: {{ _reconcile_orphans.hostgroup | default([]) }},
@@ -93,7 +93,7 @@
 # the shared freeipa_idam_orphans filter. Deleted BEFORE the groups below so a rule never
 # outlives its target group. Desired set comes from freeipa_server_automember_rules.
 - name: Reconcile | Find managed automember rules in this scope (per type)
-  ansible.builtin.command: "ipa automember-find {{ freeipa_idam_reconcile_match }} --type={{ item }} --pkey-only"
+  ansible.builtin.command: "ipa automember-find {{ freeipa_idam_reconcile_scope }} --type={{ item }} --pkey-only"
   register: _reconcile_am_find
   changed_when: false
   check_mode: false
@@ -113,7 +113,7 @@
   ansible.builtin.set_fact:
     _reconcile_am_orphans: >-
       {{ _reconcile_am_found
-         | freeipa_idam_orphans(_reconcile_am_desired, freeipa_idam_reconcile_match,
+         | freeipa_idam_orphans(_reconcile_am_desired, freeipa_idam_reconcile_scope,
                                 freeipa_idam_protected_groups | default([])) }}
   vars:
     _reconcile_am_desired:
@@ -123,7 +123,7 @@
 - name: Reconcile | Report automember rules to delete
   ansible.builtin.debug:
     msg: >-
-      Reconcile [{{ freeipa_idam_reconcile_match }}] automember orphans to delete —
+      Reconcile [{{ freeipa_idam_reconcile_scope }}] automember orphans to delete —
       group: {{ _reconcile_am_orphans.group | default([]) }},
       hostgroup: {{ _reconcile_am_orphans.hostgroup | default([]) }}
 

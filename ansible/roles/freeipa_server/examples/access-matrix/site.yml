@@ -20,7 +20,7 @@
   gather_facts: false
   vars:
     # Scopes the role's object-reconcile pass to THIS tenant×environment; blank → deletes nothing.
-    freeipa_idam_reconcile_match: "{{ freeipa_scope_tenancy }}-{{ freeipa_scope_environment }}"
+    freeipa_idam_reconcile_scope: "{{ freeipa_scope_tenancy }}-{{ freeipa_scope_environment }}"
 
   pre_tasks:
     - name: Validate the inventory scope against the matrix (drift fails loudly)

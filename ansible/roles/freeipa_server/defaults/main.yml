@@ -343,7 +343,7 @@ freeipa_idam_membership_declarative: false   # DEPRECATED — prefer freeipa_ser
 # DECLARATIVE OBJECT reconcile — default OFF (DESTRUCTIVE). When true, after the apply the
 # role DELETES matrix-managed OBJECTS (groups, hostgroups, HBAC + sudo rules) in this scope
 # that are no longer declared (orphans). Object-level sibling of membership_declarative.
-# Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_match are
+# Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_scope are
 # eligible, and only those NOT in this run's freeipa_idam_* lists and NOT in
 # freeipa_idam_protected_groups are removed. The matrix playbook sets the match to
 # '<tenant>-<environment>'; a blank match deletes NOTHING (fail-safe).
@@ -352,7 +352,7 @@ freeipa_idam_reconcile_objects: false   # DEPRECATED — prefer freeipa_server_a
 # eligible for deletion (the matrix sets it to '<tenant>-<environment>'). Blank = object
 # pruning deletes NOTHING even when authoritative, and the object-reconcile phase is
 # skipped (fail-safe). Still consumed under freeipa_server_authoritative.
-freeipa_idam_reconcile_match: ""
+freeipa_idam_reconcile_scope: ""
 
 # DECLARATIVE GROUP-EXISTENCE reconcile — default OFF (DESTRUCTIVE). The container-marker
 # sibling of reconcile_objects, but for the BASELINE groups in freeipa_idam_usergroups —
