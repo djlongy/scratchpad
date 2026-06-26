@@ -124,7 +124,7 @@ freeipa_server_ad_trusts: []
 
 # ── DNS ─────────────────────────────────────────────────────────────────────
 freeipa_server_setup_dns: true
-freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["192.168.10.1"]
+freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["10.0.0.1"]
 freeipa_server_forward_policy: "only"    # only | first
 freeipa_server_no_forwarders: false
 freeipa_server_auto_reverse: true
@@ -226,15 +226,38 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 #                              bundles PRIVILEGES and assigns them to members.
 #                              Use to delegate IPA-management powers (helpdesk).
 #
-# ── Multi-tenant role matrix — generated in YOUR inventory, not in this role ──
-# This role has NO built-in role generator. It only reconciles the baseline
-# freeipa_idam_* lists below — a stable contract that a role-internals change can
-# never alter. To derive many (tenancy × environment × app × privilege) role groups
-# from a COMPACT matrix WITHOUT copy/paste, build the baseline lists in your INVENTORY
-# group_vars from a matrix YOU author and own — visible, debuggable, WYSIWYG. A
-# complete worked example (a matrix + an access catalog + a short, readable flatten
-# that emits freeipa_idam_usergroups/hostgroups/hbac_rules/sudo_rules with a
-# CONFIGURABLE role-name prefix) lives under examples/multitenant-matrix/.
+# ── RBAC overlay (THIN) — abstract role → role group nested into policy groups ──
+# A small compiler (filter_plugins/freeipa_rbac.py) that lets you assign a user to an
+# abstract ROLE instead of hand-adding them to many granular ug-* policy groups. It
+# generates ONLY: role groups (role-<tenant>-<env>-<name>), their NESTING into EXISTING
+# ug-* policy groups, and user→role-group membership — and merges those into the native
+# freeipa_idam_usergroups below. It invents NOTHING else: HBAC, sudo, hostgroups, DNS,
+# automember, permissions/privileges/iparoles all stay plain native entries. Policy groups
+# (ug-*) must already exist natively (that is where the HBAC/sudo point) — the overlay only
+# nests the role group onto them. Leave the lists empty to skip the overlay entirely and run
+# from raw native dicts. A worked 3-tenant × 3-env example lives under examples/rbac-overlay/.
+freeipa_server_rbac_naming:
+  role_prefix: role
+  usergroup_prefix: ug
+  role_template: "{role_prefix}-{tenant}-{environment}-{name}"
+  policy_group_template: "{usergroup_prefix}-{tenant}-{environment}-{service}-{privilege}"
+# Reusable role bundles: a role = a named set of EXISTING granular policy groups.
+freeipa_server_rbac_role_sets: []
+#  - name: platform-admin
+#    tenant: acme
+#    environment: prod
+#    description: Platform admin role bundle
+#    policy_groups:                      # point at EXISTING native ug-* groups
+#      - { service: gitlab, privilege: admins }
+#      - { service: docker, privilege: operators }
+# Map users to abstract role names (NOT raw ug-* groups). A role name grants membership
+# in every role_set entry of that name (i.e. across the tenant/envs it is defined in).
+freeipa_server_rbac_user_assignments: {}
+#  alice: { roles: [platform-admin] }
+# Loosen validation (default strict): permit assignments to users not in freeipa_idam_users,
+# or role_sets that nest into policy groups not yet declared natively.
+freeipa_server_rbac_allow_unknown_users: false
+freeipa_server_rbac_allow_missing_policy_groups: false
 
 # ── Declarative IDAM data contract ───────────────────────────────────────────
 # Admin credentials come from the consolidated freeipa_server_admin_* / vault vars above —
@@ -469,9 +492,9 @@ freeipa_migrate_log: "/var/log/ipa-migrate.log"
 freeipa_migrate_restart_sssd: true
 freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
 # ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
-# freeipa_migrate_source: "mgta-freeipa-01.example.au"   # source IPA FQDN (ipa-migrate arg)
-# freeipa_migrate_source_host: "mgta-freeipa-01"       # inventory host for CA slurp
-# freeipa_migrate_bind_pw_vault: "kv-mgt/data/platform/freeipa/runtime"  # source DM pw path
+# freeipa_migrate_source: "old-ipa.example.com"      # source IPA FQDN (ipa-migrate arg)
+# freeipa_migrate_source_host: "old-ipa"             # inventory host for CA slurp
+# freeipa_migrate_bind_pw_vault: "kv-<env>/data/platform/freeipa/runtime"  # source DM pw path
 # Internal staged paths (behavioural):
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
 freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"

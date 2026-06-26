@@ -1,0 +1,58 @@
+---
+# ═════════════════════════════════════════════════════════════════════════════
+# NATIVE BASELINE — the role's raw freeipa_idam_* dicts (an exported snapshot, or
+# hand-written). This is the SOURCE OF TRUTH: policy groups (ug-*), their HBAC + sudo
+# rules, hostgroups, and users. The thin RBAC overlay (10_rbac.yml) does NOT generate any
+# of this — it only nests role groups onto the ug-* policy groups below and joins users to
+# them. Everything here you would normally `--tags export` from a live realm.
+#
+# A 3-tenant × 3-environment estate (acme / globex / initech × dev / test / prod). Naming:
+# ug-<tenant>-<env>-<service>-<privilege> (policy group), hg-<tenant>-<env> (hostgroup).
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ── POLICY groups (HBAC/sudo target these). The overlay nests role groups onto them. ──
+freeipa_idam_usergroups:
+  # acme
+  - { name: ug-acme-dev-monitoring-admins,  description: "acme/dev monitoring admins" }
+  - { name: ug-acme-test-postgres-admins,   description: "acme/test postgres admins" }
+  - { name: ug-acme-prod-gitlab-admins,     description: "acme/prod gitlab admins" }
+  - { name: ug-acme-prod-docker-operators,  description: "acme/prod docker operators" }
+  # globex
+  - { name: ug-globex-dev-grafana-readers,  description: "globex/dev grafana readers" }
+  - { name: ug-globex-test-grafana-readers, description: "globex/test grafana readers" }
+  - { name: ug-globex-prod-grafana-readers, description: "globex/prod grafana readers" }
+  - { name: ug-globex-prod-monitoring-admins, description: "globex/prod monitoring admins" }
+  # initech
+  - { name: ug-initech-dev-monitoring-admins, description: "initech/dev monitoring admins" }
+  - { name: ug-initech-prod-postgres-admins,  description: "initech/prod postgres admins" }
+
+# ── Hostgroups the rules are scoped to (populated by enrolment + automember). ──
+freeipa_idam_hostgroups:
+  - { name: hg-acme-prod,    description: "acme prod hosts" }
+  - { name: hg-globex-prod,  description: "globex prod hosts" }
+  - { name: hg-initech-prod, description: "initech prod hosts" }
+  - { name: hg-acme-dev,     description: "acme dev hosts" }
+
+# ── HBAC rules — who may log in where, with which services (target the ug-* + hostgroup). ──
+freeipa_idam_hbac_rules:
+  - { name: hbac-acme-prod-gitlab-admins,    usergroup: [ug-acme-prod-gitlab-admins],    hostgroup: [hg-acme-prod],    service: [sshd] }
+  - { name: hbac-acme-prod-docker-operators, usergroup: [ug-acme-prod-docker-operators], hostgroup: [hg-acme-prod],    service: [sshd] }
+  - { name: hbac-globex-prod-grafana-readers, usergroup: [ug-globex-prod-grafana-readers], hostgroup: [hg-globex-prod], service: [sshd] }
+  - { name: hbac-initech-prod-postgres-admins, usergroup: [ug-initech-prod-postgres-admins], hostgroup: [hg-initech-prod], service: [sshd] }
+
+# ── Sudo commands + rules. ──
+freeipa_idam_sudo_commands:
+  - { name: "/usr/bin/systemctl" }
+  - { name: "/usr/bin/journalctl" }
+  - { name: "/usr/bin/dnf" }
+freeipa_idam_sudo_rules:
+  - { name: sudo-acme-prod-gitlab-admins,    usergroup: [ug-acme-prod-gitlab-admins],    hostgroup: [hg-acme-prod], cmd: ["/usr/bin/systemctl", "/usr/bin/journalctl"] }
+  - { name: sudo-acme-prod-docker-operators, usergroup: [ug-acme-prod-docker-operators], hostgroup: [hg-acme-prod], cmd: ["/usr/bin/systemctl"] }
+  - { name: sudo-initech-prod-postgres-admins, usergroup: [ug-initech-prod-postgres-admins], hostgroup: [hg-initech-prod], cmd: ["/usr/bin/dnf"] }
+
+# ── Users (identity only — their role-group membership is added by the overlay). ──
+freeipa_idam_users:
+  - { name: alice.smith, first: Alice, last: Smith, email: ["alice.smith@example.com"] }
+  - { name: bob.ng,      first: Bob,   last: Ng,    email: ["bob.ng@example.com"] }
+  - { name: carol.fox,   first: Carol, last: Fox,   email: ["carol.fox@example.com"] }
+  - { name: dana.li,     first: Dana,  last: Li,    email: ["dana.li@example.com"] }

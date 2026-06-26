@@ -1,0 +1,18 @@
+---
+# One FreeIPA realm hosts the whole multi-tenant estate (tenant/env live in the object
+# NAMES, not separate realms). Point this at your IPA primary.
+all:
+  children:
+    ipaserver:
+      hosts:
+        idm01:
+          ansible_host: 10.0.0.11
+      vars:
+        domain: example.com                  # realm derives as EXAMPLE.COM
+        # Supply ONE admin credential source (declared var wins; Vault is the fallback):
+        # freeipa_server_admin_password: "<ADMIN_PASSWORD>"           # e.g. from -e @secrets.yml
+        # freeipa_server_vault_secret: "kv/data/platform/freeipa/runtime"
+        #
+        # Pruning is OFF by default (additive-safe). To make removals authoritative:
+        # freeipa_server_authoritative: true
+        # freeipa_idam_reconcile_scope: "<tenant>-<environment>"      # scopes object pruning

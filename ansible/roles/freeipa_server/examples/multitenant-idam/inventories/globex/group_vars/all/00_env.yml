@@ -1,7 +1,0 @@
----
-# inventories/globex/group_vars/all/00_env.yml — environment identity for THIS realm.
-# Lives in the inventory (not the playbook-global file) so each environment sets its
-# own. GLOBEX shares the prod realm here; a GLOBEX dev/test realm would be a separate
-# inventory with env: dev/test and its own domain/host.
-env: "prod"                       # dev | test | prod  (Ansible reserves `environment`)
-domain: "example.com"

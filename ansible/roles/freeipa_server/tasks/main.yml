@@ -57,6 +57,18 @@
   when: freeipa_server_is_primary | bool
   tags: [backup]
 
+# Compile the THIN RBAC overlay into the native freeipa_idam_usergroups BEFORE the idam
+# reconcile consumes it. Generates only role groups + their nesting into existing ug-*
+# policy groups + user→role-group membership (filter_plugins/freeipa_rbac.py); everything
+# else stays native. No-op unless freeipa_server_rbac_role_sets is declared. import_tasks so
+# the [idam, rbac] tags propagate and the compiled facts are set before idam.yml runs.
+- name: Compile FreeIPA RBAC overlay into native usergroups (primary only)
+  ansible.builtin.import_tasks: compile_rbac.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - (freeipa_server_rbac_role_sets | default([])) | length > 0
+  tags: [idam, rbac]
+
 # IDAM apply path. NATIVE (idam.yml, server-side ipalib) is the default and the
 # recommendation: it is 2.67x faster than the API variant on the same workload
 # (bulk groups/users), manages the full object set (iparole/privilege/permission/

@@ -1,0 +1,18 @@
+---
+# Apply the native freeipa_idam_* dicts + the thin RBAC overlay with the freeipa_server role.
+# The overlay is compiled INSIDE the role (tasks/compile_rbac.yml runs before the idam
+# reconcile under --tags idam,rbac), so this play is just the role applied to the IPA
+# primary — no pre_tasks / filter wiring needed here.
+#
+#   ansible-playbook -i inventory.yml site.yml --tags idam    # add --check --diff to preview
+#
+# Re-run → changed=0 (idempotent). Supply admin credentials (see README): set
+# freeipa_server_admin_password (or freeipa_server_vault_secret) in the inventory / an
+# Ansible-Vault file / -e. To prune objects removed from the native dicts, also set
+# freeipa_server_authoritative: true (realm-scoped — assemble the COMPLETE desired state first).
+- name: FreeIPA IDAM — native dicts + thin RBAC overlay
+  hosts: ipaserver
+  gather_facts: false
+  become: true
+  roles:
+    - role: freeipa_server

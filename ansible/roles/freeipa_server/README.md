@@ -50,16 +50,18 @@ lookup is evaluated lazily, so it never fires when the password is provided.
 |---|---|---|
 | IPA admin password | `freeipa_server_admin_password` | `freeipa_server_vault_secret` : `admin_password` |
 | Directory Manager password | `freeipa_server_dm_password` | `freeipa_server_vault_secret` : `dm_password` |
-| IDAM admin password | `freeipa_server_admin_password` | `freeipa_idam_vault_secret` : `admin_password` |
 
-Provide **one** column. Either set the password var(s), or set the
-`*_vault_secret` path(s) — the role asserts at least one source exists.
+`freeipa_server_admin_password` is the **single** admin credential for the *entire*
+role — install, IDAM reconcile, object reconcile, automember, export and delete all
+use it (there are no separate `freeipa_idam_*` credential vars). Provide **one**
+column: either set the password var(s), or set the `freeipa_server_vault_secret`
+path — the role asserts at least one source exists.
 
 ### Minimum to run each phase
 
 | Phase | Minimum vars |
 |---|---|
-| `export` (snapshot a live IPA) | `freeipa_server_admin_password` **or** `freeipa_idam_vault_secret` — nothing else |
+| `export` (snapshot a live IPA) | `freeipa_server_admin_password` **or** `freeipa_server_vault_secret` — nothing else |
 | `idam` (reconcile identity) | admin password (declared or Vault) + the `freeipa_idam_*` data |
 | `install` (build a server) | admin **and** dm password (declared or Vault) + `freeipa_server_forwarders` |
 
@@ -209,57 +211,94 @@ freeipa_server_ad_trusts:
 `freeipa_server_disable_allow_all` (guarded — refuses unless a replacement HBAC
 rule exists), `freeipa_server_crypto_policy` (report-only).
 
-## IDAM data
+## Declarative IDAM provisioning
 
-Declarative `freeipa_idam_*` lists drive users/groups/hostgroups/HBAC/sudo/
-password-policy reconciliation; managed users removed from config are deleted
-(except `freeipa_idam_protected_users`). Data lives in `data/freeipa/*.yml`.
+The role reconciles a declarative description of identity — users, groups, hostgroups,
+HBAC, sudo, password policies, delegation roles — into a live FreeIPA realm. It runs
+**only on the primary** (replicas replicate), server-side via `ipalib` using the official
+`freeipa.ansible_freeipa` modules. Run it with `--tags idam`.
 
-### Roles matrix (cleaner user↔group RBAC)
+### Native dicts are the source of truth
 
-Instead of giving each user a long list of groups, define **roles** — named
-bundles of groups — and let users reference the roles they belong to:
+Everything is declared in native `freeipa_idam_*` lists — `freeipa_idam_usergroups`,
+`freeipa_idam_users`, `freeipa_idam_hostgroups`, `freeipa_idam_hbac_rules`,
+`freeipa_idam_sudo_rules`, `freeipa_idam_hbacsvcs`, `freeipa_idam_sudo_commands`,
+`freeipa_idam_pwpolicies`, `freeipa_idam_iparoles`, … (`defaults/main.yml` documents every
+list + item shape). `--tags export` snapshots a live realm into exactly this shape, so you
+can adopt an existing instance and reapply it idempotently.
+
+### The two-tier role/policy group model
+
+A FreeIPA *user* group cannot itself hold HBAC/sudo/host rules, so policy is decoupled from
+membership:
+
+- **`role-*` (grant group)** — people are members of *this*.
+- **`ug-*` (policy group)** — HBAC/sudo/pwpolicy rules target *this*; it **contains** the
+  `role-*` group (`ug-x` carries `group: [role-x]`).
+
+A user in `role-x` is an **indirect** member of `ug-x`, so every rule pointing at `ug-x`
+applies. (Verified live; the reverse nesting does not work.)
+
+### The thin RBAC overlay (`freeipa_server_rbac_*`)
+
+Optional. Instead of hand-adding a person to dozens of granular policy groups, assign them
+an abstract **role**. A small compiler (`filter_plugins/freeipa_rbac.py`) generates **only**
+role groups, their nesting into **existing** `ug-*` policy groups, and user→role-group
+membership — and merges that into the native `freeipa_idam_usergroups` + `freeipa_idam_users`.
+It invents nothing else: HBAC, sudo, hostgroups, DNS, automember, permissions/privileges/
+iparoles all stay plain native entries.
 
 ```yaml
-freeipa_idam_roles:
+freeipa_server_rbac_role_sets:
   - name: platform-admin
-    groups: [app-gitlab-admin, app-harbor-admin, role-tier1-platform-admin]
-  - name: viewer
-    groups: [app-grafana-viewer, app-kibana-viewer]
-
-freeipa_idam_users:
-  - name: alice
-    first: Alice
-    last: Smith
-    roles: [platform-admin, viewer]      # not a 20-line groups list
+    tenant: acme
+    environment: prod
+    policy_groups:                       # point at EXISTING native ug-* groups
+      - { service: gitlab, privilege: admins }
+      - { service: docker, privilege: operators }
+freeipa_server_rbac_user_assignments:
+  alice: { roles: [platform-admin] }     # alice → role-acme-prod-platform-admin → indirect ug-*
 ```
 
-At reconcile each user's `roles` expand to the union of their groups (merged with
-any direct `groups`), so everything downstream is unchanged. Lossless. Distinct
-from `freeipa_rbac_roles` (which *generates* groups/hostgroups/HBAC/sudo) — this
-just bridges users to **existing** groups.
+Policy groups (`ug-*`) **must already exist natively** (that is where the HBAC/sudo point) —
+the overlay only nests onto them; it never invents them. Names come from
+`freeipa_server_rbac_naming` (`role_template` / `policy_group_template`). `validate_rbac`
+fails fast — naming the culprit — on an unknown role, a missing policy group, a protected-
+built-in collision, or a user not in `freeipa_idam_users`. A runnable 3-tenant × 3-environment
+example lives in [`examples/rbac-overlay/`](examples/rbac-overlay/).
 
-**Roles are opt-in.** The export keeps users **native** — each carries its real
-`groups` plus an empty `roles: []`, so a snapshot reapplies exactly as captured
-with no roles involved. It also emits a best-guess matrix under
-`freeipa_idam_roles_suggested` — a key the role **does not read** — so
-copy-paste-apply can never activate it. To adopt: rename that key to
-`freeipa_idam_roles`, give the roles real names, and set each user's `roles:`
-(the snapshot prints a suggested user→role map). Or delete the block.
+Don't confuse the overlay with two simpler, orthogonal things: **`freeipa_idam_roles`** (a flat
+bundle of groups added *directly* to a user — no role group, no nesting) and native IPA
+**`freeipa_idam_iparoles`** (delegation of IPA-management *privileges*).
 
-The suggestion is **derived** from live state by co-occurrence (groups always
-held by the same users bundle into one role). Two knobs keep it honest:
+### Additive by default; one switch that prunes
 
-- `freeipa_server_export_role_exclude` (default `[role]`) — a list of
-  case-insensitive regexes; groups matching any are kept as **direct** group
-  memberships, not mined. Add patterns for layers that own their own groups —
-  e.g. your `role-*` groups, or a PAM/JIT like `pam_*`:
-  `[role, pam, approver, eligible]`.
-- `freeipa_server_export_role_min_groups` (default `2`) — a bundle becomes a role
-  only with at least this many groups; smaller bundles stay direct (no 1-group
-  "roles").
+Creation is *additive* — `state: present` never deletes. **`freeipa_server_authoritative`**
+(default `false`) is the single switch governing all pruning:
 
-`freeipa_server_export_roles=false` skips mining entirely (flat per-user groups).
+| Mechanism (when `true`) | Removes | Scoped by |
+|---|---|---|
+| Membership reconcile | members no longer declared in a managed group | the declared, non-protected groups |
+| Group-existence reconcile | groups dropped from `freeipa_idam_usergroups` | a container marker (`idam-managed-groups`) |
+| Object reconcile | orphaned `ug-`/`hg-`/`hbac-`/`sudo-`/automember objects | a name substring `freeipa_idam_reconcile_scope` (blank ⇒ nothing) |
+
+Removed **users** are archived (preserved, recoverable) via the `idam-managed-users` marker.
+**Authoritative is realm-scoped** — only run it against a *complete* assembled desired state,
+never a partial tenant file, or it prunes the other tenants.
+
+> **Scope boundary:** object reconcile manages only `group`/`hostgroup`/`hbacrule`/`sudorule`/
+> automember. Leaf building blocks (`hbacsvc`, `sudocmd`, `permission`, `privilege`, `iparole`,
+> `pwpolicy`) are left **orphaned** when undeclared, never auto-deleted — so a removed `iparole`
+> delegation stays in force; revoke it with an explicit `state: absent`.
+
+### Account types & state controls
+
+`freeipa_idam_service_accounts` (forced nologin), `freeipa_idam_breakglass_accounts`
+(login-on, auto-protected), `freeipa_idam_nologin_accounts` / `freeipa_idam_disabled_accounts`
+(with admin-lockout guards), `freeipa_idam_default_user_password`, `freeipa_idam_group_gids`
+(deterministic GIDs), `freeipa_idam_hbac_rules_disable` (guarded), and
+`freeipa_idam_reactivate_preserved` (undelete a re-declared archived user). Validation runs
+first and reports *all* referential problems at once. The `idam` phase is fully idempotent.
 
 ## Adopt an existing instance (config export / snapshot)
 
@@ -278,7 +317,7 @@ ansible-playbook -i inventories/<env>/hosts.yml playbooks/L2_identity/freeipa.ym
   --tags export \
   -e freeipa_server_admin_password='<ADMIN_PASSWORD>'
 
-# Option B — fall back to HashiCorp Vault (set freeipa_idam_vault_secret in group_vars):
+# Option B — fall back to HashiCorp Vault (set freeipa_server_vault_secret in group_vars):
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/L2_identity/freeipa.yml \
   --tags export
 
@@ -303,6 +342,7 @@ hostgroup host rosters (enrolment + automember repopulate them — opt in with
 
 ## See also
 
+- [`examples/rbac-overlay/`](examples/rbac-overlay/) — runnable 3-tenant × 3-environment
+  RBAC-overlay template (native policy groups + the thin role overlay)
 - [`freeipa_client`](../freeipa_client/) — host enrolment
 - [`hashicorp_vault`](../hashicorp_vault/) — credential source
-- Design spec: `docs/superpowers/specs/2026-06-16-freeipa-server-portable-role-design.md`
