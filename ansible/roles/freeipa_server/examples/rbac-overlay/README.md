@@ -12,9 +12,12 @@ pieces** — drop them and the role runs from raw dicts unchanged:
    existing `ug-*` groups, and user→role-group membership — nothing else.)
 2. **The group_vars** `group_vars/all/10_rbac.yml` — `freeipa_server_rbac_*`, the overlay
    data you author.
-3. **The pre_tasks** in `site.yml` — validate + compile + merge the overlay into the native
-   `freeipa_idam_*` dicts **before** the role runs. Null-safe and gated: no `role_sets`
-   declared ⇒ they no-op ⇒ pure baseline.
+3. **A pre_task** — `compile_overlay.yml`, one reusable tasks file the playbook includes from
+   its `pre_tasks` (`import_tasks: compile_overlay.yml`). It validates + compiles + merges the
+   overlay into the native `freeipa_idam_*` dicts **before** the role runs. It reads the
+   in-scope group_vars (nothing is passed in), and is null-safe + gated: no `role_sets`
+   declared ⇒ every task no-ops ⇒ pure baseline. Include it from *every* playbook instead of
+   copy-pasting the compile steps.
 
 The native dicts in `group_vars/all/00_native.yml` (policy groups `ug-*`, their HBAC + sudo
 rules, hostgroups, users) are the **source of truth** — exactly what `--tags export` drops out
@@ -24,14 +27,15 @@ of a live realm.
 rbac-overlay/
 ├── inventory.yml                 # the IPA primary (one realm hosts all tenants)
 ├── ansible.cfg                   # loads the role + its filter_plugins (the compiler)
-├── site.yml                      # pre_tasks compile the overlay → native dicts, then the role
+├── site.yml                      # pre_tasks: import compile_overlay.yml, then the role
+├── compile_overlay.yml           # the reusable compile (set_facts merging overlay → native)
 └── group_vars/all/
     ├── 00_native.yml             # NATIVE ug-* policy groups + HBAC/sudo/hostgroups + users
     └── 10_rbac.yml               # the overlay data: freeipa_server_rbac_role_sets + assignments
 ```
 
-> **Fall back to raw dicts any time:** delete `10_rbac.yml` and the `pre_tasks` in `site.yml`
-> and you have a plain native-dict deployment — the role is identical either way.
+> **Fall back to raw dicts any time:** drop `10_rbac.yml` and the `compile_overlay.yml` include
+> from `site.yml` and you have a plain native-dict deployment — the role is identical either way.
 
 ## The model
 

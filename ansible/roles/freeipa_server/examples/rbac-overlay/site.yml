@@ -17,44 +17,11 @@
   become: true
 
   pre_tasks:
-    # (1) Validate the overlay — raises (naming the culprit) before anything is applied.
-    - name: RBAC overlay — validate input
-      ansible.builtin.set_fact:
-        _freeipa_rbac_valid: >-
-          {{ freeipa_server_rbac_role_sets | default([])
-             | freeipa_rbac_validate(
-                 freeipa_server_rbac_user_assignments | default({}),
-                 freeipa_idam_usergroups | default([]),
-                 freeipa_server_rbac_naming | default({}),
-                 native_users=freeipa_idam_users | default([]),
-                 allow_unknown_users=freeipa_server_rbac_allow_unknown_users | default(false),
-                 allow_missing_policy_groups=freeipa_server_rbac_allow_missing_policy_groups | default(false)) }}
-      when: (freeipa_server_rbac_role_sets | default([])) | length > 0
-      tags: [always]
-
-    # (2) Role groups + their nesting → merged onto the native usergroups (union the `group`
-    #     nesting list; baseline wins on a name collision).
-    - name: RBAC overlay — compile role groups + nesting onto native usergroups
-      ansible.builtin.set_fact:
-        freeipa_idam_usergroups: >-
-          {{ freeipa_idam_usergroups | default([])
-             | freeipa_idam_merge(freeipa_server_rbac_role_sets | default([])
-                                  | freeipa_rbac_role_groups(freeipa_server_rbac_naming | default({})),
-                                  union_fields=['group']) }}
-      when: (freeipa_server_rbac_role_sets | default([])) | length > 0
-      tags: [always]
-
-    # (3) User→role-group membership → merged onto the native users (union their `groups`).
-    - name: RBAC overlay — compile user→role memberships onto native users
-      ansible.builtin.set_fact:
-        freeipa_idam_users: >-
-          {{ freeipa_idam_users | default([])
-             | freeipa_idam_merge(freeipa_server_rbac_user_assignments | default({})
-                                  | freeipa_rbac_memberships(freeipa_server_rbac_role_sets | default([]),
-                                                             freeipa_server_rbac_naming | default({})),
-                                  union_fields=['groups']) }}
-      when: (freeipa_server_rbac_role_sets | default([])) | length > 0
-      tags: [always]
+    # External piece #3 — compile + merge the overlay into the native freeipa_idam_* dicts
+    # BEFORE the role runs. One reusable file (next to freeipa_rbac.py); include it from every
+    # playbook instead of copy-pasting. It reads the in-scope group_vars; nothing is passed in.
+    - name: Compile the RBAC overlay into the native dicts
+      ansible.builtin.import_tasks: compile_overlay.yml
 
   roles:
     # The baseline role — consumes ONLY native freeipa_idam_*; no overlay knowledge.
