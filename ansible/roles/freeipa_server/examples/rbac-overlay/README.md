@@ -15,9 +15,9 @@ pieces** — drop them and the role runs from raw dicts unchanged:
 3. **A pre_task** — `freeipa_server_rbac_compile.yml`, one reusable tasks file the playbook includes from
    its `pre_tasks` (`import_tasks: freeipa_server_rbac_compile.yml`). It validates + compiles + merges the
    overlay into the native `freeipa_idam_*` dicts **before** the role runs. It reads the
-   in-scope group_vars (nothing is passed in), and is null-safe + gated: no `role_sets`
-   declared ⇒ every task no-ops ⇒ pure baseline. Include it from *every* playbook instead of
-   copy-pasting the compile steps.
+   in-scope group_vars (nothing is passed in), and is null-safe + gated: no
+   `freeipa_server_rbac_roles` declared ⇒ every task no-ops ⇒ pure baseline. Include it from
+   *every* playbook instead of copy-pasting the compile steps.
 
 The native dicts in `group_vars/all/00_native.yml` (policy groups `ug-*`, their HBAC + sudo
 rules, hostgroups, users) are the **source of truth** — exactly what `--tags export` drops out
@@ -31,7 +31,7 @@ rbac-overlay/
 ├── freeipa_server_rbac_compile.yml  # the reusable compile (set_facts merging overlay → native)
 └── group_vars/all/
     ├── 00_native.yml                # NATIVE ug-* policy groups + HBAC/sudo/hostgroups + users
-    └── 10_rbac.yml                  # the overlay data: freeipa_server_rbac_role_sets + assignments
+    └── 10_rbac.yml                  # the overlay data: freeipa_server_rbac_roles tree + assignments
 ```
 
 > **Fall back to raw dicts any time:** drop `10_rbac.yml` and the `freeipa_server_rbac_compile.yml` include
@@ -50,9 +50,10 @@ policy group it nests into — so the native HBAC/sudo rules that target `ug-*` 
 Add/remove a person ⇒ one role assignment, not edits across many groups.
 
 **Policy groups must already exist natively** (that is where the HBAC/sudo point). The overlay
-only nests onto them — it never invents `ug-*` groups. `validate_rbac` fails the run (naming the
-culprit) if a role nests into a `ug-*` not declared in `00_native.yml`, if an assignment names
-an unknown role, or if a user is not in `freeipa_idam_users`.
+only nests onto them — it never invents `ug-*` groups. `freeipa_rbac_validate` fails the run
+(naming the culprit) if a role nests into a `ug-*` not declared in `00_native.yml`, if an
+assignment targets an **undefined** `(tenant, environment, role)` cell — the check that enforces
+tenant isolation — or if a user is not in `freeipa_idam_users`.
 
 ## Roles in this example
 
@@ -63,9 +64,13 @@ an unknown role, or if a user is not in `freeipa_idam_users`.
 | `db-admin` | initech/prod, acme/test | `ug-<t>-<e>-postgres-admins` |
 | `ops` | acme/dev, globex/prod, initech/dev | `ug-<t>-<e>-monitoring-admins` |
 
-A role name defined for one cell scopes there; defined for several cells (like `viewer` across
-all three globex envs) it grants membership in each. `dana.li` holds `[ops, viewer]` → ops in
-three tenants **and** the globex grafana viewer.
+**Tenancy is a hard boundary.** Each cell above is an *independent* definition — `db-admin` in
+`initech/prod` and `db-admin` in `acme/test` are two separate role groups, and `ops` is defined
+once per cell. An assignment names a full `tenant → environment → [roles]` path, so a grant can
+never fan out across tenants or environments. `carol.fox` is `db-admin` in `initech/prod` **only**
+— she gets nothing in `acme/test` even though the same role label exists there. To span cells you
+list each one explicitly: `bob.ng` names `viewer` in all three globex envs; `dana.li` names `ops`
+in `initech/dev` and `globex/prod` plus `viewer` in `globex/prod`.
 
 ## Run it
 

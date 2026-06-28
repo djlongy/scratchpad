@@ -1,50 +1,83 @@
 ---
 # ═════════════════════════════════════════════════════════════════════════════
-# THE THIN RBAC OVERLAY — assign a user to an abstract ROLE instead of hand-adding them
-# to many policy groups. The role's compile step (filter_plugins/freeipa_rbac.py) turns
-# this into: role groups (role-<tenant>-<env>-<name>), their NESTING into the EXISTING
-# ug-* policy groups from 00_native.yml, and user→role-group membership — and merges that
-# into the native dicts. It generates NOTHING else.
+# THE THIN RBAC OVERLAY — assign a user to an abstract ROLE, scoped to a single
+# (tenant, environment) cell, instead of hand-adding them to many policy groups. The
+# role's compile step (filter_plugins/freeipa_rbac.py) turns this into: role groups
+# (role-<tenant>-<env>-<name>), their NESTING into the EXISTING ug-* policy groups from
+# 00_native.yml, and user→role-group membership — and merges that into the native dicts.
+# It generates NOTHING else.
 #
-# A role_set name may be defined for one cell (single-tenant/env role) or several (the same
-# role across tenant/envs). Assigning a user a role name joins them to every cell it covers.
+# TENANCY IS A HARD BOUNDARY (think AWS VPC — we provision the boundary, the tenant owns
+# what is inside it). A role is DEFINED inside its tenant→environment cell and ASSIGNED by
+# naming that exact cell, so one grant can NEVER reach a second tenant or environment.
+# Breadth is opt-in only: to grant a role in several cells, list each cell explicitly.
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Names of the generated objects (defaults shown — override to taste).
+# Names of the generated objects (defaults shown — override to taste). role_template builds
+# the grant group from its tree coordinates; policy_group_template builds each ug-* it nests
+# into. service/privilege exist only at the policy-group level (a role bundles several).
 freeipa_server_rbac_naming:
   role_prefix: role
   usergroup_prefix: ug
   role_template: "{role_prefix}-{tenant}-{environment}-{name}"
   policy_group_template: "{usergroup_prefix}-{tenant}-{environment}-{service}-{privilege}"
 
-freeipa_server_rbac_role_sets:
-  # platform-admin in acme/prod ONLY — bundles two acme/prod policy groups.
-  - name: platform-admin
-    tenant: acme
-    environment: prod
-    description: "Platform admin (acme/prod)"
-    policy_groups:
-      - { service: gitlab, privilege: admins }
-      - { service: docker, privilege: operators }
+# DEFINITIONS — tenant → environment → role → {description?, policy_groups: [{service, privilege}]}.
+# A role that should exist in several cells is declared in each cell (same label, separate
+# entries). The ug-* names the policy_groups resolve to must already exist in 00_native.yml.
+freeipa_server_rbac_roles:
+  acme:
+    prod:
+      # platform-admin bundles two acme/prod policy groups.
+      platform-admin:
+        description: "Platform admin (acme/prod)"
+        policy_groups:
+          - { service: gitlab, privilege: admins }
+          - { service: docker, privilege: operators }
+    test:
+      # db-admin in acme/test — a SEPARATE cell from initech/prod's db-admin below.
+      db-admin:
+        description: "DB admin (acme/test)"
+        policy_groups: [{ service: postgres, privilege: admins }]
+    dev:
+      # ops in acme/dev — a SEPARATE cell from globex/prod + initech/dev ops below.
+      ops:
+        description: "Ops on-call (acme/dev)"
+        policy_groups: [{ service: monitoring, privilege: admins }]
+  initech:
+    prod:
+      db-admin:
+        description: "DB admin (initech/prod)"
+        policy_groups: [{ service: postgres, privilege: admins }]
+    dev:
+      ops:
+        description: "Ops on-call (initech/dev)"
+        policy_groups: [{ service: monitoring, privilege: admins }]
+  globex:
+    # viewer declared in each globex environment — three independent cells.
+    dev:  { viewer: { description: "Grafana viewer (globex/dev)",  policy_groups: [{ service: grafana, privilege: readers }] } }
+    test: { viewer: { description: "Grafana viewer (globex/test)", policy_groups: [{ service: grafana, privilege: readers }] } }
+    prod:
+      viewer: { description: "Grafana viewer (globex/prod)", policy_groups: [{ service: grafana, privilege: readers }] }
+      ops:    { description: "Ops on-call (globex/prod)",    policy_groups: [{ service: monitoring, privilege: admins }] }
 
-  # viewer across ALL THREE globex environments — same role name, three cells.
-  - { name: viewer, tenant: globex, environment: dev,  description: "Grafana viewer (globex)", policy_groups: [{ service: grafana, privilege: readers }] }
-  - { name: viewer, tenant: globex, environment: test, description: "Grafana viewer (globex)", policy_groups: [{ service: grafana, privilege: readers }] }
-  - { name: viewer, tenant: globex, environment: prod, description: "Grafana viewer (globex)", policy_groups: [{ service: grafana, privilege: readers }] }
-
-  # db-admin spanning two tenants (initech/prod + acme/test).
-  - { name: db-admin, tenant: initech, environment: prod, description: "DB admin", policy_groups: [{ service: postgres, privilege: admins }] }
-  - { name: db-admin, tenant: acme,    environment: test, description: "DB admin", policy_groups: [{ service: postgres, privilege: admins }] }
-
-  # ops spanning three tenants (acme/dev, globex/prod, initech/dev).
-  - { name: ops, tenant: acme,    environment: dev,  description: "Ops on-call", policy_groups: [{ service: monitoring, privilege: admins }] }
-  - { name: ops, tenant: globex,  environment: prod, description: "Ops on-call", policy_groups: [{ service: monitoring, privilege: admins }] }
-  - { name: ops, tenant: initech, environment: dev,  description: "Ops on-call", policy_groups: [{ service: monitoring, privilege: admins }] }
-
-# Assign users to abstract roles (NOT raw ug-* groups). Each user becomes a DIRECT member
-# of only their role group(s) and an INDIRECT member of every policy group those nest into.
+# ASSIGNMENTS — user → tenant → environment → [roles]. Every grant is fully qualified, so a
+# user becomes a DIRECT member of only the named cell's role group(s) and an INDIRECT member
+# of the policy groups those nest into. To span cells, name each one (see bob / dana).
 freeipa_server_rbac_user_assignments:
-  alice.smith: { roles: [platform-admin] }   # acme/prod gitlab + docker
-  bob.ng:      { roles: [viewer] }            # grafana readers across all 3 globex envs
-  carol.fox:   { roles: [db-admin] }          # initech/prod + acme/test postgres
-  dana.li:     { roles: [ops, viewer] }       # ops in 3 tenants + globex viewer
+  alice.smith:                                 # acme/prod platform-admin only
+    acme:
+      prod: [platform-admin]
+  carol.fox:                                   # initech/prod db-admin ONLY — db-admin also exists
+    initech:                                   # in acme/test, but carol never gets it (hard boundary)
+      prod: [db-admin]
+  bob.ng:                                      # grafana viewer in all three globex envs (explicit)
+    globex:
+      dev:  [viewer]
+      test: [viewer]
+      prod: [viewer]
+  dana.li:                                     # ops in two cells + globex/prod viewer — each named
+    initech:
+      dev: [ops]
+    globex:
+      prod: [ops, viewer]

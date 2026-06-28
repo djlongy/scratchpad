@@ -1,36 +1,43 @@
 # -*- coding: utf-8 -*-
 """FreeIPA RBAC overlay compiler (Ansible filter plugins).
 
-A THIN overlay. It lets a human assign a user to an abstract ROLE instead of
-hand-adding them to many granular policy groups. It compiles INTO the role's
-native ``freeipa_idam_usergroups`` list and generates ONLY:
+A THIN overlay. It lets a human assign a user to an abstract ROLE, scoped to a single
+``(tenant, environment)`` cell, instead of hand-adding them to many granular policy
+groups. It compiles INTO the role's native ``freeipa_idam_usergroups`` /
+``freeipa_idam_users`` lists and generates ONLY:
 
   * role groups          ``role-<tenant>-<environment>-<name>``
   * their NESTING into EXISTING ``ug-*`` policy groups (the policy group carries
-    ``group: [role-*]``; a user in the role group is then an INDIRECT member of
-    the policy group, so the native HBAC/sudo rules that target ``ug-*`` apply
-    unchanged — proven on the live realm)
+    ``group: [role-*]``; a user in the role group is then an INDIRECT member of the
+    policy group, so the native HBAC/sudo rules that target ``ug-*`` apply unchanged —
+    proven on the live realm)
   * user -> role-group membership
 
-It generates NOTHING else: HBAC rules, sudo rules/commands, hostgroups, DNS,
-automember, IPA permissions/privileges/roles all stay plain native entries in the
-exported ``freeipa_idam_*`` dicts. Policy groups are NOT invented — they must
-already exist natively (that is where the HBAC/sudo point); the overlay only adds
-the role-group nesting onto them.
+TENANCY IS A HARD BOUNDARY. A role is DEFINED inside its ``(tenant, environment)`` cell
+and ASSIGNED by naming that exact cell, so one grant can never resolve into a second
+tenant or environment. There is no "same name fans across cells" behaviour: breadth is
+opt-in only, by listing each cell explicitly. Think of a tenant as its own VPC — we
+provision the boundary, the tenant owns what is inside it.
 
-Filters:
-  freeipa_rbac_role_groups(role_sets, naming=None)
-      -> [ {name: role-*, description?}, {name: ug-*, group: [role-*]}, ... ]
-  freeipa_rbac_memberships(assignments, role_sets, naming=None)
-      -> [ {name: role-*, user: [<users>]}, ... ]   (batched per role group)
-  freeipa_rbac_validate(role_sets, assignments, native_usergroups, naming=None, ...)
-      -> True | raise AnsibleFilterError   (fail fast, before any apply)
+It generates NOTHING else: HBAC rules, sudo rules/commands, hostgroups, DNS, automember,
+IPA permissions/privileges/roles all stay plain native entries in the exported
+``freeipa_idam_*`` dicts. Policy groups are NOT invented — they must already exist
+natively (that is where the HBAC/sudo point); the overlay only adds the role-group
+nesting onto them.
 
 Input vars (role-prefixed per ansible-lint var-naming):
-  freeipa_server_rbac_naming            role_template + policy_group_template
-  freeipa_server_rbac_role_sets         [{name, tenant, environment, description?,
-                                          policy_groups: [{service, privilege}, ...]}]
-  freeipa_server_rbac_user_assignments  {user: {roles: [role_name, ...]}}
+  freeipa_server_rbac_naming             role_template + policy_group_template
+  freeipa_server_rbac_roles              {tenant: {environment: {role: {description?,
+                                          policy_groups: [{service, privilege}, ...]}}}}
+  freeipa_server_rbac_user_assignments   {user: {tenant: {environment: [role, ...]}}}
+
+Filters:
+  freeipa_rbac_role_groups(roles, naming=None)
+      -> [ {name: role-*, description?}, {name: ug-*, group: [role-*]}, ... ]
+  freeipa_rbac_memberships(assignments, roles, naming=None)
+      -> [ {name: <user>, groups: [role-*, ...]}, ... ]
+  freeipa_rbac_validate(roles, assignments, native_usergroups, naming=None, ...)
+      -> True | raise AnsibleFilterError   (fail fast, before any apply)
 """
 from __future__ import annotations
 
@@ -41,8 +48,9 @@ except ImportError:                           # … plain Python under pytest
         pass
 
 
-# Name templates. role_template builds the grant group; policy_group_template builds
-# each granular policy group the role nests into. Override via freeipa_server_rbac_naming.
+# Name templates. role_template builds the grant group from its tree COORDINATES
+# (tenant + environment + role name); policy_group_template builds each granular policy
+# group the role nests into. Override via freeipa_server_rbac_naming.
 DEFAULT_NAMING = {
     "role_prefix": "role",
     "usergroup_prefix": "ug",
@@ -52,9 +60,6 @@ DEFAULT_NAMING = {
 
 # FreeIPA built-ins the overlay must never generate, nest into, or collide with.
 PROTECTED_GROUPS = frozenset({"admins", "editors", "ipausers", "trust admins"})
-
-# Required fields on every role_set entry.
-ROLE_SET_REQUIRED = ("name", "tenant", "environment")
 
 
 def _naming(naming):
@@ -73,42 +78,82 @@ def _fmt(template, **tokens):
             f"RBAC naming template {template!r} is malformed: {exc}") from exc
 
 
-def _role_group_name(role_set, naming):
+def _role_group_name(tenant, environment, name, naming):
     n = _naming(naming)
     return _fmt(n["role_template"],
                 role_prefix=n["role_prefix"],
-                tenant=role_set["tenant"],
-                environment=role_set["environment"],
-                name=role_set["name"])
+                tenant=tenant, environment=environment, name=name)
 
 
-def _policy_group_name(role_set, policy_group, naming):
+def _policy_group_name(tenant, environment, policy_group, naming):
     n = _naming(naming)
     return _fmt(n["policy_group_template"],
                 usergroup_prefix=n["usergroup_prefix"],
-                tenant=role_set["tenant"],
-                environment=role_set["environment"],
-                service=policy_group["service"],
-                privilege=policy_group["privilege"])
+                tenant=tenant, environment=environment,
+                service=policy_group["service"], privilege=policy_group["privilege"])
+
+
+# ── tree walkers (the scope IS the address; flat fan-out is impossible) ────────
+def _require_mapping(value, what):
+    if not isinstance(value, dict):
+        raise AnsibleFilterError(
+            f"{what} must be a mapping, got {type(value).__name__}")
+    return value
+
+
+def _iter_roles(roles):
+    """Yield ``(tenant, environment, name, role_def)`` for every cell, in declared
+    order. Raises on a structurally malformed tree."""
+    tree = _require_mapping(roles or {}, "freeipa_server_rbac_roles")
+    for tenant, envs in tree.items():
+        envs = _require_mapping(envs, f"rbac_roles['{tenant}']")
+        for environment, role_map in envs.items():
+            role_map = _require_mapping(
+                role_map, f"rbac_roles['{tenant}']['{environment}']")
+            for name, role_def in role_map.items():
+                yield tenant, environment, name, _require_mapping(
+                    role_def, f"role '{tenant}/{environment}/{name}'")
+
+
+def _iter_assignments(assignments):
+    """Yield ``(user, tenant, environment, role_name)`` for every grant, in declared
+    order. Raises on a malformed assignment tree."""
+    tree = _require_mapping(
+        assignments or {}, "freeipa_server_rbac_user_assignments")
+    for user, tenants in tree.items():
+        tenants = _require_mapping(tenants, f"assignment for user '{user}'")
+        for tenant, envs in tenants.items():
+            yield from _iter_user_tenant(user, tenant, envs)
+
+
+def _iter_user_tenant(user, tenant, envs):
+    envs = _require_mapping(envs, f"assignment '{user}'/'{tenant}'")
+    for environment, role_names in envs.items():
+        if isinstance(role_names, str) or not isinstance(role_names, (list, tuple)):
+            raise AnsibleFilterError(
+                f"assignment '{user}'/'{tenant}'/'{environment}' must be a LIST of role "
+                f"names, got {role_names!r}")
+        for role_name in role_names:
+            yield user, tenant, environment, role_name
 
 
 # ── filter 1: generated usergroups (role groups + their nesting) ──────────────
-def _ensure_role_group(out, order, role_set, naming):
-    """Add the role_set's role group (once), return its name."""
-    role = _role_group_name(role_set, naming)
+def _ensure_role_group(out, order, tenant, environment, name, role_def, naming):
+    """Add the cell's role group (once), return its name."""
+    role = _role_group_name(tenant, environment, name, naming)
     if role not in out:
         entry = {"name": role}
-        if role_set.get("description"):
-            entry["description"] = role_set["description"]
+        if role_def.get("description"):
+            entry["description"] = role_def["description"]
         out[role] = entry
         order.append(role)
     return role
 
 
-def _nest_role_into_policy_groups(out, order, role_set, role, naming):
-    """Nest `role` into each of the role_set's (existing) ug-* policy groups."""
-    for policy_group in role_set.get("policy_groups") or []:
-        ug = _policy_group_name(role_set, policy_group, naming)
+def _nest_into_policy_groups(out, order, tenant, environment, role, policy_groups, naming):
+    """Nest `role` into each of the cell's (existing) ug-* policy groups."""
+    for policy_group in policy_groups or []:
+        ug = _policy_group_name(tenant, environment, policy_group, naming)
         entry = out.get(ug)
         if entry is None:
             entry = {"name": ug, "group": []}
@@ -118,66 +163,60 @@ def _nest_role_into_policy_groups(out, order, role_set, role, naming):
             entry["group"].append(role)
 
 
-def freeipa_rbac_role_groups(role_sets, naming=None):
-    """Generated native usergroup dicts, deterministic order, deduped by name:
-    each role group (``role-*``) plus each policy group (``ug-*``) gaining the role
-    group as a nested member (``group: [role-*]``)."""
+def freeipa_rbac_role_groups(roles, naming=None):
+    """Generated native usergroup dicts, deterministic order, deduped by name: each role
+    group (``role-*``) plus each policy group (``ug-*``) gaining the role group as a
+    nested member (``group: [role-*]``)."""
     out, order = {}, []
-    for role_set in role_sets or []:
-        role = _ensure_role_group(out, order, role_set, naming)
-        _nest_role_into_policy_groups(out, order, role_set, role, naming)
+    for tenant, environment, name, role_def in _iter_roles(roles):
+        role = _ensure_role_group(out, order, tenant, environment, name, role_def, naming)
+        _nest_into_policy_groups(out, order, tenant, environment, role,
+                                 role_def.get("policy_groups"), naming)
     return [out[name] for name in order]
 
 
 # ── filter 2: user -> role-group membership (as native user `groups` additions) ──
-def _index_role_sets_by_name(role_sets):
-    by_name = {}
-    for role_set in role_sets or []:
-        by_name.setdefault(role_set["name"], []).append(role_set)
-    return by_name
+def _role_coords(roles, naming):
+    """Map ``(tenant, environment, name)`` -> role-group name for every defined cell."""
+    return {(tenant, environment, name): _role_group_name(tenant, environment, name, naming)
+            for tenant, environment, name, _role_def in _iter_roles(roles)}
 
 
-def _role_groups_for_user(spec, by_name, naming):
-    """The deduped role-group names a user joins, across every role_set of each role name."""
-    roles = []
-    for role_name in (spec or {}).get("roles") or []:
-        for role_set in by_name.get(role_name, []):
-            role = _role_group_name(role_set, naming)
-            if role not in roles:
-                roles.append(role)
-    return roles
-
-
-def freeipa_rbac_memberships(assignments, role_sets, naming=None):
+def freeipa_rbac_memberships(assignments, roles, naming=None):
     """``[{name: <user>, groups: [role-*, ...]}]`` — the role groups each user joins,
     shaped as additions to the native ``freeipa_idam_users`` entries (merge with
-    union_fields=['groups']). A user's role name resolves to EVERY role_set entry of that
-    name, so a role defined across several tenant/envs grants membership in each. Keeping
-    membership user-side (vs a separate role-group `user:` list) means overlay users flow
-    through the role's existing user validation + membership pipeline unchanged."""
-    by_name = _index_role_sets_by_name(role_sets)
-    out = []
-    for user, spec in (assignments or {}).items():
-        roles = _role_groups_for_user(spec, by_name, naming)
-        if roles:
-            out.append({"name": user, "groups": roles})
-    return out
+    union_fields=['groups']). Each ``(tenant, environment, role)`` coordinate resolves to
+    EXACTLY ONE role group, so a grant can never reach another tenant or environment.
+    freeipa_rbac_validate is the gate that rejects an assignment to an undefined cell;
+    this projection defensively skips one so a bypassed validate can't crash the run."""
+    coords = _role_coords(roles, naming)
+    per_user, order = {}, []
+    for user, tenant, environment, role_name in _iter_assignments(assignments):
+        role = coords.get((tenant, environment, role_name))
+        if role is None:
+            continue
+        groups = per_user.get(user)
+        if groups is None:
+            groups = []
+            per_user[user] = groups
+            order.append(user)
+        if role not in groups:
+            groups.append(role)
+    return [{"name": user, "groups": per_user[user]} for user in order if per_user[user]]
 
 
 # ── filter 3: validate (fail fast, before any apply) ──────────────────────────
-def _validate_role_set_shape(role_set, idx):
-    if not isinstance(role_set, dict):
+def _validate_policy_groups_shape(tenant, environment, name, role_def):
+    policy_groups = role_def.get("policy_groups")
+    if not policy_groups:
         raise AnsibleFilterError(
-            f"role_set #{idx} must be a mapping, got {type(role_set).__name__}")
-    for field in ROLE_SET_REQUIRED:
-        if not role_set.get(field):
-            raise AnsibleFilterError(
-                f"role_set #{idx} is missing required field '{field}'")
-    for policy_group in role_set.get("policy_groups") or []:
+            f"role '{tenant}/{environment}/{name}' declares no policy_groups; a role must "
+            f"grant at least one (it would otherwise grant nothing)")
+    for policy_group in policy_groups:
         if not (isinstance(policy_group, dict)
                 and policy_group.get("service") and policy_group.get("privilege")):
             raise AnsibleFilterError(
-                f"role_set '{role_set.get('name')}': each policy_group needs both "
+                f"role '{tenant}/{environment}/{name}': each policy_group needs both "
                 f"'service' and 'privilege' (got {policy_group!r})")
 
 
@@ -192,64 +231,70 @@ def _check_group_name(name, prefix, kind):
     return name
 
 
-def _validate_policy_groups(role_set, naming, native_names, ug_prefix,
-                            allow_missing, policy_group_names):
-    for policy_group in role_set.get("policy_groups") or []:
+def _validate_cell_policy_groups(tenant, environment, name, role_def, naming,
+                                 native_names, ug_prefix, allow_missing, policy_group_names):
+    for policy_group in role_def["policy_groups"]:
         ug = _check_group_name(
-            _policy_group_name(role_set, policy_group, naming), ug_prefix, "policy")
+            _policy_group_name(tenant, environment, policy_group, naming), ug_prefix, "policy")
         policy_group_names.add(ug)
         if not allow_missing and ug not in native_names:
             raise AnsibleFilterError(
-                f"role_set '{role_set['name']}' nests into policy group '{ug}', which is not "
-                f"declared in freeipa_idam_usergroups. Declare it (with its HBAC/sudo) natively "
-                f"first, or set allow_missing_policy_groups.")
+                f"role '{tenant}/{environment}/{name}' nests into policy group '{ug}', which "
+                f"is not declared in freeipa_idam_usergroups. Declare it (with its HBAC/sudo) "
+                f"natively first, or set allow_missing_policy_groups.")
 
 
-def _validate_role_sets(role_sets, naming, native_names, allow_missing_policy_groups):
-    """Validate naming + policy-group existence; return (role_group_names, policy_group_names)."""
+def _validate_roles(roles, naming, native_names, allow_missing_policy_groups):
+    """Validate naming + policy-group existence for every cell; return
+    (role_group_names, policy_group_names, coords)."""
     n = _naming(naming)
     role_prefix, ug_prefix = n["role_prefix"] + "-", n["usergroup_prefix"] + "-"
-    role_group_names, policy_group_names = set(), set()
-    for idx, role_set in enumerate(role_sets):
-        _validate_role_set_shape(role_set, idx)
+    role_group_names, policy_group_names, coords = set(), set(), set()
+    for tenant, environment, name, role_def in _iter_roles(roles):
+        coords.add((tenant, environment, name))
         role_group_names.add(
-            _check_group_name(_role_group_name(role_set, naming), role_prefix, "role"))
-        _validate_policy_groups(role_set, naming, native_names, ug_prefix,
-                                allow_missing_policy_groups, policy_group_names)
-    return role_group_names, policy_group_names
+            _check_group_name(_role_group_name(tenant, environment, name, naming),
+                              role_prefix, "role"))
+        _validate_policy_groups_shape(tenant, environment, name, role_def)
+        _validate_cell_policy_groups(tenant, environment, name, role_def, naming,
+                                     native_names, ug_prefix, allow_missing_policy_groups,
+                                     policy_group_names)
+    return role_group_names, policy_group_names, coords
 
 
-def _validate_assignments(assignments, role_sets, known_users, allow_unknown_users):
-    known_roles = {role_set["name"] for role_set in role_sets}
-    for user, spec in (assignments or {}).items():
+def _validate_assignments(assignments, coords, known_users, allow_unknown_users):
+    for user, tenant, environment, role_name in _iter_assignments(assignments):
         if not allow_unknown_users and known_users and user not in known_users:
             raise AnsibleFilterError(
                 f"user '{user}' in rbac_user_assignments is not in freeipa_idam_users "
                 f"(set allow_unknown_users to permit)")
-        for role_name in (spec or {}).get("roles") or []:
-            if role_name not in known_roles:
-                raise AnsibleFilterError(
-                    f"user '{user}': role '{role_name}' is not a defined role_set")
+        if (tenant, environment, role_name) not in coords:
+            raise AnsibleFilterError(
+                f"user '{user}' is assigned role '{role_name}' in '{tenant}/{environment}', "
+                f"which is not a defined role "
+                f"(freeipa_server_rbac_roles['{tenant}']['{environment}']['{role_name}'] is "
+                f"missing). A grant must name an existing tenant/environment/role cell — "
+                f"that is what keeps tenancies isolated.")
 
 
-def freeipa_rbac_validate(role_sets, assignments=None, native_usergroups=None,
+def freeipa_rbac_validate(roles, assignments=None, native_usergroups=None,
                           naming=None, native_users=None,
                           allow_unknown_users=False, allow_missing_policy_groups=False):
     """Raise AnsibleFilterError on any rule break; return True when the overlay is sound.
-    Checks role_set shape + naming, that referenced policy groups exist natively, that no
+    Checks tree shape + naming, that every referenced policy group exists natively, that no
     role group name equals a policy group name (would cycle), that nothing collides with a
-    protected built-in, and that assignments reference real roles (and known users)."""
-    role_sets = role_sets or []
+    protected built-in, and that every assignment targets an EXISTING tenant/environment/role
+    cell (and a known user) — the path check is what makes cross-tenant grants impossible."""
     native_names = {g.get("name") for g in (native_usergroups or []) if isinstance(g, dict)}
-    role_group_names, policy_group_names = _validate_role_sets(
-        role_sets, naming, native_names, allow_missing_policy_groups)
+    role_group_names, policy_group_names, coords = _validate_roles(
+        roles, naming, native_names, allow_missing_policy_groups)
     clash = role_group_names & policy_group_names
     if clash:
         raise AnsibleFilterError(
             f"role group name(s) collide with policy group name(s): {sorted(clash)} "
             f"(a role group can never also be a policy group)")
     known_users = {u.get("name") for u in (native_users or []) if isinstance(u, dict)}
-    _validate_assignments(assignments, role_sets, known_users, allow_unknown_users)
+    _validate_assignments(assignments, coords, known_users, allow_unknown_users)
     return True
 
 

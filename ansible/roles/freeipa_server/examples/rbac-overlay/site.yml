@@ -9,7 +9,7 @@
 #
 #   ansible-playbook -i inventory.yml site.yml --tags idam       # add --check --diff to preview
 #
-# The pre_tasks are fully null-safe + gated: with no freeipa_server_rbac_role_sets declared
+# The pre_tasks are fully null-safe + gated: with no freeipa_server_rbac_roles declared
 # they no-op, so a pure-baseline realm runs untouched.
 - name: FreeIPA IDAM — native dicts + thin RBAC overlay (compiled in pre_tasks)
   hosts: ipaserver

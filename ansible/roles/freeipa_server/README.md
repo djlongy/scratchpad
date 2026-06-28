@@ -224,25 +224,33 @@ run from raw dicts):
 2. **group_vars `freeipa_server_rbac_*`** — the overlay data you author.
 3. **a playbook pre_task** — validates + compiles + merges the overlay into
    `freeipa_idam_usergroups` + `freeipa_idam_users` **before** the role runs (null-safe + gated:
-   no `role_sets` ⇒ no-op ⇒ pure baseline). Ship it as one reusable
+   no `freeipa_server_rbac_roles` ⇒ no-op ⇒ pure baseline). Ship it as one reusable
    [`freeipa_server_rbac_compile.yml`](examples/rbac-overlay/freeipa_server_rbac_compile.yml).
 
+**Tenancy is a hard boundary.** The overlay data is a nested tree — a role is *defined* inside
+its `tenant → environment` cell and *assigned* by naming that exact cell — so one grant can
+never reach a second tenant or environment. Breadth is opt-in only: list each cell explicitly.
+
 ```yaml
-freeipa_server_rbac_role_sets:
-  - name: platform-admin
-    tenant: acme
-    environment: prod
-    policy_groups:                         # nest into EXISTING native ug-* groups
-      - { service: gitlab, privilege: admins }     # → ug-acme-prod-gitlab-admins
-      - { service: docker, privilege: operators }
+# DEFINITIONS — tenant → environment → role → {description?, policy_groups}
+freeipa_server_rbac_roles:
+  acme:
+    prod:
+      platform-admin:
+        policy_groups:                         # nest into EXISTING native ug-* groups
+          - { service: gitlab, privilege: admins }     # → ug-acme-prod-gitlab-admins
+          - { service: docker, privilege: operators }
+# ASSIGNMENTS — user → tenant → environment → [roles]  (every grant fully qualified)
 freeipa_server_rbac_user_assignments:
-  alice: { roles: [platform-admin] }       # alice → role-acme-prod-platform-admin → indirect ug-*
+  alice: { acme: { prod: [platform-admin] } }  # alice → role-acme-prod-platform-admin → indirect ug-*
 ```
 
 Policy groups **must already exist natively** (that's where the HBAC/sudo point) — the overlay
 nests onto them, it never invents them. Names come from `freeipa_server_rbac_naming`
-(`role_template` / `policy_group_template`). `validate_rbac` fails fast on an unknown role, a
-missing policy group, a built-in collision, or a user not in `freeipa_idam_users`. A runnable
+(`role_template` / `policy_group_template`). `freeipa_rbac_validate` fails fast on an assignment
+to an **undefined** `(tenant, environment, role)` cell (enforcing tenant isolation), a missing
+policy group, a built-in collision, or a user not in `freeipa_idam_users`. The flat
+`freeipa_server_rbac_role_sets` list is **removed** (the compile step rejects it). A runnable
 3-tenant × 3-environment template is in [`examples/rbac-overlay/`](examples/rbac-overlay/).
 
 (Distinct from native IPA **`freeipa_idam_iparoles`** — delegation of IPA-*management*
