@@ -31,6 +31,7 @@
   register: _freeipa_client_verify
   changed_when: false
   failed_when: false
+  become: true                           # /etc/krb5.keytab is root-only; non-root → "no suitable keys"
 
 # When kinit -k fails (commonly "no suitable keys for host/<fqdn>@<realm>" — a principal/realm
 # mismatch between what the role builds and what is actually in the keytab), gather the keytab
@@ -38,6 +39,7 @@
 # read-only and tolerant; the play still fails (with the enriched message) on a real mismatch.
 - name: Diagnose keytab on kinit -k failure
   when: (_freeipa_client_verify.rc | default(1)) != 0
+  become: true                           # klist -kt/-ke read the root-only keytab
   block:
     - name: Diag | List host keytab principals (klist -kt)
       ansible.builtin.command: "klist -kt /etc/krb5.keytab"
@@ -81,6 +83,7 @@
   ansible.builtin.command: kdestroy
   changed_when: false
   failed_when: false
+  become: true                           # clear the root ccache the kinit above created
 
 - name: Verify SSSD resolves an IPA identity (admin)
   ansible.builtin.command: id "admin@{{ freeipa_client_domain }}"

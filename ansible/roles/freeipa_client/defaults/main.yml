@@ -13,7 +13,7 @@
 freeipa_client_domain: "{{ domain }}"
 freeipa_client_realm: "{{ freeipa_client_domain | upper }}"
 
-# This client's own FQDN (replaces ansible_fqdn — see repo hostname convention).
+# This client's own FQDN (built from hostname + domain, not gathered facts).
 # A client may live in a different DNS domain than the realm; override if so.
 freeipa_client_fqdn: "{{ inventory_hostname }}.{{ domain }}"
 freeipa_client_set_hostname: true        # set the OS hostname to freeipa_client_fqdn before join
@@ -97,23 +97,15 @@ freeipa_client_dns_zone: "{{ freeipa_client_domain }}"  # IPA-owned zone the A r
 # Reverse zone for the PTR. Empty = auto-derive the /24 zone (c.b.a.in-addr.arpa)
 # from the host IP. Override for non-/24 reverse delegations (see README).
 freeipa_client_dns_reverse_zone: ""
-# Ongoing self-healing: configure SSSD dyndns_update (maps to upstream
-# ipasssd_enable_dns_updates). SSSD re-registers the A record on every sssd
-# start/reboot and on dyndns_refresh_interval (default daily). TESTED CAVEAT: a
-# live in-place IP change is NOT picked up promptly (no update within ~100s of an
-# nmcli re-IP) — it catches up at the next sssd restart/reboot or refresh cycle.
-# Default ON: a freshly-joined client self-registers its A record at join
-# (ipa-client-install --enable-dns-updates) and SSSD keeps it current. Only effective where
-# IPA is AUTHORITATIVE for the forward zone; for estates with EXTERNAL DNS (e.g. pfSense) it
-# logs a harmless nsupdate warning and creates nothing — set false there (and seed via site DNS).
+# SSSD dyndns (maps to ipasssd_enable_dns_updates). Default ON: the client self-registers
+# its A record at join (--enable-dns-updates) and SSSD keeps it current on each start/reboot
+# and per dyndns_refresh_interval (daily). Only effective where IPA is AUTHORITATIVE for the
+# zone — with external DNS (e.g. pfSense) it warns and creates nothing, so set false there.
+# A live in-place re-IP isn't picked up until the next sssd restart/refresh.
 freeipa_client_enable_dns_updates: true
-# Force an immediate A-record refresh during the run if it has drifted from the
-# host's current IP (restarts SSSD to trigger a dyndns update only on mismatch).
-# This is the reliable way to get DNS correct right after an Ansible-driven re-IP,
-# since SSSD won't do it on its own until the next restart/refresh (see above).
-# TESTED: corrects real drift in ~8s; idempotent once IPA's bind-dyndb-ldap layer
-# has caught up (a back-to-back re-run during that few-second lag may re-fire
-# harmlessly). Needs freeipa_client_enable_dns_updates.
+# Restart SSSD during the run to force an immediate dyndns refresh when the A record has
+# drifted from the host's current IP — the reliable fix right after an Ansible-driven re-IP
+# (which SSSD won't pick up until its next restart/refresh). Idempotent. Needs enable_dns_updates.
 freeipa_client_sync_dns_record: false
 freeipa_client_no_dns_sshfp: false       # false = publish SSHFP records
 freeipa_client_ssh_trust_dns: true       # trust SSHFP from DNS (sshd VerifyHostKeyDNS)
@@ -137,8 +129,7 @@ freeipa_client_subid: false
 # ── Preflight tolerances ─────────────────────────────────────────────────────
 freeipa_client_preflight_time_tolerance_sec: 120
 
-# ── Offline resilience (login must survive IPA/storage being down) ────────────
-# Ensure SSSD caches credentials (offline auth) and that SSH key login is served
-# from SSSD (sss_ssh_authorizedkeys) rather than ~/.ssh — so login never depends
-# on a network home. See docs/superpowers/specs/2026-06-23-nfs-network-storage-design.md.
+# ── Offline resilience (login survives IPA/storage being down) ────────────────
+# SSSD caches credentials (offline auth) and serves SSH keys via sss_ssh_authorizedkeys
+# (not ~/.ssh), so login never depends on a network home.
 freeipa_client_offline_resilient: true

@@ -47,6 +47,7 @@
   register: _freeipa_client_kinit
   changed_when: false
   failed_when: false
+  become: true                           # /etc/krb5.keytab is root-only; non-root → "no suitable keys"
   when:
     - _freeipa_client_conf.stat.exists
     - freeipa_client_rejoin_stale | bool
@@ -55,6 +56,7 @@
   ansible.builtin.command: kdestroy
   changed_when: false
   failed_when: false
+  become: true                           # clear the root ccache the kinit above created
   when:
     - _freeipa_client_conf.stat.exists
     - freeipa_client_rejoin_stale | bool

@@ -64,24 +64,14 @@ When IPA *is* authoritative:
   (`freeipa_client_dns_reverse_zone`; empty = auto-derive the `/24` zone from the
   host IP — override for non-`/24` reverse delegations). **Tested:** a fresh enrol
   seeds the forward A and reverse PTR, and a re-run is `changed=0`.
-- **Following the host IP** — `freeipa_client_enable_dns_updates` (default **true**)
-  turns on SSSD `dyndns_update`, which re-registers the A record (authenticated
-  with the host keytab) **on SSSD start (i.e. every boot/`sssd` restart)** and
-  periodically per `dyndns_refresh_interval` (default daily). **Tested caveat:** a
-  live in-place IP change (e.g. `nmcli` re-IP without a reboot) is **not** picked
-  up promptly — SSSD did not push an update within ~100s of the address changing.
-  The record catches up at the next SSSD restart/reboot or the next refresh
-  interval. So over a reboot cycle the record does follow the host, but if you
-  re-IP a running host and need DNS correct immediately, use the next bullet.
-- **Forcing an immediate refresh** in an Ansible run (e.g. right after re-IPing a
-  host) — `freeipa_client_sync_dns_record: true` checks the live A record against
-  the host's current primary IP and restarts SSSD to push an update only on a
-  mismatch (requires `freeipa_client_enable_dns_updates`). **Tested:** corrects a
-  real drift within ~8s and skips cleanly once in sync. Note IPA's bind-dyndb-ldap
-  serves DNS from LDAP with a short refresh lag, so the authoritative answer can
-  trail the keytab update by a few seconds; a re-run fired immediately
-  back-to-back may briefly re-detect drift and restart SSSD again (harmless — it
-  converges). It is idempotent once the DNS layer has caught up.
+- **Following the host IP** — SSSD `dyndns_update` (on with `freeipa_client_enable_dns_updates`)
+  re-registers the A record on each SSSD start/reboot and per `dyndns_refresh_interval` (daily).
+  A live in-place re-IP isn't picked up until the next restart/refresh — for an immediate fix
+  use the next bullet.
+- **Forcing an immediate refresh** — `freeipa_client_sync_dns_record: true` compares the live A
+  record to the host's current IP and restarts SSSD to push an update only on a mismatch (needs
+  `freeipa_client_enable_dns_updates`). Idempotent; converges once IPA's bind-dyndb-ldap refresh
+  lag catches up.
 
 ## Stale-machine rejoin (idempotency model)
 
