@@ -68,6 +68,17 @@
       or JSON extra-vars (`-e '{"var": [ ... ]}'`).
     quiet: true
 
+# Accept bare-string shorthand for the name-only object lists: a `cockpit` entry is
+# normalized to `{name: cockpit}` so terse input (and older exports) work alongside the
+# full `{name: ..., description: ...}` form — without crashing the downstream
+# `map(attribute='name')` validation with "'str object' has no attribute 'name'".
+# Runs AFTER the list-type guard above (so non-lists are already rejected) and BEFORE the
+# validation/create tasks that read these by `.name`.
+- name: Normalize name-only IDAM lists (accept bare-string shorthand)
+  ansible.builtin.set_fact:
+    freeipa_idam_hbacsvcs: "{{ freeipa_idam_hbacsvcs | freeipa_idam_named }}"
+    freeipa_idam_sudo_commands: "{{ freeipa_idam_sudo_commands | freeipa_idam_named }}"
+
 # Fold the separate account-type lists into the working user set so they flow
 # through the SAME validation/create/group/marker pipeline — but with their
 # distinguishing attributes. Service accounts get the nologin shell. Break-glass

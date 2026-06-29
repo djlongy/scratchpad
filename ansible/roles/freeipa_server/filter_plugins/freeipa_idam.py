@@ -85,9 +85,23 @@ def freeipa_idam_orphans(found, desired, match, protected=None):
     return out
 
 
+# ── normalize name-only object lists (accept bare-string shorthand) ───────────
+def freeipa_idam_named(items):
+    """Normalize a name-only object list to dicts: a bare string ``s`` becomes
+    ``{'name': s}``; a mapping is passed through unchanged. Lets terse shorthand
+    (e.g. ``freeipa_idam_hbacsvcs: [cockpit]``) work alongside the full
+    ``[{name: cockpit, description: ...}]`` form, instead of crashing the
+    downstream ``map(attribute='name')`` with 'str object has no attribute name'."""
+    out = []
+    for item in items or []:
+        out.append({"name": item} if isinstance(item, str) else item)
+    return out
+
+
 class FilterModule:
     def filters(self):
         return {
             "freeipa_idam_merge": freeipa_idam_merge,
             "freeipa_idam_orphans": freeipa_idam_orphans,
+            "freeipa_idam_named": freeipa_idam_named,
         }
