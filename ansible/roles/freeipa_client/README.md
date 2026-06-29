@@ -32,9 +32,10 @@ by the upstream `ipaclient` role's per-distro vars.
 - **sudo** — SSSD sudo provider (`freeipa_client_no_sudo: false`); the host runs
   server-defined sudo rules.
 - **HBAC** — enforced automatically by SSSD (`access_provider=ipa`).
-- **DNS** — the host self-registers its A/SSHFP records on join, and (with
-  `freeipa_client_enable_dns_updates`) keeps the A record in sync with the host IP
-  via SSSD `dyndns_update`. See "DNS record propagation" below.
+- **DNS** — with `freeipa_client_enable_dns_updates` (**on by default**) the host
+  self-registers its A record on join and SSSD keeps it in sync with the host IP via
+  `dyndns_update`; SSHFP is published regardless. Only effective where IPA is authoritative
+  for the client's zone. See "DNS record propagation" below.
 
 ## DNS record propagation
 
@@ -47,8 +48,10 @@ cannot create the record; it must come from site DNS or a server-side
 
 When IPA *is* authoritative:
 
-- **At join** — `ipa-client-install` adds the A record (and PTR if the reverse
-  zone exists). `freeipa_client_all_ip_addresses: true` registers every NIC IP.
+- **At join** — with `freeipa_client_enable_dns_updates` (default **true**),
+  `ipa-client-install` adds the A record (and PTR if the reverse zone exists) via an
+  authenticated nsupdate; with it **false** no A record is created at join (use the explicit
+  seed below or site DNS). `freeipa_client_all_ip_addresses: true` registers every NIC IP.
 - **Explicit seed at enrol** — set `freeipa_client_seed_dns_record: true` to write
   the A record (and, with `freeipa_client_seed_dns_reverse`, the reverse PTR)
   server-side via the admin API right after join, independent of join-time
@@ -61,7 +64,7 @@ When IPA *is* authoritative:
   (`freeipa_client_dns_reverse_zone`; empty = auto-derive the `/24` zone from the
   host IP — override for non-`/24` reverse delegations). **Tested:** a fresh enrol
   seeds the forward A and reverse PTR, and a re-run is `changed=0`.
-- **Following the host IP** — set `freeipa_client_enable_dns_updates: true`. This
+- **Following the host IP** — `freeipa_client_enable_dns_updates` (default **true**)
   turns on SSSD `dyndns_update`, which re-registers the A record (authenticated
   with the host keytab) **on SSSD start (i.e. every boot/`sssd` restart)** and
   periodically per `dyndns_refresh_interval` (default daily). **Tested caveat:** a

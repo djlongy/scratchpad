@@ -30,6 +30,52 @@
   ansible.builtin.command: "kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}"
   register: _freeipa_client_verify
   changed_when: false
+  failed_when: false
+
+# When kinit -k fails (commonly "no suitable keys for host/<fqdn>@<realm>" — a principal/realm
+# mismatch between what the role builds and what is actually in the keytab), gather the keytab
+# contents + host identity so the failure is ACTIONABLE instead of a bare non-zero rc. All
+# read-only and tolerant; the play still fails (with the enriched message) on a real mismatch.
+- name: Diagnose keytab on kinit -k failure
+  when: (_freeipa_client_verify.rc | default(1)) != 0
+  block:
+    - name: Diag | List host keytab principals (klist -kt)
+      ansible.builtin.command: "klist -kt /etc/krb5.keytab"
+      register: _freeipa_client_klist
+      changed_when: false
+      failed_when: false
+
+    - name: Diag | List host keytab encryption types (klist -ke)
+      ansible.builtin.command: "klist -ke /etc/krb5.keytab"
+      register: _freeipa_client_klist_enc
+      changed_when: false
+      failed_when: false
+
+    - name: Diag | Resolve the host's actual FQDN
+      ansible.builtin.command: "hostname -f"
+      register: _freeipa_client_hostnamef
+      changed_when: false
+      failed_when: false
+
+    - name: Fail with enriched kinit -k diagnostics
+      ansible.builtin.fail:
+        msg: |-
+          kinit -k FAILED for the principal this role built:
+            tried principal : host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}
+            kinit rc        : {{ _freeipa_client_verify.rc | default('n/a') }}
+            kinit stderr    : {{ _freeipa_client_verify.stderr | default('') | trim }}
+          Host identity (compare against the keytab below):
+            freeipa_client_fqdn  : {{ freeipa_client_fqdn }}
+            freeipa_client_realm : {{ freeipa_client_realm }}
+            hostname -f          : {{ _freeipa_client_hostnamef.stdout | default('?') | trim }}
+          Keytab principals — klist -kt /etc/krb5.keytab:
+          {{ _freeipa_client_klist.stdout | default('(klist failed: ' ~ (_freeipa_client_klist.stderr | default('') | trim) ~ ')') }}
+          Keytab enctypes — klist -ke:
+          {{ _freeipa_client_klist_enc.stdout | default('') }}
+          Most common cause: the keytab holds host/<fqdn>@<REALM> with a DIFFERENT realm or
+          FQDN than the role built (a FreeIPA realm is independent of the DNS domain). Set
+          freeipa_client_realm / freeipa_client_fqdn to match the principal shown above, then
+          re-run. (Paste this block back for help.)
 
 - name: Destroy verification ticket
   ansible.builtin.command: kdestroy

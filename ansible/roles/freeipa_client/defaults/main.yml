@@ -102,8 +102,11 @@ freeipa_client_dns_reverse_zone: ""
 # start/reboot and on dyndns_refresh_interval (default daily). TESTED CAVEAT: a
 # live in-place IP change is NOT picked up promptly (no update within ~100s of an
 # nmcli re-IP) — it catches up at the next sssd restart/reboot or refresh cycle.
-# Default off (matches upstream; avoids failed nsupdate noise for non-IPA zones).
-freeipa_client_enable_dns_updates: false
+# Default ON: a freshly-joined client self-registers its A record at join
+# (ipa-client-install --enable-dns-updates) and SSSD keeps it current. Only effective where
+# IPA is AUTHORITATIVE for the forward zone; for estates with EXTERNAL DNS (e.g. pfSense) it
+# logs a harmless nsupdate warning and creates nothing — set false there (and seed via site DNS).
+freeipa_client_enable_dns_updates: true
 # Force an immediate A-record refresh during the run if it has drifted from the
 # host's current IP (restarts SSSD to trigger a dyndns update only on mismatch).
 # This is the reliable way to get DNS correct right after an Ansible-driven re-IP,
