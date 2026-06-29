@@ -322,6 +322,15 @@ freeipa_idam_preserve_archived: true
 # inventories set only this one var.
 freeipa_server_authoritative: false
 
+# Membership-only reconcile — the SAFE nightly drift-revoke mode. When true, the run strips
+# undeclared group members (exactly like authoritative) but SUPPRESSES every object/user
+# deletion: no group-existence delete, no user archival, no object reconcile. A self-add to a
+# managed group is revoked overnight, while NOTHING is ever removed — so it is safe to run
+# per-tenant against a partial file, with no scope/marker collisions. Enables the membership
+# strip on its own (no need to also set freeipa_server_authoritative); if BOTH are set, this
+# wins and deletions stay suppressed.
+freeipa_idam_reconcile_memberships_only: false
+
 # Print an end-of-run IDAM summary (managed users/groups, what changed, what was
 # archived/deleted/pruned). On by default; set false to silence.
 freeipa_idam_report: true

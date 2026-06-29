@@ -712,10 +712,12 @@
 
 # Membership reconcile. Default = ADDITIVE (ipagroup action: member) for ALL groups —
 # adds declared members, never strips, so out-of-band/system memberships (e.g. admin's)
-# are safe. Opt in to DECLARATIVE with freeipa_server_authoritative: true, which
-# (for non-protected managed groups only) reconciles membership to EXACTLY what is
-# declared — a user/nested-group no longer in code is REMOVED, a group with zero declared
-# members is emptied. Protected/built-in groups always stay additive (never stripped).
+# are safe. Opt in to DECLARATIVE with freeipa_server_authoritative: true (or with
+# freeipa_idam_reconcile_memberships_only: true — SAME membership behaviour, but it
+# suppresses every object/user deletion below: the safe nightly drift-revoke mode). For
+# non-protected managed groups it then reconciles membership to EXACTLY what is declared —
+# a user/nested-group no longer in code is REMOVED, a group with zero declared members is
+# emptied. Protected/built-in groups always stay additive (never stripped).
 #
 # Split the desired members into the two modes. The DECLARATIVE payload is built straight
 # from freeipa_idam_usergroups_effective so it includes every non-protected managed group
@@ -724,6 +726,8 @@
 # (membermanager is left out of this payload → managers are not stripped).
 - name: Build membership reconcile payloads (additive / declarative)
   ansible.builtin.set_fact:
+    # Strip undeclared members when EITHER authoritative OR the membership-only mode is on.
+    _freeipa_idam_strip_memberships: "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_memberships_only | bool) }}"
     _freeipa_members_protected: >-
       {{ _freeipa_idam_usergroups_members
          | selectattr('name', 'in', freeipa_idam_protected_groups | default([])) | list }}
@@ -745,7 +749,7 @@
     action: member
     state: present
   vars:
-    _members_additive: "{{ (freeipa_server_authoritative | bool) | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+    _members_additive: "{{ _freeipa_idam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
   when: _members_additive | length > 0
   register: _freeipa_idam_changed_members_add
   no_log: true
@@ -758,7 +762,7 @@
     # default action (group) → gen_add_del_lists reconciles user + nested-group membership
     state: present
   when:
-    - freeipa_server_authoritative | bool
+    - _freeipa_idam_strip_memberships
     - _freeipa_members_declarative | length > 0
   register: _freeipa_idam_changed_members_decl
   no_log: true
@@ -936,6 +940,7 @@
         | difference(freeipa_idam_desired_usernames)
         | difference(freeipa_idam_protected_users)
       }}
+  when: not (freeipa_idam_reconcile_memberships_only | bool)   # membership-only mode never archives users
 
 # Archive (don't destroy) users removed from declarative config: bulk ipauser with
 # preserve=true → user-del --preserve (deactivated + retained, recoverable). Set
@@ -947,7 +952,9 @@
     name: "{{ freeipa_idam_users_to_remove }}"
     state: absent
     preserve: "{{ freeipa_idam_preserve_archived | bool }}"
-  when: freeipa_idam_users_to_remove | length > 0
+  when:
+    - not (freeipa_idam_reconcile_memberships_only | bool)
+    - freeipa_idam_users_to_remove | default([]) | length > 0
   no_log: true
 
 # ── Declarative GROUP-EXISTENCE reconcile (opt-in) ───────────────────────────
@@ -977,7 +984,9 @@
          | difference(freeipa_idam_group_names)
          | difference(freeipa_idam_protected_groups)
          | difference([freeipa_idam_managed_groups_group, freeipa_idam_managed_group]) }}
-  when: freeipa_server_authoritative | bool
+  when:
+    - not (freeipa_idam_reconcile_memberships_only | bool)
+    - freeipa_server_authoritative | bool
 
 - name: Report groups to delete (declarative group-existence reconcile)
   ansible.builtin.debug:
@@ -985,6 +994,7 @@
       Group reconcile → deleting {{ _freeipa_idam_groups_to_remove | length }}
       orphaned managed group(s): {{ _freeipa_idam_groups_to_remove }}
   when:
+    - not (freeipa_idam_reconcile_memberships_only | bool)
     - freeipa_server_authoritative | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
 
@@ -998,6 +1008,7 @@
     name: "{{ _freeipa_idam_groups_to_remove }}"
     state: absent
   when:
+    - not (freeipa_idam_reconcile_memberships_only | bool)
     - freeipa_server_authoritative | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
   no_log: true

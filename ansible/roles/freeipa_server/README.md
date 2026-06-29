@@ -271,6 +271,14 @@ Removed **users** are archived (preserved, recoverable) via the `idam-managed-us
 destroyed. **Authoritative is realm-scoped** — only run it against a *complete* assembled desired
 state, never a partial tenant file, or it prunes the other tenants.
 
+**`freeipa_idam_reconcile_memberships_only`** (default `false`) is the **safe nightly
+drift-revoke mode**: it runs the *membership* reconcile (strips members no longer declared —
+e.g. a user who added themselves to a privileged group) but **suppresses every deletion** (no
+group-existence delete, no user archival, no object reconcile). It enables the strip on its own
+(no `authoritative` needed) and, removing *nothing*, is **safe to run per-tenant against a
+partial file** — the right mode for a nightly cron. Reserve full `authoritative` for a
+deliberate, complete run when you actually intend to delete objects.
+
 > **Scope boundary:** object reconcile manages only `group`/`hostgroup`/`hbacrule`/`sudorule`/
 > automember. The leaf building blocks (`hbacsvc`, `sudocmd`, `permission`, `privilege`,
 > `iparole`, `pwpolicy`) are left orphaned when undeclared — a removed `iparole` delegation
