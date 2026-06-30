@@ -32,7 +32,8 @@ from ipalib import api, errors
 # to re-declare — so they are skipped on export. This is NOT "protection": protected
 # objects (admin, admins, ipausers, trust admins) ARE exported (state stays complete
 # + auditable); protection is purely an APPLY-time delete/modify guard. Skipped here:
-#   * the role's own marker group (re-created by the role; circular to capture)
+#   * the role's own marker/container groups — idam-managed-*, *-idam-managed-*
+#     (see _is_marker; re-created + auto-populated by the role; circular to capture)
 #   * User Private Groups (one per user, mepManagedEntry — handled by _is_upg below)
 GROUP_EXPORT_SKIP = {"idam-managed-users"}
 # Built-in FreeIPA delegation roles (ipa role) — recreated on every install, so only
@@ -159,11 +160,22 @@ def _safe(label, fn, default):
         return default
 
 
+def _is_marker(name):
+    """Auto-managed marker / container groups (idam-managed-users, idam-managed-groups,
+    <tenant>-idam-managed-*, idam-*-managed) — created and populated by the role's own
+    enrolment tasks, NOT declarative config. Re-declaring them (and the auto-enrolled
+    members they hold) would fight the role on every run, so they are skipped on export.
+    Because export_users() filters each user's groups to the EXPORTED group set, skipping
+    markers here also strips them from every user's `groups` and from group nesting."""
+    n = (name or "").lower()
+    return "idam" in n and "managed" in n
+
+
 def export_groups():
     groups, names = [], set()
     for e in _find("group_find"):
         name = _str(e, "cn")
-        if not name or name in GROUP_EXPORT_SKIP or _is_upg(e):
+        if not name or name in GROUP_EXPORT_SKIP or _is_marker(name) or _is_upg(e):
             continue
         names.add(name)
         groups.append(e)
