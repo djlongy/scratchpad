@@ -17,6 +17,8 @@
   ansible.builtin.set_fact:
     _freeipa_tenant_hdr: "{{ lookup('ansible.builtin.file', _freeipa_tenant_file) | from_yaml }}"
     _freeipa_host_env: "{{ env | default('') }}"
+    _freeipa_host_prefix: "{{ prefix | default('') }}"
+    _freeipa_host_tenant: "{{ tenant | default('') }}"
   no_log: true  # tenant files may carry inline user passwords
 
 - name: tenants | Load {{ _freeipa_tenant_file | basename }} as native vars
@@ -28,7 +30,9 @@
   ansible.builtin.set_fact:
     _freeipa_tenants_raw: "{{ (_freeipa_tenants_raw | default([])) + [_freeipa_tenant_this] }}"
   vars:
-    tenant: "{{ _freeipa_tenant_hdr.tenant | default('') }}"
+    # File header wins (for self-ref); otherwise fall back to the in-scope inventory/group var
+    # of the same name — never clobber an inventory-level tenant/env/prefix with an empty string.
+    tenant: "{{ _freeipa_tenant_hdr.tenant | default(_freeipa_host_tenant) }}"
     env: "{{ _freeipa_tenant_hdr.env | default(_freeipa_host_env) }}"
-    prefix: "{{ _freeipa_tenant_hdr.prefix | default('') }}"
+    prefix: "{{ _freeipa_tenant_hdr.prefix | default(_freeipa_host_prefix) }}"
   no_log: true  # tenant files may carry inline user passwords
