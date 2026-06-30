@@ -377,6 +377,24 @@
   # name pairs only (no secrets) — shown at -vv.
   no_log: "{{ ansible_verbosity < 2 }}"
 
+# TENANT-ISOLATION BOUNDARY: a user->group membership is only applied when the
+# GROUP is declared in THIS slice's freeipa_idam_usergroups (the effective-groups
+# build below attaches members to declared groups only). A reference to a built-in
+# or another slice's group passes validation but would NOT be reconciled here — so
+# surface it loudly instead of dropping it silently. To actually apply such a
+# membership, declare it in the inventory that owns the group (e.g. the global slice).
+- name: Warn on memberships into groups this slice does not manage (not applied)
+  ansible.builtin.debug:
+    msg: |-
+      WARNING — {{ _unmanaged | length }} membership(s) reference groups this slice does not
+      manage; NOT applied (declare them where the group is owned, e.g. the global slice):
+      {% for p in _unmanaged %}
+        - {{ p.user }} -> {{ p.group }}
+      {% endfor %}
+  vars:
+    _unmanaged: "{{ freeipa_idam_user_group_pairs | default([]) | rejectattr('group', 'in', freeipa_idam_group_names) | list }}"
+  when: _unmanaged | length > 0
+
 - name: Build effective FreeIPA groups with merged memberships
   ansible.builtin.set_fact:
     freeipa_idam_usergroups_effective: "{{ (freeipa_idam_usergroups_effective | default([])) + [item | combine(_freeipa_idam_group_user_block, recursive=True)] }}"
