@@ -96,7 +96,9 @@
         _audit_current_play:
           play_name: "{{ ansible_play_name | default('unnamed') }}"
           hosts: "{{ ansible_play_hosts_all | default([]) }}"
-          roles: "{{ ansible_play_role_names | default([]) }}"
+          # unique: some Ansible/Semaphore versions list an include_role'd role
+          # once per host — dedupe so audit_logging isn't repeated N times.
+          roles: "{{ ansible_play_role_names | default([]) | unique }}"
 
     - name: Build consolidated plays list
       ansible.builtin.set_fact:

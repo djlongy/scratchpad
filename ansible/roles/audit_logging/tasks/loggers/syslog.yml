@@ -1,15 +1,29 @@
 ---
 # loggers/syslog.yml — log the audit record via local logger(1).
-# Vars: audit_logging_syslog_facility, audit_logging_syslog_priority
+# Vars: audit_logging_syslog_facility, _priority, _tag, _format (json|kv)
+#
+# format=json  → the record as a single JSON blob. Splunk's stock
+#                linux_messages_syslog sourcetype will NOT parse it; route the
+#                tag to a custom sourcetype with KV_MODE=json (see README).
+# format=kv    → logfmt `key="value"` pairs. Splunk's default key=value
+#                extraction picks these up even under the syslog sourcetype, so
+#                fields are searchable with no Splunk-side config.
 
 - name: Write audit record to syslog
   ansible.builtin.command:
     argv:
       - logger
       - -t
-      - ansible-audit
+      - "{{ audit_logging_syslog_tag }}"
       - -p
       - "{{ audit_logging_syslog_facility }}.{{ audit_logging_syslog_priority }}"
-      - "{{ audit_logging_event_json }}"
+      - "{{ _audit_syslog_message }}"
+  vars:
+    # logfmt: each top-level field as key=<json value>. Compact separators
+    # (no spaces) keep list/dict values a SINGLE token (e.g. hosts=["a","b"]),
+    # and to_json quotes strings so spaces stay inside one token — both of which
+    # Splunk's default key=value extraction handles with no props.conf.
+    _audit_syslog_kv: "{% for k, v in audit_logging_event.items() %}{{ k }}={{ v | to_json(separators=(',', ':')) }}{{ ' ' if not loop.last else '' }}{% endfor %}"
+    _audit_syslog_message: "{{ audit_logging_event_json if audit_logging_syslog_format == 'json' else _audit_syslog_kv }}"
   changed_when: false
   ignore_errors: true

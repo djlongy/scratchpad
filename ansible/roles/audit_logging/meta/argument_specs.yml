@@ -45,6 +45,15 @@ argument_specs:
         type: str
         default: info
         description: syslog priority (backend C(syslog)).
+      audit_logging_syslog_tag:
+        type: str
+        default: ansible-audit
+        description: Tag prepended to the syslog line (route it to a custom Splunk sourcetype).
+      audit_logging_syslog_format:
+        type: str
+        default: json
+        choices: [json, kv]
+        description: syslog message format — C(json) blob, or C(kv) logfmt pairs that Splunk auto-extracts under the syslog sourcetype.
 
       audit_logging_rsyslog_host:
         type: str

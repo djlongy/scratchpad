@@ -38,5 +38,6 @@
         _audit_this_play:
           play_name: "{{ ansible_play_name | default('unnamed') }}"
           hosts: "{{ ansible_play_hosts_all | default([]) }}"
-          roles: "{{ ansible_play_role_names | default([]) }}"
+          # unique: dedupe roles that some versions list once per host.
+          roles: "{{ ansible_play_role_names | default([]) | unique }}"
       changed_when: false

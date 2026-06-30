@@ -44,6 +44,14 @@ audit_logging_file_become: true
 # ── syslog (local logger(1)) ──────────────────────────────────────────────
 audit_logging_syslog_facility: local0
 audit_logging_syslog_priority: info
+# Tag prepended to the syslog line. Route this tag to a dedicated Splunk
+# sourcetype (props.conf KV_MODE=json) if you keep the json format.
+audit_logging_syslog_tag: ansible-audit
+# Message format: 'json' (the record as a JSON blob) or 'kv' (logfmt
+# key="value" pairs). Splunk's default linux_messages_syslog sourcetype does
+# NOT json-parse the body, so 'kv' is the drop-in choice for field extraction
+# under syslog with no Splunk-side config.
+audit_logging_syslog_format: json
 
 # ── rsyslog (remote, UDP) ─────────────────────────────────────────────────
 audit_logging_rsyslog_host: ""        # REQUIRED when 'rsyslog' is enabled

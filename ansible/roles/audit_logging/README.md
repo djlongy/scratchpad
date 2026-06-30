@@ -106,10 +106,44 @@ full contract.
 | `audit_logging_splunk_hec_token` | `""` | Splunk HEC token **(required for `splunk`)** |
 | `audit_logging_splunk_sourcetype` | `ansible:audit` | Splunk sourcetype |
 | `audit_logging_splunk_index` | `ansible` | Splunk index |
+| `audit_logging_syslog_tag` | `ansible-audit` | syslog tag (route to a Splunk sourcetype) |
+| `audit_logging_syslog_format` | `json` | syslog body: `json` blob or `kv` logfmt |
 | `audit_logging_elasticsearch_url` | `""` | ES base URL **(required for `elasticsearch`)** |
 | `audit_logging_rsyslog_host` | `""` | Remote rsyslog host **(required for `rsyslog`)** |
 | `audit_logging_fluentd_url` | `http://localhost:9880` | Fluentd HTTP input |
 | `audit_logging_cloudwatch_log_group` | `/ansible/audit` | CloudWatch log group |
+
+## syslog → Splunk (field extraction)
+
+Splunk's stock `linux_messages_syslog` sourcetype does **not** JSON-parse the
+message body, so a `json`-format syslog line lands unparsed. Two ways to get
+searchable key/value fields:
+
+- **`audit_logging_syslog_format: kv`** — emits logfmt `key="value"` pairs (lists
+  as compact single tokens, e.g. `hosts=["web01","web02"]`). Splunk's default
+  `key=value` extraction picks these up under *any* sourcetype, no config needed.
+- **Keep `json` + route the tag** — point `audit_logging_syslog_tag` at a
+  dedicated sourcetype and set `KV_MODE = json` for it in `props.conf`.
+
+## Efficiency on many-host plays
+
+The role is included per target host but its body runs only for the first
+(`ansible_play_hosts_all | first`), so it ships once — but the *include itself*
+(and its arg-spec validation) is still evaluated per host. On large plays you can
+skip that by gating the include at the call site to the same first host:
+
+```yaml
+post_tasks:
+  - name: Write audit log
+    ansible.builtin.include_role:
+      name: audit_logging
+    when: inventory_hostname == ansible_play_hosts_all | first   # include once
+    vars: { audit_logging_backends: [splunk] }
+```
+
+Use `when:` (not `run_once:` — that fires once *per serial batch*). The role is
+correct either way; this just avoids the per-host include overhead. The `roles`
+field in the record is de-duplicated regardless of how many hosts ran.
 
 ## The audit record
 
