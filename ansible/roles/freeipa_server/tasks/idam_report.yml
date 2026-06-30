@@ -35,7 +35,9 @@
 
 - name: IDAM report | Print run summary
   ansible.builtin.debug:
-    msg: "{{ _lines }}"
+    # Join into ONE multi-line string so the callback prints a clean `msg: |-`
+    # block instead of a hyphenated YAML list.
+    msg: "{{ _lines | join('\n') }}"
   vars:
     _s: "{{ _freeipa_idam_summary }}"
     # Groups deleted across BOTH mechanisms (group-existence container + object reconcile).
