@@ -186,6 +186,46 @@ in `defaults/main.yml`):
 `--tags export` snapshots a live realm into exactly this shape, so you can adopt an existing
 instance and reapply it idempotently (see "Adopt an existing instance").
 
+### Per-tenant identity directory (optional front-end)
+
+Instead of hand-maintaining the `freeipa_idam_*` lists in one big group_vars file, point
+**`freeipa_idam_tenants_dir`** at a directory of per-tenant files. The role
+reads and flattens **all** of them in **one run** — the precondition for a single, fully
+declarative reconcile that sees every tenant at once (so membership of even a shared or
+built-in group reflects the whole realm, not one slice). Leave it empty to stay in legacy
+mode (declare the lists directly in group_vars).
+
+Each file is a plain `.yml` of `{tenant, shared?, <object lists>}` and may carry a tenant's
+**whole** config — not just users and groups but `groups`, `hbac_rules`, `sudo_rules`, `roles`,
+`automember`, `dns_zones`/`dns_records`, … Use the short hand-friendly key **or** the full
+`freeipa_idam_*` / `freeipa_server_*` var (e.g. straight from a `--tags export` snapshot —
+adopting an export is just adding a `tenant:` header). Lists are concatenated across files by
+their target var; users and groups are stamped `_owner` (the tenant) and `_shared`.
+
+Each file is loaded with `include_vars`, so it behaves **exactly like any vars YAML in the
+inventory** — reference inventory/group_vars (and the file's own `{{ tenant }}` / `{{ env }}` /
+`{{ prefix }}`) with ordinary quoted Jinja, **including pulling a whole list in from a group_var**
+(it stays a native list, not a stringified one). A file with no Jinja loads verbatim. There is
+**no special extension** — a tenant file is just a `.yml`, exactly what `--tags export` emits.
+
+```yaml
+# inventories/<env>/tenants/acme.yml  — a plain vars YAML, templated like any inventory file
+tenant: acme
+shared: false
+prefix: ug                            # your own header var, usable below via {{ prefix }}
+groups:
+  - { name: "{{ prefix }}-{{ tenant }}-admins", description: "Acme admins" }   # self-ref
+users:
+  - { name: alice.smith, givenname: Alice, sn: Smith, groups: ["{{ prefix }}-{{ tenant }}-admins"] }
+freeipa_idam_hbac_rules: "{{ shared_hbac_baseline }}"   # pull a whole list from group_vars
+dns_records:                                            # bulk zone shape → ipadnsrecord
+  - zone_name: ipa.example.com.
+    records:
+      - { record_name: app1, a_record: [10.0.0.20] }
+```
+
+`freeipa_idam_tenants_dir` is typically `"{{ inventory_dir }}/tenants"`.
+
 ### The two-tier role/policy group model
 
 A FreeIPA *user group* can't itself hold HBAC/sudo/host rules, so policy is decoupled from
@@ -298,6 +338,24 @@ deliberate, complete run when you actually intend to delete objects.
 
 Protected/never-touched: `freeipa_idam_protected_users` (incl. `admin`),
 `freeipa_idam_protected_groups` (incl. `admins`, `ipausers`).
+
+### Reference-integrity validation
+
+Before any change, the role validates the whole data set and reports *all* problems at once.
+Shape/typo errors (a missing `name`, a user with no groups/roles, a duplicate user) **always
+hard-fail**. The cross-object *reference* checks (role→group, user→group/role, hbac→service,
+sudo→command) are governed by **`freeipa_server_idam_reference_validation`**, so a scoped
+per-tenant slice can reference a global object it does not itself declare:
+
+| Mode | Behaviour |
+|---|---|
+| `strict` (default) | a reference must be declared here, or be a known built-in |
+| `warn` | unknown references are reported, the run continues |
+| `off` | reference checks skipped |
+| `live` | also accept any reference that already exists on the realm (`ipa *-find`; needs a real connection — not usable under `--check`) |
+
+Built-ins (`freeipa_server_idam_builtin_groups` — admins/editors/ipausers/trust admins) are
+always valid targets, so a tenant slice never has to redeclare them just to validate.
 
 ## Adopt an existing instance (`--tags export`)
 

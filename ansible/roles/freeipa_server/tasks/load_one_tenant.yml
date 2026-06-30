@@ -1,0 +1,34 @@
+---
+# Load ONE tenant file as native vars and append it to _freeipa_tenants_raw. Included per file
+# by load_tenants.yml so each file's Jinja resolves in ITS OWN tenant scope.
+#
+# Three steps, by design:
+#   1. read the literal header (tenant/env/prefix) with a plain from_yaml — quoted Jinja in the
+#      body parses to harmless strings here; we only read the scalar header keys.
+#   2. include_vars the file under a namespaced var. include_vars gives NATIVE, lazy templating,
+#      so a quoted "{{ a_group_var }}" stays a native list (a template-render round-trip would
+#      flatten it to a string) — this is why the file behaves like any inventory vars YAML.
+#   3. capture (resolve) the namespaced dict with the file's own tenant/env/prefix exposed, so a
+#      file can self-reference {{ tenant }} / {{ env }} / {{ prefix }} (name: "{{ tenant }}-admins").
+#      Those come from the header read in step 1 — NOT from the namespaced dict — which is what
+#      avoids a self-referential templating recursion.
+
+- name: tenants | Read {{ _freeipa_tenant_file | basename }} header
+  ansible.builtin.set_fact:
+    _freeipa_tenant_hdr: "{{ lookup('ansible.builtin.file', _freeipa_tenant_file) | from_yaml }}"
+    _freeipa_host_env: "{{ env | default('') }}"
+  no_log: true  # tenant files may carry inline user passwords
+
+- name: tenants | Load {{ _freeipa_tenant_file | basename }} as native vars
+  ansible.builtin.include_vars:
+    file: "{{ _freeipa_tenant_file }}"
+    name: _freeipa_tenant_this
+
+- name: tenants | Capture {{ _freeipa_tenant_file | basename }} (own tenant/env/prefix in scope)
+  ansible.builtin.set_fact:
+    _freeipa_tenants_raw: "{{ (_freeipa_tenants_raw | default([])) + [_freeipa_tenant_this] }}"
+  vars:
+    tenant: "{{ _freeipa_tenant_hdr.tenant | default('') }}"
+    env: "{{ _freeipa_tenant_hdr.env | default(_freeipa_host_env) }}"
+    prefix: "{{ _freeipa_tenant_hdr.prefix | default('') }}"
+  no_log: true  # tenant files may carry inline user passwords

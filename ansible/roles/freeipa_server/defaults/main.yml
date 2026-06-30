@@ -241,12 +241,20 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 # Admin credentials come from the consolidated freeipa_server_admin_* / vault vars above —
 # there are NO freeipa_idam_admin_* / freeipa_idam_vault_secret vars (removed for consistency).
 #
-# Unified per-realm model (optional): a directory of per-tenant identity/*.yml files,
-# each {tenant, shared?, users: [...], groups: [...]}. When set, the role loads + flattens
-# ALL of them in one run into freeipa_idam_users / freeipa_idam_usergroups, stamping
-# _owner/_shared (see tasks/idam_identity.yml). Empty = legacy mode (set the lists directly
-# in group_vars). Inventory sets e.g. "{{ inventory_dir }}/identity".
-freeipa_idam_source_dir: ""
+# Unified per-realm model (optional): a directory of per-tenant files, each
+# {tenant, shared?, <object lists>}. When set, the role reads + flattens ALL of them in ONE
+# run, so a single declarative reconcile sees every tenant at once. A file can carry its WHOLE
+# config — not just users/groups but groups, hbac_rules, sudo_rules, roles, automember,
+# dns_zones/dns_records, ... (short keys like users/groups/hbac_rules/dns_records, or the full
+# freeipa_idam_*/freeipa_server_* var straight from an export). Lists are concatenated across
+# files by target var; users/groups are stamped _owner (tenant) + _shared. Each file is loaded
+# with include_vars, so it behaves like ANY inventory vars YAML: reference inventory/group_vars
+# (and the file's own tenant/env/prefix) with normal quoted Jinja, incl. pulling a whole list
+# from a group_var (stays a native list). No special extension — a tenant file is a plain .yml
+# (see tasks/load_tenants.yml + load_one_tenant.yml).
+# Empty = legacy mode (set the lists directly in group_vars). Inventory sets e.g.
+# "{{ inventory_dir }}/tenants".
+freeipa_idam_tenants_dir: ""
 freeipa_idam_managed_group: "idam-managed-users"
 freeipa_idam_usergroups: []
 # Roles matrix — a role is a named bundle of groups; users reference roles

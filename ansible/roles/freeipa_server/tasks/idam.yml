@@ -20,14 +20,15 @@
     freeipa_idam_usergroups_effective: []
     freeipa_idam_users_effective: []
 
-# UNIFIED PER-REALM MODEL: when freeipa_idam_source_dir is set, load every per-tenant
-# identity/*.yml in one run and flatten into freeipa_idam_users / freeipa_idam_usergroups
-# (stamped _owner/_shared). Empty source_dir = legacy mode (use the vars from group_vars
-# directly) so existing inventories are unchanged. Runs before the type-validation below
-# so the merged lists are what everything downstream validates and reconciles.
-- name: Load + merge per-tenant identity files (unified per-realm model)
-  ansible.builtin.import_tasks: idam_identity.yml
-  when: freeipa_idam_source_dir | length > 0
+# UNIFIED PER-REALM MODEL: when freeipa_idam_tenants_dir is set, load every per-tenant
+# tenants/*.yml in one run and flatten into the freeipa_idam_* / freeipa_server_* object
+# lists (users/groups stamped _owner/_shared). Empty tenants_dir = legacy mode (use the
+# vars from group_vars directly) so existing inventories are unchanged. Runs before the
+# type-validation below so the merged lists are what everything downstream validates and
+# reconciles.
+- name: Load + merge per-tenant files (unified per-realm model)
+  ansible.builtin.import_tasks: load_tenants.yml
+  when: freeipa_idam_tenants_dir | length > 0
 
 # Fail fast on gross TYPE errors BEFORE any task consumes these vars — the RBAC
 # expander, the service/break-glass merge, the role lookup and the item-level scan

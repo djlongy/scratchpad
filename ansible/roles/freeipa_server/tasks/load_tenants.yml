@@ -1,0 +1,46 @@
+---
+# Unified per-realm tenant load. When freeipa_idam_tenants_dir is set, every per-tenant
+# tenants/*.yml in the realm is read in ONE run and flattened into the flat freeipa_idam_* /
+# freeipa_server_* object lists the engine consumes, stamped with _owner (tenant) + _shared.
+# Seeing all tenants in one run is the precondition for a fully declarative, single-source
+# membership reconcile. A tenant file may carry its WHOLE config (users, groups, hbac, sudo,
+# roles, automember, dns, ...), not just users + groups.
+#
+# Each file is loaded with include_vars (see load_one_tenant.yml), so it behaves EXACTLY like
+# any vars YAML in the inventory: reference inventory/group_vars — and the file's own
+# tenant/env/prefix — with normal (quoted) Jinja, INCLUDING pulling a whole list from a
+# group_var (freeipa_idam_usergroups: "{{ baseline }}"), which stays a native list. Files with
+# no templating load verbatim. No special extension: a tenant file is a plain .yml.
+#
+# fileglob + lookups run on the control node (where the inventory lives), so no delegation is
+# needed. Empty tenants_dir never reaches here (gated by the caller).
+
+- name: tenants | Discover per-tenant files
+  ansible.builtin.set_fact:
+    _freeipa_tenant_files: "{{ query('ansible.builtin.fileglob', freeipa_idam_tenants_dir ~ '/*.yml') | sort }}"
+
+# One include per file so each file's Jinja resolves in ITS OWN tenant scope (a single loop
+# would race on the shared header facts).
+- name: tenants | Load + capture each tenant file (native templating, own tenant scope)
+  ansible.builtin.include_tasks: load_one_tenant.yml
+  loop: "{{ _freeipa_tenant_files }}"
+  loop_control:
+    loop_var: _freeipa_tenant_file
+    label: "{{ _freeipa_tenant_file | basename }}"
+
+- name: tenants | Flatten tenants (object lists + ownership maps)
+  ansible.builtin.set_fact:
+    _freeipa_tenants: "{{ _freeipa_tenants_raw | default([]) | freeipa_idam_identity_merge }}"
+  no_log: true  # tenant files may carry inline user passwords
+
+# Dynamically set every object var the merge produced (freeipa_idam_users,
+# freeipa_idam_usergroups, freeipa_idam_hbac_rules, freeipa_server_dns_zones, ...) —
+# so a tenant file carries its WHOLE config (HBAC, sudo, roles, DNS, automember, ...),
+# not just users/groups.
+- name: tenants | Populate IDAM/server object lists from merged tenants
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value }}"
+  loop: "{{ _freeipa_tenants.objects | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} ({{ item.value | length }})"
+  no_log: true
