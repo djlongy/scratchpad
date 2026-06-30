@@ -445,11 +445,13 @@ freeipa_server_export_include_sshkeys: false
 # How list values are rendered in the snapshot (cosmetic — all styles reload
 # identically):
 #   block     — multi-line block YAML (default; one item per line)
-#   json      — each list as a single-line embedded JSON array
-#               (hybrid: YAML keys, JSON list values) e.g.
-#               freeipa_idam_hbacsvcs: [{"name":"cockpit","description":"…"}]
-#   yaml_flow — each list as single-line YAML flow style, e.g.
-#               freeipa_idam_hbacsvcs: [{name: cockpit, description: …}]
+#   json      — hyphenated list, each item a single-line JSON dict, e.g.
+#                 freeipa_idam_hbacsvcs:
+#                   - {"name": "cockpit", "description": "…"}
+#   yaml_flow — hyphenated list, each item a single-line YAML flow dict, e.g.
+#                 freeipa_idam_hbacsvcs:
+#                   - {name: cockpit, description: …}
+# (json/yaml_flow keep one item per line so groups/memberships scan easily.)
 freeipa_server_export_list_style: block
 # The export is a FAITHFUL MIRROR of the live directory: every user is captured with
 # its real, literal `groups` list — no roles matrix is inferred (role STRUCTURE is
