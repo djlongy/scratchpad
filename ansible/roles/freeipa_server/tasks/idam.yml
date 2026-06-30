@@ -1083,6 +1083,61 @@
          | select('search', 'uid=')
          | map('regex_replace', '.*uid=([^,]+).*', '\1') | list }}
 
+# ── C2: managed-subset membership eviction (the WYSIWYG snap-back) ────────────
+# Evict MANAGED users (marker members, freeipa_idam_current_managed_users) who are
+# CURRENT members of a declared group but no longer declare it — e.g. a managed user
+# who self-added to admins in the GUI, or who had a group removed from their entry.
+# NEVER touches members the role does not manage (the built-in admin, service accounts,
+# anything created out-of-band): freeipa_idam_evictions returns only (current ∩ managed)
+# − desired. Excludes automember-target groups (membership is assigned at runtime by the
+# rule, not statically declared) and the marker containers (never in the declared set).
+# Reuses the discovery ticket acquired above. Stronger stripping (removing UNMANAGED
+# members too) remains opt-in via freeipa_server_authoritative on the declarative task.
+- name: C2 | Build eviction candidate groups (declared, not automember-populated)
+  ansible.builtin.set_fact:
+    _freeipa_idam_evict_candidates: >-
+      {{ _freeipa_idam_usergroups_members | default([])
+         | rejectattr('name', 'in', (freeipa_server_automember_rules | default([]) | map(attribute='name') | list))
+         | list }}
+    _freeipa_idam_evict_payload: []
+  no_log: "{{ ansible_verbosity < 2 }}"
+
+- name: C2 | Read current members of candidate groups
+  ansible.builtin.command: "ipa group-show {{ item.name }} --all --raw"
+  register: _freeipa_idam_evict_current
+  loop: "{{ _freeipa_idam_evict_candidates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: C2 | Compute managed-subset eviction payload (evict managed droppers only)
+  ansible.builtin.set_fact:
+    _freeipa_idam_evict_payload: >-
+      {{ (_freeipa_idam_evict_payload | default([]))
+         + ([{'name': item.item.name, 'user': _evict}] if (_evict | length > 0) else []) }}
+  vars:
+    _current: >-
+      {{ (item.stdout_lines | default([])) | map('trim')
+         | select('search', 'uid=') | map('regex_replace', '.*uid=([^,]+).*', '\1') | list }}
+    _evict: "{{ _current | freeipa_idam_evictions(freeipa_idam_current_managed_users, item.item.user | default([])) }}"
+  loop: "{{ _freeipa_idam_evict_current.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name | default('?') }}"
+  no_log: "{{ ansible_verbosity < 2 }}"
+
+- name: C2 | Evict managed users from groups they no longer declare (managed-subset)
+  freeipa.ansible_freeipa.ipagroup:
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
+    groups: "{{ _freeipa_idam_evict_payload }}"
+    action: member
+    state: absent
+  when: (_freeipa_idam_evict_payload | default([])) | length > 0
+  register: _freeipa_idam_changed_members_evict
+  no_log: true
+
 - name: Build declarative user delete list
   ansible.builtin.set_fact:
     freeipa_idam_users_to_remove: >-
