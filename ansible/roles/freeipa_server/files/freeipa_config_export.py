@@ -171,11 +171,11 @@ def _is_marker(name):
     return "idam" in n and "managed" in n
 
 
-def export_groups():
+def export_groups(skip=frozenset()):
     groups, names = [], set()
     for e in _find("group_find"):
         name = _str(e, "cn")
-        if not name or name in GROUP_EXPORT_SKIP or _is_marker(name) or _is_upg(e):
+        if not name or name in GROUP_EXPORT_SKIP or name in skip or _is_marker(name) or _is_upg(e):
             continue
         names.add(name)
         groups.append(e)
@@ -614,17 +614,23 @@ def main():
                     help="JSON array of stock HBAC service names to skip (already "
                          "exist on a fresh server); extend it for newer FreeIPA "
                          "versions (default: the built-in set)")
+    ap.add_argument("--skip-groups", default=None, metavar="JSON",
+                    help="JSON array of EXTRA group names to skip on export — the role "
+                         "passes its configured marker/container groups "
+                         "(freeipa_idam_managed_group + freeipa_idam_managed_groups_group) "
+                         "so a custom marker name is honoured, not just the built-in default")
     args = ap.parse_args()
 
     stock_hbacsvc = (set(json.loads(args.stock_hbacsvc))
                      if args.stock_hbacsvc else DEFAULT_HBACSVCS)
+    skip_groups = set(json.loads(args.skip_groups)) if args.skip_groups else set()
 
     api.bootstrap(context="cli", log=None)
     api.finalize()
     api.Backend.rpcclient.connect()
 
     _SKIPPED.clear()
-    groups, group_names = _safe("usergroups", export_groups, ([], set()))
+    groups, group_names = _safe("usergroups", lambda: export_groups(skip_groups), ([], set()))
     users, service_accounts, used_fallback = _safe(
         "users", lambda: export_users(group_names, args.include_sshkeys), ([], [], False))
     dns_forwarders, dns_forward_policy = _safe(

@@ -21,7 +21,11 @@
     _freeipa_identity_raw: "{{ (_freeipa_identity_raw | default([])) + [lookup('ansible.builtin.template', item, template_vars=_tvars) | from_yaml] }}"
   vars:
     _hdr: "{{ lookup('ansible.builtin.file', item) | from_yaml }}"
-    _tvars: "{{ {'tenant': _hdr.tenant | default(''), 'env': _hdr.env | default('')} }}"
+    # Inject the file's OWN header vars — everything that isn't a freeipa_* object list —
+    # so a file works like any Ansible vars YAML: define tenant/env/prefix/region/... and
+    # reference them (name: "{{ prefix }}-{{ tenant }}-admins"). Inventory/group_vars are
+    # also in scope during render; these header vars add to / override them per file.
+    _tvars: "{{ _hdr | dict2items | rejectattr('key', 'match', '^freeipa_') | items2dict }}"
   loop: "{{ _freeipa_identity_paths }}"
   loop_control:
     label: "{{ item | basename }}"

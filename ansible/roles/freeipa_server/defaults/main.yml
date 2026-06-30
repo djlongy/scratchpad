@@ -467,15 +467,15 @@ freeipa_server_export_include_host_membership: false
 freeipa_server_export_include_sshkeys: false
 # How list values are rendered in the snapshot (cosmetic — all styles reload
 # identically):
-#   block     — multi-line block YAML (default; one item per line)
+#   block     — multi-line block YAML (one item per line)
 #   json      — hyphenated list, each item a single-line JSON dict, e.g.
 #                 freeipa_idam_hbacsvcs:
 #                   - {"name": "cockpit", "description": "…"}
-#   yaml_flow — hyphenated list, each item a single-line YAML flow dict, e.g.
+#   yaml_flow — hyphenated list, each item a single-line YAML flow dict (DEFAULT), e.g.
 #                 freeipa_idam_hbacsvcs:
 #                   - {name: cockpit, description: …}
 # (json/yaml_flow keep one item per line so groups/memberships scan easily.)
-freeipa_server_export_list_style: block
+freeipa_server_export_list_style: yaml_flow
 # Export scope filter — carve a monolithic realm into per-tenant/env inventories.
 # Matches captured objects by NAME substring (DNS records by zone_name):
 #   include (default) — keep objects whose name CONTAINS any scope (the slice)

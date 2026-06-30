@@ -51,6 +51,7 @@
     {{ '--include-host-membership' if freeipa_server_export_include_host_membership | bool else '' }}
     {{ '--include-sshkeys' if freeipa_server_export_include_sshkeys | bool else '' }}
     --stock-hbacsvc {{ freeipa_server_export_hbacsvc_stock | to_json | quote }}
+    --skip-groups {{ [freeipa_idam_managed_group, freeipa_idam_managed_groups_group] | to_json | quote }}
   args:
     executable: /usr/bin/python3
   register: _freeipa_export_raw
