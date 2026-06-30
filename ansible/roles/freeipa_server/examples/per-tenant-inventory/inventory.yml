@@ -1,0 +1,15 @@
+---
+# One FreeIPA realm hosts the whole multi-tenant estate — the tenant lives in object NAMES
+# and the tenants/*.yml split, NOT in separate realms. Point this at your IPA primary.
+#
+# Realm-level connection + the tenants_dir live in group_vars/all/realm.yml (auto-loaded
+# because it sits next to this inventory). Per-tenant identity lives in tenants/*.yml.
+all:
+  vars:
+    ansible_user: ansible
+    # ansible_ssh_private_key_file: ~/.ssh/your-key.pem
+  children:
+    freeipa_idam:
+      hosts:
+        idm01:
+          ansible_host: 10.0.0.11

@@ -1,0 +1,14 @@
+---
+# Apply the freeipa_server role. It reads freeipa_idam_tenants_dir and reconciles EVERY
+# tenants/*.yml in one run (one realm = one run). The role knows nothing special about
+# tenants — it just consumes the flattened freeipa_idam_* lists the loader produces.
+#
+#   ansible-playbook -i inventory.yml site.yml --tags idam              # add --check --diff to preview
+#   ansible-playbook -i inventory.yml site.yml --tags idam              # re-run -> changed=0 (idempotent)
+#
+- name: FreeIPA per-realm identity from per-tenant files
+  hosts: freeipa_idam
+  gather_facts: false
+  become: true
+  roles:
+    - role: freeipa_server

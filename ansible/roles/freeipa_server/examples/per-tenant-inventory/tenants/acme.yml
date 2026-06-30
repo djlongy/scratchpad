@@ -1,0 +1,17 @@
+---
+# acme — a tenant written as LITERAL data: exactly what `--tags export` drops out of a live
+# realm, so adopting an export is just adding the `tenant:` header. A user is declared ONCE
+# with their COMPLETE group list — tenant groups + any built-in/global groups (which are
+# owned in global.yml). One run sees both files and reconciles the membership.
+tenant: acme
+groups:
+  - { name: acme-admins, description: "Acme admins" }
+  - { name: acme-editors, description: "Acme editors" }
+  - { name: acme-viewers, description: "Acme read-only" }
+hostgroups:
+  - { name: hg-acme, description: "Acme hosts" }
+users:
+  - { name: acme.dave, first: Dave, last: Dunn, groups: [acme-admins, admins] }   # also a built-in admin
+  - { name: acme.erin, first: Erin, last: Ellis, groups: [acme-viewers] }
+hbac_rules:
+  - { name: hbac-acme-ssh, usergroup: [acme-admins], hostgroup: [hg-acme], service: [sshd] }

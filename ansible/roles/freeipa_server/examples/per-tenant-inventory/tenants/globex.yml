@@ -1,0 +1,25 @@
+---
+# globex — the SAME kind of tenant as acme, but written with TEMPLATING to show that a
+# plain tenants/*.yml behaves like ANY inventory vars YAML. No special extension.
+#   * {{ tenant }} / {{ prefix }} self-reference the header keys below.
+#   * shared_sudo_commands is pulled WHOLE from group_vars (group_vars/all/realm.yml) and
+#     stays a native list — not a stringified one.
+# Use whichever style you like per file; the loader treats them identically.
+tenant: globex
+prefix: ug
+groups:
+  - { name: "{{ prefix }}-{{ tenant }}-admins", description: "Globex admins" }
+  - { name: "{{ prefix }}-{{ tenant }}-viewers", description: "Globex read-only" }
+hostgroups:
+  - { name: "hg-{{ tenant }}", description: "Globex hosts" }
+users:
+  - { name: "{{ tenant }}.sam", first: Sam, last: Stone, groups: ["{{ prefix }}-{{ tenant }}-admins", admins] }
+  - { name: "{{ tenant }}.val", first: Val, last: Vega,  groups: ["{{ prefix }}-{{ tenant }}-viewers"] }
+hbac_rules:
+  - { name: "hbac-{{ tenant }}-ssh", usergroup: ["{{ prefix }}-{{ tenant }}-admins"], hostgroup: ["hg-{{ tenant }}"], service: [sshd] }
+freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"   # whole list pulled from group_vars
+dns_records:
+  - zone_name: ipa.example.com.
+    records:
+      - { record_name: app1, a_record: [10.0.0.40] }
+      - { record_name: app2, a_record: [10.0.0.41] }
