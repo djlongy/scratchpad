@@ -294,7 +294,8 @@
       - "sudo rule '{{ s.name }}' references sudo command group '{{ cg }}' not declared or on the realm"
       {% endif %}
       {% endfor %}{% endfor %}
-  no_log: true
+  # Problem strings only (no secrets) — suppressed normally, shown at -vv.
+  no_log: "{{ ansible_verbosity < 2 }}"
 
 - name: Report IDAM shape problems (always hard-fail)
   ansible.builtin.assert:
@@ -373,7 +374,8 @@
   loop: "{{ _freeipa_idam_users | subelements('groups', skip_missing=True) }}"
   loop_control:
     label: "{{ item.0.name }} -> {{ item.1 }}"
-  no_log: true
+  # name pairs only (no secrets) — shown at -vv.
+  no_log: "{{ ansible_verbosity < 2 }}"
 
 - name: Build effective FreeIPA groups with merged memberships
   ansible.builtin.set_fact:
@@ -393,7 +395,8 @@
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_usergroups | length > 0
-  no_log: true
+  # group dicts with member NAMES (no secrets) — shown at -vv.
+  no_log: "{{ ansible_verbosity < 2 }}"
 
 # Build the two BULK ipagroup payloads — one `groups:` list to create the group
 # OBJECTS (name/description/gidnumber/posix), one to set MEMBERSHIP (user/group/
@@ -420,7 +423,8 @@
       - {name: "{{ g.name }}"{% if g.user | default([]) | length > 0 %}, user: {{ g.user | to_json }}{% endif %}{% if g.group | default([]) | length > 0 %}, group: {{ g.group | to_json }}{% endif %}{% if g.membermanager_user | default([]) | length > 0 %}, membermanager_user: {{ g.membermanager_user | to_json }}{% endif %}{% if g.membermanager_group | default([]) | length > 0 %}, membermanager_group: {{ g.membermanager_group | to_json }}{% endif %}}
       {% endif %}
       {% endfor %}
-  no_log: true
+  # ipagroup create/membership payloads — NAMES only (no secrets) — shown at -vv.
+  no_log: "{{ ansible_verbosity < 2 }}"
 
 # Protected/system users (admin) are EXCLUDED from the create/mod payload: the
 # `admin` entry lacks the inetOrgPerson objectClass, so FreeIPA refuses to set
@@ -830,7 +834,8 @@
       - {name: "{{ g.name }}", user: {{ g.user | default([]) | to_json }}, group: {{ g.group | default([]) | to_json }}}
       {% endif %}
       {% endfor %}
-  no_log: true
+  # membership reconcile payload — NAMES only (no secrets) — shown at -vv.
+  no_log: "{{ ansible_verbosity < 2 }}"
 
 - name: Ensure group memberships present — ADDITIVE (protected always; all when not declarative)
   freeipa.ansible_freeipa.ipagroup:
