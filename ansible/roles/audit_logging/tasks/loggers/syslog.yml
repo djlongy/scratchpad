@@ -1,0 +1,15 @@
+---
+# loggers/syslog.yml — log the audit record via local logger(1).
+# Vars: audit_logging_syslog_facility, audit_logging_syslog_priority
+
+- name: Write audit record to syslog
+  ansible.builtin.command:
+    argv:
+      - logger
+      - -t
+      - ansible-audit
+      - -p
+      - "{{ audit_logging_syslog_facility }}.{{ audit_logging_syslog_priority }}"
+      - "{{ audit_logging_event_json }}"
+  changed_when: false
+  ignore_errors: true

@@ -1,0 +1,14 @@
+---
+# loggers/fluentd.yml — POST the audit record to a Fluentd HTTP input.
+# Vars: audit_logging_fluentd_url, audit_logging_fluentd_tag
+
+- name: Write audit record to Fluentd
+  ansible.builtin.uri:
+    url: "{{ audit_logging_fluentd_url }}/{{ audit_logging_fluentd_tag }}"
+    method: POST
+    body_format: json
+    body: "{{ audit_logging_event }}"
+    headers:
+      Content-Type: application/json
+    status_code: [200, 201]
+  ignore_errors: true

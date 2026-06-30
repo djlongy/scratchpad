@@ -1,0 +1,25 @@
+---
+# loggers/elasticsearch.yml — index the audit record via the _doc API.
+# Vars: audit_logging_elasticsearch_url (required), _index, _user, _password,
+#       _validate_certs
+
+- name: Assert Elasticsearch URL is set
+  ansible.builtin.assert:
+    that: audit_logging_elasticsearch_url | length > 0
+    fail_msg: "audit_logging_elasticsearch_url must be set when 'elasticsearch' is enabled"
+    quiet: true
+
+- name: Write audit record to Elasticsearch
+  ansible.builtin.uri:
+    url: "{{ audit_logging_elasticsearch_url }}/{{ audit_logging_elasticsearch_index }}/_doc"
+    method: POST
+    body_format: json
+    body: "{{ audit_logging_event }}"
+    headers:
+      Content-Type: application/json
+    user: "{{ audit_logging_elasticsearch_user | default(omit, true) }}"
+    password: "{{ audit_logging_elasticsearch_password | default(omit, true) }}"
+    validate_certs: "{{ audit_logging_elasticsearch_validate_certs | bool }}"
+    status_code: [200, 201]
+  no_log: "{{ audit_logging_elasticsearch_password | length > 0 }}"
+  ignore_errors: true

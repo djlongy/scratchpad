@@ -1,0 +1,39 @@
+---
+# loggers/splunk.yml — POST the audit record to the Splunk HTTP Event Collector.
+# Vars: audit_logging_splunk_hec_url (required), _hec_token (required),
+#       _sourcetype, _index, _validate_certs
+#
+# The record is sent as the HEC `event` object so Splunk indexes it as native
+# JSON (each top-level key becomes a searchable field), tagged with the given
+# sourcetype + index.
+
+- name: Assert Splunk HEC URL and token are set
+  ansible.builtin.assert:
+    that:
+      - audit_logging_splunk_hec_url | length > 0
+      - audit_logging_splunk_hec_token | length > 0
+    fail_msg: "audit_logging_splunk_hec_url and audit_logging_splunk_hec_token must be set when 'splunk' is enabled"
+    quiet: true
+
+- name: Write audit record to Splunk HEC
+  ansible.builtin.uri:
+    url: "{{ audit_logging_splunk_hec_url }}/services/collector/event"
+    method: POST
+    body_format: json
+    body:
+      event: "{{ audit_logging_event }}"
+      sourcetype: "{{ audit_logging_splunk_sourcetype }}"
+      index: "{{ audit_logging_splunk_index }}"
+    headers:
+      Authorization: "Splunk {{ audit_logging_splunk_hec_token }}"
+    validate_certs: "{{ audit_logging_splunk_validate_certs | bool }}"
+    status_code: [200]
+  register: _audit_splunk_resp
+  ignore_errors: true
+
+- name: Report Splunk HEC result
+  ansible.builtin.debug:
+    msg: >-
+      Splunk HEC {{ audit_logging_splunk_index }}/{{ audit_logging_splunk_sourcetype }}:
+      {{ _audit_splunk_resp.json.text | default(_audit_splunk_resp.msg) | default('no response') }}
+      (code {{ _audit_splunk_resp.json.code | default(_audit_splunk_resp.status) | default('?') }})

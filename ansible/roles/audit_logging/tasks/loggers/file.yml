@@ -1,0 +1,19 @@
+---
+# loggers/file.yml — append the audit record as one JSON line on the control node.
+# Vars: audit_logging_file_path, audit_logging_file_become
+
+- name: Ensure audit log directory exists
+  ansible.builtin.file:
+    path: "{{ audit_logging_file_path | dirname }}"
+    state: directory
+    mode: '0750'
+  become: "{{ audit_logging_file_become | bool }}"
+
+- name: Write audit record to local file
+  ansible.builtin.lineinfile:
+    path: "{{ audit_logging_file_path }}"
+    line: "{{ audit_logging_event_json }}"
+    create: true
+    mode: '0640'
+  become: "{{ audit_logging_file_become | bool }}"
+  ignore_errors: true

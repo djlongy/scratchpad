@@ -1,0 +1,119 @@
+---
+argument_specs:
+  main:
+    short_description: Capture run metadata and ship one JSON audit record to selected backends.
+    description:
+      - Default entrypoint. Gathers execution metadata for the current run and
+        POSTs/writes a single structured JSON record to every backend named in
+        C(audit_logging_backends).
+      - Connection vars are validated at runtime only for the backends you
+        actually enable.
+    options:
+      audit_logging_backends:
+        type: list
+        elements: str
+        default: []
+        choices: [file, syslog, rsyslog, fluentd, elasticsearch, splunk, cloudwatch]
+        description: Which logging backends to ship the audit record to. Empty ships nowhere.
+      audit_logging_status:
+        type: str
+        default: success
+        description: Run status stamped into the record (set to C(failed) from a rescue/always block).
+
+      audit_logging_file_path:
+        type: str
+        default: /var/log/ansible/audit.jsonl
+        description: Control-node JSON Lines file (backend C(file)).
+      audit_logging_file_become:
+        type: bool
+        default: true
+        description: Whether to escalate when creating/writing the file backend path.
+
+      audit_logging_syslog_facility:
+        type: str
+        default: local0
+        description: syslog facility (backend C(syslog)).
+      audit_logging_syslog_priority:
+        type: str
+        default: info
+        description: syslog priority (backend C(syslog)).
+
+      audit_logging_rsyslog_host:
+        type: str
+        default: ""
+        description: Remote rsyslog host. Required when C(rsyslog) is enabled.
+      audit_logging_rsyslog_port:
+        type: int
+        default: 514
+        description: Remote rsyslog UDP port.
+
+      audit_logging_fluentd_url:
+        type: str
+        default: "http://localhost:9880"
+        description: Fluentd HTTP input base URL (backend C(fluentd)).
+      audit_logging_fluentd_tag:
+        type: str
+        default: ansible.audit
+        description: Fluentd event tag appended to the URL.
+
+      audit_logging_elasticsearch_url:
+        type: str
+        default: ""
+        description: Elasticsearch base URL. Required when C(elasticsearch) is enabled.
+      audit_logging_elasticsearch_index:
+        type: str
+        default: ansible-audit
+        description: Elasticsearch index name.
+      audit_logging_elasticsearch_user:
+        type: str
+        default: ""
+        description: Optional Elasticsearch basic-auth user.
+      audit_logging_elasticsearch_password:
+        type: str
+        default: ""
+        description: Optional Elasticsearch basic-auth password.
+      audit_logging_elasticsearch_validate_certs:
+        type: bool
+        default: true
+        description: Validate TLS certs for the Elasticsearch endpoint.
+
+      audit_logging_splunk_hec_url:
+        type: str
+        default: ""
+        description: Splunk HEC base URL (e.g. https://splunk:8088). Required when C(splunk) is enabled.
+      audit_logging_splunk_hec_token:
+        type: str
+        default: ""
+        description: Splunk HEC token. Required when C(splunk) is enabled.
+      audit_logging_splunk_sourcetype:
+        type: str
+        default: "ansible:audit"
+        description: Splunk sourcetype tag for the event.
+      audit_logging_splunk_index:
+        type: str
+        default: ansible
+        description: Splunk index to write the event to.
+      audit_logging_splunk_validate_certs:
+        type: bool
+        default: true
+        description: Validate TLS certs for the Splunk HEC endpoint.
+
+      audit_logging_cloudwatch_profile:
+        type: str
+        default: default
+        description: AWS CLI profile (backend C(cloudwatch)).
+      audit_logging_cloudwatch_log_group:
+        type: str
+        default: /ansible/audit
+        description: CloudWatch Logs log group.
+      audit_logging_cloudwatch_aws_cli:
+        type: str
+        default: /usr/local/bin/aws
+        description: Path to the AWS CLI binary on the control node.
+
+  accumulate:
+    short_description: Buffer one play's metadata for multi-play (monolithic) playbooks.
+    description:
+      - Call in EACH play's post_tasks of a multi-play playbook, then call the
+        default entrypoint in the final play to write the consolidated record.
+    options: {}

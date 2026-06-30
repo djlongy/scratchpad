@@ -1,0 +1,59 @@
+---
+# loggers/cloudwatch.yml — ship the audit record to AWS CloudWatch Logs.
+# Vars: audit_logging_cloudwatch_profile, _log_group, _aws_cli
+# The log stream is named after the invoking user (one stream per operator).
+
+- name: Ensure CloudWatch log group exists
+  ansible.builtin.command:
+    argv:
+      - "{{ audit_logging_cloudwatch_aws_cli }}"
+      - logs
+      - create-log-group
+      - --profile
+      - "{{ audit_logging_cloudwatch_profile }}"
+      - --log-group-name
+      - "{{ audit_logging_cloudwatch_log_group }}"
+  register: _audit_cw_group
+  failed_when:
+    - _audit_cw_group.rc != 0
+    - "'ResourceAlreadyExistsException' not in _audit_cw_group.stderr"
+  changed_when: _audit_cw_group.rc == 0
+
+- name: Ensure CloudWatch log stream exists
+  ansible.builtin.command:
+    argv:
+      - "{{ audit_logging_cloudwatch_aws_cli }}"
+      - logs
+      - create-log-stream
+      - --profile
+      - "{{ audit_logging_cloudwatch_profile }}"
+      - --log-group-name
+      - "{{ audit_logging_cloudwatch_log_group }}"
+      - --log-stream-name
+      - "{{ _audit_local_user.stdout }}"
+  register: _audit_cw_stream
+  failed_when:
+    - _audit_cw_stream.rc != 0
+    - "'ResourceAlreadyExistsException' not in _audit_cw_stream.stderr"
+  changed_when: _audit_cw_stream.rc == 0
+
+- name: Write audit record to CloudWatch
+  ansible.builtin.command:
+    argv:
+      - "{{ audit_logging_cloudwatch_aws_cli }}"
+      - logs
+      - put-log-events
+      - --profile
+      - "{{ audit_logging_cloudwatch_profile }}"
+      - --log-group-name
+      - "{{ audit_logging_cloudwatch_log_group }}"
+      - --log-stream-name
+      - "{{ _audit_local_user.stdout }}"
+      - --log-events
+      # JSON form (not key=val shorthand) — the message is JSON full of commas
+      # which the shorthand parser would split on.
+      - "{{ [{'timestamp': (_audit_cw_epoch | int) * 1000, 'message': audit_logging_event_json}] | to_json }}"
+  vars:
+    _audit_cw_epoch: "{{ ansible_date_time.epoch if ansible_date_time is defined else lookup('pipe', 'date +%s') }}"
+  changed_when: true
+  ignore_errors: true

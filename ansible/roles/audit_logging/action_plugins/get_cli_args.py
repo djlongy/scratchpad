@@ -1,0 +1,229 @@
+# action_plugins/get_cli_args.py
+from ansible.plugins.action import ActionBase
+import sys
+import os
+import re
+import json
+import subprocess
+
+
+def _run_git(cmd, cwd):
+    """Run a git command and return stdout, or None on failure."""
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+                # rstrip only — strip() would eat the leading space off the first
+            # porcelain line, turning " M file" into "M file" (staged false positive).
+            return result.stdout.rstrip()
+    except Exception:
+        pass
+    return None
+
+
+_ESCAPE_MAP = {
+    '"': b'"', '\\': b'\\', 'n': b'\n', 't': b'\t',
+    'r': b'\r', 'a': b'\x07', 'b': b'\x08',
+}
+
+
+def _decode_escape(inner, i):
+    """Decode a single C-style escape at position i (the backslash). Returns (bytes, new_i)."""
+    nx = inner[i + 1]
+    if nx in _ESCAPE_MAP:
+        return _ESCAPE_MAP[nx], i + 2
+    if nx in '01234567' and i + 3 < len(inner):
+        octal = inner[i + 1:i + 4]
+        if re.match(r'^[0-7]{3}$', octal):
+            return bytes([int(octal, 8)]), i + 4
+    return inner[i].encode(), i + 1
+
+
+def _decode_git_path(path):
+    """
+    Decode a path token as returned by git status --porcelain.
+
+    Git wraps paths that contain spaces, non-ASCII characters, or other
+    special bytes in double-quotes and represents those bytes as C-style
+    escape sequences (\\, \", \n, \t, \r, \a, \b, \nnn octal).
+
+    If the path is not quoted it is returned unchanged.
+    """
+    if not (path.startswith('"') and path.endswith('"')):
+        return path
+
+    inner = path[1:-1]
+    result = bytearray()
+    i = 0
+    while i < len(inner):
+        if inner[i] == '\\' and i + 1 < len(inner):
+            chunk, i = _decode_escape(inner, i)
+            result += chunk
+        else:
+            result += inner[i].encode('utf-8')
+            i += 1
+
+    return result.decode('utf-8')
+
+
+def _parse_rename_dest(raw_field):
+    """
+    Extract and decode the destination path from a porcelain rename/copy field.
+
+    The raw field (everything after 'XY ') can take four forms depending on
+    whether either filename contains characters that require quoting:
+
+        old.txt -> new.txt                          (neither quoted)
+        "old file.txt" -> new.txt                   (old quoted)
+        old.txt -> "new file.txt"                   (new quoted)
+        "old file.txt" -> "new file.txt"            (both quoted)
+    """
+    if raw_field.startswith('"'):
+        # Old path is quoted: match the closing quote then the arrow
+        m = re.match(r'^"(?:[^"\\]|\\.)*"\s*->\s*(.+)$', raw_field)
+        if m:
+            return _decode_git_path(m.group(1).strip())
+    # Old path is unquoted: find the first ' -> ' separator
+    arrow = raw_field.find(' -> ')
+    if arrow != -1:
+        return _decode_git_path(raw_field[arrow + 4:].strip())
+    # Fallback: no arrow found, treat entire field as destination
+    return _decode_git_path(raw_field)
+
+
+def _classify_porcelain_line(index_status, worktree_status, raw_path,
+                             modified, staged, untracked, deleted):
+    """Classify a single porcelain v1 line into the appropriate bucket."""
+    # Staged changes (index column): M/A/D/R/C/T
+    if index_status in ("R", "C"):
+        staged.append(_parse_rename_dest(raw_path))
+    elif index_status in ("M", "A", "D", "T"):
+        staged.append(_decode_git_path(raw_path))
+
+    # Worktree changes (not yet staged)
+    if worktree_status == "M":
+        modified.append(_decode_git_path(raw_path))
+    elif worktree_status == "D":
+        deleted.append(_decode_git_path(raw_path))
+
+    # Untracked (??)
+    if index_status == "?" and worktree_status == "?":
+        untracked.append(_decode_git_path(raw_path))
+
+
+def _get_git_status(playbook_dir):
+    """
+    Collect git state for the playbook's working tree.
+
+    Returns a dict with:
+        branch        - current branch name (or 'HEAD' if detached)
+        commit        - full commit SHA
+        commit_short  - 7-char short SHA
+        tag           - nearest tag (git describe), or None
+        modified      - list of modified tracked files (not staged)
+        staged        - list of staged files (destination path for renames/copies)
+        untracked     - list of untracked files
+        deleted       - list of unstaged-deleted tracked files
+        is_clean      - True if working tree and index are clean
+        error         - set if git is unavailable or dir is not a repo
+    """
+    cwd = playbook_dir or os.getcwd()
+
+    branch = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    if branch is None:
+        return {"error": "not a git repository or git unavailable"}
+
+    commit = _run_git(["git", "rev-parse", "HEAD"], cwd) or "unknown"
+    commit_short = commit[:7] if commit != "unknown" else "unknown"
+    tag = _run_git(["git", "describe", "--tags", "--always", "--dirty"], cwd)
+
+    porcelain = _run_git(["git", "status", "--porcelain"], cwd) or ""
+
+    modified, staged, untracked, deleted = [], [], [], []
+
+    for line in porcelain.splitlines():
+        if len(line) < 4:
+            continue
+        index_status, worktree_status, raw_path = line[0], line[1], line[3:]
+        _classify_porcelain_line(
+            index_status, worktree_status, raw_path,
+            modified, staged, untracked, deleted,
+        )
+
+    is_clean = not (modified or staged or untracked or deleted)
+
+    return {
+        "branch": branch,
+        "commit": commit,
+        "commit_short": commit_short,
+        "tag": tag,
+        "modified": modified,
+        "staged": staged,
+        "untracked": untracked,
+        "deleted": deleted,
+        "is_clean": is_clean,
+    }
+
+
+def _extract_semaphore_vars(next_arg):
+    """Try to parse semaphore_vars from a JSON extra-vars argument."""
+    try:
+        extra_vars_dict = json.loads(next_arg)
+        return extra_vars_dict.get('semaphore_vars', {})
+    except json.JSONDecodeError:
+        return {}
+
+
+def _parse_argv(argv):
+    """
+    Separate semaphore metadata from the playbook argv.
+
+    Returns (cleaned_argv, semaphore_data).
+    """
+    if argv and '/' in argv[0]:
+        argv[0] = os.path.basename(argv[0])
+
+    semaphore_data = {}
+    cleaned_argv = []
+    skip_next = False
+
+    for i, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+
+        if arg in ('--extra-vars', '-e') and i + 1 < len(argv):
+            next_arg = argv[i + 1]
+            skip_next = True
+            if next_arg.startswith('{'):
+                semaphore_data = _extract_semaphore_vars(next_arg)
+            else:
+                cleaned_argv.extend([arg, next_arg])
+        else:
+            cleaned_argv.append(arg)
+
+    return cleaned_argv, semaphore_data
+
+
+class ActionModule(ActionBase):
+    def run(self, tmp=None, task_vars=None):
+        result = super(ActionModule, self).run(tmp, task_vars)
+
+        cleaned_argv, semaphore_data = _parse_argv(list(sys.argv))
+
+        playbook_dir = (task_vars or {}).get("playbook_dir") or os.getcwd()
+        git_status = _get_git_status(playbook_dir)
+
+        result.update({
+            "changed": False,
+            "ansible_playbook_argv": cleaned_argv,
+            "ansible_playbook_cmd": " ".join(cleaned_argv),
+            "semaphore_vars": semaphore_data or None,
+            "git_status": git_status,
+        })
+        return result

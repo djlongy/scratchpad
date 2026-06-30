@@ -1,0 +1,20 @@
+---
+# loggers/rsyslog.yml — ship the audit record to a remote rsyslog over UDP.
+# Vars: audit_logging_rsyslog_host (required), audit_logging_rsyslog_port
+
+- name: Assert remote rsyslog host is set
+  ansible.builtin.assert:
+    that: audit_logging_rsyslog_host | length > 0
+    fail_msg: "audit_logging_rsyslog_host must be set when 'rsyslog' is enabled"
+    quiet: true
+
+- name: Write audit record to remote rsyslog
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      printf '%s\n' "$AUDIT_RECORD" | nc -w1 -u {{ audit_logging_rsyslog_host }} {{ audit_logging_rsyslog_port }}
+    executable: /bin/bash
+  environment:
+    AUDIT_RECORD: "{{ audit_logging_event_json }}"
+  changed_when: false
+  ignore_errors: true

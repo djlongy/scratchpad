@@ -1,0 +1,64 @@
+---
+# audit_logging — portable, backend-agnostic Ansible run-audit logging.
+#
+# Captures execution metadata for an ansible-playbook run (who ran it, from
+# where, against which hosts/roles, with which CLI args and git state) and
+# ships ONE structured JSON record to any combination of logging backends.
+#
+# Everything below is a behavioural default and is meant to be overridden
+# from inventory / group_vars / role vars. Connection-specific values that
+# have no safe default (HEC URL + token, remote rsyslog host, Elasticsearch
+# URL) ship empty and are validated at runtime only for the backends you
+# actually enable — see meta/argument_specs.yml for the full contract.
+
+# ── Backend selection ─────────────────────────────────────────────────────
+# Which backends to ship each audit record to. Empty = capture only, ship
+# nowhere (useful for a dry run). Order is irrelevant; each is independent.
+audit_logging_backends: []
+#   - file
+#   - syslog
+#   - rsyslog
+#   - fluentd
+#   - elasticsearch
+#   - splunk
+#   - cloudwatch
+
+# Run status stamped into the record. Override to 'failed' from a play-level
+# rescue/always block to record failed runs (e.g. audit_logging_status: failed).
+audit_logging_status: success
+
+# ── file (control-node JSON Lines) ────────────────────────────────────────
+audit_logging_file_path: /var/log/ansible/audit.jsonl
+# Set false when writing to a user-writable path (no root needed).
+audit_logging_file_become: true
+
+# ── syslog (local logger(1)) ──────────────────────────────────────────────
+audit_logging_syslog_facility: local0
+audit_logging_syslog_priority: info
+
+# ── rsyslog (remote, UDP) ─────────────────────────────────────────────────
+audit_logging_rsyslog_host: ""        # REQUIRED when 'rsyslog' is enabled
+audit_logging_rsyslog_port: 514
+
+# ── fluentd (HTTP input plugin) ───────────────────────────────────────────
+audit_logging_fluentd_url: "http://localhost:9880"
+audit_logging_fluentd_tag: ansible.audit
+
+# ── elasticsearch (_doc index API) ────────────────────────────────────────
+audit_logging_elasticsearch_url: ""   # REQUIRED when 'elasticsearch' is enabled
+audit_logging_elasticsearch_index: ansible-audit
+audit_logging_elasticsearch_user: ""        # optional basic-auth user
+audit_logging_elasticsearch_password: ""    # optional basic-auth password
+audit_logging_elasticsearch_validate_certs: true
+
+# ── splunk (HTTP Event Collector) ─────────────────────────────────────────
+audit_logging_splunk_hec_url: ""      # REQUIRED, e.g. https://splunk.example.com:8088
+audit_logging_splunk_hec_token: ""    # REQUIRED (HEC token)
+audit_logging_splunk_sourcetype: "ansible:audit"
+audit_logging_splunk_index: ansible
+audit_logging_splunk_validate_certs: true
+
+# ── cloudwatch (AWS CLI) ──────────────────────────────────────────────────
+audit_logging_cloudwatch_profile: default
+audit_logging_cloudwatch_log_group: /ansible/audit
+audit_logging_cloudwatch_aws_cli: /usr/local/bin/aws

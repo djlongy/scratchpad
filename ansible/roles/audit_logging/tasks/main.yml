@@ -1,0 +1,152 @@
+---
+# roles/audit_logging/tasks/main.yml
+#
+# Portable Ansible Audit Logging.
+# Collects execution metadata and routes one structured record to every
+# backend listed in `audit_logging_backends`.
+#
+# ── Single-play playbooks ────────────────────────────────────────────────
+# Call this role once in post_tasks. It captures the current play's context.
+#
+#   post_tasks:
+#     - name: Write audit log
+#       ansible.builtin.include_role:
+#         name: audit_logging
+#       vars:
+#         audit_logging_backends: [splunk]
+#
+# ── Multi-play (monolithic) playbooks ────────────────────────────────────
+# Call `tasks_from: accumulate` in EACH play's post_tasks to park per-play
+# metadata into a cross-play buffer, then call this role (default entrypoint)
+# only in the FINAL play's post_tasks to write one consolidated record
+# covering every play in the run. The buffer is detected automatically — no
+# configuration required.
+
+- name: Ansible audit logging
+  block:
+
+    # ── Gather audit metadata ──────────────────────────────────────────────
+
+    - name: Get ansible-playbook CLI arguments and git state
+      get_cli_args:
+      register: _audit_cli_args
+      changed_when: false
+      # Role-local action plugin (action_plugins/get_cli_args.py). Returns:
+      # ansible_playbook_argv, ansible_playbook_cmd, semaphore_vars, git_status
+
+    - name: Get local username
+      ansible.builtin.command: /usr/bin/whoami
+      register: _audit_local_user
+      changed_when: false
+
+    - name: Get control node hostname
+      ansible.builtin.command: hostname
+      register: _audit_control_node
+      changed_when: false
+
+    # ── Resolve multi-play buffer (if present) ─────────────────────────────
+    # When accumulate.yml has been called per play, __audit_buffer__ holds the
+    # accumulated history. Fall back to the current play's context for single-
+    # play playbooks so this works transparently in both modes.
+    - name: Resolve accumulated play buffer
+      ansible.builtin.set_fact:
+        _audit_buffer: "{{ hostvars['__audit_buffer__'] | default({}) }}"
+        _audit_current_play:
+          play_name: "{{ ansible_play_name | default('unnamed') }}"
+          hosts: "{{ ansible_play_hosts | default([]) }}"
+          roles: "{{ ansible_play_role_names | default([]) }}"
+
+    - name: Build consolidated plays list
+      ansible.builtin.set_fact:
+        _audit_plays: >-
+          {{
+            ((_audit_buffer.audit_plays | default([])) + [_audit_current_play])
+            if (_audit_buffer.audit_plays | default([]) | length > 0)
+            else [_audit_current_play]
+          }}
+
+    - name: Build consolidated roles list
+      ansible.builtin.set_fact:
+        _audit_roles_all: >-
+          {{
+            ((_audit_buffer.audit_roles_all | default([]))
+            | union(ansible_play_role_names | default([])))
+            | unique | sort
+          }}
+
+    - name: Build consolidated hosts list
+      ansible.builtin.set_fact:
+        _audit_hosts_all: >-
+          {{
+            _audit_plays | map(attribute='hosts') | flatten | unique | sort | list
+          }}
+
+    # ── Build structured audit record ──────────────────────────────────────
+
+    - name: Build JSON audit record
+      ansible.builtin.set_fact:
+        audit_logging_event: "{{ _audit_event }}"
+        audit_logging_event_json: "{{ _audit_event | to_json }}"
+      vars:
+        _audit_event:
+          # Uses ansible_date_time when facts are gathered, else a shell lookup
+          # so the role works under gather_facts: false.
+          timestamp: "{{ ansible_date_time.iso8601 if ansible_date_time is defined else lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          user: "{{ _audit_local_user.stdout }}"
+          control_node: "{{ _audit_control_node.stdout }}"
+          # playbook: name of the first (or single) play
+          playbook: "{{ _audit_plays[0].play_name | default('unnamed') }}"
+          # plays: full per-play breakdown — name, hosts, roles for each play
+          plays: "{{ _audit_plays }}"
+          play_count: "{{ _audit_plays | length }}"
+          # roles: deduplicated union of all roles across all plays
+          roles: "{{ _audit_roles_all | join(', ') }}"
+          # hosts: deduplicated union of all target hosts across all plays
+          hosts: "{{ _audit_hosts_all }}"
+          status: "{{ audit_logging_status | default('success') }}"
+          ansible_command: "{{ _audit_cli_args.ansible_playbook_cmd | default('unknown') }}"
+          semaphore_vars: "{{ _audit_cli_args.semaphore_vars | default(omit) }}"
+          run_tags: "{{ ansible_run_tags | default('all') }}"
+          skip_tags: "{{ ansible_skip_tags | default([]) | join(', ') }}"
+          git_branch: "{{ _audit_cli_args.git_status.branch | default('unknown') }}"
+          git_commit: "{{ _audit_cli_args.git_status.commit | default('unknown') }}"
+          git_tag: "{{ _audit_cli_args.git_status.tag | default('unknown') }}"
+          git_is_clean: "{{ _audit_cli_args.git_status.is_clean | default(true) }}"
+          git_modified_files: "{{ _audit_cli_args.git_status.modified | default([]) }}"
+          git_staged_files: "{{ _audit_cli_args.git_status.staged | default([]) }}"
+          git_untracked_files: "{{ _audit_cli_args.git_status.untracked | default([]) }}"
+
+    # ── Backend dispatch ───────────────────────────────────────────────────
+
+    - name: Ship audit record to local file
+      ansible.builtin.include_tasks: loggers/file.yml
+      when: "'file' in audit_logging_backends"
+
+    - name: Ship audit record to syslog
+      ansible.builtin.include_tasks: loggers/syslog.yml
+      when: "'syslog' in audit_logging_backends"
+
+    - name: Ship audit record to remote rsyslog
+      ansible.builtin.include_tasks: loggers/rsyslog.yml
+      when: "'rsyslog' in audit_logging_backends"
+
+    - name: Ship audit record to Fluentd
+      ansible.builtin.include_tasks: loggers/fluentd.yml
+      when: "'fluentd' in audit_logging_backends"
+
+    - name: Ship audit record to Elasticsearch
+      ansible.builtin.include_tasks: loggers/elasticsearch.yml
+      when: "'elasticsearch' in audit_logging_backends"
+
+    - name: Ship audit record to Splunk HEC
+      ansible.builtin.include_tasks: loggers/splunk.yml
+      when: "'splunk' in audit_logging_backends"
+
+    - name: Ship audit record to CloudWatch Logs
+      ansible.builtin.include_tasks: loggers/cloudwatch.yml
+      when: "'cloudwatch' in audit_logging_backends"
+
+  delegate_to: localhost
+  become: false
+  run_once: true
+  # no_log: true   # uncomment if a play handles sensitive data in its vars
