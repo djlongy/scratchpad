@@ -11,20 +11,21 @@
 # Source  : {{ _freeipa_export.meta.source }}  (realm {{ _freeipa_export.meta.realm }})
 # Captured: {{ _freeipa_export.meta.captured_at }}
 # Counts  : {{ _freeipa_export.meta.counts | to_json }}
-{% if _fexport_scoped %}
-# Scope   : {{ freeipa_server_export_scope_mode | default('include') }} {{ freeipa_server_export_scope | to_json }}
-{% if (freeipa_server_export_scope_mode | default('include')) == 'exclude' %}
-#           This file is the OUTLIERS slice — objects whose name matches NONE of the
-#           scopes above (the shared/global set: users, DNS, built-ins). Each
-#           tenant/env's own objects live in their own scoped file.
+# Export scope this snapshot was captured with (recorded below as real vars).
+{% if _fexport_scoped and (freeipa_server_export_scope_mode | default('include')) == 'exclude' %}
+#   OUTLIERS slice: objects whose name matches NONE of the scopes — the shared/
+#   global set (users, DNS, built-ins). Each tenant/env's objects are in their own files.
+{% elif _fexport_scoped %}
+#   ONE tenant/env slice: only objects whose name contains a scope. NOT here by
+#   design — users, DNS, built-ins, other tenants (they live in their own slices).
 {% else %}
-#           This file is ONE tenant/env slice — only objects whose name contains a
-#           scope above. NOT here by design: users, DNS, built-ins, other tenants —
-#           they live in the global (exclude) slice or other tenants' files.
+#   Full snapshot — every captured object.
 {% endif %}
-{% else %}
-# Scope   : none — full snapshot (every captured object)
-{% endif %}
+# These are EXPORT-time vars (inert when applying this file). A future
+# `--tags export` from an inventory holding them re-uses this scope; override with
+# -e freeipa_server_export_scope=[] for a full re-export.
+freeipa_server_export_scope: {{ freeipa_server_export_scope | default([]) | to_json }}
+freeipa_server_export_scope_mode: {{ freeipa_server_export_scope_mode | default('include') }}
 # ─────────────────────────────────────────────────────────────────────────────
 # This file IS the freeipa_server role's declarative group_vars contract. Drop it
 # into an inventory group_vars (e.g. inventories/<env>/group_vars/freeipa.yml, or
