@@ -377,6 +377,22 @@ freeipa_idam_protected_groups:
   - ipausers
   - trust admins
 
+# ── IDAM reference-integrity validation ──────────────────────────────────────
+# References (role→group, user→group/role, hbac→service, sudo→command) are checked
+# so a typo fails loudly instead of as a cryptic module error. Shape/typo checks
+# (missing name, no groups/roles, duplicate user) ALWAYS hard-fail; this governs
+# only the cross-object REFERENCE checks, so a scoped per-tenant slice can
+# reference a global object it does not declare/own:
+#   strict — a reference must be DECLARED here or a known built-in (default)
+#   warn   — report unknown references as a warning and continue
+#   off    — skip reference checks entirely
+#   live   — ALSO accept any reference that already exists on the realm (one set
+#            of `ipa *-find` queries; needs a ticket, so not usable under --check)
+freeipa_server_idam_reference_validation: strict
+# Built-in objects that always exist on a realm → always valid reference targets,
+# so a scoped/tenant slice never has to declare them just to satisfy validation.
+freeipa_server_idam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
+
 # ── Account types beyond human users ────────────────────────────────────────
 # SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user
 # (name, givenname, sn, groups, ...) but the role forces shell = the nologin shell.

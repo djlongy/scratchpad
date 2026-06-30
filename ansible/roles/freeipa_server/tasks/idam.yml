@@ -148,28 +148,84 @@
 # scroll up through the log to find. Accepts first/givenname and last/sn (ipauser
 # aliases); protected users (admin) are exempt from the first/last requirement
 # because their attributes cannot be set (see the payload task below).
-- name: Collect all IDAM validation problems
+# LIVE mode (freeipa_server_idam_reference_validation: live): query the realm once
+# for existing object names so a reference to an object that EXISTS but isn't
+# declared in this (scoped) slice passes — only true typos fail. This is the
+# Terraform "data source" idea. Needs a Kerberos ticket, so it can't run --check.
+- name: Gather live realm object names for reference validation (live mode)
+  when: freeipa_server_idam_reference_validation == 'live'
+  no_log: true
+  block:
+    - name: live-validate | Resolve admin password (declared var first, Vault fallback)
+      ansible.builtin.set_fact:
+        _freeipa_live_admin_pw: >-
+          {{ freeipa_server_admin_password
+             if (freeipa_server_admin_password | default('') | length > 0)
+             else lookup('community.hashi_vault.hashi_vault',
+                'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
+
+    - name: live-validate | Acquire Kerberos ticket
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+      args:
+        stdin: "{{ _freeipa_live_admin_pw }}"
+      changed_when: false
+
+    - name: live-validate | Find existing object names (pkey only)
+      ansible.builtin.command: "ipa {{ item.cmd }} --pkey-only --sizelimit=0"
+      register: _freeipa_live_finds
+      changed_when: false
+      failed_when: false
+      loop:
+        - { key: groups, cmd: group-find }
+        - { key: roles, cmd: role-find }
+        - { key: hbacsvcs, cmd: hbacsvc-find }
+        - { key: hbacsvcgroups, cmd: hbacsvcgroup-find }
+        - { key: sudocmds, cmd: sudocmd-find }
+        - { key: sudocmdgroups, cmd: sudocmdgroup-find }
+      loop_control:
+        label: "{{ item.cmd }}"
+
+    - name: live-validate | Destroy Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      failed_when: false
+
+    - name: live-validate | Parse live names per object type
+      ansible.builtin.set_fact:
+        _freeipa_live: >-
+          {{ _freeipa_live | default({}) | combine({
+               item.item.key:
+                 (item.stdout_lines | select('search', ':')
+                  | map('regex_replace', '^\\s*[^:]+:\\s*', '') | map('trim') | select | list)
+             }) }}
+      loop: "{{ _freeipa_live_finds.results }}"
+      loop_control:
+        label: "{{ item.item.cmd }}"
+
+# SHAPE problems (missing name, no groups/roles, duplicate user, protected-absent)
+# ALWAYS hard-fail. REFERENCE problems (role→group, user→group/role, hbac→service,
+# sudo→command) are governed by freeipa_server_idam_reference_validation — the
+# "known" sets below add the built-in allow-list and, in live mode, the live names,
+# so a scoped slice can reference a global object it doesn't declare.
+- name: Collect IDAM validation problems (shape + references)
   ansible.builtin.set_fact:
-    _freeipa_idam_problems: "{{ (_freeipa_idam_problems_yaml | from_yaml) or [] }}"
+    _freeipa_idam_problems_shape: "{{ (_shape_yaml | from_yaml) or [] }}"
+    _freeipa_idam_problems_refs: "{{ (_refs_yaml | from_yaml) or [] }}"
   vars:
-    _gnames: "{{ freeipa_idam_usergroups | map(attribute='name') | list }}"
-    _rnames: "{{ freeipa_idam_roles | map(attribute='name') | list }}"
+    _live: "{{ _freeipa_live | default({}) }}"
+    # Known names = declared + built-in allow-list + (live names when in live mode).
+    _gnames: "{{ (freeipa_idam_usergroups | map(attribute='name') | list)
+                 + (freeipa_server_idam_builtin_groups | default([]))
+                 + (_live.groups | default([])) }}"
+    _rnames: "{{ (freeipa_idam_roles | map(attribute='name') | list) + (_live.roles | default([])) }}"
     _unames: "{{ _freeipa_idam_users_base | map(attribute='name', default='(unnamed)') | list }}"
-    # Foundation object names a rule may reference. HBAC services include the stock
-    # set (sshd, sudo, ...) that always exist; the rest must be declared. These are
-    # the dependencies FreeIPA HARD-REJECTS ("hbacsvc/sudocmd ...: no such entry"), so
-    # catch them here with a clear message instead of a cryptic module failure.
-    _hbacsvc_names: "{{ (freeipa_server_export_hbacsvc_stock | default([])) + (freeipa_idam_hbacsvcs | map(attribute='name') | list) }}"
-    _hbacsvcgrp_names: "{{ freeipa_idam_hbacsvcgroups | map(attribute='name') | list }}"
-    _sudocmd_names: "{{ freeipa_idam_sudo_commands | map(attribute='name') | list }}"
-    _sudocmdgrp_names: "{{ freeipa_idam_sudocmdgroups | map(attribute='name') | list }}"
-    _freeipa_idam_problems_yaml: |-
-      {% for r in freeipa_idam_roles %}
-      {% for g in (r.groups | default([])) %}
-      {% if g not in _gnames %}
-      - "role '{{ r.name }}' references unknown group '{{ g }}'"
-      {% endif %}
-      {% endfor %}{% endfor %}
+    _hbacsvc_names: "{{ (freeipa_server_export_hbacsvc_stock | default([]))
+                        + (freeipa_idam_hbacsvcs | map(attribute='name') | list)
+                        + (_live.hbacsvcs | default([])) }}"
+    _hbacsvcgrp_names: "{{ (freeipa_idam_hbacsvcgroups | map(attribute='name') | list) + (_live.hbacsvcgroups | default([])) }}"
+    _sudocmd_names: "{{ (freeipa_idam_sudo_commands | map(attribute='name') | list) + (_live.sudocmds | default([])) }}"
+    _sudocmdgrp_names: "{{ (freeipa_idam_sudocmdgroups | map(attribute='name') | list) + (_live.sudocmdgroups | default([])) }}"
+    _shape_yaml: |-
       {% for u in _freeipa_idam_users_base %}
       {% if u.name is not defined %}
       - "a user entry is missing 'name'"
@@ -183,16 +239,6 @@
       {% if (u.groups | default([]) | length == 0) and (u.roles | default([]) | length == 0) %}
       - "user '{{ u.name }}' has no groups and no roles (must belong to at least one)"
       {% endif %}
-      {% for rn in (u.roles | default([])) %}
-      {% if rn not in _rnames %}
-      - "user '{{ u.name }}' references unknown role '{{ rn }}'"
-      {% endif %}
-      {% endfor %}
-      {% for g in (u.groups | default([])) %}
-      {% if g not in _gnames %}
-      - "user '{{ u.name }}' references unknown group '{{ g }}'"
-      {% endif %}
-      {% endfor %}
       {% endif %}
       {% endfor %}
       {% for n in (_unames | unique) %}
@@ -205,39 +251,84 @@
       - "group '{{ g.name }}' is a protected FreeIPA built-in — refusing state: absent (would delete core schema)"
       {% endif %}
       {% endfor %}
+    _refs_yaml: |-
+      {% for r in freeipa_idam_roles %}
+      {% for g in (r.groups | default([])) %}
+      {% if g not in _gnames %}
+      - "role '{{ r.name }}' references unknown group '{{ g }}'"
+      {% endif %}
+      {% endfor %}{% endfor %}
+      {% for u in _freeipa_idam_users_base %}
+      {% if u.name is defined %}
+      {% for rn in (u.roles | default([])) %}
+      {% if rn not in _rnames %}
+      - "user '{{ u.name }}' references unknown role '{{ rn }}'"
+      {% endif %}
+      {% endfor %}
+      {% for g in (u.groups | default([])) %}
+      {% if g not in _gnames %}
+      - "user '{{ u.name }}' references unknown group '{{ g }}'"
+      {% endif %}
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
       {% for h in freeipa_idam_hbac_rules %}
       {% for s in (h.service | default([])) %}
       {% if s not in _hbacsvc_names %}
-      - "HBAC rule '{{ h.name }}' references HBAC service '{{ s }}' that is not stock and not in freeipa_idam_hbacsvcs"
+      - "HBAC rule '{{ h.name }}' references HBAC service '{{ s }}' that is not stock, declared, or on the realm"
       {% endif %}
       {% endfor %}
       {% for sg in (h.servicegroup | default([])) %}
       {% if sg not in _hbacsvcgrp_names %}
-      - "HBAC rule '{{ h.name }}' references service group '{{ sg }}' not in freeipa_idam_hbacsvcgroups"
+      - "HBAC rule '{{ h.name }}' references service group '{{ sg }}' not declared or on the realm"
       {% endif %}
       {% endfor %}{% endfor %}
       {% for s in freeipa_idam_sudo_rules %}
       {% for c in (s.cmd | default([])) + (s.deny_cmd | default([])) %}
       {% if c not in _sudocmd_names %}
-      - "sudo rule '{{ s.name }}' references sudo command '{{ c }}' not in freeipa_idam_sudo_commands"
+      - "sudo rule '{{ s.name }}' references sudo command '{{ c }}' not declared or on the realm"
       {% endif %}
       {% endfor %}
       {% for cg in (s.cmdgroup | default([])) + (s.deny_cmdgroup | default([])) %}
       {% if cg not in _sudocmdgrp_names %}
-      - "sudo rule '{{ s.name }}' references sudo command group '{{ cg }}' not in freeipa_idam_sudocmdgroups"
+      - "sudo rule '{{ s.name }}' references sudo command group '{{ cg }}' not declared or on the realm"
       {% endif %}
       {% endfor %}{% endfor %}
   no_log: true
 
-- name: Report all IDAM validation problems at once
+- name: Report IDAM shape problems (always hard-fail)
   ansible.builtin.assert:
-    that: _freeipa_idam_problems | length == 0
+    that: _freeipa_idam_problems_shape | length == 0
     quiet: true
     fail_msg: |-
-      FreeIPA IDAM validation failed — fix these {{ _freeipa_idam_problems | length }} item(s):
-      {% for p in _freeipa_idam_problems %}
+      FreeIPA IDAM validation failed — fix these {{ _freeipa_idam_problems_shape | length }} item(s):
+      {% for p in _freeipa_idam_problems_shape %}
         - {{ p }}
       {% endfor %}
+
+- name: Report IDAM reference problems (strict / live → fail)
+  ansible.builtin.assert:
+    that: _freeipa_idam_problems_refs | length == 0
+    quiet: true
+    fail_msg: |-
+      FreeIPA IDAM reference validation failed — fix these {{ _freeipa_idam_problems_refs | length }} item(s)
+      (declare them, add to freeipa_server_idam_builtin_groups, or relax
+       freeipa_server_idam_reference_validation to live/warn/off):
+      {% for p in _freeipa_idam_problems_refs %}
+        - {{ p }}
+      {% endfor %}
+  when: freeipa_server_idam_reference_validation in ['strict', 'live']
+
+- name: Warn on IDAM reference problems (warn mode — continue)
+  ansible.builtin.debug:
+    msg: |-
+      WARNING — {{ _freeipa_idam_problems_refs | length }} unresolved IDAM reference(s) (mode=warn, continuing):
+      {% for p in _freeipa_idam_problems_refs %}
+        - {{ p }}
+      {% endfor %}
+  when:
+    - freeipa_server_idam_reference_validation == 'warn'
+    - _freeipa_idam_problems_refs | length > 0
 
 - name: Expand user roles into group memberships
   ansible.builtin.set_fact:
