@@ -98,10 +98,62 @@ def freeipa_idam_named(items):
     return out
 
 
+# ── scope a captured snapshot to a tenant/env slice (export) ─────────────────
+_SCOPE_ID_FIELDS = ("name", "zone_name")
+
+
+def _scope_identifier(item):
+    """The string a scope substring is matched against for one captured object:
+    its ``name``, or ``zone_name`` for a DNS-records group."""
+    if isinstance(item, dict):
+        for field in _SCOPE_ID_FIELDS:
+            value = item.get(field)
+            if value:
+                return str(value)
+    return ""
+
+
+def freeipa_export_scope(export, scopes, mode="include"):
+    """Slice a captured FreeIPA snapshot by object-name substring, so one realm
+    can be carved into per-tenant/env inventories.
+
+    ``export`` : the parsed snapshot dict (meta + server_* scalars + object lists).
+    ``scopes`` : a substring or list of substrings (e.g. ``acme-prod-``).
+    ``mode``   : ``include`` keeps objects whose identifier CONTAINS any scope (the
+                 tenant/env slice); ``exclude`` keeps objects whose identifier
+                 contains NONE of them (the global 'outliers' — users, DNS,
+                 ``platform-*``, built-ins — for the shared/auth inventory).
+
+    Only object lists (lists of dicts) are filtered, matched on each item's
+    ``name`` (or ``zone_name`` for DNS records). Scalar keys and non-object lists
+    (``meta``, ``realm``, ``domain``, ``forwarders``) pass through unchanged.
+    An empty ``scopes`` returns the snapshot untouched (no filtering)."""
+    if isinstance(scopes, str):
+        scopes = [scopes]
+    scopes = [s for s in (scopes or []) if s]
+    if not scopes:
+        return export
+    exclude = (mode == "exclude")
+
+    def keep(item):
+        ident = _scope_identifier(item)
+        hit = any(s in ident for s in scopes)
+        return (not hit) if exclude else hit
+
+    out = {}
+    for key, value in (export or {}).items():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            out[key] = [item for item in value if keep(item)]
+        else:
+            out[key] = value
+    return out
+
+
 class FilterModule:
     def filters(self):
         return {
             "freeipa_idam_merge": freeipa_idam_merge,
             "freeipa_idam_orphans": freeipa_idam_orphans,
             "freeipa_idam_named": freeipa_idam_named,
+            "freeipa_export_scope": freeipa_export_scope,
         }

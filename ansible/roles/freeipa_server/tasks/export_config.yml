@@ -68,6 +68,11 @@
     # can never break from_json — the script emits one JSON object as its real output.
     _freeipa_export: "{{ _freeipa_export_raw.stdout[_freeipa_export_raw.stdout.find('{'):] | from_json }}"
 
+- name: Export | Scope the snapshot to a tenant/env slice (optional)
+  ansible.builtin.set_fact:
+    _freeipa_export: "{{ _freeipa_export | freeipa_export_scope(freeipa_server_export_scope, freeipa_server_export_scope_mode) }}"
+  when: freeipa_server_export_scope | default([]) | length > 0
+
 - name: Export | Render the snapshot group_vars file on the control node
   ansible.builtin.template:
     src: freeipa.config.snapshot.yml.j2

@@ -453,6 +453,18 @@ freeipa_server_export_include_sshkeys: false
 #                   - {name: cockpit, description: …}
 # (json/yaml_flow keep one item per line so groups/memberships scan easily.)
 freeipa_server_export_list_style: block
+# Export scope filter — carve a monolithic realm into per-tenant/env inventories.
+# Matches captured objects by NAME substring (DNS records by zone_name):
+#   include (default) — keep objects whose name CONTAINS any scope (the slice)
+#   exclude           — keep objects whose name contains NONE of the scopes (the
+#                       global 'outliers': users, DNS, platform-*, built-ins)
+# Empty list = no filter (full snapshot). Server identity (realm/domain/fqdn/
+# forwarders) is omitted from a scoped slice — it lives on the IPA host's own
+# group_vars, not a per-tenant file. Scope is a list of substrings, e.g.:
+#   per tenant/env :  -e '{"freeipa_server_export_scope":["acme-prod-"]}'
+#   outliers/global:  -e '{"freeipa_server_export_scope":["acme-prod-","globex-dev-"],"freeipa_server_export_scope_mode":"exclude"}'
+freeipa_server_export_scope: []
+freeipa_server_export_scope_mode: include
 # The export is a FAITHFUL MIRROR of the live directory: every user is captured with
 # its real, literal `groups` list — no roles matrix is inferred (role STRUCTURE is
 # authored forward via the RBAC template engine, not guessed from the export).
