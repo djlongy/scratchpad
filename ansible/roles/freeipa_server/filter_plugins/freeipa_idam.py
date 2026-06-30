@@ -150,38 +150,76 @@ def freeipa_export_scope(export, scopes, mode="include"):
 
 
 # ── unified per-realm membership model (declarative, user-centric) ────────────
-def freeipa_idam_identity_merge(files: list[dict]) -> dict:
-    """Flatten per-tenant identity files into one realm-wide dataset.
+# Short, hand-friendly object keys a tenant file may use -> the role var they feed.
+# (Full freeipa_idam_* / freeipa_server_* keys, e.g. straight from a --tags export
+# snapshot, pass through unchanged — so migrating an export is just adding a header.)
+_FREEIPA_IDENTITY_ALIASES = {
+    "users": "freeipa_idam_users",
+    "groups": "freeipa_idam_usergroups",
+    "roles": "freeipa_idam_roles",
+    "hostgroups": "freeipa_idam_hostgroups",
+    "hbacsvcs": "freeipa_idam_hbacsvcs",
+    "hbacsvcgroups": "freeipa_idam_hbacsvcgroups",
+    "hbac_rules": "freeipa_idam_hbac_rules",
+    "sudo_commands": "freeipa_idam_sudo_commands",
+    "sudocmdgroups": "freeipa_idam_sudocmdgroups",
+    "sudo_rules": "freeipa_idam_sudo_rules",
+    "permissions": "freeipa_idam_permissions",
+    "privileges": "freeipa_idam_privileges",
+    "iparoles": "freeipa_idam_iparoles",
+    "pwpolicies": "freeipa_idam_pwpolicies",
+    "service_accounts": "freeipa_idam_service_accounts",
+    "automember": "freeipa_server_automember_rules",
+    "dns_zones": "freeipa_server_dns_zones",
+    "dns_records": "freeipa_server_dns_records",
+}
+_FREEIPA_IDENTITY_META = {"tenant", "shared"}
+_FREEIPA_USERS_VAR = "freeipa_idam_users"
+_FREEIPA_GROUPS_VAR = "freeipa_idam_usergroups"
 
-    Each file is ``{tenant, shared?, users: [...], groups: [...]}``. Returns the
-    flattened ``users`` / ``groups`` lists **unchanged** (so they pass straight to
-    the ipa modules with no stray keys) plus SEPARATE ownership maps the boundary
-    and report consume: ``user_owner`` / ``group_owner`` (name -> tenant) and
-    ``group_shared`` (name -> bool, the group's own ``shared`` if set else the
-    file's). Seeing every tenant in one run is the precondition for a fully
-    declarative reconcile.
+
+def freeipa_idam_identity_merge(files: list[dict]) -> dict:
+    """Flatten per-tenant identity files into one realm-wide dataset — EVERY object
+    type, not just users/groups.
+
+    Each file is ``{tenant, shared?, <object lists>}`` where an object list is either
+    a hand-friendly short key (``users``, ``groups``, ``hbac_rules``, ``sudo_rules``,
+    ``roles`` …) or the full role var (``freeipa_idam_*`` / ``freeipa_server_*``, e.g.
+    straight from an export snapshot). Returns:
+
+      ``objects``       {role_var: concatenated list across all files} — the lists are
+                        passed through UNCHANGED (so they go straight to the ipa modules
+                        with no stray keys), keyed by the role var each feeds.
+      ``user_owner`` / ``group_owner``  name -> tenant
+      ``group_shared``  name -> bool (the group's own ``shared`` if set, else the file's)
+
+    Seeing every tenant in one run is the precondition for a fully declarative reconcile.
     """
-    users: list[dict] = []
-    groups: list[dict] = []
+    objects: dict[str, list] = {}
     user_owner: dict[str, str] = {}
     group_owner: dict[str, str] = {}
     group_shared: dict[str, bool] = {}
     for entry in files or []:
         tenant = entry.get("tenant", "")
         file_shared = bool(entry.get("shared", False))
-        for user in (entry.get("users") or []):
-            users.append(user)
-            if user.get("name"):
-                user_owner[user["name"]] = tenant
-        for group in (entry.get("groups") or []):
-            obj = group if isinstance(group, dict) else {"name": group}
-            groups.append(obj)
-            name = obj.get("name")
-            if name:
-                group_owner[name] = tenant
-                group_shared[name] = bool(obj.get("shared", file_shared))
-    return {"users": users, "groups": groups,
-            "user_owner": user_owner, "group_owner": group_owner, "group_shared": group_shared}
+        for key, value in (entry or {}).items():
+            if key in _FREEIPA_IDENTITY_META or not isinstance(value, list):
+                continue
+            target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
+            objects.setdefault(target, []).extend(value)
+            if target == _FREEIPA_USERS_VAR:
+                for user in value:
+                    if isinstance(user, dict) and user.get("name"):
+                        user_owner[user["name"]] = tenant
+            elif target == _FREEIPA_GROUPS_VAR:
+                for group in value:
+                    obj = group if isinstance(group, dict) else {"name": group}
+                    name = obj.get("name")
+                    if name:
+                        group_owner[name] = tenant
+                        group_shared[name] = bool(obj.get("shared", file_shared))
+    return {"objects": objects, "user_owner": user_owner,
+            "group_owner": group_owner, "group_shared": group_shared}
 
 
 def freeipa_idam_group_membership(users: list[dict]) -> dict[str, list[str]]:
