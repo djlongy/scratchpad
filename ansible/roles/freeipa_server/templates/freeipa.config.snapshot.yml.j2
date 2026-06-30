@@ -89,4 +89,6 @@ freeipa_server_forward_policy: {{ _freeipa_export.freeipa_server_forward_policy 
 {% else %}
 {{ key }}: []
 {% endif %}
+{# blank line between each root-key block for readability #}
+
 {% endfor %}

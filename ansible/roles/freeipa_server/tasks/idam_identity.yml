@@ -12,12 +12,20 @@
   ansible.builtin.set_fact:
     _freeipa_identity_paths: "{{ query('ansible.builtin.fileglob', freeipa_idam_source_dir ~ '/*.yml') | sort }}"
 
-- name: identity | Read and parse each tenant file
+# Render each file as a template with its OWN tenant/env in scope, so identity files
+# can DRY-reference {{ tenant }} / {{ env }} (e.g. name: "{{ tenant }}-admins"). The
+# header is read raw first to get tenant/env, then the file is rendered with them
+# injected and parsed. Files with no templating render unchanged.
+- name: identity | Read + render each tenant file (its own tenant/env in scope)
   ansible.builtin.set_fact:
-    _freeipa_identity_raw: "{{ (_freeipa_identity_raw | default([])) + [lookup('ansible.builtin.file', item) | from_yaml] }}"
+    _freeipa_identity_raw: "{{ (_freeipa_identity_raw | default([])) + [lookup('ansible.builtin.template', item, template_vars=_tvars) | from_yaml] }}"
+  vars:
+    _hdr: "{{ lookup('ansible.builtin.file', item) | from_yaml }}"
+    _tvars: "{{ {'tenant': _hdr.tenant | default(''), 'env': _hdr.env | default('')} }}"
   loop: "{{ _freeipa_identity_paths }}"
   loop_control:
     label: "{{ item | basename }}"
+  no_log: true  # tenant files may carry inline user passwords
 
 - name: identity | Flatten identity (object lists + ownership maps)
   ansible.builtin.set_fact:
