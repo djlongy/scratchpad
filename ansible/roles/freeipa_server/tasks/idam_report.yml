@@ -47,12 +47,26 @@
                         + (_s.pruned_hbac | length) + (_s.pruned_sudo | length)
                         + (_s.pruned_hostgroups | length) + (_s.pruned_automember | length) }}"
     _chg: "{{ '✚ changed' if (_s.users_changed or _s.groups_changed or _s.members_changed or (_removed_count | int > 0)) else '· no change' }}"
-    _lines:
-      - "════════ FreeIPA IDAM run summary — {{ _s.realm }} ({{ 'AUTHORITATIVE' if _s.authoritative else 'additive' }}) ════════"
-      - "USERS   managed {{ _s.users_managed | length }}: {{ _s.users_managed | sort | join(', ') | default('—', true) }}"
-      - "        created/updated: {{ 'yes' if _s.users_changed else 'no' }}    archived (removed): {{ _s.users_archived | length }}{{ (' → ' + (_s.users_archived | sort | join(', '))) if (_s.users_archived | length > 0) else '' }}"
-      - "GROUPS  managed {{ _s.groups_managed | length }}: {{ _s.groups_managed | sort | join(', ') | default('—', true) }}"
-      - "        objects created/updated: {{ 'yes' if _s.groups_changed else 'no' }}    membership changed: {{ 'yes' if _s.members_changed else 'no' }}"
-      - "        deleted (no longer declared): {{ _groups_removed | length }}{{ (' → ' + (_groups_removed | sort | join(', '))) if (_groups_removed | length > 0) else '' }}"
-      - "PRUNED  hbac: {{ _s.pruned_hbac | default([]) }}  sudo: {{ _s.pruned_sudo | default([]) }}  hostgroups: {{ _s.pruned_hostgroups | default([]) }}  automember: {{ _s.pruned_automember | default([]) }}"
-      - "═════════════════════════════════════════════════════════════ {{ _chg }} ═"
+    # One field per line; list values expand to one bullet per item (so large
+    # arrays stay readable), empty arrays contribute no bullets.
+    _bul: "          • "
+    _users_lines: "{{ (_s.users_managed | sort | map('regex_replace', '^', _bul) | list) if (_s.users_managed | length > 0) else [] }}"
+    _groups_lines: "{{ (_s.groups_managed | sort | map('regex_replace', '^', _bul) | list) if (_s.groups_managed | length > 0) else [] }}"
+    _archived_lines: "{{ (_s.users_archived | sort | map('regex_replace', '^', _bul) | list) if (_s.users_archived | length > 0) else [] }}"
+    _deleted_lines: "{{ (_groups_removed | sort | map('regex_replace', '^', _bul) | list) if (_groups_removed | length > 0) else [] }}"
+    _lines: >-
+      {{
+        ['════════ FreeIPA IDAM run summary — ' ~ _s.realm ~ ' (' ~ ('AUTHORITATIVE' if _s.authoritative else 'additive') ~ ') ════════']
+        + ['USERS   managed: ' ~ (_s.users_managed | length)] + _users_lines
+        + ['        created/updated:   ' ~ ('yes' if _s.users_changed else 'no')]
+        + ['        archived (removed): ' ~ (_s.users_archived | length)] + _archived_lines
+        + ['GROUPS  managed: ' ~ (_s.groups_managed | length)] + _groups_lines
+        + ['        created/updated:    ' ~ ('yes' if _s.groups_changed else 'no')]
+        + ['        membership changed: ' ~ ('yes' if _s.members_changed else 'no')]
+        + ['        deleted:            ' ~ (_groups_removed | length)] + _deleted_lines
+        + ['PRUNED  hbac:       ' ~ (_s.pruned_hbac | default([]) | join(', ') | default('(none)', true))]
+        + ['        sudo:       ' ~ (_s.pruned_sudo | default([]) | join(', ') | default('(none)', true))]
+        + ['        hostgroups: ' ~ (_s.pruned_hostgroups | default([]) | join(', ') | default('(none)', true))]
+        + ['        automember: ' ~ (_s.pruned_automember | default([]) | join(', ') | default('(none)', true))]
+        + ['═════════════════════════════════════════════════════════════ ' ~ _chg ~ ' ═']
+      }}
