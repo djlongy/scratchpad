@@ -149,6 +149,101 @@ def freeipa_export_scope(export, scopes, mode="include"):
     return out
 
 
+# ── unified per-realm membership model (declarative, user-centric) ────────────
+def freeipa_idam_identity_merge(files: list[dict]) -> dict:
+    """Flatten per-tenant identity files into one realm-wide dataset.
+
+    Each file is ``{tenant, shared?, users: [...], groups: [...]}``. Returns
+    ``{'users': [...], 'groups': [...]}`` with every user and group stamped
+    ``_owner`` (its tenant) and every group ``_shared`` (the group's own ``shared``
+    if set, else the file's ``shared``). Letting one run see every tenant at once is
+    the precondition for a fully declarative reconcile.
+    """
+    users: list[dict] = []
+    groups: list[dict] = []
+    for entry in files or []:
+        tenant = entry.get("tenant", "")
+        file_shared = bool(entry.get("shared", False))
+        for user in (entry.get("users") or []):
+            users.append({**user, "_owner": tenant})
+        for group in (entry.get("groups") or []):
+            obj = group if isinstance(group, dict) else {"name": group}
+            shared = bool(obj.get("shared", file_shared))
+            groups.append({**obj, "_owner": tenant, "_shared": shared})
+    return {"users": users, "groups": groups}
+
+
+def freeipa_idam_group_membership(users: list[dict]) -> dict[str, list[str]]:
+    """Aggregate desired membership across ALL users, keyed by group.
+
+    ``{group_name: sorted([usernames who declare it])}``. Because the unified run
+    sees every tenant's users, this map is each group's COMPLETE desired
+    membership — the basis for declaratively reconciling even built-in groups.
+    """
+    out: dict[str, set] = {}
+    for user in users or []:
+        name = user.get("name")
+        if not name:
+            continue
+        for group in (user.get("groups") or []):
+            out.setdefault(group, set()).add(name)
+    return {group: sorted(members) for group, members in out.items()}
+
+
+def freeipa_idam_evictions(current: list[str], managed: list[str], desired: list[str]) -> list[str]:
+    """Managed members of a group no longer desired -> eviction list.
+
+    ``(current ∩ managed) − desired``. Members not in ``managed`` (the built-in
+    ``admin``, service accounts, anything created out-of-band) are NEVER returned,
+    so eviction can only remove accounts the role owns.
+    """
+    managed_set = set(managed or [])
+    desired_set = set(desired or [])
+    return sorted(m for m in (current or []) if m in managed_set and m not in desired_set)
+
+
+def freeipa_idam_boundary(users: list[dict], groups: dict) -> list[dict]:
+    """Membership pairs that cross a tenant boundary (for the opt-in enforcer).
+
+    A pair violates the boundary when a user owned by tenant T references a group
+    that is neither owned by T nor ``_shared``. ``groups`` is a metadata map
+    ``{name: {_owner, _shared}}``. Returns ``[{user, group, group_owner}]`` — empty
+    when nothing crosses a boundary.
+    """
+    meta = groups or {}
+    out: list[dict] = []
+    for user in users or []:
+        owner = user.get("_owner")
+        for group in (user.get("groups") or []):
+            info = meta.get(group) or {}
+            if info.get("_shared"):
+                continue
+            group_owner = info.get("_owner")
+            if group_owner and group_owner != owner:
+                out.append({"user": user.get("name"), "group": group, "group_owner": group_owner})
+    return out
+
+
+def freeipa_idam_group_plan(current: list[str], managed: list[str], desired: list[str]) -> dict[str, list[str]]:
+    """Per-group reconcile plan for the WYSIWYG report.
+
+    Returns ``{keep, add, evict, unmanaged_kept}``:
+      keep            desired members already present
+      add             desired members not yet present
+      evict           managed members present but no longer desired
+      unmanaged_kept  present members the role does not manage (left untouched)
+    """
+    current_set = set(current or [])
+    managed_set = set(managed or [])
+    desired_set = set(desired or [])
+    return {
+        "keep": sorted(desired_set & current_set),
+        "add": sorted(desired_set - current_set),
+        "evict": sorted((current_set & managed_set) - desired_set),
+        "unmanaged_kept": sorted(current_set - managed_set),
+    }
+
+
 class FilterModule:
     def filters(self):
         return {
@@ -156,4 +251,9 @@ class FilterModule:
             "freeipa_idam_orphans": freeipa_idam_orphans,
             "freeipa_idam_named": freeipa_idam_named,
             "freeipa_export_scope": freeipa_export_scope,
+            "freeipa_idam_identity_merge": freeipa_idam_identity_merge,
+            "freeipa_idam_group_membership": freeipa_idam_group_membership,
+            "freeipa_idam_evictions": freeipa_idam_evictions,
+            "freeipa_idam_boundary": freeipa_idam_boundary,
+            "freeipa_idam_group_plan": freeipa_idam_group_plan,
         }
