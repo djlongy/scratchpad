@@ -1,51 +1,42 @@
 ---
 # roles/audit_logging/tasks/accumulate.yml
 #
-# Accumulates per-play metadata into a dummy host (__audit_buffer__) that
-# persists across plays within a single playbook run.
-#
-# Call this in EACH play's post_tasks of a multi-play monolithic playbook,
-# then call the role's default entrypoint only in the FINAL play's post_tasks
-# to write the consolidated record. For single-play playbooks, skip this
-# entirely — tasks/main.yml handles both modes.
+# Buffers one play's metadata so a later play can emit a single consolidated
+# record for the whole run. Call in EACH play's post_tasks of a multi-play
+# monolithic playbook, then call the default entrypoint only in the FINAL play.
+# For single-play playbooks, skip this — tasks/main.yml handles both modes.
 #
 #   post_tasks:
 #     - name: Accumulate audit data for this play
 #       ansible.builtin.include_role:
 #         name: audit_logging
 #         tasks_from: accumulate
+#
+# The buffer is kept as facts on localhost (not add_host): set_fact preserves
+# native types (lists stay lists) and works under the free strategy, whereas
+# add_host stringifies values and bypasses the host loop (errors under free).
+# Gated to the first host of the play so it accumulates exactly once per play,
+# not once per host / per serial batch.
 
 - name: Audit accumulate — buffer this play's metadata
+  delegate_to: localhost
+  become: false
+  when: inventory_hostname == (ansible_play_hosts_all | first)
   block:
 
-    - name: Record current play into audit buffer
-      ansible.builtin.add_host:
-        name: __audit_buffer__
-        # add_host merges variables, so we read the existing list first and
-        # append this play's entry.
-        audit_plays: >-
+    - name: Append this play to the run-global audit buffer (localhost facts)
+      ansible.builtin.set_fact:
+        audit_logging_buffer_plays: "{{ (hostvars['localhost']['audit_logging_buffer_plays'] | default([])) + [_audit_this_play] }}"
+        audit_logging_buffer_roles: >-
           {{
-            (hostvars['__audit_buffer__']['audit_plays'] | default([]))
-            + [_audit_this_play]
-          }}
-        # Accumulate the flat union of all roles seen so far.
-        audit_roles_all: >-
-          {{
-            (hostvars['__audit_buffer__']['audit_roles_all'] | default([]))
+            (hostvars['localhost']['audit_logging_buffer_roles'] | default([]))
             | union(ansible_play_role_names | default([]))
           }}
-        # Count plays seen so far.
-        audit_play_count: >-
-          {{
-            (hostvars['__audit_buffer__']['audit_play_count'] | default(0)) + 1
-          }}
+      delegate_to: localhost
+      delegate_facts: true
       vars:
         _audit_this_play:
           play_name: "{{ ansible_play_name | default('unnamed') }}"
-          hosts: "{{ ansible_play_hosts | default([]) }}"
+          hosts: "{{ ansible_play_hosts_all | default([]) }}"
           roles: "{{ ansible_play_role_names | default([]) }}"
       changed_when: false
-
-  delegate_to: localhost
-  become: false
-  run_once: true

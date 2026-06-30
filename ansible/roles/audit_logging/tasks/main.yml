@@ -85,12 +85,14 @@
           or (_audit_hostname_fallback.stdout | default('') | trim) or 'unknown' }}"
 
     # ── Resolve multi-play buffer (if present) ─────────────────────────────
-    # When accumulate.yml has been called per play, __audit_buffer__ holds the
-    # accumulated history. Fall back to the current play's context for single-
-    # play playbooks so this works transparently in both modes.
+    # When accumulate.yml has been called per play, the localhost buffer facts
+    # hold the accumulated history. Empty for single-play playbooks, so this
+    # works transparently in both modes.
     - name: Resolve accumulated play buffer
       ansible.builtin.set_fact:
-        _audit_buffer: "{{ hostvars['__audit_buffer__'] | default({}) }}"
+        _audit_buffer:
+          audit_plays: "{{ hostvars['localhost']['audit_logging_buffer_plays'] | default([]) }}"
+          audit_roles_all: "{{ hostvars['localhost']['audit_logging_buffer_roles'] | default([]) }}"
         _audit_current_play:
           play_name: "{{ ansible_play_name | default('unnamed') }}"
           hosts: "{{ ansible_play_hosts_all | default([]) }}"
