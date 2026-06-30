@@ -22,9 +22,16 @@ hardcoded.
 | `splunk` | Splunk HTTP Event Collector | `uri` POST `/services/collector/event` |
 | `cloudwatch` | AWS CloudWatch Logs | AWS CLI |
 
-All shipping runs **once on the control node** (`delegate_to: localhost`,
-`run_once: true`) — the record describes the *run*, not each target host. Every
-backend is best-effort (`ignore_errors`) so audit logging never fails the play.
+All shipping runs **exactly once on the control node** — the record describes the
+*run*, not each target host. The body is delegated to `localhost` and gated to the
+first host of the whole play (`ansible_play_hosts_all | first`), so it ships once
+under the **linear, `free`, and `serial:` (any batch size)** strategies alike.
+(`run_once` is deliberately **not** used — it fires once *per serial batch* and is
+unreliable under `free`, which over-ships.) Every backend is best-effort
+(`ignore_errors`) so audit logging never fails the play.
+
+For a single consolidated record across a **multi-play** run, use the `accumulate`
+entrypoint per play + the default entrypoint in the final play (below).
 
 ## Usage
 
@@ -92,6 +99,8 @@ full contract.
 |---|---|---|
 | `audit_logging_backends` | `[]` | Which backends to ship to |
 | `audit_logging_status` | `success` | Run status stamped into the record |
+| `audit_logging_hostname_command` | `hostname` | Binary to read the hostname (falls back to `uname -n`) |
+| `audit_logging_whoami_command` | `whoami` | Binary to read the username (falls back to `id -un`) |
 | `audit_logging_file_path` | `/var/log/ansible/audit.jsonl` | file backend path |
 | `audit_logging_splunk_hec_url` | `""` | Splunk HEC base URL **(required for `splunk`)** |
 | `audit_logging_splunk_hec_token` | `""` | Splunk HEC token **(required for `splunk`)** |

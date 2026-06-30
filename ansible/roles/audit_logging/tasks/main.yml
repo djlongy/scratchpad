@@ -5,9 +5,14 @@
 # Collects execution metadata and routes one structured record to every
 # backend listed in `audit_logging_backends`.
 #
-# ── Single-play playbooks ────────────────────────────────────────────────
-# Call this role once in post_tasks. It captures the current play's context.
+# ── Ships exactly once per run ───────────────────────────────────────────
+# The body runs for the FIRST host of the whole play only
+# (ansible_play_hosts_all | first) — stable across `serial:` batches and the
+# `free` strategy, where `run_once` fires once *per batch* and over-ships — and
+# a run-global sentinel (__audit_sent__) prevents a second ship if the role is
+# included again in a later play. All work is delegated to the control node.
 #
+# ── Single-play playbooks ────────────────────────────────────────────────
 #   post_tasks:
 #     - name: Write audit log
 #       ansible.builtin.include_role:
@@ -18,11 +23,18 @@
 # ── Multi-play (monolithic) playbooks ────────────────────────────────────
 # Call `tasks_from: accumulate` in EACH play's post_tasks to park per-play
 # metadata into a cross-play buffer, then call this role (default entrypoint)
-# only in the FINAL play's post_tasks to write one consolidated record
-# covering every play in the run. The buffer is detected automatically — no
-# configuration required.
+# only in the FINAL play's post_tasks to write one consolidated record.
 
 - name: Ansible audit logging
+  delegate_to: localhost
+  become: false
+  # Exactly-once gate: only the FIRST host of the whole play enters. Unlike
+  # run_once (which fires once per serial batch and is unreliable under the
+  # free strategy), ansible_play_hosts_all is the stable full play host list,
+  # so this ships exactly once under linear, serial, and free alike. For a
+  # consolidated once-per-RUN record across multiple plays, use the accumulate
+  # entrypoint (see tasks/accumulate.yml).
+  when: inventory_hostname == (ansible_play_hosts_all | first)
   block:
 
     # ── Gather audit metadata ──────────────────────────────────────────────
@@ -34,15 +46,43 @@
       # Role-local action plugin (action_plugins/get_cli_args.py). Returns:
       # ansible_playbook_argv, ansible_playbook_cmd, semaphore_vars, git_status
 
-    - name: Get local username
-      ansible.builtin.command: /usr/bin/whoami
-      register: _audit_local_user
+    # Username + hostname are read from configurable binaries, each with a
+    # POSIX fallback so the role survives minimal CI/runner images that lack
+    # /usr/bin/hostname or whoami.
+    - name: Get local username (preferred binary)
+      ansible.builtin.command: "{{ audit_logging_whoami_command }}"
+      register: _audit_user_primary
       changed_when: false
+      failed_when: false
 
-    - name: Get control node hostname
-      ansible.builtin.command: hostname
-      register: _audit_control_node
+    - name: Fall back to 'id -un' when the username binary is unavailable
+      ansible.builtin.command: id -un
+      register: _audit_user_fallback
       changed_when: false
+      failed_when: false
+      when: (_audit_user_primary.rc | default(1)) != 0 or
+            (_audit_user_primary.stdout | default('') | trim) == ''
+
+    - name: Get control node hostname (preferred binary)
+      ansible.builtin.command: "{{ audit_logging_hostname_command }}"
+      register: _audit_hostname_primary
+      changed_when: false
+      failed_when: false
+
+    - name: Fall back to 'uname -n' when the hostname binary is unavailable
+      ansible.builtin.command: uname -n
+      register: _audit_hostname_fallback
+      changed_when: false
+      failed_when: false
+      when: (_audit_hostname_primary.rc | default(1)) != 0 or
+            (_audit_hostname_primary.stdout | default('') | trim) == ''
+
+    - name: Resolve control-node identity (with fallbacks)
+      ansible.builtin.set_fact:
+        _audit_user: "{{ (_audit_user_primary.stdout | default('') | trim)
+          or (_audit_user_fallback.stdout | default('') | trim) or 'unknown' }}"
+        _audit_hostname: "{{ (_audit_hostname_primary.stdout | default('') | trim)
+          or (_audit_hostname_fallback.stdout | default('') | trim) or 'unknown' }}"
 
     # ── Resolve multi-play buffer (if present) ─────────────────────────────
     # When accumulate.yml has been called per play, __audit_buffer__ holds the
@@ -53,7 +93,7 @@
         _audit_buffer: "{{ hostvars['__audit_buffer__'] | default({}) }}"
         _audit_current_play:
           play_name: "{{ ansible_play_name | default('unnamed') }}"
-          hosts: "{{ ansible_play_hosts | default([]) }}"
+          hosts: "{{ ansible_play_hosts_all | default([]) }}"
           roles: "{{ ansible_play_role_names | default([]) }}"
 
     - name: Build consolidated plays list
@@ -92,8 +132,8 @@
           # Uses ansible_date_time when facts are gathered, else a shell lookup
           # so the role works under gather_facts: false.
           timestamp: "{{ ansible_date_time.iso8601 if ansible_date_time is defined else lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
-          user: "{{ _audit_local_user.stdout }}"
-          control_node: "{{ _audit_control_node.stdout }}"
+          user: "{{ _audit_user }}"
+          control_node: "{{ _audit_hostname }}"
           # playbook: name of the first (or single) play
           playbook: "{{ _audit_plays[0].play_name | default('unnamed') }}"
           # plays: full per-play breakdown — name, hosts, roles for each play
@@ -145,8 +185,4 @@
     - name: Ship audit record to CloudWatch Logs
       ansible.builtin.include_tasks: loggers/cloudwatch.yml
       when: "'cloudwatch' in audit_logging_backends"
-
-  delegate_to: localhost
-  become: false
-  run_once: true
   # no_log: true   # uncomment if a play handles sensitive data in its vars

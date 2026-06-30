@@ -30,7 +30,7 @@
       - --log-group-name
       - "{{ audit_logging_cloudwatch_log_group }}"
       - --log-stream-name
-      - "{{ _audit_local_user.stdout }}"
+      - "{{ _audit_user }}"
   register: _audit_cw_stream
   failed_when:
     - _audit_cw_stream.rc != 0
@@ -48,7 +48,7 @@
       - --log-group-name
       - "{{ audit_logging_cloudwatch_log_group }}"
       - --log-stream-name
-      - "{{ _audit_local_user.stdout }}"
+      - "{{ _audit_user }}"
       - --log-events
       # JSON form (not key=val shorthand) — the message is JSON full of commas
       # which the shorthand parser would split on.

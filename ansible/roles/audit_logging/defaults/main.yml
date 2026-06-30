@@ -27,6 +27,15 @@ audit_logging_backends: []
 # rescue/always block to record failed runs (e.g. audit_logging_status: failed).
 audit_logging_status: success
 
+# ── Control-node metadata binaries ────────────────────────────────────────
+# Commands used to read the invoking username and control-node hostname.
+# Override if your runners ship them at non-standard paths/names. Each has a
+# built-in POSIX fallback when the preferred binary is missing or returns empty:
+#   hostname → falls back to `uname -n`
+#   whoami   → falls back to `id -un`
+audit_logging_hostname_command: hostname
+audit_logging_whoami_command: whoami
+
 # ── file (control-node JSON Lines) ────────────────────────────────────────
 audit_logging_file_path: /var/log/ansible/audit.jsonl
 # Set false when writing to a user-writable path (no root needed).

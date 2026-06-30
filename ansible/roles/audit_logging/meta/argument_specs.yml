@@ -19,6 +19,14 @@ argument_specs:
         type: str
         default: success
         description: Run status stamped into the record (set to C(failed) from a rescue/always block).
+      audit_logging_hostname_command:
+        type: str
+        default: hostname
+        description: Binary used to read the control-node hostname; falls back to C(uname -n) if missing/empty.
+      audit_logging_whoami_command:
+        type: str
+        default: whoami
+        description: Binary used to read the invoking username; falls back to C(id -un) if missing/empty.
 
       audit_logging_file_path:
         type: str
