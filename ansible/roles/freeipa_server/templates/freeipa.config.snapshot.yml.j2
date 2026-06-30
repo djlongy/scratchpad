@@ -75,7 +75,12 @@ freeipa_server_forward_policy: {{ _freeipa_export.freeipa_server_forward_policy 
 {% if _fexport_style in ['json', 'yaml_flow'] %}
 {{ key }}:
 {% for _item in _freeipa_export[key] %}
-  - {{ (_item | to_json) if _fexport_style == 'json' else (_item | to_yaml(default_flow_style=True, width=4096, sort_keys=False) | trim) }}
+{% if _fexport_style == 'json' %}
+  - {{ _item | to_json }}
+{% else %}
+{% set _flow = _item | to_yaml(default_flow_style=True, width=4096, sort_keys=False) | trim %}
+  - {{ ('{ ' ~ _flow[1:-1] ~ ' }') if (_flow[:1] == '{' and _flow[-1:] == '}') else _flow }}
+{% endif %}
 {% endfor %}
 {% else %}
 {{ key }}:
