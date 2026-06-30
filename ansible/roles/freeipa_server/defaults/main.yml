@@ -442,6 +442,15 @@ freeipa_server_export_output: "freeipa.config.snapshot.yml"
 freeipa_server_export_include_host_membership: false
 # Emit per-user SSH public keys.
 freeipa_server_export_include_sshkeys: false
+# How list values are rendered in the snapshot (cosmetic — all styles reload
+# identically):
+#   block     — multi-line block YAML (default; one item per line)
+#   json      — each list as a single-line embedded JSON array
+#               (hybrid: YAML keys, JSON list values) e.g.
+#               freeipa_idam_hbacsvcs: [{"name":"cockpit","description":"…"}]
+#   yaml_flow — each list as single-line YAML flow style, e.g.
+#               freeipa_idam_hbacsvcs: [{name: cockpit, description: …}]
+freeipa_server_export_list_style: block
 # The export is a FAITHFUL MIRROR of the live directory: every user is captured with
 # its real, literal `groups` list — no roles matrix is inferred (role STRUCTURE is
 # authored forward via the RBAC template engine, not guessed from the export).

@@ -47,10 +47,17 @@ freeipa_server_forward_policy: {{ _freeipa_export.freeipa_server_forward_policy 
 #
 # Users below carry their REAL, literal `groups` exactly as held in FreeIPA — this
 # snapshot is a faithful mirror of the directory, not an inferred refactor.
+{% set _fexport_style = freeipa_server_export_list_style | default('block') %}
 {% for key in ['freeipa_idam_usergroups', 'freeipa_idam_users', 'freeipa_idam_service_accounts', 'freeipa_idam_hostgroups', 'freeipa_idam_iparoles', 'freeipa_idam_privileges', 'freeipa_idam_permissions', 'freeipa_idam_hbacsvcs', 'freeipa_idam_hbacsvcgroups', 'freeipa_idam_hbac_rules', 'freeipa_idam_sudo_commands', 'freeipa_idam_sudocmdgroups', 'freeipa_idam_sudo_rules', 'freeipa_idam_pwpolicies', 'freeipa_server_dns_zones', 'freeipa_server_dns_forward_zones', 'freeipa_server_dns_records', 'freeipa_server_automember_rules'] %}
 {% if _freeipa_export[key] | length > 0 %}
+{% if _fexport_style == 'json' %}
+{{ key }}: {{ _freeipa_export[key] | to_json }}
+{% elif _fexport_style == 'yaml_flow' %}
+{{ key }}: {{ _freeipa_export[key] | to_yaml(default_flow_style=True, width=4096, sort_keys=False) | trim }}
+{% else %}
 {{ key }}:
 {{ _freeipa_export[key] | to_nice_yaml(indent=2, width=160, sort_keys=False) | indent(2, first=True) }}
+{% endif %}
 {% else %}
 {{ key }}: []
 {% endif %}
