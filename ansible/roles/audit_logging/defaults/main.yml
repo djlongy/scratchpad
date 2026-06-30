@@ -72,7 +72,12 @@ audit_logging_elasticsearch_validate_certs: true
 audit_logging_splunk_hec_url: ""      # REQUIRED, e.g. https://splunk.example.com:8088
 audit_logging_splunk_hec_token: ""    # REQUIRED (HEC token)
 audit_logging_splunk_sourcetype: "ansible:audit"
-audit_logging_splunk_index: ansible
+# Target index. Defaults to 'main' because a restricted HEC token often cannot
+# write to (or create) a custom index — Splunk HEC then rejects the event with
+# "Incorrect index", which this best-effort backend would swallow silently.
+# Set to "" (empty) to OMIT the index field entirely and let the HEC token route
+# the event to its own configured default index.
+audit_logging_splunk_index: main
 audit_logging_splunk_validate_certs: true
 
 # ── cloudwatch (AWS CLI) ──────────────────────────────────────────────────

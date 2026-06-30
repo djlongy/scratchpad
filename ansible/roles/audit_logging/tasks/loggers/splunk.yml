@@ -20,10 +20,15 @@
     url: "{{ audit_logging_splunk_hec_url }}/services/collector/event"
     method: POST
     body_format: json
-    body:
-      event: "{{ audit_logging_event }}"
-      sourcetype: "{{ audit_logging_splunk_sourcetype }}"
-      index: "{{ audit_logging_splunk_index }}"
+    # index is included only when set; an empty audit_logging_splunk_index omits
+    # it so the HEC token routes the event to its own default index (portable to
+    # work Splunk where the token may not be authorised for a named index).
+    body: >-
+      {{
+        {'event': audit_logging_event, 'sourcetype': audit_logging_splunk_sourcetype}
+        | combine({'index': audit_logging_splunk_index}
+                  if (audit_logging_splunk_index | default('') | length > 0) else {})
+      }}
     headers:
       Authorization: "Splunk {{ audit_logging_splunk_hec_token }}"
     validate_certs: "{{ audit_logging_splunk_validate_certs | bool }}"

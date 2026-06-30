@@ -108,8 +108,12 @@ argument_specs:
         description: Splunk sourcetype tag for the event.
       audit_logging_splunk_index:
         type: str
-        default: ansible
-        description: Splunk index to write the event to.
+        default: main
+        description: >-
+          Splunk index to write the event to. Defaults to C(main) for
+          compatibility with restricted HEC tokens that cannot create or write a
+          named index. Set to "" to omit the index and use the HEC token's own
+          default index.
       audit_logging_splunk_validate_certs:
         type: bool
         default: true

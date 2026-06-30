@@ -105,7 +105,7 @@ full contract.
 | `audit_logging_splunk_hec_url` | `""` | Splunk HEC base URL **(required for `splunk`)** |
 | `audit_logging_splunk_hec_token` | `""` | Splunk HEC token **(required for `splunk`)** |
 | `audit_logging_splunk_sourcetype` | `ansible:audit` | Splunk sourcetype |
-| `audit_logging_splunk_index` | `ansible` | Splunk index |
+| `audit_logging_splunk_index` | `main` | Splunk index (empty `""` = omit, use the HEC token's default index) |
 | `audit_logging_syslog_tag` | `ansible-audit` | syslog tag (route to a Splunk sourcetype) |
 | `audit_logging_syslog_format` | `json` | syslog body: `json` blob or `kv` logfmt |
 | `audit_logging_elasticsearch_url` | `""` | ES base URL **(required for `elasticsearch`)** |
@@ -152,8 +152,8 @@ A flat JSON object — every top-level key is a searchable field once indexed:
 ```json
 {
   "timestamp": "2026-06-30T00:21:00Z",
-  "user": "long",
-  "control_node": "mba.local",
+  "user": "deploy",
+  "control_node": "runner-01",
   "playbook": "Deploy nginx",
   "plays": [{"play_name": "Deploy nginx", "hosts": ["web01"], "roles": ["nginx"]}],
   "play_count": 1,
@@ -173,7 +173,7 @@ A flat JSON object — every top-level key is a searchable field once indexed:
 }
 ```
 
-When sent to Splunk via HEC `event`, Splunk parses it natively — `index=ansible
+When sent to Splunk via HEC `event`, Splunk parses it natively — `index=main
 sourcetype="ansible:audit"` yields each field (`user`, `git_commit`, `status`, …)
 as a key/value pair with no field extraction config.
 
