@@ -153,24 +153,35 @@ def freeipa_export_scope(export, scopes, mode="include"):
 def freeipa_idam_identity_merge(files: list[dict]) -> dict:
     """Flatten per-tenant identity files into one realm-wide dataset.
 
-    Each file is ``{tenant, shared?, users: [...], groups: [...]}``. Returns
-    ``{'users': [...], 'groups': [...]}`` with every user and group stamped
-    ``_owner`` (its tenant) and every group ``_shared`` (the group's own ``shared``
-    if set, else the file's ``shared``). Letting one run see every tenant at once is
-    the precondition for a fully declarative reconcile.
+    Each file is ``{tenant, shared?, users: [...], groups: [...]}``. Returns the
+    flattened ``users`` / ``groups`` lists **unchanged** (so they pass straight to
+    the ipa modules with no stray keys) plus SEPARATE ownership maps the boundary
+    and report consume: ``user_owner`` / ``group_owner`` (name -> tenant) and
+    ``group_shared`` (name -> bool, the group's own ``shared`` if set else the
+    file's). Seeing every tenant in one run is the precondition for a fully
+    declarative reconcile.
     """
     users: list[dict] = []
     groups: list[dict] = []
+    user_owner: dict[str, str] = {}
+    group_owner: dict[str, str] = {}
+    group_shared: dict[str, bool] = {}
     for entry in files or []:
         tenant = entry.get("tenant", "")
         file_shared = bool(entry.get("shared", False))
         for user in (entry.get("users") or []):
-            users.append({**user, "_owner": tenant})
+            users.append(user)
+            if user.get("name"):
+                user_owner[user["name"]] = tenant
         for group in (entry.get("groups") or []):
             obj = group if isinstance(group, dict) else {"name": group}
-            shared = bool(obj.get("shared", file_shared))
-            groups.append({**obj, "_owner": tenant, "_shared": shared})
-    return {"users": users, "groups": groups}
+            groups.append(obj)
+            name = obj.get("name")
+            if name:
+                group_owner[name] = tenant
+                group_shared[name] = bool(obj.get("shared", file_shared))
+    return {"users": users, "groups": groups,
+            "user_owner": user_owner, "group_owner": group_owner, "group_shared": group_shared}
 
 
 def freeipa_idam_group_membership(users: list[dict]) -> dict[str, list[str]]:

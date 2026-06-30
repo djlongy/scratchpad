@@ -20,6 +20,15 @@
     freeipa_idam_usergroups_effective: []
     freeipa_idam_users_effective: []
 
+# UNIFIED PER-REALM MODEL: when freeipa_idam_source_dir is set, load every per-tenant
+# identity/*.yml in one run and flatten into freeipa_idam_users / freeipa_idam_usergroups
+# (stamped _owner/_shared). Empty source_dir = legacy mode (use the vars from group_vars
+# directly) so existing inventories are unchanged. Runs before the type-validation below
+# so the merged lists are what everything downstream validates and reconciles.
+- name: Load + merge per-tenant identity files (unified per-realm model)
+  ansible.builtin.import_tasks: idam_identity.yml
+  when: freeipa_idam_source_dir | length > 0
+
 # Fail fast on gross TYPE errors BEFORE any task consumes these vars — the RBAC
 # expander, the service/break-glass merge, the role lookup and the item-level scan
 # all iterate these and assume real lists. `is iterable` is NOT enough: a bare
@@ -66,6 +75,34 @@
       A bare string or a single dict is the usual cause — wrap single items in a list ([ ... ]).
       Note: base lists passed via `-e key=value` arrive as strings; use group_vars/vars_files
       or JSON extra-vars (`-e '{"var": [ ... ]}'`).
+    quiet: true
+
+# Fail fast on REQUIRED inventory vars BEFORE the no_log payload builds consume them —
+# else an undefined var (classically `domain`, via freeipa_idam_email_domain: "{{ domain }}")
+# surfaces as a cryptic, no_log-CENSORED 'undefined variable' crash with no clue which var.
+# List the missing ones plainly instead.
+- name: Assert required IDAM connection/identity variables are defined
+  vars:
+    # Only check what can genuinely be undefined: freeipa_server_domain/realm/admin_principal
+    # all carry defaults (is defined is always true), so they are not checked. `domain` has NO
+    # default and derives freeipa_server_domain/realm AND freeipa_idam_email_domain — it is the
+    # var that actually crashes when missing. Admin credentials are resolvable iff the password
+    # is supplied directly OR a Vault path is given (the role's declared-first / Vault-fallback).
+    _freeipa_required_vars:
+      domain: "{{ domain is defined }}"
+      admin_credentials: >-
+        {{ (freeipa_server_admin_password | default('') | length > 0)
+           or (freeipa_server_vault_secret is defined) }}
+    _freeipa_missing_vars: "{{ _freeipa_required_vars | dict2items | rejectattr('value') | map(attribute='key') | list }}"
+  ansible.builtin.assert:
+    that: _freeipa_missing_vars | length == 0
+    fail_msg: >-
+      Required configuration missing: {{ _freeipa_missing_vars | join(', ') }}.
+      'domain' must be set in the inventory (group_vars/all/) per the hostname convention —
+      it derives freeipa_server_domain/realm and the IDAM email domain. 'admin_credentials'
+      means set freeipa_server_admin_password OR freeipa_server_vault_secret so the role can
+      obtain the IPA admin password. These feed no_log tasks, so asserting here turns a
+      censored 'undefined variable' crash into this clear message.
     quiet: true
 
 # Accept bare-string shorthand for the name-only object lists: a `cockpit` entry is

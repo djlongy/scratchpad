@@ -1,0 +1,31 @@
+---
+# Unified per-realm identity load. When freeipa_idam_source_dir is set, every
+# per-tenant identity/*.yml in the realm is read in ONE run and flattened into the
+# flat freeipa_idam_users / freeipa_idam_usergroups lists the engine consumes,
+# stamped with _owner (tenant) and _shared. Seeing all tenants in one run is the
+# precondition for a fully declarative, single-source membership reconcile.
+#
+# fileglob + file lookups run on the control node (where the inventory lives), so
+# no delegation is needed. Empty source_dir never reaches here (gated by the caller).
+
+- name: identity | Discover tenant identity files
+  ansible.builtin.set_fact:
+    _freeipa_identity_paths: "{{ query('ansible.builtin.fileglob', freeipa_idam_source_dir ~ '/*.yml') | sort }}"
+
+- name: identity | Read and parse each tenant file
+  ansible.builtin.set_fact:
+    _freeipa_identity_raw: "{{ (_freeipa_identity_raw | default([])) + [lookup('ansible.builtin.file', item) | from_yaml] }}"
+  loop: "{{ _freeipa_identity_paths }}"
+  loop_control:
+    label: "{{ item | basename }}"
+
+- name: identity | Flatten + stamp ownership
+  ansible.builtin.set_fact:
+    _freeipa_identity: "{{ _freeipa_identity_raw | default([]) | freeipa_idam_identity_merge }}"
+  no_log: true  # tenant files may carry inline user passwords
+
+- name: identity | Populate working IDAM lists from merged identity
+  ansible.builtin.set_fact:
+    freeipa_idam_users: "{{ _freeipa_identity.users }}"
+    freeipa_idam_usergroups: "{{ _freeipa_identity.groups }}"
+  no_log: true

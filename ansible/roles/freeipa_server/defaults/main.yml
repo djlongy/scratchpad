@@ -240,6 +240,13 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 # ── Declarative IDAM data contract ───────────────────────────────────────────
 # Admin credentials come from the consolidated freeipa_server_admin_* / vault vars above —
 # there are NO freeipa_idam_admin_* / freeipa_idam_vault_secret vars (removed for consistency).
+#
+# Unified per-realm model (optional): a directory of per-tenant identity/*.yml files,
+# each {tenant, shared?, users: [...], groups: [...]}. When set, the role loads + flattens
+# ALL of them in one run into freeipa_idam_users / freeipa_idam_usergroups, stamping
+# _owner/_shared (see tasks/idam_identity.yml). Empty = legacy mode (set the lists directly
+# in group_vars). Inventory sets e.g. "{{ inventory_dir }}/identity".
+freeipa_idam_source_dir: ""
 freeipa_idam_managed_group: "idam-managed-users"
 freeipa_idam_usergroups: []
 # Roles matrix — a role is a named bundle of groups; users reference roles
