@@ -3,8 +3,8 @@
 # by load_tenants.yml so each file's Jinja resolves in ITS OWN tenant scope.
 #
 # Three steps, by design:
-#   1. read the literal header (tenant/env/prefix) with a plain from_yaml — quoted Jinja in the
-#      body parses to harmless strings here; we only read the scalar header keys.
+#   1. read the literal header (tenant/env_override/prefix) with a plain from_yaml — quoted Jinja
+#      in the body parses to harmless strings here; we only read the scalar header keys.
 #   2. include_vars the file under a namespaced var. include_vars gives NATIVE, lazy templating,
 #      so a quoted "{{ a_group_var }}" stays a native list (a template-render round-trip would
 #      flatten it to a string) — this is why the file behaves like any inventory vars YAML.
@@ -12,6 +12,13 @@
 #      file can self-reference {{ tenant }} / {{ env }} / {{ prefix }} (name: "{{ tenant }}-admins").
 #      Those come from the header read in step 1 — NOT from the namespaced dict — which is what
 #      avoids a self-referential templating recursion.
+#
+# NOTE on {{ env }}: the body token is always `env`, but the *header key* is `env_override` — an
+# OPTIONAL per-file override of the inventory-wide `env`. Omit it and {{ env }} inherits the realm
+# env from inventory; set `env_override: dev` only when THIS file's object names must differ. The
+# key is deliberately named `env_override` (not `env`) so it reads as a naming override, not an
+# environment *switch*: it only feeds {{ env }} in object names, and changes nothing else in the
+# run (target host, reconcile scope, service FQDNs are all untouched).
 
 - name: tenants | Read {{ _freeipa_tenant_file | basename }} header
   ansible.builtin.set_fact:
@@ -32,7 +39,9 @@
   vars:
     # File header wins (for self-ref); otherwise fall back to the in-scope inventory/group var
     # of the same name — never clobber an inventory-level tenant/env/prefix with an empty string.
+    # `env` comes from the OPTIONAL `env_override` header key (per-file naming override), else the
+    # inventory-wide `env` — so {{ env }} in the body is "this file's env, or the realm default".
     tenant: "{{ _freeipa_tenant_hdr.tenant | default(_freeipa_host_tenant) }}"
-    env: "{{ _freeipa_tenant_hdr.env | default(_freeipa_host_env) }}"
+    env: "{{ _freeipa_tenant_hdr.env_override | default(_freeipa_host_env) }}"
     prefix: "{{ _freeipa_tenant_hdr.prefix | default(_freeipa_host_prefix) }}"
   no_log: true  # tenant files may carry inline user passwords

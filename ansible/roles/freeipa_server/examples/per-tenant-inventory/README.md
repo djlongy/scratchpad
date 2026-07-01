@@ -41,6 +41,60 @@ YAML**. There is no special extension.
   header keys, and `freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"` pulls a whole list
   **in from `group_vars`** (it stays a native list). Ordinary quoted Jinja, like any vars file.
 
+### Header keys — `tenant`, `prefix`, `env_override` (naming aids only)
+
+A tenant file may set a few scalar header keys that the loader exposes to the file's **own**
+Jinja, so object names can self-reference them:
+
+| Key | `{{ … }}` in the file | Purpose / effect |
+|---|---|---|
+| `tenant` | `{{ tenant }}` | Per-tenant token **and** an ownership stamp (records who owns each user/group). |
+| `prefix` | `{{ prefix }}` | A naming prefix token, e.g. `ug`. |
+| `env_override` | `{{ env }}` | **Optional** per-file override of the inventory-wide `env`. Omit it and `{{ env }}` inherits the realm's `env` from inventory; set `env_override: dev` only when *this file's* object names must differ. |
+
+These feed **naming only** — none of them switches the target realm/host, changes the reconcile
+scope, or alters service FQDNs. The header key is `env_override` (not `env`) precisely so it
+can't be mistaken for an environment switch. `{{ env }}` in a name becomes the `-prod-`/`-dev-`
+segment that a `freeipa_idam_reconcile_scope: "<tenant>-<env>-"` later matches on.
+
+### Testing destructive plays: QA realm first, then live
+
+Running the *same* identity against a **QA FreeIPA** before the **live** one is an **inventory**
+concern, not a tenant-file one. Keep the tenant files identical and select the realm by inventory:
+
+```
+inventories/
+  qa/    { inventory.yml (QA IPA host), group_vars/all/realm.yml, tenants/ }
+  live/  { inventory.yml (live IPA host), group_vars/all/realm.yml, tenants/ }
+```
+
+Only each `realm.yml` differs — it points at that instance:
+
+```yaml
+# qa/group_vars/all/realm.yml           # live/group_vars/all/realm.yml
+env: qa                                 # env: prod
+freeipa_server_domain: ipa.qa.example.com   # freeipa_server_domain: ipa.example.com
+freeipa_server_realm:  IPA.QA.EXAMPLE.COM   # freeipa_server_realm:  IPA.EXAMPLE.COM
+```
+
+Share the identity by pointing both inventories' `freeipa_idam_tenants_dir` at one common
+`tenants/` (a shared path or a symlink) so there is a single source of truth. Then:
+
+```bash
+# 1) Rehearse the destructive run on QA (scope + authoritative), preview first:
+ansible-playbook -i inventories/qa/inventory.yml site.yml --tags idam \
+  -e freeipa_server_authoritative=true -e freeipa_idam_reconcile_scope=acme- --check --diff
+ansible-playbook -i inventories/qa/inventory.yml site.yml --tags idam \
+  -e freeipa_server_authoritative=true -e freeipa_idam_reconcile_scope=acme-
+
+# 2) Confident? Same command, live inventory:
+ansible-playbook -i inventories/live/inventory.yml site.yml --tags idam \
+  -e freeipa_server_authoritative=true -e freeipa_idam_reconcile_scope=acme-
+```
+
+Because `env` (and the domain/realm/host) come from the selected inventory, the identical tenant
+files apply faithfully to whichever instance you target — QA validates exactly what live will do.
+
 ## Run it
 
 ```bash
