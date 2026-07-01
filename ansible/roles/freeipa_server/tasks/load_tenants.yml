@@ -6,11 +6,12 @@
 # membership reconcile. A tenant file may carry its WHOLE config (users, groups, hbac, sudo,
 # roles, automember, dns, ...), not just users + groups.
 #
-# Each file is loaded with include_vars (see load_one_tenant.yml), so it behaves EXACTLY like
-# any vars YAML in the inventory: reference inventory/group_vars — and the file's own
-# tenant/env/prefix — with normal (quoted) Jinja, INCLUDING pulling a whole list from a
-# group_var (freeipa_idam_usergroups: "{{ baseline }}"), which stays a native list. Files with
-# no templating load verbatim. No special extension: a tenant file is a plain .yml.
+# Each file is loaded with a single include_vars (see load_one_tenant.yml), so it behaves EXACTLY
+# like any vars YAML in the inventory: a value can reference the file's OWN vars (native
+# self-reference, e.g. name: "{{ hg_prefix }}-all") as well as inventory/group_vars — INCLUDING
+# pulling a whole list from a group_var (freeipa_idam_usergroups: "{{ baseline }}"), which stays a
+# native list. Files with no templating load verbatim. No special extension: a tenant file is a
+# plain .yml.
 #
 # fileglob + lookups run on the control node (where the inventory lives), so no delegation is
 # needed. Empty tenants_dir never reaches here (gated by the caller).
@@ -19,8 +20,8 @@
   ansible.builtin.set_fact:
     _freeipa_tenant_files: "{{ query('ansible.builtin.fileglob', freeipa_idam_tenants_dir ~ '/*.yml') | sort }}"
 
-# One include per file so each file's Jinja resolves in ITS OWN tenant scope (a single loop
-# would race on the shared header facts).
+# One include per file: each file's vars are injected, resolved, and snapshotted before the next
+# file's include overwrites them — so every tenant's Jinja resolves in ITS OWN scope.
 - name: tenants | Load + capture each tenant file (native templating, own tenant scope)
   ansible.builtin.include_tasks: load_one_tenant.yml
   loop: "{{ _freeipa_tenant_files }}"

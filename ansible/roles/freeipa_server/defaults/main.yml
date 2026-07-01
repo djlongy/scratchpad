@@ -185,9 +185,11 @@ freeipa_server_tmpfiles_clean_interval: "1h"
 # The role reads + flattens ALL of them in one run so a single reconcile sees every tenant. A file
 # can carry its whole config (short keys like users/groups/hbac_rules/dns_records, or full
 # freeipa_idam_*/freeipa_server_* straight from an export). Lists concatenate across files by target
-# var; users/groups are stamped _owner (tenant) + _shared. Loaded via include_vars, so a file
-# behaves like any inventory YAML (quoted Jinja, can pull a whole list from a group_var). Empty =
-# legacy mode (set the lists directly in group_vars). Inventory sets e.g. "{{ inventory_dir }}/tenants".
+# var; users/groups are stamped _owner (tenant) + _shared. Loaded via a single include_vars, so a
+# file behaves like any inventory YAML: a value can reference ANY other var the file defines
+# (native self-reference, e.g. name: "{{ hg_prefix }}-all") plus group_vars, and can pull a whole
+# list from a group_var. {{ env }} = inventory env; define your own scalar for a per-file variant.
+# Empty = legacy mode (set the lists directly in group_vars). Inventory sets "{{ inventory_dir }}/tenants".
 # See tasks/load_tenants.yml + load_one_tenant.yml.
 freeipa_idam_tenants_dir: ""
 freeipa_idam_managed_group: "idam-managed-users"

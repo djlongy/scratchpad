@@ -1,47 +1,37 @@
 ---
-# Load ONE tenant file as native vars and append it to _freeipa_tenants_raw. Included per file
-# by load_tenants.yml so each file's Jinja resolves in ITS OWN tenant scope.
+# Load ONE tenant file as native vars (SINGLE parse) and append its resolved object set to
+# _freeipa_tenants_raw. `include_vars` WITHOUT a name injects the file's keys into scope, so a
+# value may reference ANY other var the file defines — native self-reference, exactly like a
+# normal vars file:
 #
-# Three steps, by design:
-#   1. read the literal header (tenant/env_override/prefix) with a plain from_yaml — quoted Jinja
-#      in the body parses to harmless strings here; we only read the scalar header keys.
-#   2. include_vars the file under a namespaced var. include_vars gives NATIVE, lazy templating,
-#      so a quoted "{{ a_group_var }}" stays a native list (a template-render round-trip would
-#      flatten it to a string) — this is why the file behaves like any inventory vars YAML.
-#   3. capture (resolve) the namespaced dict with the file's own tenant/env/prefix exposed, so a
-#      file can self-reference {{ tenant }} / {{ env }} / {{ prefix }} (name: "{{ tenant }}-admins").
-#      Those come from the header read in step 1 — NOT from the namespaced dict — which is what
-#      avoids a self-referential templating recursion.
+#     tenant: beta
+#     env_local: dev
+#     hg_prefix: "hg-{{ tenant }}-{{ env_local }}"      # references other file-local vars
+#     freeipa_idam_hostgroups:
+#       - { name: "{{ hg_prefix }}-all" }               # -> hg-beta-dev-all
 #
-# NOTE on {{ env }}: the body token is always `env`, but the *header key* is `env_override` — an
-# OPTIONAL per-file override of the inventory-wide `env`. Omit it and {{ env }} inherits the realm
-# env from inventory; set `env_override: dev` only when THIS file's object names must differ. The
-# key is deliberately named `env_override` (not `env`) so it reads as a naming override, not an
-# environment *switch*: it only feeds {{ env }} in object names, and changes nothing else in the
-# run (target host, reconcile scope, service FQDNs are all untouched).
+# plus inventory/group_vars. Registering the include hands us the file's parsed dict
+# (_freeipa_tenant_inc.ansible_facts) in the SAME parse — no second read of the file.
+#
+#   {{ tenant }} / {{ prefix }} / any local scalar  → resolve because the file defines them.
+#   {{ env }}                                        → the inventory-wide env (in play scope).
+#   per-file naming variant                          → define your own scalar (e.g. env_local: dev)
+#                                                       and reference it; no special header key.
+#
+# The file's keys are injected as host facts only for this resolve: freeipa_idam_* /
+# freeipa_server_* are overwritten by the merge in load_tenants.yml, and the scalar keys
+# (tenant/prefix/…) are read nowhere else in the role, so the transient injection is inert.
 
-- name: tenants | Read {{ _freeipa_tenant_file | basename }} header
-  ansible.builtin.set_fact:
-    _freeipa_tenant_hdr: "{{ lookup('ansible.builtin.file', _freeipa_tenant_file) | from_yaml }}"
-    _freeipa_host_env: "{{ env | default('') }}"
-    _freeipa_host_prefix: "{{ prefix | default('') }}"
-    _freeipa_host_tenant: "{{ tenant | default('') }}"
-  no_log: true  # tenant files may carry inline user passwords
-
-- name: tenants | Load {{ _freeipa_tenant_file | basename }} as native vars
+- name: tenants | Load {{ _freeipa_tenant_file | basename }} (native scope, single parse)
   ansible.builtin.include_vars:
     file: "{{ _freeipa_tenant_file }}"
-    name: _freeipa_tenant_this
-
-- name: tenants | Capture {{ _freeipa_tenant_file | basename }} (own tenant/env/prefix in scope)
-  ansible.builtin.set_fact:
-    _freeipa_tenants_raw: "{{ (_freeipa_tenants_raw | default([])) + [_freeipa_tenant_this] }}"
-  vars:
-    # File header wins (for self-ref); otherwise fall back to the in-scope inventory/group var
-    # of the same name — never clobber an inventory-level tenant/env/prefix with an empty string.
-    # `env` comes from the OPTIONAL `env_override` header key (per-file naming override), else the
-    # inventory-wide `env` — so {{ env }} in the body is "this file's env, or the realm default".
-    tenant: "{{ _freeipa_tenant_hdr.tenant | default(_freeipa_host_tenant) }}"
-    env: "{{ _freeipa_tenant_hdr.env_override | default(_freeipa_host_env) }}"
-    prefix: "{{ _freeipa_tenant_hdr.prefix | default(_freeipa_host_prefix) }}"
+  register: _freeipa_tenant_inc
   no_log: true  # tenant files may carry inline user passwords
+
+# Snapshot THIS file's resolved vars before the next tenant's include overwrites them. Empty or
+# fully-commented files (ansible_facts == {}) contribute nothing and are skipped.
+- name: tenants | Capture {{ _freeipa_tenant_file | basename }} (resolved; own vars in scope)
+  ansible.builtin.set_fact:
+    _freeipa_tenants_raw: "{{ (_freeipa_tenants_raw | default([])) + [_freeipa_tenant_inc.ansible_facts] }}"
+  when: _freeipa_tenant_inc.ansible_facts | length > 0
+  no_log: true

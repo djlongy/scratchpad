@@ -196,20 +196,23 @@ every tenant at once. Empty = legacy mode (lists directly in group_vars).
 Each file is a plain `.yml` of `{tenant, shared?, <object lists>}` and may carry a tenant's
 **whole** config. Use the short key (`users`, `groups`, `hbac_rules`, …) **or** the full
 `freeipa_idam_*`/`freeipa_server_*` var (e.g. straight from an export). Lists concatenate across
-files by target var; users/groups are stamped `_owner` + `_shared`. Loaded via `include_vars`, so
-a file templates **exactly like any inventory YAML** — ordinary quoted Jinja referencing
-group_vars and its own `{{ tenant }}`/`{{ env }}`/`{{ prefix }}`, including pulling a whole list
-in from a group_var (stays a native list). No Jinja ⇒ loads verbatim.
+files by target var; users/groups are stamped `_owner` + `_shared`. Loaded via a single
+`include_vars`, so a file templates **exactly like any inventory YAML**: a value can reference
+**any other var the file defines** (native self-reference) as well as group_vars, including
+pulling a whole list in from a group_var (stays a native list). No Jinja ⇒ loads verbatim.
+`{{ env }}` is the inventory-wide env; for a per-file naming variant just define your own scalar
+(e.g. `env_local: dev`) — no special header key.
 
 ```yaml
 # inventories/<env>/tenants/acme.yml  — a plain vars YAML, templated like any inventory file
 tenant: acme
 shared: false
-prefix: ug                            # your own header var, usable below via {{ prefix }}
+env_local: dev                        # any scalar; referable below like a normal var
+ug_prefix: "ug-{{ tenant }}-{{ env_local }}"   # file-local var referencing other file-local vars
 groups:
-  - { name: "{{ prefix }}-{{ tenant }}-admins", description: "Acme admins" }
+  - { name: "{{ ug_prefix }}-admins", description: "Acme admins" }   # -> ug-acme-dev-admins
 users:
-  - { name: acme.dave, givenname: Dave, sn: Okafor, groups: ["{{ prefix }}-{{ tenant }}-admins"] }
+  - { name: acme.dave, givenname: Dave, sn: Okafor, groups: ["{{ ug_prefix }}-admins"] }
 freeipa_idam_hbac_rules: "{{ shared_hbac_baseline }}"   # pull a whole list from group_vars
 dns_records:
   - { zone_name: ipa.example.com., records: [ { record_name: app1, a_record: [10.0.0.20] } ] }
