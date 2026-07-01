@@ -407,6 +407,9 @@ freeipa_server_idam_reference_validation: strict
 # Built-in objects that always exist on a realm → always valid reference targets,
 # so a scoped/tenant slice never has to declare them just to satisfy validation.
 freeipa_server_idam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
+# Built-in hostgroups that always exist on a realm (validation reference targets for
+# hbac/sudo hostgroup:, nested hostgroup:, and hostgroup automember targets).
+freeipa_server_idam_builtin_hostgroups: ["ipaservers"]
 
 # ── Account types beyond human users ────────────────────────────────────────
 # SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user
