@@ -30,7 +30,6 @@
   loop_control:
     label: "{{ item.automember_type }}:{{ item.name }}"
   register: _freeipa_automember_result
-  no_log: true
 
 # A host that enrols AFTER its rule exists is placed automatically by the IPA
 # automember plugin at host-create time — no rebuild needed. A rebuild only
@@ -47,4 +46,3 @@
   loop_control:
     label: "{{ item }}"
   when: (_freeipa_automember_result is changed) or (freeipa_server_automember_rebuild | bool)
-  no_log: true

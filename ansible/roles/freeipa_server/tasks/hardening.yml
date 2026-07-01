@@ -56,7 +56,6 @@
   loop_control:
     label: "{{ item }}"
   when: freeipa_server_require_otp_groups | length > 0
-  no_log: true
 
 # allow_all teardown — GUARDED: only proceed if replacement HBAC rules exist,
 # so the run cannot lock operators out.
@@ -84,7 +83,6 @@
     name: allow_all
     state: disabled
   when: freeipa_server_disable_allow_all | bool
-  no_log: true
 
 - name: Report current system crypto policy
   ansible.builtin.command: update-crypto-policies --show

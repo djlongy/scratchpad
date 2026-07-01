@@ -64,7 +64,6 @@
     # "DNS zone <reverse> already exists". Reverse zones are a primary concern.
     ipareplica_auto_reverse: false
     ipareplica_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
-  no_log: true
 
 - name: Ensure IPA service is enabled and started
   ansible.builtin.service:

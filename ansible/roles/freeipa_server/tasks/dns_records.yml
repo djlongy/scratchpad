@@ -36,7 +36,6 @@
   loop: "{{ freeipa_server_dns_zones }}"
   loop_control:
     label: "{{ item.name | default(item.name_from_ip) | default('unnamed-zone') }}"
-  no_log: true
 
 - name: DNS | Manage conditional forward zones
   freeipa.ansible_freeipa.ipadnsforwardzone:
@@ -48,7 +47,6 @@
   loop: "{{ freeipa_server_dns_forward_zones }}"
   loop_control:
     label: "{{ item.name }}"
-  no_log: true
 
 # ONE task for every record shape — record_value is list-typed upstream, so a
 # single value and many values are the SAME field (no record_value/record_values
@@ -73,4 +71,3 @@
   loop: "{{ freeipa_server_dns_records }}"
   loop_control:
     label: "{{ item.zone_name }}/{{ item.name | default('(bulk)') }} {{ item.record_type | default('') }}"
-  no_log: true

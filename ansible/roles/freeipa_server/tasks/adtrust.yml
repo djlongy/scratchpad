@@ -36,4 +36,3 @@
   loop: "{{ freeipa_server_ad_trusts }}"
   loop_control:
     label: "{{ item.realm }}"
-  no_log: true
