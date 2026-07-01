@@ -256,19 +256,35 @@
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_pwpolicies | length > 0
 
-- name: Ensure declarative FreeIPA hostgroups are present
+# TWO passes so a hostgroup that NESTS another (hostgroup: [child]) never races ahead of the
+# child's creation. Pass 1 creates every hostgroup (name/description/host) with NO nested member;
+# pass 2 then reconciles the nesting once all targets exist. A single combined call failed on a
+# fresh realm with "hostgroup_add_member: hostgroup <child>: no such entry" when the parent was
+# declared before the child (list order is not dependency order).
+- name: Ensure declarative FreeIPA hostgroups exist (nesting added next)
   freeipa.ansible_freeipa.ipahostgroup:
     ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
     ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     host: "{{ item.host | default(omit) }}"
-    hostgroup: "{{ item.hostgroup | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   loop: "{{ freeipa_idam_hostgroups }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_hostgroups | length > 0
+
+- name: Reconcile declarative FreeIPA hostgroup nesting (all hostgroups now exist)
+  freeipa.ansible_freeipa.ipahostgroup:
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
+    name: "{{ item.name }}"
+    hostgroup: "{{ item.hostgroup }}"
+    state: "{{ item.state | default('present') }}"
+  loop: "{{ freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: (freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list | length) > 0
 
 # Seed CUSTOM HBAC services before any rule membership references them. Stock
 # services (sshd, sudo, …) already exist on every server; custom ones do not, so
