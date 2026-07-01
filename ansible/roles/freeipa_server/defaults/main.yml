@@ -356,6 +356,23 @@ freeipa_idam_report: true
 # phase is skipped (fail-safe — it never considers the whole realm).
 freeipa_idam_reconcile_scope: ""
 
+# WHOLE-REALM prune (delete ALL undeclared managed objects, not just a scope). This is the
+# match-everything override of freeipa_idam_reconcile_scope — the "enforce only declared
+# exists" nuke. DOUBLE-GATED: it does nothing unless BOTH freeipa_idam_reconcile_all AND
+# freeipa_idam_reconcile_all_confirm are true (set the confirm via -e on the command line).
+# Protection is always the role's own declared lists (builtin_groups/hostgroups,
+# protected/unmodifiable users, builtin_hbac_rules, stock hbacsvcs, markers) — so
+# admins/editors/ipausers/trust admins/admin/ipaservers + allow_all/allow_systemd-user + the
+# stock HBAC services survive even with an empty desired set. iparoles/privileges/permissions
+# are NOT pruned by this (huge IPA built-in sets) — use --tags delete for those.
+freeipa_idam_reconcile_all: false
+freeipa_idam_reconcile_all_confirm: false
+
+# Built-in HBAC rules that always exist on a realm → never pruned by reconcile (whole-realm mode).
+freeipa_server_idam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
+# Built-in HBAC service groups IPA ships (Sudo, ftp) → never pruned by reconcile (whole-realm mode).
+freeipa_server_idam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
+
 # Container-marker group for declarative GROUP-EXISTENCE reconcile: every declared group is
 # nested into this container during apply; under freeipa_server_authoritative any container
 # member NO LONGER in freeipa_idam_usergroups (and not protected) is DELETED — so removing a

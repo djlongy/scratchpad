@@ -68,7 +68,10 @@
 - name: Assemble + validate declarative IDAM desired state (primary only)
   ansible.builtin.import_tasks: idam_desired.yml
   when: freeipa_server_is_primary | bool
-  tags: [idam, reconcile, users, groups, hbac, sudo]
+  # `delete` is here too: the hard-delete path (delete.yml) consumes these same
+  # freeipa_idam_* lists, so `--tags delete` must assemble them first — without this
+  # tag the delete run finds empty lists and silently no-ops.
+  tags: [idam, reconcile, delete, users, groups, hbac, sudo]
 
 # APPLY. NATIVE (idam.yml, server-side ipalib) is the default and the recommendation:
 # it is 2.67x faster than the API variant on the same workload (bulk groups/users),
@@ -103,7 +106,8 @@
     - freeipa_server_is_primary | bool
     - freeipa_server_authoritative | bool
     - not (freeipa_idam_reconcile_memberships_only | default(false) | bool)
-    - (freeipa_idam_reconcile_scope | default('')) | length > 0
+    - ((freeipa_idam_reconcile_scope | default('')) | length > 0)
+      or (freeipa_idam_reconcile_all | default(false) | bool)
   tags: [idam, reconcile]
 
 # End-of-run summary of what IDAM managed/changed/removed. Runs AFTER idam + reconcile so it

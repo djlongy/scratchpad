@@ -58,8 +58,17 @@ def freeipa_idam_merge(base, extra, key="name", union_fields=None):
 
 # ── orphan reconcile — what to DELETE (managed, in scope, no longer declared) ──
 def _is_orphan(name, match, want, protected):
-    """A name is an orphan iff it carries the scope marker, isn't desired, isn't protected."""
-    return bool(name) and match in name and name not in want and name not in protected
+    """A name is an orphan iff it is in scope, not desired, and not protected.
+
+    In scope means: the scope marker is a substring of the name, OR match == "*"
+    (the all-undeclared mode — every found name is eligible). A blank match is
+    handled by the caller (freeipa_idam_orphans) as a hard fail-safe (deletes
+    nothing), so it never reaches here as "".
+    """
+    if not name:
+        return False
+    in_scope = (match == "*") or (match in name)
+    return in_scope and name not in want and name not in protected
 
 
 def freeipa_idam_orphans(found, desired, match, protected=None):
