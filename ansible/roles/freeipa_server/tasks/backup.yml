@@ -2,7 +2,7 @@
 # FreeIPA backup automation — runs on primary only
 # Tag: backup
 
-- name: Set FreeIPA backup directory permissions for Borg read access
+- name: Set FreeIPA backup directory permissions for the backup reader group
   ansible.builtin.file:
     path: "{{ freeipa_backup_dir }}"
     state: directory
@@ -64,8 +64,8 @@
     daemon_reload: true
 
 # Optional offload: copy server backups to the Ansible controller (non-destructive).
-# Wraps the upstream ipabackup role (state=copied). Our Borg setup already offloads
-# off-box; this is for an extra controller-side copy when freeipa_server_backup_fetch_name is set.
+# Wraps the upstream ipabackup role (state=copied); runs only when
+# freeipa_server_backup_fetch_name is set (an external backup agent may already offload off-box).
 - name: Offload FreeIPA backups to the controller (opt-in)
   ansible.builtin.include_role:
     name: freeipa.ansible_freeipa.ipabackup

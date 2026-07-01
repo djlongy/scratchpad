@@ -3,10 +3,23 @@
 # Opt-in post-install hardening. Each block is gated by a default-off/safe var,
 # idempotent, and runs on the primary only. Requires an admin Kerberos ticket.
 
+# Resolve creds only when at least one hardening control is enabled — an
+# all-defaults run must never need a credential source.
+- name: Hardening | Resolve admin password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin]
+  when: >-
+    (freeipa_server_harden_anonymous_bind | bool)
+    or (freeipa_server_search_size_limit | int > 0)
+    or (freeipa_server_search_time_limit | int > 0)
+    or (freeipa_server_require_otp_groups | length > 0)
+    or (freeipa_server_disable_allow_all | bool)
+
 - name: Acquire Kerberos ticket for hardening operations
   ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
   args:
-    stdin: "{{ freeipa_server_admin_password }}\n"
+    stdin: "{{ _freeipa_admin_password }}\n"
   changed_when: false
   no_log: true
   when: >-
@@ -47,8 +60,6 @@
 
 - name: Require OTP for hardened admin groups
   freeipa.ansible_freeipa.ipagroup:
-    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_server_admin_password }}"
     name: "{{ item }}"
     action: member
     state: present
@@ -78,8 +89,6 @@
 
 - name: Disable the permissive allow_all HBAC rule
   freeipa.ansible_freeipa.ipahbacrule:
-    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
-    ipaadmin_password: "{{ freeipa_server_admin_password }}"
     name: allow_all
     state: disabled
   when: freeipa_server_disable_allow_all | bool

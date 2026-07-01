@@ -27,21 +27,15 @@
       (no HashiCorp Vault needed), or configure freeipa_server_vault_secret for the
       Vault fallback.
 
-- name: Export | Resolve admin password (declared var first, Vault fallback)
-  ansible.builtin.set_fact:
-    _freeipa_export_admin_pw: >-
-      {{ freeipa_server_admin_password
-         if (freeipa_server_admin_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: Export | Resolve admin password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin]
 
 - name: Export | Acquire Kerberos ticket
   ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
   args:
-    stdin: "{{ _freeipa_export_admin_pw }}\n"
+    stdin: "{{ _freeipa_admin_password }}\n"
   changed_when: false
   no_log: true
 

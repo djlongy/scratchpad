@@ -5,7 +5,7 @@ galaxy_info:
   description: >-
     Install and configure a FreeIPA server cluster (primary + replicas) on
     EL-family or Debian/Ubuntu by wrapping freeipa.ansible_freeipa, with
-    bespoke cold-start resilience, Borg-readable backup, declarative IDAM
+    cold-start resilience, scheduled backups, declarative IDAM
     reconciliation, and an opt-in post-install hardening baseline.
   license: MIT
   min_ansible_version: "2.14"
@@ -25,7 +25,11 @@ galaxy_info:
     - kerberos
     - ldap
 
-# Requires the freeipa.ansible_freeipa collection (declared in
-# ansible/requirements.yml). Not listed as a role dependency to avoid
-# implicit pre-run; install roles are invoked explicitly via include_role.
+# Collections this role needs installed (roles cannot hard-depend on
+# collections — declare them in your requirements.yml):
+#   freeipa.ansible_freeipa    — install roles + all ipa* modules (always)
+#   community.general          — ldap_attrs (hardening anonymous-bind only)
+#   community.hashi_vault      — ONLY if you use the Vault password fallback
+# Not listed as role dependencies to avoid implicit pre-run; the upstream
+# install roles are invoked explicitly via include_role.
 dependencies: []

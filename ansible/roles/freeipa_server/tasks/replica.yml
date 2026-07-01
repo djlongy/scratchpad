@@ -8,31 +8,35 @@
     path: /etc/ipa/default.conf
   register: _freeipa_server_replica_configured
 
-- name: Get active NetworkManager connection UUID for the primary interface
-  ansible.builtin.command:
-    cmd: nmcli -t -f UUID,DEVICE con show --active
-  register: _freeipa_server_nm_cons
-  changed_when: false
-  when: not _freeipa_server_replica_configured.stat.exists
+# DNS repoint runs only when freeipa_server_replica_connection names an NM
+# connection — without it, /etc/hosts (below) still carries enrolment resolution.
+- name: Repoint replica DNS at the primary for enrolment
+  when:
+    - not _freeipa_server_replica_configured.stat.exists
+    - freeipa_server_replica_connection | length > 0
+  block:
+    - name: Get active NetworkManager connection UUID for the primary interface
+      ansible.builtin.command:
+        cmd: nmcli -t -f UUID,DEVICE con show --active
+      register: _freeipa_server_nm_cons
+      changed_when: false
 
-- name: Resolve the active connection UUID
-  ansible.builtin.set_fact:
-    _freeipa_server_con_uuid: >-
-      {{ (_freeipa_server_nm_cons.stdout_lines
-          | select('search', ':' + connection_name + '$') | first).split(':')[0] }}
-  when: not _freeipa_server_replica_configured.stat.exists
+    - name: Resolve the active connection UUID
+      ansible.builtin.set_fact:
+        _freeipa_server_con_uuid: >-
+          {{ (_freeipa_server_nm_cons.stdout_lines
+              | select('search', ':' + freeipa_server_replica_connection + '$')
+              | first).split(':')[0] }}
 
-- name: Point DNS at the primary IPA server for enrolment
-  ansible.builtin.command:
-    cmd: nmcli con mod {{ _freeipa_server_con_uuid }} ipv4.dns "{{ freeipa_server_primary_ip }}"
-  changed_when: true
-  when: not _freeipa_server_replica_configured.stat.exists
+    - name: Point DNS at the primary IPA server for enrolment
+      ansible.builtin.command:
+        cmd: nmcli con mod {{ _freeipa_server_con_uuid }} ipv4.dns "{{ freeipa_server_primary_ip }}"
+      changed_when: true
 
-- name: Reapply DNS settings without cycling the connection
-  ansible.builtin.command:
-    cmd: nmcli dev reapply {{ connection_name }}
-  changed_when: true
-  when: not _freeipa_server_replica_configured.stat.exists
+    - name: Reapply DNS settings without cycling the connection
+      ansible.builtin.command:
+        cmd: nmcli dev reapply {{ freeipa_server_replica_connection }}
+      changed_when: true
 
 - name: Ensure primary FQDN is in /etc/hosts for enrolment
   ansible.builtin.lineinfile:
@@ -51,8 +55,8 @@
     ipareplica_hostname: "{{ freeipa_server_fqdn }}"
     ipareplica_servers: ["{{ freeipa_server_primary_host }}"]
     ipareplica_ip_addresses: "{{ freeipa_server_ip_addresses }}"
-    ipaadmin_password: "{{ freeipa_server_admin_password }}"
-    ipadm_password: "{{ freeipa_server_dm_password }}"
+    ipaadmin_password: "{{ _freeipa_admin_password }}"
+    ipadm_password: "{{ _freeipa_dm_password }}"
     ipareplica_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
     ipareplica_setup_kra: "{{ freeipa_server_setup_kra }}"
     ipareplica_setup_dns: "{{ freeipa_server_setup_dns }}"

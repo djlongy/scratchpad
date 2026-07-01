@@ -10,7 +10,7 @@ set -euo pipefail
 BACKUP_DIR="{{ freeipa_backup_dir }}"
 RETENTION_DAYS="{{ freeipa_backup_retention_days }}"
 LOG_FILE="/var/log/freeipa-backup.log"
-PROM_DIR="/var/lib/node_exporter/textfile_collector"
+PROM_DIR="{{ freeipa_backup_metrics_dir }}"
 BACKUP_SUCCESS=0
 
 log() {
@@ -18,7 +18,8 @@ log() {
 }
 
 write_metrics() {
-    mkdir -p "${PROM_DIR}"
+    # Only when a node_exporter textfile dir exists — no monitoring stack, no metrics.
+    [ -d "${PROM_DIR}" ] || return 0
     local last_success_ts=0
     if [ "${BACKUP_SUCCESS}" -eq 1 ]; then
         last_success_ts=$(date +%s)

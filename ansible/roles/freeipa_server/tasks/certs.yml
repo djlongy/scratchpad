@@ -18,26 +18,22 @@
   ansible.builtin.assert:
     that:
       - item.name | default('') | length > 0
-      - (item.src | default('') | length > 0) or (item.content | default('') | length > 0)
+      - (item.src | default('') | length > 0)
+        or (item.content | default('') | length > 0)
+        or (item.url | default('') | length > 0)
     fail_msg: >-
       Each freeipa_server_trusted_external_cas entry needs 'name' and one of
-      'src' (PEM on the control node) or 'content' (inline PEM).
+      'src' (PEM on the control node), 'content' (inline PEM), or 'url'
+      (PEM fetched by the server, e.g. from an internal artifact repo).
     quiet: true
   loop: "{{ freeipa_server_trusted_external_cas }}"
   loop_control:
     label: "{{ item.name | default('?') }}"
 
-- name: Trusted CAs | Resolve Directory Manager password (declared var first, Vault fallback)
-  ansible.builtin.set_fact:
-    _freeipa_trusted_ca_dm_pw: >-
-      {{ freeipa_server_dm_password
-         if (freeipa_server_dm_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret
-            + ':' + freeipa_server_dm_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: Trusted CAs | Resolve Directory Manager password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [dm]
 
 - name: Trusted CAs | Ensure the staging directory exists
   ansible.builtin.file:
@@ -47,7 +43,7 @@
     group: root
     mode: "0700"
 
-- name: Trusted CAs | Stage CA certificates on the primary
+- name: Trusted CAs | Stage CA certificates on the primary (src/content)
   ansible.builtin.copy:
     src: "{{ item.src | default(omit) }}"
     content: "{{ item.content | default(omit) }}"
@@ -55,7 +51,23 @@
     owner: root
     group: root
     mode: "0644"
-  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop: "{{ freeipa_server_trusted_external_cas | rejectattr('url', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# URL items are fetched BY THE SERVER (get_url on the primary) — the pattern for
+# seeding trust from an internal artifact repo (Artifactory/Nexus) the server can
+# reach. Optional per item: checksum ("sha256:<hex>"), validate_certs (default true).
+- name: Trusted CAs | Fetch CA certificates from URL onto the primary
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.name }}.pem"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "{{ item.checksum | default(omit) }}"
+    validate_certs: "{{ item.validate_certs | default(true) }}"
+  loop: "{{ freeipa_server_trusted_external_cas | selectattr('url', 'defined') | list }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -72,7 +84,7 @@
       - -n
       - "{{ item.name }}"
       - "{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.name }}.pem"
-    stdin: "{{ _freeipa_trusted_ca_dm_pw }}"
+    stdin: "{{ _freeipa_dm_password }}"
   loop: "{{ freeipa_server_trusted_external_cas }}"
   loop_control:
     label: "{{ item.name }}"

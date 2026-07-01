@@ -13,7 +13,7 @@ User=root
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=full
-ReadWritePaths={{ freeipa_backup_dir }} /var/log /var/lib/node_exporter
+ReadWritePaths={{ freeipa_backup_dir }} /var/log -{{ freeipa_backup_metrics_dir }}
 
 [Install]
 WantedBy=multi-user.target

@@ -7,17 +7,10 @@
 #
 # Only meaningful when IPA runs integrated DNS (freeipa_server_setup_dns: true).
 
-- name: DNS | Resolve admin password (declared var first, Vault fallback)
-  ansible.builtin.set_fact:
-    _freeipa_dns_admin_pw: >-
-      {{ freeipa_server_admin_password
-         if (freeipa_server_admin_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret
-            + ':' + freeipa_server_admin_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: DNS | Resolve admin password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin]
 
 # Forward AND reverse zones in one task. Forward: set `name`. Reverse: set
 # `name_from_ip` to a CIDR (e.g. 10.0.0.0/24) and IPA derives the in-addr.arpa
@@ -25,7 +18,6 @@
 # automatic PTRs. skip_overlap_check helps when a reverse zone overlaps a parent.
 - name: DNS | Manage hosted zones (forward + reverse)
   freeipa.ansible_freeipa.ipadnszone:
-    ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
     name: "{{ item.name | default(omit) }}"
     name_from_ip: "{{ item.name_from_ip | default(omit) }}"
     dynamic_update: "{{ item.dynamic_update | default(omit) }}"
@@ -39,7 +31,6 @@
 
 - name: DNS | Manage conditional forward zones
   freeipa.ansible_freeipa.ipadnsforwardzone:
-    ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
     name: "{{ item.name }}"
     forwarders: "{{ item.forwarders | default(omit) }}"
     forwardpolicy: "{{ item.forwardpolicy | default(omit) }}"
@@ -59,7 +50,6 @@
 # allow_sync_ptr. Great for vCenter/ESXi hosts sourced from inventory hostvars.
 - name: DNS | Manage records (single, multi, or bulk — one task)
   freeipa.ansible_freeipa.ipadnsrecord:
-    ipaadmin_password: "{{ _freeipa_dns_admin_pw }}"
     zone_name: "{{ item.zone_name }}"
     name: "{{ item.name | default(omit) }}"
     record_type: "{{ item.record_type | default(omit) }}"

@@ -1,30 +1,27 @@
 ---
+# Input contract for the primary user-facing surface. The freeipa_idam_* data lists
+# deliberately omit `elements:` — the role's own type-guard (idam_desired.yml) reports
+# a wrong type far more helpfully than the argument-spec failure dump. Everything here
+# is optional at the spec level — the ONE genuinely required input is the inventory var `domain`
+# (freeipa_server_domain/realm derive from it; asserted with a clear message in
+# idam_desired.yml). Full variable surface + item shapes: defaults/main.yml.
 argument_specs:
   main:
-    short_description: Install and configure a FreeIPA server cluster.
+    short_description: Install and configure a FreeIPA server cluster (install, resilience, backup, declarative IDAM/DNS, hardening).
     options:
+      # ── Identity / topology ────────────────────────────────────────────────
       freeipa_server_domain:
         type: str
-        required: true
-        description: FreeIPA primary DNS domain (lowercase).
+        required: false
+        description: FreeIPA primary DNS domain (lowercase). Defaults to the inventory var `domain` — set that, or override this.
       freeipa_server_realm:
         type: str
-        required: true
-        description: Kerberos realm (uppercase domain).
-      freeipa_server_admin_password:
+        required: false
+        description: Kerberos realm. Defaults to the uppercased domain.
+      freeipa_server_primary_group:
         type: str
         required: false
-        no_log: true
-        description: IPA admin password. Declared vars win over Vault; set this (or freeipa_server_vault_secret) — with it set, no HashiCorp Vault is needed.
-      freeipa_server_dm_password:
-        type: str
-        required: false
-        no_log: true
-        description: Directory Manager password. Declared vars win over Vault; set this (or freeipa_server_vault_secret).
-      freeipa_server_vault_secret:
-        type: str
-        required: false
-        description: HashiCorp Vault KV path holding admin_password + dm_password. FALLBACK only — used when the password vars above are empty.
+        description: Inventory group whose first host is the primary. Falls back to `freeipa`, then to the current host (single-server needs no groups).
       freeipa_server_is_primary:
         type: bool
         required: false
@@ -32,17 +29,75 @@ argument_specs:
       freeipa_server_primary_host:
         type: str
         required: false
-        description: FQDN of the primary server (replica enrolment target).
+        description: FQDN of the primary server (replica enrolment target). Derived.
+      freeipa_server_replica_connection:
+        type: str
+        required: false
+        description: NetworkManager connection name on a replica whose DNS is repointed at the primary for enrolment. Empty = skip the repoint (/etc/hosts still covers enrolment).
+
+      # ── Credentials (declared var wins; HashiCorp Vault is the fallback) ───
+      freeipa_server_admin_password:
+        type: str
+        required: false
+        no_log: true
+        description: IPA admin password. Set this (or freeipa_server_vault_secret) — with it set, no HashiCorp Vault is needed.
+      freeipa_server_dm_password:
+        type: str
+        required: false
+        no_log: true
+        description: Directory Manager password. Same declared-first/Vault-fallback contract.
+      freeipa_server_vault_secret:
+        type: str
+        required: false
+        description: HashiCorp Vault KV path holding admin_password + dm_password. FALLBACK only — used when the password vars above are empty (needs community.hashi_vault).
+
+      # ── Install options (selected) ─────────────────────────────────────────
       freeipa_server_forwarders:
         type: list
         elements: str
         required: false
-        description: Upstream DNS forwarders for the IPA-managed zone.
+        description: Upstream DNS forwarders for the IPA-managed zone (required for a DNS-enabled install).
+      freeipa_server_forward_policy:
+        type: str
+        required: false
+        choices: [only, first]
+        description: DNS forward policy.
       freeipa_server_ca_mode:
         type: str
         required: false
         choices: [self-signed, external-ca, ca-less]
         description: Certificate authority deployment model.
+      freeipa_server_setup_kra:
+        type: bool
+        required: false
+        description: Install the Key Recovery Authority.
+      freeipa_server_no_hbac_allow:
+        type: bool
+        required: false
+        description: Skip creating the permissive allow_all HBAC rule at install.
+      freeipa_server_fips_required:
+        type: bool
+        required: false
+        description: Assert the host is in FIPS mode before install (never auto-enables).
+      freeipa_server_setup_adtrust:
+        type: bool
+        required: false
+        description: Enable the AD trust controller at install (--setup-adtrust).
+      freeipa_server_ad_trusts:
+        type: list
+        elements: dict
+        required: false
+        description: Active Directory trusts to establish (ipatrust). Each item needs realm, admin, password_field.
+
+      # ── Day-2 features ─────────────────────────────────────────────────────
+      freeipa_server_resilience_enabled:
+        type: bool
+        required: false
+        description: Master toggle for the resilience phase (cold-start recovery timer, ccache cleanup, SSSD self-heal). Default on.
+      freeipa_backup_reader_group:
+        type: str
+        required: false
+        description: Group granted read access (setgid 2750) to the backup dir for an external backup agent. Default root (root-only).
       freeipa_server_trusted_external_cas:
         type: list
         elements: dict
@@ -56,32 +111,28 @@ argument_specs:
           src:
             type: str
             required: false
-            description: Path to a PEM CA cert on the control node (use this or content).
+            description: PEM CA cert on the control node (one of src/content/url).
           content:
             type: str
             required: false
-            description: Inline PEM CA cert text (use this or src).
-      freeipa_server_trusted_ca_staging_dir:
-        type: str
-        required: false
-        description: Temp directory on the primary for staging CA certs before import.
-      freeipa_server_restore_name:
-        type: str
-        required: false
-        description: Backup name to restore (break-glass, `never` tag; wraps upstream ipabackup state=restored).
-      freeipa_server_backup_fetch_name:
-        type: str
-        required: false
-        description: Backup name (or "all") to copy to the Ansible controller during a backup run.
-      freeipa_server_backup_controller_path:
-        type: str
-        required: false
-        description: Controller-side directory for offloaded backups.
+            description: Inline PEM CA cert text (one of src/content/url).
+          url:
+            type: str
+            required: false
+            description: URL the SERVER fetches the PEM from (e.g. an internal artifact repo). Optional per-item checksum + validate_certs.
+          checksum:
+            type: str
+            required: false
+            description: Optional get_url checksum for the url source, e.g. "sha256:<hex>".
+          validate_certs:
+            type: bool
+            required: false
+            description: TLS verification for the url fetch (default true).
       freeipa_server_dns_zones:
         type: list
         elements: dict
         required: false
-        description: IPA-hosted DNS zones to manage (ipadnszone). Each item needs name.
+        description: IPA-hosted DNS zones to manage (ipadnszone). Each item needs name (or name_from_ip for reverse).
       freeipa_server_dns_forward_zones:
         type: list
         elements: dict
@@ -91,17 +142,7 @@ argument_specs:
         type: list
         elements: dict
         required: false
-        description: DNS records to manage (ipadnsrecord). Each item needs zone_name, name, record_type, record_value.
-      freeipa_idam_roles:
-        type: list
-        elements: dict
-        required: false
-        description: Roles matrix — each role bundles groups (name + groups). Users reference roles instead of long group lists; at reconcile each user's roles expand to the union of their groups. Distinct from the inventory-side multi-tenant role matrix (see examples/multitenant-matrix).
-      freeipa_idam_hbacsvcs:
-        type: list
-        elements: dict
-        required: false
-        description: Custom HBAC services to create (ipahbacsvc) before HBAC rule memberships reference them. Each item needs name. Stock services need not be listed.
+        description: DNS records to manage (ipadnsrecord). Each item needs zone_name + name/record fields.
       freeipa_server_automember_rules:
         type: list
         elements: dict
@@ -110,51 +151,98 @@ argument_specs:
       freeipa_server_automember_rebuild:
         type: bool
         required: false
-        description: Force a one-off automember rebuild even when no rule changed (re-evaluates existing members; newly-enrolling hosts are placed automatically without it).
-      freeipa_server_export_output:
+        description: Force a one-off automember rebuild (re-evaluates existing members).
+
+      # ── Declarative IDAM data (the core contract; shapes in defaults/main.yml) ─
+      freeipa_idam_users:
+        type: list
+        required: false
+        description: Declarative users. Each needs name + first/givenname + last/sn + groups/roles.
+      freeipa_idam_usergroups:
+        type: list
+        required: false
+        description: Declarative user groups (may nest other groups via `group:`).
+      freeipa_idam_hostgroups:
+        type: list
+        required: false
+        description: Declarative hostgroups (may nest via `hostgroup:` — applied in a race-safe second pass).
+      freeipa_idam_hbac_rules:
+        type: list
+        required: false
+        description: Declarative HBAC rules (usergroup/hostgroup/service/servicegroup refs are validated).
+      freeipa_idam_sudo_rules:
+        type: list
+        required: false
+        description: Declarative sudo rules (cmd/cmdgroup/usergroup/hostgroup refs are validated).
+      freeipa_idam_hbacsvcs:
+        type: list
+        required: false
+        description: Custom HBAC services (bare names or dicts). Stock services need not be listed.
+      freeipa_idam_service_accounts:
+        type: list
+        required: false
+        description: Non-human accounts — same shape as users, shell forced to nologin.
+      freeipa_idam_breakglass_accounts:
+        type: list
+        required: false
+        description: Emergency accounts — login stays enabled, auto-protected from delete/archive.
+      freeipa_idam_roles:
+        type: list
+        required: false
+        description: Group-bundle matrix (name + groups) — a user's `roles` expand to the union of those groups. Ansible-side only.
+      freeipa_idam_tenants_dir:
         type: str
         required: false
-        description: Control-node path for the config snapshot written by the export task (tags-export).
-      freeipa_server_export_include_host_membership:
+        description: Directory of per-tenant vars files loaded + flattened in one run (typically "{{ inventory_dir }}/tenants"). Empty = lists come straight from group_vars.
+      freeipa_server_idam_reference_validation:
+        type: str
+        required: false
+        choices: [strict, warn, "off", live]
+        description: Cross-object reference checking mode. strict = declared/built-in only; live = also accept names already on the realm.
+
+      # ── Destructive controls (read README "Destructive operations") ────────
+      freeipa_server_authoritative:
         type: bool
         required: false
-        description: Export task — pin static hostgroup host rosters (default off; enrolment + automember own them).
-      freeipa_server_export_include_sshkeys:
+        description: SOFT prune switch. true = desired state is authoritative — undeclared members stripped, in-scope undeclared objects deleted, undeclared users ARCHIVED (recoverable). Run only against a complete realm desired-state.
+      freeipa_idam_reconcile_memberships_only:
         type: bool
         required: false
-        description: Export task — emit per-user SSH public keys in the snapshot.
-      freeipa_server_export_hbacsvc_stock:
+        description: Safe nightly mode — strip undeclared group members but suppress ALL object/user deletion. Safe per-tenant.
+      freeipa_idam_reconcile_scope:
+        type: str
+        required: false
+        description: Name-substring scope marker for object pruning under authoritative. Blank = object pruning skipped (fail-safe).
+      freeipa_idam_delete:
+        type: bool
+        required: false
+        description: THE single HARD-DELETE gate (irrecoverable ipa *-del; mock/lab realms only). The never-tag picks the operation — --tags delete (declared objects) or --tags prune_preserved (orphaned preserved users); --check = dry-run.
+      freeipa_idam_protected_users:
         type: list
         elements: str
         required: false
-        description: Export task — stock HBAC service names skipped during capture (only custom services are exported). Append to it for newer FreeIPA versions that ship extra stock services.
-      freeipa_server_setup_adtrust:
-        type: bool
-        required: false
-        description: Enable the AD trust controller at install (ipa-server-install --setup-adtrust).
-      freeipa_server_ad_trusts:
+        description: Users the reconcile must never delete/archive (break-glass accounts are auto-added).
+      freeipa_idam_protected_groups:
         type: list
-        elements: dict
+        elements: str
         required: false
-        description: Active Directory trusts to establish (ipatrust). Each item needs realm, admin, password_field.
-      freeipa_server_forward_policy:
+        description: Built-in groups whose deletion is always refused.
+
+      # ── Config export / snapshot ───────────────────────────────────────────
+      freeipa_server_export_output:
         type: str
         required: false
-        choices: [only, first]
-        description: DNS forward policy.
-      freeipa_server_setup_kra:
-        type: bool
+        description: Control-node path for the config snapshot written by --tags export.
+      freeipa_server_export_scope:
+        type: list
+        elements: str
         required: false
-        description: Install the Key Recovery Authority.
-      freeipa_server_no_hbac_allow:
-        type: bool
+        description: Name-substring filter(s) to carve a scoped per-tenant/env snapshot slice.
+      freeipa_server_restore_name:
+        type: str
         required: false
-        description: Skip creating the permissive allow_all HBAC rule at install.
-      freeipa_server_fips_required:
-        type: bool
+        description: Backup name to restore (break-glass, `never` tag; wraps upstream ipabackup state=restored).
+      freeipa_server_backup_fetch_name:
+        type: str
         required: false
-        description: Assert the host is in FIPS mode before install (never auto-enables).
-      freeipa_server_disable_allow_all:
-        type: bool
-        required: false
-        description: Tear down allow_all HBAC (guarded — requires replacement rules).
+        description: Backup name (or "all") to copy to the Ansible controller during a backup run.

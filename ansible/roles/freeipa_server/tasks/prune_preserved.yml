@@ -25,21 +25,15 @@
       --tags prune_preserved. Add --check for a dry-run.
     quiet: true
 
-- name: Prune-preserved | Resolve admin password (declared var first, Vault fallback)
-  ansible.builtin.set_fact:
-    _freeipa_server_admin_password: >-
-      {{ freeipa_server_admin_password
-         if (freeipa_server_admin_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: Prune-preserved | Resolve admin password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin]
 
 # A valid admin Kerberos ticket is required for `ipa user-find`. Password on stdin, no_log.
 - name: Prune-preserved | Obtain admin Kerberos ticket
   ansible.builtin.shell:
-    cmd: "set -o pipefail; echo {{ _freeipa_server_admin_password | quote }} | kinit {{ freeipa_server_admin_principal | quote }}"
+    cmd: "set -o pipefail; echo {{ _freeipa_admin_password | quote }} | kinit {{ freeipa_server_admin_principal | quote }}"
     executable: /bin/bash
   no_log: true
   changed_when: false
@@ -85,8 +79,6 @@
 # --check the module reports the change without applying it (the dry-run).
 - name: Prune-preserved | Hard-delete preserved users (preserve=false)
   freeipa.ansible_freeipa.ipauser:
-    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
-    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
     name: "{{ _prune_candidates }}"
     preserve: false
     state: absent

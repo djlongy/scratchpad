@@ -1,20 +1,11 @@
 ---
-# Unified per-realm tenant load. When freeipa_idam_tenants_dir is set, every per-tenant
-# tenants/*.yml in the realm is read in ONE run and flattened into the flat freeipa_idam_* /
-# freeipa_server_* object lists the engine consumes, stamped with _owner (tenant) + _shared.
-# Seeing all tenants in one run is the precondition for a fully declarative, single-source
-# membership reconcile. A tenant file may carry its WHOLE config (users, groups, hbac, sudo,
-# roles, automember, dns, ...), not just users + groups.
-#
-# Each file is loaded with a single include_vars (see load_one_tenant.yml), so it behaves EXACTLY
-# like any vars YAML in the inventory: a value can reference the file's OWN vars (native
-# self-reference, e.g. name: "{{ hg_prefix }}-all") as well as inventory/group_vars — INCLUDING
-# pulling a whole list from a group_var (freeipa_idam_usergroups: "{{ baseline }}"), which stays a
-# native list. Files with no templating load verbatim. No special extension: a tenant file is a
-# plain .yml.
-#
-# fileglob + lookups run on the control node (where the inventory lives), so no delegation is
-# needed. Empty tenants_dir never reaches here (gated by the caller).
+# Unified per-realm tenant load: read every tenants/*.yml in ONE run and flatten into
+# the freeipa_idam_* / freeipa_server_* object lists (users/groups stamped _owner +
+# _shared) — the precondition for a single declarative reconcile that sees every
+# tenant. A tenant file may carry its WHOLE config (users, groups, hbac, sudo, dns,
+# automember, ...) and templates exactly like any inventory vars file (see
+# load_one_tenant.yml). fileglob runs on the control node; the caller gates on a
+# non-empty freeipa_idam_tenants_dir.
 
 - name: tenants | Discover per-tenant files
   ansible.builtin.set_fact:

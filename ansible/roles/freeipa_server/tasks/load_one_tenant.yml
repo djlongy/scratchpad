@@ -1,26 +1,10 @@
 ---
-# Load ONE tenant file as native vars (SINGLE parse) and append its resolved object set to
-# _freeipa_tenants_raw. `include_vars` WITHOUT a name injects the file's keys into scope, so a
-# value may reference ANY other var the file defines — native self-reference, exactly like a
-# normal vars file:
-#
-#     tenant: beta
-#     env_local: dev
-#     hg_prefix: "hg-{{ tenant }}-{{ env_local }}"      # references other file-local vars
-#     freeipa_idam_hostgroups:
-#       - { name: "{{ hg_prefix }}-all" }               # -> hg-beta-dev-all
-#
-# plus inventory/group_vars. Registering the include hands us the file's parsed dict
-# (_freeipa_tenant_inc.ansible_facts) in the SAME parse — no second read of the file.
-#
-#   {{ tenant }} / {{ prefix }} / any local scalar  → resolve because the file defines them.
-#   {{ env }}                                        → the inventory-wide env (in play scope).
-#   per-file naming variant                          → define your own scalar (e.g. env_local: dev)
-#                                                       and reference it; no special header key.
-#
-# The file's keys are injected as host facts only for this resolve: freeipa_idam_* /
-# freeipa_server_* are overwritten by the merge in load_tenants.yml, and the scalar keys
-# (tenant/prefix/…) are read nowhere else in the role, so the transient injection is inert.
+# Load ONE tenant file as native vars (single parse) and append its resolved object
+# set to _freeipa_tenants_raw. A bare include_vars injects the file's keys into scope,
+# so values reference the file's OWN vars (hg_prefix: "hg-{{ tenant }}-{{ env_local }}")
+# plus group_vars — exactly like any inventory vars file. The registered result hands
+# back the file's resolved dict in the same parse; the transient key injection is inert
+# (the merge in load_tenants.yml overwrites the freeipa_* vars, nothing reads the rest).
 
 - name: tenants | Load {{ _freeipa_tenant_file | basename }} (native scope, single parse)
   ansible.builtin.include_vars:
@@ -28,8 +12,8 @@
   register: _freeipa_tenant_inc
   no_log: true  # tenant files may carry inline user passwords
 
-# Snapshot THIS file's resolved vars before the next tenant's include overwrites them. Empty or
-# fully-commented files (ansible_facts == {}) contribute nothing and are skipped.
+# Snapshot this file's resolved vars before the next include overwrites them;
+# empty / fully-commented files contribute nothing.
 - name: tenants | Capture {{ _freeipa_tenant_file | basename }} (resolved; own vars in scope)
   ansible.builtin.set_fact:
     _freeipa_tenants_raw: "{{ (_freeipa_tenants_raw | default([])) + [_freeipa_tenant_inc.ansible_facts] }}"

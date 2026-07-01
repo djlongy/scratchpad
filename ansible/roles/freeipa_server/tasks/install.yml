@@ -3,23 +3,10 @@
 # Fetch credentials from Vault, then dispatch to upstream primary/replica wrap.
 # Packaging + firewall are owned by the upstream ipaserver/ipareplica roles.
 
-- name: Resolve FreeIPA credentials (declared vars first, HashiCorp Vault fallback)
-  ansible.builtin.set_fact:
-    freeipa_server_admin_password: >-
-      {{ freeipa_server_admin_password
-         if (freeipa_server_admin_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret
-            + ':' + freeipa_server_admin_password_field) }}
-    freeipa_server_dm_password: >-
-      {{ freeipa_server_dm_password
-         if (freeipa_server_dm_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret
-            + ':' + freeipa_server_dm_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: Install | Resolve credentials (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin, dm]
 
 - name: Deploy primary FreeIPA server
   ansible.builtin.include_tasks: primary.yml

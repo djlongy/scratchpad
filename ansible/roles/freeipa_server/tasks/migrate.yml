@@ -22,17 +22,10 @@
       (inventory host for the source CA cert), and freeipa_migrate_bind_pw_vault
       (Vault path holding the source realm bind password).
 
-- name: Resolve new-realm admin password for local kinit (declared var first, Vault fallback)
-  ansible.builtin.set_fact:
-    _freeipa_migrate_admin_pw: >-
-      {{ freeipa_server_admin_password
-         if (freeipa_server_admin_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret
-            + ':' + freeipa_server_admin_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: Migrate | Resolve admin password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin]
 
 - name: Resolve source-realm bind password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
@@ -71,7 +64,7 @@
 
 - name: Acquire Kerberos ticket for the new realm
   ansible.builtin.shell:
-    cmd: "set -o pipefail; echo '{{ _freeipa_migrate_admin_pw }}' | kinit admin@{{ freeipa_server_realm }}"
+    cmd: "set -o pipefail; echo '{{ _freeipa_admin_password }}' | kinit admin@{{ freeipa_server_realm }}"
     executable: /bin/bash
   environment:
     KRB5CCNAME: "{{ freeipa_migrate_ccache }}"

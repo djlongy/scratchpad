@@ -204,48 +204,42 @@ def freeipa_idam_identity_merge(files: list[dict]) -> dict:
 
     Seeing every tenant in one run is the precondition for a fully declarative reconcile.
     """
-    objects: dict[str, list] = {}
-    user_owner: dict[str, str] = {}
-    group_owner: dict[str, str] = {}
-    group_shared: dict[str, bool] = {}
+    result = {"objects": {}, "user_owner": {}, "group_owner": {}, "group_shared": {}}
     for entry in files or []:
-        tenant = entry.get("tenant", "")
-        file_shared = bool(entry.get("shared", False))
-        for key, value in (entry or {}).items():
-            if key in _FREEIPA_IDENTITY_META or not isinstance(value, list):
-                continue
-            target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
-            objects.setdefault(target, []).extend(value)
-            if target == _FREEIPA_USERS_VAR:
-                for user in value:
-                    if isinstance(user, dict) and user.get("name"):
-                        user_owner[user["name"]] = tenant
-            elif target == _FREEIPA_GROUPS_VAR:
-                for group in value:
-                    obj = group if isinstance(group, dict) else {"name": group}
-                    name = obj.get("name")
-                    if name:
-                        group_owner[name] = tenant
-                        group_shared[name] = bool(obj.get("shared", file_shared))
-    return {"objects": objects, "user_owner": user_owner,
-            "group_owner": group_owner, "group_shared": group_shared}
+        _merge_identity_entry(entry, result)
+    return result
 
 
-def freeipa_idam_group_membership(users: list[dict]) -> dict[str, list[str]]:
-    """Aggregate desired membership across ALL users, keyed by group.
-
-    ``{group_name: sorted([usernames who declare it])}``. Because the unified run
-    sees every tenant's users, this map is each group's COMPLETE desired
-    membership — the basis for declaratively reconciling even built-in groups.
-    """
-    out: dict[str, set] = {}
-    for user in users or []:
-        name = user.get("name")
-        if not name:
+def _merge_identity_entry(entry: dict, result: dict) -> None:
+    """Fold one tenant file's object lists into the realm-wide result (in place)."""
+    tenant = entry.get("tenant", "")
+    file_shared = bool(entry.get("shared", False))
+    for key, value in (entry or {}).items():
+        if key in _FREEIPA_IDENTITY_META or not isinstance(value, list):
             continue
-        for group in (user.get("groups") or []):
-            out.setdefault(group, set()).add(name)
-    return {group: sorted(members) for group, members in out.items()}
+        target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
+        result["objects"].setdefault(target, []).extend(value)
+        if target == _FREEIPA_USERS_VAR:
+            _stamp_user_owner(value, tenant, result["user_owner"])
+        elif target == _FREEIPA_GROUPS_VAR:
+            _stamp_group_owner(value, tenant, file_shared, result)
+
+
+def _stamp_user_owner(users: list, tenant: str, user_owner: dict) -> None:
+    """Record name -> owning tenant for each named user in the list."""
+    for user in users:
+        if isinstance(user, dict) and user.get("name"):
+            user_owner[user["name"]] = tenant
+
+
+def _stamp_group_owner(groups: list, tenant: str, file_shared: bool, result: dict) -> None:
+    """Record name -> owning tenant + shared flag for each named group in the list."""
+    for group in groups:
+        obj = group if isinstance(group, dict) else {"name": group}
+        name = obj.get("name")
+        if name:
+            result["group_owner"][name] = tenant
+            result["group_shared"][name] = bool(obj.get("shared", file_shared))
 
 
 def freeipa_idam_evictions(current: list[str], managed: list[str], desired: list[str]) -> list[str]:
@@ -260,46 +254,191 @@ def freeipa_idam_evictions(current: list[str], managed: list[str], desired: list
     return sorted(m for m in (current or []) if m in managed_set and m not in desired_set)
 
 
-def freeipa_idam_boundary(users: list[dict], groups: dict) -> list[dict]:
-    """Membership pairs that cross a tenant boundary (for the opt-in enforcer).
+# ── desired-state validation (shape + references) ─────────────────────────────
+# Python port of the (formerly inline-Jinja) validation engine in idam_desired.yml:
+# collect EVERY structural + referential problem in one pass so the operator gets a
+# complete bullet list, not one assert at a time. Messages are kept identical to the
+# original engine; within a check block, problems are grouped per check rather than
+# per item (content-equal, order may differ from the old per-item interleave).
 
-    A pair violates the boundary when a user owned by tenant T references a group
-    that is neither owned by T nor ``_shared``. ``groups`` is a metadata map
-    ``{name: {_owner, _shared}}``. Returns ``[{user, group, group_owner}]`` — empty
-    when nothing crosses a boundary.
-    """
-    meta = groups or {}
-    out: list[dict] = []
-    for user in users or []:
-        owner = user.get("_owner")
-        for group in (user.get("groups") or []):
-            info = meta.get(group) or {}
-            if info.get("_shared"):
-                continue
-            group_owner = info.get("_owner")
-            if group_owner and group_owner != owner:
-                out.append({"user": user.get("name"), "group": group, "group_owner": group_owner})
+def _names(items: list | None) -> list[str]:
+    """The `name` of every dict item that has one."""
+    return [i["name"] for i in (items or []) if isinstance(i, dict) and i.get("name")]
+
+
+def _lst(data: dict, key: str) -> list:
+    """data[key] as a list (missing/None -> [])."""
+    return data.get(key) or []
+
+
+def _as_set(*sources) -> set:
+    """Union of any mix of lists/None into one set."""
+    out: set = set()
+    for src in sources:
+        out.update(src or [])
     return out
 
 
-def freeipa_idam_group_plan(current: list[str], managed: list[str], desired: list[str]) -> dict[str, list[str]]:
-    """Per-group reconcile plan for the WYSIWYG report.
-
-    Returns ``{keep, add, evict, unmanaged_kept}``:
-      keep            desired members already present
-      add             desired members not yet present
-      evict           managed members present but no longer desired
-      unmanaged_kept  present members the role does not manage (left untouched)
-    """
-    current_set = set(current or [])
-    managed_set = set(managed or [])
-    desired_set = set(desired or [])
+def _known_name_sets(data: dict) -> dict[str, set[str]]:
+    """Known names per type = declared + built-in allow-lists + live realm names."""
+    live = data.get("live") or {}
     return {
-        "keep": sorted(desired_set & current_set),
-        "add": sorted(desired_set - current_set),
-        "evict": sorted((current_set & managed_set) - desired_set),
-        "unmanaged_kept": sorted(current_set - managed_set),
+        "groups": _as_set(_names(data.get("usergroups")),
+                          data.get("builtin_groups"), live.get("groups")),
+        "hostgroups": _as_set(_names(data.get("hostgroups")),
+                              data.get("builtin_hostgroups"), live.get("hostgroups")),
+        "roles": _as_set(_names(data.get("roles")), live.get("roles")),
+        "hbacsvcs": _as_set(data.get("stock_hbacsvcs"),
+                            _names(data.get("hbacsvcs")), live.get("hbacsvcs")),
+        "hbacsvcgroups": _as_set(_names(data.get("hbacsvcgroups")), live.get("hbacsvcgroups")),
+        "sudocmds": _as_set(_names(data.get("sudo_commands")), live.get("sudocmds")),
+        "sudocmdgroups": _as_set(_names(data.get("sudocmdgroups")), live.get("sudocmdgroups")),
     }
+
+
+def _user_shape_problems(users: list, unmodifiable: set[str]) -> list[str]:
+    """Per-user shape checks: name present, first/last present, has groups or roles."""
+    out: list[str] = []
+    for user in users or []:
+        name = user.get("name")
+        if name is None:
+            out.append("a user entry is missing 'name'")
+            continue
+        if name not in unmodifiable and "first" not in user and "givenname" not in user:
+            out.append(f"user '{name}' is missing a first name (first/givenname)")
+        if name not in unmodifiable and "last" not in user and "sn" not in user:
+            out.append(f"user '{name}' is missing a surname (last/sn)")
+        if not (user.get("groups") or []) and not (user.get("roles") or []):
+            out.append(f"user '{name}' has no groups and no roles (must belong to at least one)")
+    return out
+
+
+def _duplicate_user_problems(users: list) -> list[str]:
+    """Duplicate usernames across the whole assembled user set."""
+    unames = [u.get("name", "(unnamed)") for u in (users or [])]
+    out: list[str] = []
+    for name in dict.fromkeys(unames):  # unique, first-occurrence order
+        count = unames.count(name)
+        if count > 1:
+            out.append(f"duplicate username '{name}' ({count} entries)")
+    return out
+
+
+def _protected_group_problems(usergroups: list, protected: set[str]) -> list[str]:
+    """A protected built-in group declared state: absent is refused."""
+    return [
+        f"group '{g.get('name')}' is a protected FreeIPA built-in — "
+        "refusing state: absent (would delete core schema)"
+        for g in (usergroups or [])
+        if g.get("state", "present") == "absent" and g.get("name") in protected
+    ]
+
+
+def _ref_missing(items: list, fields: list[str], known: set[str], tmpl: str) -> list[str]:
+    """Problems for refs in any of `fields` of each item that are not in `known`."""
+    out: list[str] = []
+    for item in items or []:
+        for field in fields:
+            for ref in item.get(field) or []:
+                if ref not in known:
+                    out.append(tmpl.format(name=item.get("name"), ref=ref))
+    return out
+
+
+def _one_user_ref_problems(user: dict, rnames: set[str], gnames: set[str]) -> list[str]:
+    """Role + group reference problems for a single (named) user."""
+    name = user.get("name")
+    if name is None:
+        return []
+    bad_roles = [r for r in user.get("roles") or [] if r not in rnames]
+    bad_groups = [g for g in user.get("groups") or [] if g not in gnames]
+    return ([f"user '{name}' references unknown role '{r}'" for r in bad_roles]
+            + [f"user '{name}' references unknown group '{g}'" for g in bad_groups])
+
+
+def _user_ref_problems(users: list, rnames: set[str], gnames: set[str]) -> list[str]:
+    """Per-user role + group reference checks (unnamed users are skipped)."""
+    return [p for user in users or [] for p in _one_user_ref_problems(user, rnames, gnames)]
+
+
+def _automember_target_problems(rules: list, gnames: set[str], hgnames: set[str]) -> list[str]:
+    """An automember rule's NAME must be a known group/hostgroup (it targets itself)."""
+    out: list[str] = []
+    for rule in rules or []:
+        name = rule.get("name")
+        atype = rule.get("automember_type", "")
+        if atype == "group" and name not in gnames:
+            out.append(f"automember rule '{name}' (group) targets unknown group '{name}'")
+        if atype == "hostgroup" and name not in hgnames:
+            out.append(f"automember rule '{name}' (hostgroup) targets unknown hostgroup '{name}'")
+    return out
+
+
+def _pwpolicy_target_problems(pwpolicies: list, gnames: set[str]) -> list[str]:
+    """A password policy's NAME must be a known group (it targets itself)."""
+    return [f"password policy '{p.get('name')}' targets unknown group '{p.get('name')}'"
+            for p in pwpolicies if p.get("name") not in gnames]
+
+
+def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
+    """All shape + reference problems for an assembled IDAM desired state.
+
+    `data` carries the assembled object lists plus the allow-lists:
+      users, usergroups, roles, hostgroups, hbacsvcs, hbacsvcgroups, hbac_rules,
+      sudo_commands, sudocmdgroups, sudo_rules, iparoles, pwpolicies,
+      automember_rules, unmodifiable_users, protected_groups, builtin_groups,
+      builtin_hostgroups, stock_hbacsvcs, live ({type: [names]} from live mode).
+
+    Returns {"shape": [...], "refs": [...]}: shape problems always hard-fail in the
+    role; reference problems obey freeipa_server_idam_reference_validation.
+    """
+    known = _known_name_sets(data)
+    users = _lst(data, "users")
+    usergroups = _lst(data, "usergroups")
+    hbac_rules = _lst(data, "hbac_rules")
+    sudo_rules = _lst(data, "sudo_rules")
+
+    shape = (_user_shape_problems(users, set(_lst(data, "unmodifiable_users")))
+             + _duplicate_user_problems(users)
+             + _protected_group_problems(usergroups, set(_lst(data, "protected_groups"))))
+
+    refs = (
+        _ref_missing(_lst(data, "roles"), ["groups"], known["groups"],
+                     "role '{name}' references unknown group '{ref}'")
+        + _user_ref_problems(users, known["roles"], known["groups"])
+        + _ref_missing(hbac_rules, ["service"], known["hbacsvcs"],
+                       "HBAC rule '{name}' references HBAC service '{ref}' "
+                       "that is not stock, declared, or on the realm")
+        + _ref_missing(hbac_rules, ["servicegroup"], known["hbacsvcgroups"],
+                       "HBAC rule '{name}' references service group '{ref}' not declared or on the realm")
+        + _ref_missing(sudo_rules, ["cmd", "deny_cmd"], known["sudocmds"],
+                       "sudo rule '{name}' references sudo command '{ref}' not declared or on the realm")
+        + _ref_missing(sudo_rules, ["cmdgroup", "deny_cmdgroup"], known["sudocmdgroups"],
+                       "sudo rule '{name}' references sudo command group '{ref}' "
+                       "not declared or on the realm")
+        + _ref_missing(hbac_rules, ["usergroup"], known["groups"],
+                       "HBAC rule '{name}' references unknown user group '{ref}'")
+        + _ref_missing(hbac_rules, ["hostgroup"], known["hostgroups"],
+                       "HBAC rule '{name}' references unknown host group '{ref}'")
+        + _ref_missing(sudo_rules, ["usergroup"], known["groups"],
+                       "sudo rule '{name}' references unknown user group '{ref}'")
+        + _ref_missing(sudo_rules, ["hostgroup"], known["hostgroups"],
+                       "sudo rule '{name}' references unknown host group '{ref}'")
+        + _ref_missing(_lst(data, "iparoles"), ["usergroup"], known["groups"],
+                       "iparole '{name}' references unknown user group '{ref}'")
+        + _ref_missing(_lst(data, "hbacsvcgroups"), ["hbacsvc"], known["hbacsvcs"],
+                       "HBAC service group '{name}' references unknown HBAC service '{ref}'")
+        + _ref_missing(_lst(data, "sudocmdgroups"), ["sudocmd"], known["sudocmds"],
+                       "sudo command group '{name}' references unknown sudo command '{ref}'")
+        + _ref_missing(usergroups, ["group"], known["groups"],
+                       "usergroup '{name}' nests unknown group '{ref}'")
+        + _ref_missing(_lst(data, "hostgroups"), ["hostgroup"], known["hostgroups"],
+                       "hostgroup '{name}' nests unknown hostgroup '{ref}'")
+        + _automember_target_problems(_lst(data, "automember_rules"),
+                                      known["groups"], known["hostgroups"])
+        + _pwpolicy_target_problems(_lst(data, "pwpolicies"), known["groups"])
+    )
+    return {"shape": shape, "refs": refs}
 
 
 class FilterModule:
@@ -310,8 +449,6 @@ class FilterModule:
             "freeipa_idam_named": freeipa_idam_named,
             "freeipa_export_scope": freeipa_export_scope,
             "freeipa_idam_identity_merge": freeipa_idam_identity_merge,
-            "freeipa_idam_group_membership": freeipa_idam_group_membership,
             "freeipa_idam_evictions": freeipa_idam_evictions,
-            "freeipa_idam_boundary": freeipa_idam_boundary,
-            "freeipa_idam_group_plan": freeipa_idam_group_plan,
+            "freeipa_idam_validate": freeipa_idam_validate,
         }

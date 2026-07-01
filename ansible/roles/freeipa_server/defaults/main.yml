@@ -13,18 +13,26 @@ freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
 # This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
 freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
 
-# Topology derived from inventory groups. One host in `freeipa` → it's the primary and
-# the replica path never dispatches; add hosts (optionally to freeipa_primary) to cluster.
+# Topology derived from inventory groups: first host of freeipa_server_primary_group,
+# else of `freeipa`, else this host (single-server needs NO group setup at all).
+# Add hosts (optionally to freeipa_primary) to cluster; non-primaries become replicas.
 freeipa_server_primary_group: "freeipa_primary"
 freeipa_server_primary_host_name: >-
-  {{ (groups[freeipa_server_primary_group] | default(groups['freeipa']))[0] }}
+  {{ (groups[freeipa_server_primary_group]
+      | default(groups['freeipa'] | default([inventory_hostname], true), true))[0] }}
 freeipa_server_primary_host: "{{ freeipa_server_primary_host_name }}.{{ freeipa_server_domain }}"
 freeipa_server_primary_ip: "{{ hostvars[freeipa_server_primary_host_name].ansible_host }}"
 freeipa_server_is_primary: "{{ inventory_hostname == freeipa_server_primary_host_name }}"
 
-# This host's IP address (passed to the installer).
+# This host's IP address (passed to the installer). ansible_host must be the IP
+# (repo convention); override this list if you address hosts by name.
 freeipa_server_ip_addresses:
   - "{{ ansible_host }}"
+
+# NetworkManager connection on a REPLICA whose DNS is repointed at the primary for
+# enrolment. Empty (and no legacy `connection_name` inventory var) → the repoint is
+# skipped and /etc/hosts alone carries enrolment resolution.
+freeipa_server_replica_connection: "{{ connection_name | default('') }}"
 
 # ── Credentials: declared Ansible var FIRST, HashiCorp Vault as fallback ─────
 # For every secret: use the declared var below if non-empty, else look it up at
@@ -62,9 +70,15 @@ freeipa_server_external_cert_files: []
 # Import third-party CA certs into the IPA trust store so IPA + enrolled clients (via
 # ipa-certupdate) trust certs they issue. Does NOT change the CA from ca_mode — adds roots
 # alongside it. Primary only, replicates cluster-wide; idempotent; skipped in ca-less mode.
-# Auth uses the DM password (vault_secret + dm_password_field, fed on stdin). Each item:
-#   { name: <trust-store nickname>, src: <PEM on control node> } | { name, content: "<PEM>" }
+# Auth uses the DM password (vault_secret + dm_password_field, fed on stdin). Each item
+# needs `name` (trust-store nickname) + ONE source:
+#   src:     PEM file on the control node
+#   content: inline PEM
+#   url:     PEM the SERVER fetches (internal artifact repo pattern);
+#            optional checksum: "sha256:<hex>", validate_certs: false
 freeipa_server_trusted_external_cas: []
+#  - { name: corp-root, src: files/corp-root.pem }
+#  - { name: partner-root, url: "https://artifacts.example.com/pki/partner-root.pem" }
 freeipa_server_trusted_ca_staging_dir: "/root/.freeipa-trusted-cas"
 
 # ── Backup restore / offload (wraps upstream ipabackup; backup.yml runs ipa-backup) ─
@@ -75,6 +89,16 @@ freeipa_server_restore_name: ""
 # Set a backup name, or "all" for every backup.
 freeipa_server_backup_fetch_name: ""
 freeipa_server_backup_controller_path: "./freeipa-backups"
+# Backup pipeline (freeipa-backup.timer wraps `ipa-backup --data --online` + retention prune).
+freeipa_backup_dir: "/var/lib/ipa/backup"
+freeipa_backup_retention_days: 14
+freeipa_backup_script_path: "/usr/local/bin/freeipa-backup.sh"
+# Group granted read access to the backup dir (setgid 2750) for an external backup
+# agent (e.g. a Borg/restic reader account). Default keeps it root-only.
+freeipa_backup_reader_group: "root"
+# Prometheus node_exporter textfile dir — metrics are written ONLY if it already
+# exists on the host (no monitoring stack -> silently skipped, never a failure).
+freeipa_backup_metrics_dir: "/var/lib/node_exporter/textfile_collector"
 
 # ── KRA / PKINIT ────────────────────────────────────────────────────────────
 freeipa_server_setup_kra: false
@@ -148,24 +172,6 @@ freeipa_server_search_time_limit: 0                 # 0 → leave as-is
 freeipa_server_require_otp_groups: []               # admin groups to force OTP on
 freeipa_server_disable_allow_all: false             # true → tear down allow_all (guarded)
 freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "FIPS", "DEFAULT"
-
-# ── Cold-start resilience tuning (behavioural — sensible defaults) ───────────
-freeipa_server_dirsrv_timeout_sec: 600
-freeipa_server_recovery_initial_delay: 6min
-freeipa_server_recovery_periodic_interval: 10min
-freeipa_server_recovery_max_retries: 1
-freeipa_server_recovery_retry_delay_seconds: 30
-freeipa_server_recovery_ipactl_timeout_sec: 90
-freeipa_server_recovery_ldap_wait_attempts: 30
-freeipa_server_recovery_service_timeout: 1800
-freeipa_server_recovery_restart_sec: 2min
-freeipa_server_recovery_start_limit_interval: 30min
-freeipa_server_recovery_start_limit_burst: 10
-freeipa_server_recovery_chrony_max_correction: "0.5"
-
-# ── HTTPD ccache cleanup (behavioural — sensible defaults) ──────────────────
-freeipa_server_ccache_max_age: "4h"
-freeipa_server_tmpfiles_clean_interval: "1h"
 
 # ── Declarative IDAM data contract ────────────────────────────────────────────
 # Two role-like inputs, both optional conveniences over the group baseline:
@@ -366,14 +372,6 @@ freeipa_idam_reactivate_preserved: true
 # instead, declare it with `user: []` (members reconcile declaratively).
 freeipa_idam_hbac_rules_disable: []
 
-# IDAM apply path. false = NATIVE (idam.yml, server-side ipalib) — default + recommended: ~2.67x
-# faster (bulks groups/users in one ipalib call), manages the FULL object set (community.general has
-# no privilege/permission/hbacsvc/hbacsvcgroup/automember modules), bootstraps before DNS (connects
-# by IP). true = API variant (idam_api.yml, community.general over the API by fqdn) — only for a
-# provisioned, DNS-resolvable server, and it refuses RBAC objects it can't manage.
-freeipa_idam_apply_via_api: false
-freeipa_idam_api_validate_certs: true   # API path only: verify the IPA server cert
-
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
 # Snapshot a LIVE FreeIPA into this role's declarative contract (read-only) to adopt an existing
 # instance. Output path on the control node (move into inventory group_vars to apply).
@@ -431,6 +429,27 @@ freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
 freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
 freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"
+
+# ── Cold-start resilience tuning (behavioural — sensible defaults) ───────────
+# Master toggle for the whole resilience phase (recovery timer, ccache cleanup,
+# SSSD self-heal). Recommended on; disable wholesale if you manage these yourself.
+freeipa_server_resilience_enabled: true
+freeipa_server_dirsrv_timeout_sec: 600
+freeipa_server_recovery_initial_delay: 6min
+freeipa_server_recovery_periodic_interval: 10min
+freeipa_server_recovery_max_retries: 1
+freeipa_server_recovery_retry_delay_seconds: 30
+freeipa_server_recovery_ipactl_timeout_sec: 90
+freeipa_server_recovery_ldap_wait_attempts: 30
+freeipa_server_recovery_service_timeout: 1800
+freeipa_server_recovery_restart_sec: 2min
+freeipa_server_recovery_start_limit_interval: 30min
+freeipa_server_recovery_start_limit_burst: 10
+freeipa_server_recovery_chrony_max_correction: "0.5"
+
+# ── HTTPD ccache cleanup (behavioural — sensible defaults) ──────────────────
+freeipa_server_ccache_max_age: "4h"
+freeipa_server_tmpfiles_clean_interval: "1h"
 
 # ── SSSD identity-resolution self-heal (resilience.yml) ──────────────────────
 # Watchdog: expires the SSSD cache + restarts sssd if identity resolution is wedged (which sshd/sudo/

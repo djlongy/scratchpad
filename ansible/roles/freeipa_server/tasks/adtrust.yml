@@ -8,21 +8,13 @@
 #
 # NOTE: not live-tested in this estate (no AD); shipped as a capability.
 
-- name: AD trust | Resolve IPA admin password (declared var first, Vault fallback)
-  ansible.builtin.set_fact:
-    _freeipa_adtrust_admin_pw: >-
-      {{ freeipa_server_admin_password
-         if (freeipa_server_admin_password | default('') | length > 0)
-         else lookup('community.hashi_vault.hashi_vault',
-            'secret=' + freeipa_server_vault_secret
-            + ':' + freeipa_server_admin_password_field) }}
-  no_log: true
-  delegate_to: localhost
-  become: false
+- name: AD trust | Resolve admin password (shared resolver)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [admin]
 
 - name: AD trust | Establish trust(s) with Active Directory
   freeipa.ansible_freeipa.ipatrust:
-    ipaadmin_password: "{{ _freeipa_adtrust_admin_pw }}"
     realm: "{{ item.realm }}"
     trust_type: "{{ item.trust_type | default('ad') }}"
     admin: "{{ item.admin }}"

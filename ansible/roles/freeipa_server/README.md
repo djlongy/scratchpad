@@ -2,15 +2,43 @@
 
 Portable, multi-OS FreeIPA **server** role. Wraps the upstream
 `freeipa.ansible_freeipa` `ipaserver`/`ipareplica` roles for install, and layers
-bespoke cold-start resilience, Borg-readable backup, declarative IDAM
+cold-start resilience, a scheduled backup timer, declarative IDAM
 reconciliation, and an opt-in post-install hardening baseline.
 
 Pairs with [`freeipa_client`](../freeipa_client/) for host enrolment.
 
-## Supported platforms
+## Quick start
 
-EL-family (RHEL/Rocky/Alma/CentOS/Fedora) and Debian/Ubuntu — the full FreeIPA
-*server* support matrix. Packaging and firewall are handled by the upstream roles.
+Requirements: `ansible-galaxy collection install freeipa.ansible_freeipa`
+(plus `community.general` for one hardening task, and `community.hashi_vault`
+only if you use the Vault password fallback). Targets: EL-family
+(RHEL/Rocky/Alma/CentOS/Fedora) or Debian/Ubuntu — the full FreeIPA *server*
+support matrix; packaging and firewall are handled by the upstream roles.
+
+```yaml
+# inventory.yml — a single server needs NO special groups
+all:
+  hosts:
+    ipa01: { ansible_host: 10.0.0.10 }
+  vars:
+    domain: example.com                    # THE one required var (realm derives)
+    freeipa_server_admin_password: "..."   # or freeipa_server_vault_secret
+    freeipa_server_dm_password: "..."
+    freeipa_server_forwarders: ["10.0.0.1"]
+
+# site.yml
+- hosts: all
+  become: true
+  roles: [freeipa_server]
+```
+
+```bash
+ansible-playbook -i inventory.yml site.yml            # install + everything
+ansible-playbook -i inventory.yml site.yml -t idam    # later: just reconcile identity
+```
+
+Add hosts (optionally to a `freeipa_primary` group) to grow into a cluster —
+non-primary hosts enrol as replicas automatically.
 
 ## Phases (tags)
 
@@ -23,7 +51,7 @@ A no-tag run runs everything except the `never`-tagged ops.
 | `configure` / `resilience` | Cold-start timeout override + recovery timer |
 | `certs` (`ca`) | Import trusted external CAs into the IPA trust store (primary, opt-in) |
 | `hardening` | Opt-in post-install hardening (primary) |
-| `backup` | Borg-readable backup timer + opt-in controller offload (primary) |
+| `backup` | Scheduled ipa-backup timer + opt-in controller offload (primary) |
 | `idam` (`users`/`groups`/`hbac`/`sudo`) | Declarative IDAM reconciliation (primary) |
 | `dns` | Declarative DNS zones / forward-zones / records (primary, opt-in) |
 | `automember` | Auto group/hostgroup membership rules (primary, opt-in) |
@@ -38,6 +66,11 @@ ansible-playbook -i inventories/mgt/hosts.yml playbooks/freeipa_idam.yml --tags 
 # Re-apply just resilience
 ansible-playbook -i inventories/mgt/hosts.yml playbooks/freeipa_idam.yml --tags resilience
 ```
+
+The resilience phase (cold-start recovery timer, ccache cleanup, SSSD self-heal
+watchdog) is on by default — disable wholesale with
+`freeipa_server_resilience_enabled: false`, or just the watchdog with
+`freeipa_server_sssd_selfheal: false`.
 
 ## Credentials — declared vars first, HashiCorp Vault as fallback
 
@@ -107,6 +140,9 @@ freeipa_server_trusted_external_cas:
       -----BEGIN CERTIFICATE-----
       ...
       -----END CERTIFICATE-----
+  - name: internal-root                              # …or fetched BY THE SERVER from an
+    url: "https://artifactory.example.com/pki/internal-root.pem"   # internal artifact repo
+    checksum: "sha256:abc123..."                     # optional; validate_certs: false also supported
 ```
 
 ## Backup restore / offload

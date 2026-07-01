@@ -4,10 +4,3 @@
 
 freeipa_server_realm_systemd_instance: "{{ freeipa_server_realm | replace('.', '-') }}"
 freeipa_server_dirsrv_service_name: "dirsrv@{{ freeipa_server_realm_systemd_instance }}.service"
-
-# Backup settings (bespoke Borg-readable pipeline — names intentionally
-# freeipa_backup_* and consumed by templates; see spec §5).
-freeipa_backup_dir: "/var/lib/ipa/backup"
-freeipa_backup_retention_days: 14
-freeipa_backup_reader_group: "ansible"
-freeipa_backup_script_path: "/usr/local/bin/freeipa-backup.sh"

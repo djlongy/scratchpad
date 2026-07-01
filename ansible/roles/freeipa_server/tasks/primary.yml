@@ -15,8 +15,8 @@
     ipaserver_realm: "{{ freeipa_server_realm }}"
     ipaserver_hostname: "{{ freeipa_server_fqdn }}"
     ipaserver_ip_addresses: "{{ freeipa_server_ip_addresses }}"
-    ipaadmin_password: "{{ freeipa_server_admin_password }}"
-    ipadm_password: "{{ freeipa_server_dm_password }}"
+    ipaadmin_password: "{{ _freeipa_admin_password }}"
+    ipadm_password: "{{ _freeipa_dm_password }}"
     ipaserver_install_packages: "{{ freeipa_server_install_packages }}"
     ipaserver_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
     ipaserver_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
@@ -40,35 +40,22 @@
     ipaclient_ntp_servers: "{{ freeipa_server_ntp_servers }}"
   no_log: true
 
-- name: Map optional ipaserver firewalld zone when provided
+# Optional inputs are set ONLY when non-empty/non-zero (one filtered loop), leaving
+# them undefined for upstream's own `| default(omit)` — see the header note on omit.
+- name: Map optional ipaserver inputs when provided
   ansible.builtin.set_fact:
-    ipaserver_firewalld_zone: "{{ freeipa_server_firewalld_zone }}"
-  when: freeipa_server_firewalld_zone | default('') | length > 0
-
-- name: Map optional ipaserver CA subject base when provided
-  ansible.builtin.set_fact:
-    ipaserver_subject_base: "{{ freeipa_server_subject_base }}"
-  when: freeipa_server_subject_base | default('') | length > 0
-
-- name: Map optional ipaserver CA subject when provided
-  ansible.builtin.set_fact:
-    ipaserver_ca_subject: "{{ freeipa_server_ca_subject }}"
-  when: freeipa_server_ca_subject | default('') | length > 0
-
-- name: Map optional ipaserver POSIX idstart when provided
-  ansible.builtin.set_fact:
-    ipaserver_idstart: "{{ freeipa_server_idstart | int }}"
-  when: freeipa_server_idstart | int > 0
-
-- name: Map optional ipaserver POSIX idmax when provided
-  ansible.builtin.set_fact:
-    ipaserver_idmax: "{{ freeipa_server_idmax | int }}"
-  when: freeipa_server_idmax | int > 0
-
-- name: Map optional NTP pool when provided
-  ansible.builtin.set_fact:
-    ipaclient_ntp_pool: "{{ freeipa_server_ntp_pool }}"
-  when: freeipa_server_ntp_pool | default('') | length > 0
+    "{{ item.key }}": "{{ item.value }}"
+  loop: >-
+    {{ ({'ipaserver_firewalld_zone': freeipa_server_firewalld_zone,
+         'ipaserver_subject_base': freeipa_server_subject_base,
+         'ipaserver_ca_subject': freeipa_server_ca_subject,
+         'ipaclient_ntp_pool': freeipa_server_ntp_pool}
+        | dict2items | rejectattr('value', 'equalto', '') | list)
+       + ({'ipaserver_idstart': freeipa_server_idstart | int,
+           'ipaserver_idmax': freeipa_server_idmax | int}
+          | dict2items | selectattr('value', 'greaterthan', 0) | list) }}
+  loop_control:
+    label: "{{ item.key }}"
 
 - name: Install FreeIPA primary via upstream ipaserver role
   ansible.builtin.include_role:
