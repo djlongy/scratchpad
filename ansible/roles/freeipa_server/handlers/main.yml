@@ -19,3 +19,10 @@
 - name: Clean ipa ccaches now
   ansible.builtin.command: systemd-tmpfiles --clean
   changed_when: false
+
+- name: Restart sssd selfheal timer
+  ansible.builtin.systemd:
+    name: sssd-selfheal.timer
+    enabled: true
+    state: restarted
+    daemon_reload: true

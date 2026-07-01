@@ -266,3 +266,114 @@
   notify:
     - Reload systemd
     - Restart tmpfiles clean timer
+
+# ── SSSD identity-resolution self-heal ──────────────────────────────────────
+# SSSD can flip OFFLINE (error 1432158212) after heavy directory churn, or on a
+# reboot where it starts before dirsrv is ready — and NOT recover on its own. NSS
+# lookups then hang, so sshd/sudo/login wedge (you authenticate but the shell
+# hangs). A REBOOT does not fix it: SSSD's cache is persistent on disk, so it
+# reloads the poisoned/offline state. The cure is `sss_cache -E` (invalidate
+# cache) + restart against a healthy dirsrv. This watchdog does exactly that,
+# guarded so it acts only on a genuine, sustained failure. Opt out with
+# freeipa_server_sssd_selfheal: false.
+- name: Deploy SSSD self-heal script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/sssd-selfheal.sh
+    content: |
+      #!/bin/bash
+      # SSSD self-heal — expire cache + restart sssd if identity resolution is wedged.
+      # Guarded: acts only after {{ freeipa_server_sssd_selfheal_strikes }} consecutive failed
+      # checks, and at most once per {{ freeipa_server_sssd_selfheal_min_interval }}s (anti-storm).
+      set -u
+      CANARY="{{ freeipa_server_sssd_selfheal_canary }}"
+      STRIKES={{ freeipa_server_sssd_selfheal_strikes | int }}
+      MIN_INTERVAL={{ freeipa_server_sssd_selfheal_min_interval | int }}
+      STATE=/run/sssd-selfheal.fails
+      LAST=/run/sssd-selfheal.last
+      DOM="$(hostname -d 2>/dev/null)"
+
+      resolves() { timeout 8 id "$CANARY" >/dev/null 2>&1; }
+      # WEDGED if sssd is down, OR the domain reports OFFLINE (the exact failure, err 1432158212),
+      # OR a canary lookup hangs/fails. domain-status is AUTHORITATIVE — the canary alone is
+      # unreliable (on a server it can fall through to another NSS source even while sssd is offline).
+      wedged() {
+        systemctl is-active --quiet sssd || return 0
+        sssctl domain-status "$DOM" 2>/dev/null | grep -qi 'Online status: Offline' && return 0
+        resolves || return 0
+        return 1
+      }
+      if ! wedged; then rm -f "$STATE"; exit 0; fi
+
+      fails=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 )); echo "$fails" > "$STATE"
+      if [ "$fails" -lt "$STRIKES" ]; then
+        logger -t sssd-selfheal "identity resolution failing ($fails/$STRIKES) — will act if it persists"
+        exit 0
+      fi
+
+      now=$(date +%s); last=$(cat "$LAST" 2>/dev/null || echo 0)
+      if [ $(( now - last )) -lt "$MIN_INTERVAL" ]; then
+        logger -t sssd-selfheal "still down but healed <${MIN_INTERVAL}s ago — backing off (dirsrv may be broken)"
+        exit 0
+      fi
+      echo "$now" > "$LAST"
+
+      logger -t sssd-selfheal "identity resolution DOWN ($fails strikes) — sss_cache -E + restart sssd"
+      sss_cache -E 2>/dev/null || true
+      systemctl restart sssd
+      sleep 3
+      if ! wedged; then
+        logger -t sssd-selfheal "RECOVERED after sssd restart"; rm -f "$STATE"
+      else
+        logger -t sssd-selfheal "STILL DOWN after restart — needs a human (check dirsrv/replication)"
+      fi
+    mode: "0755"
+  when: freeipa_server_sssd_selfheal | bool
+
+- name: Deploy SSSD self-heal service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sssd-selfheal.service
+    content: |
+      [Unit]
+      Description=SSSD identity-resolution self-heal (expire cache + restart if wedged)
+      After=sssd.service
+      StartLimitIntervalSec={{ freeipa_server_sssd_selfheal_start_limit_interval }}
+      StartLimitBurst={{ freeipa_server_sssd_selfheal_start_limit_burst }}
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/sssd-selfheal.sh
+      TimeoutStartSec=60
+    mode: "0644"
+  when: freeipa_server_sssd_selfheal | bool
+  notify:
+    - Reload systemd
+    - Restart sssd selfheal timer
+
+- name: Deploy SSSD self-heal timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sssd-selfheal.timer
+    content: |
+      [Unit]
+      Description=SSSD self-heal timer
+
+      [Timer]
+      OnBootSec={{ freeipa_server_sssd_selfheal_boot_delay }}
+      OnUnitActiveSec={{ freeipa_server_sssd_selfheal_interval }}
+      Persistent=true
+      Unit=sssd-selfheal.service
+
+      [Install]
+      WantedBy=timers.target
+    mode: "0644"
+  when: freeipa_server_sssd_selfheal | bool
+  notify:
+    - Reload systemd
+    - Restart sssd selfheal timer
+
+- name: Enable SSSD self-heal timer
+  ansible.builtin.systemd:
+    name: sssd-selfheal.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: freeipa_server_sssd_selfheal | bool

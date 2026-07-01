@@ -560,3 +560,17 @@ freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
 freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
 freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"
+
+# ── SSSD identity-resolution self-heal (resilience.yml) ──────────────────────
+# Watchdog that expires the SSSD cache + restarts sssd if identity resolution is
+# wedged/offline (which sshd/sudo/login block on, and which a REBOOT does not
+# clear — the SSSD cache is persistent on disk). Guarded: acts only after N
+# consecutive failed checks and at most once per min_interval seconds.
+freeipa_server_sssd_selfheal: true
+freeipa_server_sssd_selfheal_canary: "admin"          # IPA user that must always resolve via SSSD
+freeipa_server_sssd_selfheal_strikes: 2               # consecutive failed checks before acting
+freeipa_server_sssd_selfheal_interval: "5min"         # how often the timer probes
+freeipa_server_sssd_selfheal_boot_delay: "3min"       # first probe after boot
+freeipa_server_sssd_selfheal_min_interval: 900        # min seconds between restarts (anti-storm)
+freeipa_server_sssd_selfheal_start_limit_interval: "30min"
+freeipa_server_sssd_selfheal_start_limit_burst: 5
