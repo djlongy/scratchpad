@@ -265,18 +265,17 @@ A FreeIPA *user* group can't hold HBAC/sudo/host rules, so policy is decoupled f
 A user in `role-x` is an **indirect** member of `ug-x`, so every rule pointing at `ug-x` applies.
 (The reverse nesting does not work.)
 
-### The thin RBAC overlay (optional, **external** to the role)
+### The thin RBAC overlay (optional, built-in)
 
 Instead of hand-adding a person to dozens of granular policy groups, assign them an abstract
 **role**. The overlay generates **only** role groups, their nesting into **existing** `ug-*`
-policy groups, and user→role-group membership — nothing else. **The role itself has no knowledge
-of it**: three external, decoupled pieces, so the role runs on any native baseline and you can
-drop the overlay and run from raw dicts:
-
-1. **`filter_plugins/freeipa_rbac.py`** — the compiler (a Jinja filter).
-2. **group_vars `freeipa_server_rbac_*`** — the overlay data you author.
-3. **a playbook `pre_task`** — validates + compiles + merges into `freeipa_idam_usergroups` +
-   `_users` **before** the role runs (null-safe + gated; no roles ⇒ no-op ⇒ pure baseline).
+policy groups, and user→role-group membership — nothing else. It is compiled **by the role
+itself** (`tasks/rbac.yml`, inside the desired phase): declare the two `freeipa_server_rbac_*`
+vars in group_vars and run the role — no playbook `pre_task` needed. With nothing declared it
+no-ops, so a pure-baseline realm runs untouched, and because it compiles **after** the tenant
+load it composes with `freeipa_idam_tenants_dir`. (Compiled objects are merged via `set_fact`,
+so supplying `freeipa_idam_users`/`_usergroups` as extra-vars would bypass the overlay — use
+group_vars or tenant files.)
 
 **Tenancy is a hard boundary**: a role is *defined* inside its `tenant → environment` cell and
 *assigned* by naming that exact cell, so one grant can never reach another tenant/environment.

@@ -3,21 +3,14 @@
 A runnable, sanitised template for a **3-tenant × 3-environment** estate (acme / globex /
 initech × dev / test / prod).
 
-**The `freeipa_server` role knows nothing about this overlay.** The role consumes only the
-native `freeipa_idam_*` dicts. The overlay is layered on top by **three external, decoupled
-pieces** — drop them and the role runs from raw dicts unchanged:
-
-1. **The filter plugin** `../../filter_plugins/freeipa_rbac.py` — the compiler, a Jinja
-   filter loaded via `ansible.cfg`. (Generates **only** role groups, their nesting into the
-   existing `ug-*` groups, and user→role-group membership — nothing else.)
-2. **The group_vars** `group_vars/all/10_rbac.yml` — `freeipa_server_rbac_*`, the overlay
-   data you author.
-3. **A pre_task** — `freeipa_server_rbac_compile.yml`, one reusable tasks file the playbook includes from
-   its `pre_tasks` (`import_tasks: freeipa_server_rbac_compile.yml`). It validates + compiles + merges the
-   overlay into the native `freeipa_idam_*` dicts **before** the role runs. It reads the
-   in-scope group_vars (nothing is passed in), and is null-safe + gated: no
-   `freeipa_server_rbac_roles` declared ⇒ every task no-ops ⇒ pure baseline. Include it from
-   *every* playbook instead of copy-pasting the compile steps.
+**The overlay is a purely optional add-on, compiled by the role itself** (`tasks/rbac.yml`,
+inside the desired phase). The role consumes only the native `freeipa_idam_*` dicts; when
+`freeipa_server_rbac_roles` is declared it validates + compiles + merges the overlay onto them
+(generating **only** role groups, their nesting into the existing `ug-*` groups, and
+user→role-group membership — nothing else). No playbook `pre_tasks` are needed, and with no
+overlay vars declared — or empty/null ones — every overlay task no-ops: a pure-baseline realm
+runs untouched. It also composes with the per-tenant `freeipa_idam_tenants_dir` mode (the
+overlay compiles after the tenant load). You author one file: `group_vars/all/10_rbac.yml`.
 
 The native dicts in `group_vars/all/00_native.yml` (policy groups `ug-*`, their HBAC + sudo
 rules, hostgroups, users) are the **source of truth** — exactly what `--tags export` drops out
@@ -27,15 +20,14 @@ of a live realm.
 rbac-overlay/
 ├── inventory.yml                    # the IPA primary (one realm hosts all tenants)
 ├── ansible.cfg                      # loads the role + its filter_plugins (the compiler)
-├── site.yml                         # pre_tasks import the compile, then the role
-├── freeipa_server_rbac_compile.yml  # the reusable compile (set_facts merging overlay → native)
+├── site.yml                         # just the role — it compiles the overlay itself
 └── group_vars/all/
     ├── 00_native.yml                # NATIVE ug-* policy groups + HBAC/sudo/hostgroups + users
     └── 10_rbac.yml                  # the overlay data: freeipa_server_rbac_roles tree + assignments
 ```
 
-> **Fall back to raw dicts any time:** drop `10_rbac.yml` and the `freeipa_server_rbac_compile.yml` include
-> from `site.yml` and you have a plain native-dict deployment — the role is identical either way.
+> **Fall back to raw dicts any time:** drop `10_rbac.yml` and you have a plain native-dict
+> deployment — the role is identical either way.
 
 ## The model
 

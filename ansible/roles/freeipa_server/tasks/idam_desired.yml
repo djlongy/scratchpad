@@ -134,6 +134,13 @@
     freeipa_idam_hbacsvcs: "{{ freeipa_idam_hbacsvcs | freeipa_idam_named }}"
     freeipa_idam_sudo_commands: "{{ freeipa_idam_sudo_commands | freeipa_idam_named }}"
 
+# OPTIONAL thin RBAC overlay — compiles freeipa_server_rbac_* (abstract user→role
+# assignments) into the native usergroups/users lists. No-op when undeclared; runs
+# after the tenant load so it composes with tenants_dir, and before the account fold
+# + validation below so compiled objects are validated like everything else.
+- name: Compile the RBAC overlay into the native lists (optional)
+  ansible.builtin.import_tasks: rbac.yml
+
 # Fold the separate account-type lists into the working user set so they flow
 # through the SAME validation/create/group/marker pipeline — but with their
 # distinguishing attributes. Service accounts get the nologin shell. Break-glass

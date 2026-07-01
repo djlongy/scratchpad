@@ -1,28 +1,15 @@
 ---
-# Native freeipa_idam_* dicts + the OPTIONAL thin RBAC overlay. The role itself knows nothing
-# about the overlay — the overlay is added by THREE external pieces, all here in the playbook
-# layer (never in the role):
-#   1. the filter plugin   ../../filter_plugins/freeipa_rbac.py   (loaded via ansible.cfg)
-#   2. the group_vars      group_vars/all/10_rbac.yml (freeipa_server_rbac_*)
-#   3. the pre_tasks below — compile + merge the overlay into the native freeipa_idam_* dicts
-#      BEFORE the role runs. Drop these three and the role still runs from raw dicts unchanged.
+# Native freeipa_idam_* dicts + the OPTIONAL thin RBAC overlay — compiled BY THE ROLE
+# (tasks/rbac.yml, inside the desired phase). Declare freeipa_server_rbac_* in group_vars
+# and just run the role; with no overlay vars declared the role runs pure-native.
 #
 #   ansible-playbook -i inventory.yml site.yml --tags idam       # add --check --diff to preview
-#
-# The pre_tasks are fully null-safe + gated: with no freeipa_server_rbac_roles declared
-# they no-op, so a pure-baseline realm runs untouched.
-- name: FreeIPA IDAM — native dicts + thin RBAC overlay (compiled in pre_tasks)
+- name: FreeIPA IDAM — native dicts + thin RBAC overlay (compiled by the role)
   hosts: ipaserver
   gather_facts: false
   become: true
 
-  pre_tasks:
-    # External piece #3 — compile + merge the overlay into the native freeipa_idam_* dicts
-    # BEFORE the role runs. One reusable file (next to freeipa_rbac.py); include it from every
-    # playbook instead of copy-pasting. It reads the in-scope group_vars; nothing is passed in.
-    - name: Compile the RBAC overlay into the native dicts
-      ansible.builtin.import_tasks: freeipa_server_rbac_compile.yml
-
   roles:
-    # The baseline role — consumes ONLY native freeipa_idam_*; no overlay knowledge.
+    # Consumes the native freeipa_idam_* dicts; compiles the overlay itself when
+    # freeipa_server_rbac_roles is declared (group_vars/all/10_rbac.yml).
     - role: freeipa_server

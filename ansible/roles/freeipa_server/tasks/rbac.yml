@@ -1,0 +1,58 @@
+---
+# Thin RBAC overlay — a PURELY OPTIONAL add-on, compiled inside the desired-state
+# phase (imported by idam_desired.yml). A native run (no freeipa_server_rbac_* vars,
+# or empty/null ones) no-ops through this file — the role never requires the overlay.
+# When declared, it generates ONLY role groups + their nesting into EXISTING ug-*
+# policy groups + user→role-group membership, merged onto the native lists via
+# freeipa_idam_merge (baseline wins on a name collision; the listed fields union).
+# Runs AFTER the tenant load, so it composes with freeipa_idam_tenants_dir.
+#
+# Caveat: the merge lands via set_fact — freeipa_idam_users/_usergroups supplied as
+# EXTRA-VARS outrank set_fact and would ignore the overlay (use group_vars/tenants).
+
+- name: RBAC overlay | Reject the removed flat role_sets schema (fail fast)
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_rbac_role_sets is not defined
+    fail_msg: >-
+      freeipa_server_rbac_role_sets has been removed. The RBAC overlay is a nested
+      tree: freeipa_server_rbac_roles[<tenant>][<environment>][<role>] = {description?,
+      policy_groups: [...]}, with assignments freeipa_server_rbac_user_assignments[<user>]
+      [<tenant>][<environment>] = [roles]. The flat list allowed one role name to fan out
+      across tenants (a cross-tenant breach); the tree makes every grant a fully-qualified
+      cell. Migrate per the role README.
+    quiet: true
+
+# Everything below is gated on a non-empty roles tree (null-safe: a bare
+# `freeipa_server_rbac_roles:` key arrives as None and still means "overlay off").
+- name: RBAC overlay | Validate input (fail fast, names the culprit)
+  ansible.builtin.set_fact:
+    _freeipa_rbac_valid: >-
+      {{ (freeipa_server_rbac_roles | default({}, true))
+         | freeipa_rbac_validate(
+             freeipa_server_rbac_user_assignments | default({}, true),
+             freeipa_idam_usergroups,
+             freeipa_server_rbac_naming | default({}, true),
+             native_users=freeipa_idam_users,
+             allow_unknown_users=freeipa_server_rbac_allow_unknown_users | bool,
+             allow_missing_policy_groups=freeipa_server_rbac_allow_missing_policy_groups | bool) }}
+  when: (freeipa_server_rbac_roles | default({}, true)) | length > 0
+
+- name: RBAC overlay | Compile role groups + nesting onto native usergroups
+  ansible.builtin.set_fact:
+    freeipa_idam_usergroups: >-
+      {{ freeipa_idam_usergroups
+         | freeipa_idam_merge((freeipa_server_rbac_roles | default({}, true))
+                              | freeipa_rbac_role_groups(freeipa_server_rbac_naming | default({}, true)),
+                              union_fields=['group']) }}
+  when: (freeipa_server_rbac_roles | default({}, true)) | length > 0
+
+- name: RBAC overlay | Compile user→role memberships onto native users
+  ansible.builtin.set_fact:
+    freeipa_idam_users: >-
+      {{ freeipa_idam_users
+         | freeipa_idam_merge((freeipa_server_rbac_user_assignments | default({}, true))
+                              | freeipa_rbac_memberships(freeipa_server_rbac_roles | default({}, true),
+                                                         freeipa_server_rbac_naming | default({}, true)),
+                              union_fields=['groups']) }}
+  when: (freeipa_server_rbac_roles | default({}, true)) | length > 0
