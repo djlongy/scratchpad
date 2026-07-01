@@ -68,10 +68,11 @@
 - name: Assemble + validate declarative IDAM desired state (primary only)
   ansible.builtin.import_tasks: idam_desired.yml
   when: freeipa_server_is_primary | bool
-  # `delete` is here too: the hard-delete path (delete.yml) consumes these same
-  # freeipa_idam_* lists, so `--tags delete` must assemble them first — without this
-  # tag the delete run finds empty lists and silently no-ops.
-  tags: [idam, reconcile, delete, users, groups, hbac, sudo]
+  # `delete` + `prune_preserved` are here too: both hard-delete paths need this assembly
+  # first — delete.yml consumes the freeipa_idam_* lists (else it finds empty lists and
+  # no-ops), and prune_preserved.yml needs the break-glass → protected_users augmentation
+  # (idam_desired.yml) so an archived break-glass/service account is shielded from the sweep.
+  tags: [idam, reconcile, delete, prune_preserved, users, groups, hbac, sudo]
 
 # APPLY. NATIVE (idam.yml, server-side ipalib) is the default and the recommendation:
 # it is 2.67x faster than the API variant on the same workload (bulk groups/users),
@@ -165,3 +166,15 @@
     - freeipa_server_is_primary | bool
     - freeipa_idam_delete | default(false) | bool
   tags: [never, delete]
+
+# HARD-DELETE ORPHANED preserved (archived) users — accounts the reconcile archived because
+# they are no longer declared, so they never appear in a freeipa_idam_* list and delete.yml
+# cannot reach them. Discovers the preserved set LIVE. Shares the ONE hard-delete gate with
+# delete.yml (freeipa_idam_delete); the `never` tag selects THIS op vs --tags delete, and
+# --check makes it a dry-run. Does NOT consume the desired-state lists (no idam_desired dep).
+- name: Prune (HARD-DELETE) orphaned preserved users
+  ansible.builtin.import_tasks: prune_preserved.yml
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_idam_delete | default(false) | bool
+  tags: [never, prune_preserved]

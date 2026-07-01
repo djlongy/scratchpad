@@ -1,0 +1,93 @@
+---
+# tasks/prune_preserved.yml — HARD-DELETE users that are in the PRESERVED (archived)
+# state on the realm. This is the counterpart to delete.yml: where delete.yml removes
+# objects DECLARED in the current run, this removes ORPHANED preserved users — accounts
+# the normal reconcile archived (user-del --preserve) because they are no longer
+# declared, and which therefore never appear in any freeipa_idam_* list. delete.yml
+# structurally cannot reach them; this task discovers them LIVE instead.
+#
+# ── SAFETY — destructive + irreversible ──────────────────────────────────────
+# Shares the ONE hard-delete gate with delete.yml — no per-task permission boolean:
+#   1. gate  freeipa_idam_delete: true      (the single hard-delete switch; default false)
+#   2. tag   --tags prune_preserved         (`never`-tagged; selects THIS op vs --tags delete)
+# For a DRY-RUN add `--check`: discovery is read-only (check_mode: false) and the ipauser
+# delete runs in check mode, reporting what it WOULD remove without deleting. Protected
+# users, the keep-list, and the keep-regex (default `^svc-`, shielding service accounts)
+# are always excluded from the candidate set.
+
+- name: Prune-preserved | Refuse to run unless the hard-delete gate is set
+  ansible.builtin.assert:
+    that:
+      - freeipa_idam_delete | default(false) | bool
+    fail_msg: >-
+      prune_preserved.yml ran without freeipa_idam_delete=true. This is a hard-delete of preserved
+      (archived) users — arm the single hard-delete gate (freeipa_idam_delete=true) AND invoke with
+      --tags prune_preserved. Add --check for a dry-run.
+    quiet: true
+
+- name: Prune-preserved | Resolve admin password (declared var first, Vault fallback)
+  ansible.builtin.set_fact:
+    _freeipa_server_admin_password: >-
+      {{ freeipa_server_admin_password
+         if (freeipa_server_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+            'secret=' + freeipa_server_vault_secret + ':' + freeipa_server_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+# A valid admin Kerberos ticket is required for `ipa user-find`. Password on stdin, no_log.
+- name: Prune-preserved | Obtain admin Kerberos ticket
+  ansible.builtin.shell:
+    cmd: "set -o pipefail; echo {{ _freeipa_server_admin_password | quote }} | kinit {{ freeipa_server_admin_principal | quote }}"
+    executable: /bin/bash
+  no_log: true
+  changed_when: false
+  check_mode: false
+
+# Read-only discovery of the live preserved set. --pkey-only keeps output to logins only.
+- name: Prune-preserved | Discover live preserved users
+  ansible.builtin.command:
+    cmd: ipa user-find --preserved=True --pkey-only --sizelimit=0
+  register: _prune_preserved_find
+  changed_when: false
+  check_mode: false
+
+- name: Prune-preserved | Compute preserved logins
+  ansible.builtin.set_fact:
+    _preserved_logins: "{{ _prune_preserved_find.stdout | regex_findall('User login: (\\S+)') }}"
+
+# Candidate set = preserved − protected − explicit keep-list, then − keep-regex matches
+# (only when a regex is set, so an empty regex can never match-and-exclude everything).
+- name: Prune-preserved | Compute prune candidates (protected + keep-list + keep-regex excluded)
+  ansible.builtin.set_fact:
+    _prune_candidates: >-
+      {{ (_base | reject('match', freeipa_idam_prune_preserved_keep_regex) | list)
+         if (freeipa_idam_prune_preserved_keep_regex | default('') | length > 0)
+         else _base }}
+  vars:
+    _base: >-
+      {{ _preserved_logins
+         | difference(freeipa_idam_protected_users | default([]))
+         | difference(freeipa_idam_prune_preserved_keep | default([])) }}
+
+- name: Prune-preserved | Show prune plan
+  ansible.builtin.debug:
+    msg: >-
+      PRUNE-PRESERVED [{{ 'DRY-RUN (--check)' if ansible_check_mode else 'APPLY' }}]:
+      {{ _prune_candidates | length }} of {{ _preserved_logins | length }} preserved users
+      {{ 'would be' if ansible_check_mode else 'WILL BE' }} HARD-DELETED.
+      Candidates: {{ _prune_candidates | join(', ') | default('(none)', true) }}.
+      Kept: {{ (_preserved_logins | difference(_prune_candidates)) | join(', ') | default('(none)', true) }}.
+
+# The actual hard-delete. preserve: false → user_del (NOT --preserve); the ipauser module
+# resolves preserved entries via user_show, so a preserved user is genuinely removed. Under
+# --check the module reports the change without applying it (the dry-run).
+- name: Prune-preserved | Hard-delete preserved users (preserve=false)
+  freeipa.ansible_freeipa.ipauser:
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_server_admin_password }}"
+    name: "{{ _prune_candidates }}"
+    preserve: false
+    state: absent
+  when: _prune_candidates | length > 0

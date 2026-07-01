@@ -1,57 +1,43 @@
 ---
 # roles/freeipa_server/defaults/main.yml
 #
-# Portable FreeIPA server role. Behavioural defaults live here; env-specific
-# values (IPs, vault paths) are commented out for discoverability and set in
-# inventory group_vars. All inputs are prefixed freeipa_server_*.
-#
-# Install/replica options map 1:1 to upstream freeipa.ansible_freeipa
-# (ipaserver_* / ipareplica_*) at the include_role call in tasks/primary.yml
-# and tasks/replica.yml.
+# Portable FreeIPA server role. Behavioural defaults live here; env-specific values
+# (IPs, vault paths) are commented out for discoverability and set in inventory
+# group_vars. All inputs are prefixed freeipa_server_* / freeipa_idam_*. Install and
+# replica options map 1:1 to upstream freeipa.ansible_freeipa (ipaserver_* / ipareplica_*)
+# at the include_role calls in tasks/primary.yml and tasks/replica.yml.
 
 # ── Identity (derived; override in inventory only to break convention) ───────
 freeipa_server_domain: "{{ domain }}"
 freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
-
 # This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
 freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
 
-# Topology derived from inventory groups (supports single-server + clusters).
-# A single host in the `freeipa` group → it is the primary, replica path never
-# dispatches. Add a 2nd host (optionally to freeipa_replica) to grow a cluster.
+# Topology derived from inventory groups. One host in `freeipa` → it's the primary and
+# the replica path never dispatches; add hosts (optionally to freeipa_primary) to cluster.
 freeipa_server_primary_group: "freeipa_primary"
 freeipa_server_primary_host_name: >-
   {{ (groups[freeipa_server_primary_group] | default(groups['freeipa']))[0] }}
 freeipa_server_primary_host: "{{ freeipa_server_primary_host_name }}.{{ freeipa_server_domain }}"
 freeipa_server_primary_ip: "{{ hostvars[freeipa_server_primary_host_name].ansible_host }}"
 freeipa_server_is_primary: "{{ inventory_hostname == freeipa_server_primary_host_name }}"
-# True only when more than one FreeIPA server is defined in inventory.
-freeipa_server_has_replicas: "{{ (groups['freeipa'] | default([])) | length > 1 }}"
 
 # This host's IP address (passed to the installer).
 freeipa_server_ip_addresses:
   - "{{ ansible_host }}"
 
-# ── Credentials: declared Ansible vars FIRST, HashiCorp Vault as fallback ────
-# Resolution order for every secret this role needs:
-#   1. a declared Ansible var (these two below) — set via group_vars, an
-#      Ansible-Vault file, or -e. If non-empty it is used verbatim.
-#   2. otherwise a HashiCorp Vault lookup at freeipa_*_vault_secret : *_field.
-# Supplying the password(s) directly means NO HashiCorp Vault is required — e.g.
-# you can run `--tags export` with just freeipa_server_admin_password. The Vault
-# lookup is evaluated lazily, so it never fires when the password is provided.
-freeipa_server_admin_principal: "admin"  # IPA admin user/principal for kinit + ipaadmin ops
-freeipa_server_admin_password: ""        # IPA admin password (used for kinit/admin ops)
+# ── Credentials: declared Ansible var FIRST, HashiCorp Vault as fallback ─────
+# For every secret: use the declared var below if non-empty, else look it up at
+# freeipa_server_vault_secret : *_field. The Vault lookup is lazy, so supplying the
+# password directly means no Vault is needed (e.g. `--tags export`). These vars are the
+# SINGLE credential source for the WHOLE role — there are no separate freeipa_idam_* ones.
+freeipa_server_admin_principal: "admin"  # IPA admin principal for kinit + ipaadmin ops
+freeipa_server_admin_password: ""        # IPA admin password
 freeipa_server_dm_password: ""           # Directory Manager password
-
-# HashiCorp Vault fallback location (ENV-SPECIFIC — set in inventory group_vars).
-# Only needed when the passwords above are left empty.
+# Vault fallback location (ENV-SPECIFIC — set in inventory). Only used when passwords empty.
 # freeipa_server_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
 freeipa_server_admin_password_field: "admin_password"
 freeipa_server_dm_password_field: "dm_password"
-# NOTE: these freeipa_server_admin_* / freeipa_server_vault_secret vars are the SINGLE
-# source of admin credentials for the ENTIRE role — install, IDAM, reconcile, automember,
-# export, delete. There are no separate freeipa_idam_* credential vars; set only these.
 
 # ── Packaging / firewall (upstream owns these) ──────────────────────────────
 freeipa_server_install_packages: true
@@ -59,47 +45,34 @@ freeipa_server_setup_firewalld: true
 freeipa_server_firewalld_zone: ""        # "" → upstream default zone
 
 # ── Airgap / offline install (default online) ───────────────────────────────
+# When offline, point freeipa_server_package_repo at a pre-staged internal repo
+# (handled in preflight): { name, baseurl, gpgcheck }.
 freeipa_server_offline: false
-# When offline, point to a pre-staged internal repo (handled in preflight):
-# freeipa_server_package_repo:
-#   name: "idm-local"
-#   baseurl: "https://repo.internal/idm/$releasever/$basearch"
-#   gpgcheck: true
 
-# ── CA design ───────────────────────────────────────────────────────────────
-# self-signed | external-ca | ca-less
+# ── CA design: self-signed | external-ca | ca-less ──────────────────────────
 freeipa_server_ca_mode: "self-signed"
 freeipa_server_subject_base: ""          # "" → upstream derives O=<REALM>
 freeipa_server_ca_subject: ""            # "" → upstream default
 freeipa_server_random_serial_numbers: false
-# external-ca (two-phase: 1st run emits CSR, sign, 2nd run consumes certs):
+# external-ca is two-phase: 1st run emits a CSR, you sign it, 2nd run consumes the certs.
 freeipa_server_external_cert_files: []
-# ca-less (provide HTTP/LDAP cert files via upstream vars when chosen):
-# documented in README; not defaulted.
+# ca-less: provide HTTP/LDAP cert files via upstream vars (see README); not defaulted.
 
 # ── Trusted external CAs (ADDITIVE to the IPA CA) ────────────────────────────
-# Import third-party / other-domain CA certs into the IPA trust store so IPA and
-# its enrolled clients (via ipa-certupdate) TRUST certificates issued by them.
-# This does NOT change the IPA CA chosen by freeipa_server_ca_mode — it adds
-# trusted roots alongside it. Primary only; replicates to the rest of the cluster.
-# Each item: { name: <trust-store nickname>, src: <PEM on the control node> }
-#         or { name: <nickname>, content: "<inline PEM text>" }
-# Idempotent (skips nicknames already present). Needs the IPA CA store, so it is
-# skipped in ca-less mode. Auth uses the Directory Manager password from
-# freeipa_server_vault_secret + freeipa_server_dm_password_field (fed on stdin).
+# Import third-party CA certs into the IPA trust store so IPA + enrolled clients (via
+# ipa-certupdate) trust certs they issue. Does NOT change the CA from ca_mode — adds roots
+# alongside it. Primary only, replicates cluster-wide; idempotent; skipped in ca-less mode.
+# Auth uses the DM password (vault_secret + dm_password_field, fed on stdin). Each item:
+#   { name: <trust-store nickname>, src: <PEM on control node> } | { name, content: "<PEM>" }
 freeipa_server_trusted_external_cas: []
 freeipa_server_trusted_ca_staging_dir: "/root/.freeipa-trusted-cas"
 
-# ── Backup restore / offload (wraps upstream freeipa.ansible_freeipa.ipabackup) ─
-# Our scheduled backup.yml runs `ipa-backup` on a timer; these add the missing
-# restore + controller-offload paths by delegating to the upstream ipabackup role.
-#
-# RESTORE is DESTRUCTIVE and break-glass: gated behind the `never` tag (runs ONLY
-# with `--tags restore`) AND requires this to name a backup present on the server
-# (e.g. "ipa-data-2026-06-22-12-00-00" or "ipa-full-..."). DM password from Vault.
+# ── Backup restore / offload (wraps upstream ipabackup; backup.yml runs ipa-backup) ─
+# RESTORE is DESTRUCTIVE break-glass: `never`-tagged (runs only with --tags restore) and
+# must name a backup on the server (e.g. "ipa-full-2026-06-22-12-00-00"). DM password from Vault.
 freeipa_server_restore_name: ""
-# OFFLOAD (non-destructive): copy server backups to the Ansible controller during
-# a normal backup run. Set to a backup name, or "all" for every backup.
+# OFFLOAD (non-destructive): during a normal backup run, copy backups to the controller.
+# Set a backup name, or "all" for every backup.
 freeipa_server_backup_fetch_name: ""
 freeipa_server_backup_controller_path: "./freeipa-backups"
 
@@ -107,24 +80,17 @@ freeipa_server_backup_controller_path: "./freeipa-backups"
 freeipa_server_setup_kra: false
 freeipa_server_no_pkinit: false
 
-# ── Active Directory trust (cross-forest identity) ───────────────────────────
-# Trust an AD forest so AD users authenticate against IPA-managed resources.
-# Requires the AD trust controller (set freeipa_server_setup_adtrust: true so the
-# install passes --setup-adtrust) PLUS reachable AD DCs + working DNS both ways.
-# Each trust is established via the upstream ipatrust module; the IPA admin and
-# each AD admin password come from Vault. Opt-in, default off.
-# NOTE: not exercised in this lab (no AD); shipped as a capability.
+# ── Active Directory trust (cross-forest identity; opt-in, default off) ──────
+# Trust an AD forest so AD users authenticate against IPA resources. Needs setup_adtrust
+# (passes --setup-adtrust), reachable AD DCs, and two-way DNS. Each trust → upstream ipatrust;
+# IPA admin + each AD admin password from Vault. Not exercised in this lab (no AD).
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
-#  - realm: "AD.EXAMPLE.COM"
-#    admin: "Administrator"               # AD admin user authorizing the trust
-#    password_field: "ad_trust_password"  # field in freeipa_server_vault_secret
-#    two_way: true                        # bidirectional trust
-#    trust_type: "ad"
+#  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }
 
 # ── DNS ─────────────────────────────────────────────────────────────────────
 freeipa_server_setup_dns: true
-freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["10.0.0.1"]
+freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["192.0.2.1"]
 freeipa_server_forward_policy: "only"    # only | first
 freeipa_server_no_forwarders: false
 freeipa_server_auto_reverse: true
@@ -132,45 +98,29 @@ freeipa_server_reverse_zones: []
 freeipa_server_no_dnssec_validation: true
 freeipa_server_allow_zone_overlap: true
 
-# Declarative DNS (primary only; needs integrated DNS). Manages IPA-hosted zones,
-# conditional forward zones, and records via the upstream ipadns* modules. Idempotent.
-#
-# Zones — forward (name) OR reverse (name_from_ip: CIDR → IPA derives in-addr.arpa):
+# Declarative DNS (primary only; needs integrated DNS) via upstream ipadns* modules; idempotent.
+# Zones — forward (name) OR reverse (name_from_ip: CIDR → IPA derives in-addr.arpa). To REMOVE
+# a reverse zone use its explicit name (state: absent + name: "0.0.10.in-addr.arpa."), not name_from_ip.
 freeipa_server_dns_zones: []
 #  - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
 #  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true, skip_overlap_check: true }  # reverse
-#    # NB: to REMOVE a reverse zone use its explicit name (state: absent +
-#    #     name: "0.0.10.in-addr.arpa."), not name_from_ip.
 freeipa_server_dns_forward_zones: []
 #  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
-#
-# Records — record_value is list-typed, so single and multiple values are the SAME
-# field (no record_value/record_values split). create_reverse auto-builds the PTR
-# (needs the reverse zone above + allow_sync_ptr). Or drive a whole zone in one call
-# via `records:`. Values commonly sourced from inventory hostvars (see example role).
+# Records — record_value is list-typed (single or many, same field). create_reverse auto-builds
+# the PTR (needs the reverse zone + allow_sync_ptr). Or drive a whole zone via `records:`.
 freeipa_server_dns_records: []
 #  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
 #  - { zone_name: "internal.example.com", name: "vip",  record_type: "A", record_value: ["10.0.0.21", "10.0.0.22"] }
 #  - { zone_name: "internal.example.com", name: "vcenter", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR
 #  - { zone_name: "internal.example.com", records: [ { record_name: "esx01", a_record: ["10.0.0.31"], create_reverse: true } ] }  # bulk per zone
 
-# ── Automember (auto group/hostgroup membership rules) ───────────────────────
-# Primary only. Each rule auto-assigns users/hosts to a group by attribute regex
-# via the upstream ipaautomember module. Idempotent.
+# ── Automember (auto group/hostgroup membership by attribute regex; primary only) ──
+# Each rule → upstream ipaautomember; idempotent. The target group/hostgroup must already exist.
 freeipa_server_automember_rules: []
-#  - name: linux-hosts            # the target group/hostgroup (must already exist)
-#    automember_type: hostgroup   # group | hostgroup
-#    inclusive:
-#      - { key: "fqdn", expression: ".*\\.example\\.com$" }
-#  - name: contractors
-#    automember_type: group
-#    inclusive:
-#      - { key: "title", expression: "Contractor" }
-
-# Re-evaluate EXISTING members after a rule changes, so hosts that enrolled BEFORE
-# their rule existed get placed (a newly-enrolling host is placed automatically by
-# IPA at host-create — no rebuild needed). The rebuild runs only when a rule
-# changed this run; set true to force a one-off rebuild on demand.
+#  - { name: linux-hosts, automember_type: hostgroup, inclusive: [{ key: "fqdn", expression: ".*\\.example\\.com$" }] }
+#  - { name: contractors, automember_type: group,     inclusive: [{ key: "title", expression: "Contractor" }] }
+# Re-evaluate EXISTING members after a rule changes (new hosts are placed at enrol time, so no
+# rebuild needed for them). Runs only when a rule changed this run; set true to force a one-off.
 freeipa_server_automember_rebuild: false
 
 # ── POSIX ID range / HBAC / homedirs ────────────────────────────────────────
@@ -188,7 +138,7 @@ freeipa_server_ntp_pool: ""
 freeipa_server_fips_required: false
 
 # ── Preflight tolerances ────────────────────────────────────────────────────
-freeipa_server_preflight_time_tolerance_sec: 120   # Kerberos fails > 300s skew
+freeipa_server_preflight_time_tolerance_sec: 120    # Kerberos fails > 300s skew
 freeipa_server_preflight_wait_primary_timeout: 600  # replica waits for primary LDAP
 
 # ── Post-install hardening (ALL opt-in; default = no behaviour change) ───────
@@ -217,54 +167,34 @@ freeipa_server_recovery_chrony_max_correction: "0.5"
 freeipa_server_ccache_max_age: "4h"
 freeipa_server_tmpfiles_clean_interval: "1h"
 
-# ── TWO "role"-like inputs (both OPTIONAL conveniences over the baseline) ─────
-#   1. freeipa_idam_roles    — GROUP-BUNDLE matrix (declared below). A role is a
-#                              named set of groups; a user's `roles: [...]` expand
-#                              to the union of those groups. Pure Ansible-side
-#                              convenience; creates NO IPA object of its own.
-#   2. freeipa_idam_iparoles — NATIVE IPA delegation role objects (`ipa role`):
-#                              bundles PRIVILEGES and assigns them to members.
-#                              Use to delegate IPA-management powers (helpdesk).
+# ── Declarative IDAM data contract ────────────────────────────────────────────
+# Two role-like inputs, both optional conveniences over the group baseline:
+#   freeipa_idam_roles    — GROUP-BUNDLE matrix: a role is a named set of groups; a user's
+#                           `roles: [...]` expands to the union of those groups. Ansible-side
+#                           only, creates NO IPA object.
+#   freeipa_idam_iparoles — NATIVE IPA delegation role objects (`ipa role`): bundle PRIVILEGES
+#                           and assign to members. Delegates IPA-management powers (helpdesk).
 #
-# ── Optional THIN RBAC overlay — NOT a role feature (kept external on purpose) ──
-# This role consumes ONLY the native freeipa_idam_* dicts below and has NO knowledge of any
-# overlay. An OPTIONAL "assign a user to an abstract role instead of many granular groups"
-# overlay lives entirely OUTSIDE the role — three external, decoupled pieces:
-#   1. filter_plugins/freeipa_rbac.py   — the compiler (a Jinja filter; usable from anywhere)
-#   2. group_vars  freeipa_server_rbac_* — the overlay data you author (NOT defined here)
-#   3. a playbook PRE_TASK              — compiles + merges the overlay into freeipa_idam_*
-#                                         BEFORE this role runs
-# So the role works on ANY native FreeIPA baseline out of the box; the overlay sits on top,
-# and dropping it leaves you running from raw dicts. Worked example: examples/rbac-overlay/.
-
-# ── Declarative IDAM data contract ───────────────────────────────────────────
-# Admin credentials come from the consolidated freeipa_server_admin_* / vault vars above —
-# there are NO freeipa_idam_admin_* / freeipa_idam_vault_secret vars (removed for consistency).
+# OPTIONAL thin RBAC overlay ("assign a user to an abstract role, not many groups") lives ENTIRELY
+# OUTSIDE this role — the role only consumes the native freeipa_idam_* dicts. Three decoupled pieces:
+# filter_plugins/freeipa_rbac.py (compiler), group_vars freeipa_server_rbac_* (your overlay data),
+# and a playbook PRE_TASK that compiles+merges into freeipa_idam_* before the role runs. Drop it and
+# you're back to raw dicts. Worked example: examples/rbac-overlay/.
 #
-# Unified per-realm model (optional): a directory of per-tenant files, each
-# {tenant, shared?, <object lists>}. When set, the role reads + flattens ALL of them in ONE
-# run, so a single declarative reconcile sees every tenant at once. A file can carry its WHOLE
-# config — not just users/groups but groups, hbac_rules, sudo_rules, roles, automember,
-# dns_zones/dns_records, ... (short keys like users/groups/hbac_rules/dns_records, or the full
-# freeipa_idam_*/freeipa_server_* var straight from an export). Lists are concatenated across
-# files by target var; users/groups are stamped _owner (tenant) + _shared. Each file is loaded
-# with include_vars, so it behaves like ANY inventory vars YAML: reference inventory/group_vars
-# (and the file's own tenant/env/prefix) with normal quoted Jinja, incl. pulling a whole list
-# from a group_var (stays a native list). No special extension — a tenant file is a plain .yml
-# (see tasks/load_tenants.yml + load_one_tenant.yml).
-# Empty = legacy mode (set the lists directly in group_vars). Inventory sets e.g.
-# "{{ inventory_dir }}/tenants".
+# Tenants (optional): a directory of per-tenant .yml files, each {tenant, shared?, <object lists>}.
+# The role reads + flattens ALL of them in one run so a single reconcile sees every tenant. A file
+# can carry its whole config (short keys like users/groups/hbac_rules/dns_records, or full
+# freeipa_idam_*/freeipa_server_* straight from an export). Lists concatenate across files by target
+# var; users/groups are stamped _owner (tenant) + _shared. Loaded via include_vars, so a file
+# behaves like any inventory YAML (quoted Jinja, can pull a whole list from a group_var). Empty =
+# legacy mode (set the lists directly in group_vars). Inventory sets e.g. "{{ inventory_dir }}/tenants".
+# See tasks/load_tenants.yml + load_one_tenant.yml.
 freeipa_idam_tenants_dir: ""
 freeipa_idam_managed_group: "idam-managed-users"
 freeipa_idam_usergroups: []
-# Roles matrix — a role is a named bundle of groups; users reference roles
-# (user `roles: [...]`) instead of long flat group lists. At reconcile, each
-# user's roles expand to the union of their groups (merged with any direct
-# `groups`). Distinct from the inventory-side role matrix (which derives groups/
-# hostgroups/HBAC/sudo) — this just bridges users <-> existing groups for cleaner RBAC.
+# Group-bundle roles matrix (see above). Each user's roles expand to the union of their groups.
 freeipa_idam_roles: []
-#  - name: platform-admin
-#    groups: [app-gitlab-admin, app-harbor-admin]
+#  - { name: platform-admin, groups: [app-gitlab-admin, app-harbor-admin] }
 freeipa_idam_users: []
 freeipa_idam_hostgroups: []
 freeipa_idam_hbacsvcs: []                  # custom HBAC services (e.g. docker, xrdp-sesman)
@@ -277,132 +207,109 @@ freeipa_idam_sudocmdgroups: []             # bundle sudo cmds → grant via cmdg
 freeipa_idam_sudo_rules: []
 freeipa_idam_pwpolicies: []
 
-# Custom RBAC building blocks for delegation roles (the permission → privilege →
-# role daisychain). Built-ins are never declared — only custom grants you define.
-# permission = atomic right; privilege = bundle of permissions; role (below) = bundle
-# of privileges assigned to members. Field names = ipapermission / ipaprivilege params.
+# Custom RBAC building blocks for delegation roles: permission (atomic right) → privilege
+# (bundle of permissions) → iparole (bundle of privileges, below). Built-ins are never declared.
+# Field names = ipapermission / ipaprivilege params.
 freeipa_idam_permissions: []
 #  - { name: "Read Docker Hostgroups", right: [read, search], object_type: hostgroup, attrs: [cn, member] }
 freeipa_idam_privileges: []
 #  - { name: "Docker Fleet Operators", description: "Manage docker hostgroups", permission: ["Read Docker Hostgroups"] }
 
-# Native FreeIPA RBAC DELEGATION roles (`ipa role`) — a different layer from the
-# group-bundle freeipa_idam_roles above. A native role bundles PRIVILEGES (manage
-# users, reset passwords, read schema, ...) and is assigned to members. Use this to
-# delegate IPA-management powers (helpdesk, operators), NOT app/host access (that's
-# groups + HBAC). Applied via freeipa.ansible_freeipa.iparole AFTER users + groups
-# exist so members resolve. Each item: { name, privilege: [...], user: [...],
-# group: [...], host: [...], hostgroup: [...], service: [...], state: present }.
+# Native FreeIPA RBAC DELEGATION roles (`ipa role`) — bundle PRIVILEGES and assign to members, to
+# delegate IPA-management powers (helpdesk/operators), NOT app/host access (that's groups + HBAC).
+# Applied via iparole AFTER users + groups exist. Each item: { name, privilege: [...], user/group/
+# host/hostgroup/service: [...], state: present }.
 freeipa_idam_iparoles: []
-#  - name: helpdesk-l1
-#    privilege: ["Modify Users and Reset passwords", "Unlock user accounts"]
-#    group: [it-helpdesk]
+#  - { name: helpdesk-l1, privilege: ["Modify Users and Reset passwords", "Unlock user accounts"], group: [it-helpdesk] }
 freeipa_idam_password_expiration_floors: []
 
-# Email is built as <name>@<freeipa_idam_email_domain> when a user has no explicit
-# `email:` — the mail domain is often NOT the realm domain, so it is its own var.
-# An explicit per-user email always overrides this.
+# Email = <name>@<email_domain> when a user has no explicit `email:` (the mail domain is often
+# not the realm domain, hence its own var). A per-user email always overrides this.
 freeipa_idam_email_domain: "{{ domain }}"
 
-# Initial password set on user CREATE (update_password: on_create, so existing
-# users are never reset). Empty = create users with no password. Set this from
-# Vault in inventory (e.g. a lookup on freeipa_server_vault_secret). A per-user
-# `password:` overrides it.
+# Initial password on user CREATE only (update_password: on_create — existing users never reset).
+# Empty = create with no password. Set from Vault in inventory. A per-user `password:` overrides.
 freeipa_idam_default_user_password: ""
 
-# Deterministic group GIDs (Infrastructure-as-Code): name -> gidnumber. Groups
-# whose name is in this map are created with the fixed GID, so POSIX permissions
-# (/etc/group, SSSD/NSS) stay consistent across environments + DR rebuilds. A
-# group's own `gidnumber:` still wins if set; otherwise the map; otherwise IPA
-# auto-assigns. User UIDs stay auto-assigned (no cross-host constraint).
+# Deterministic group GIDs (name → gidnumber) so POSIX perms stay consistent across environments +
+# DR rebuilds. Precedence: a group's own `gidnumber:` > this map > IPA auto-assign. UIDs stay auto.
 freeipa_idam_group_gids: {}
 #  docker: 89600115
-#  ansible: 89600116
 
-# Archive (preserve) removed users instead of hard-deleting them. preserve=true →
-# user-del --preserve: account deactivated + retained (recoverable), not destroyed.
+# Archive (preserve) removed users instead of hard-deleting: user-del --preserve deactivates +
+# retains the account (recoverable) rather than destroying it.
 freeipa_idam_preserve_archived: true
 
-# ── ONE authoritative switch (spec §8) — the recommended control for ALL pruning ─────
-# false (default) = additive-safe: create/update declared objects + memberships and add
-# users/groups, but do NOT strip undeclared members or delete undeclared objects. true =
-# the COMPILED desired-state is authoritative: undeclared group members are removed,
-# undeclared matrix-managed objects in scope (groups, hostgroups, HBAC + sudo + automember
-# rules) are deleted, and users dropped from config are archived. REALM-SCOPED: only ever
-# run authoritative against a COMPLETE assembled desired-state (never a partial tenant
-# file), or it will prune another tenant's objects — see spec §9.
-#
-# This is the SOLE pruning control — there are NO legacy per-mechanism flags
-# (membership_declarative / reconcile_objects / reconcile_groups were removed). New
-# inventories set only this one var.
+# ── Pruning control ───────────────────────────────────────────────────────────
+# THE authoritative switch (spec §8) — the sole pruning control (no legacy per-mechanism flags).
+# false (default) = additive-safe: create/update declared objects + memberships, add users/groups,
+# but never strip undeclared members or delete undeclared objects. true = compiled desired-state is
+# authoritative: undeclared group members removed, undeclared in-scope matrix objects (groups,
+# hostgroups, HBAC/sudo/automember rules) deleted, users dropped from config archived. REALM-SCOPED:
+# only run authoritative against a COMPLETE assembled desired-state, never a partial tenant file, or
+# it prunes another tenant's objects (spec §9).
 freeipa_server_authoritative: false
 
-# Membership-only reconcile — the SAFE nightly drift-revoke mode. When true, the run strips
-# undeclared group members (exactly like authoritative) but SUPPRESSES every object/user
-# deletion: no group-existence delete, no user archival, no object reconcile. A self-add to a
-# managed group is revoked overnight, while NOTHING is ever removed — so it is safe to run
-# per-tenant against a partial file, with no scope/marker collisions. Enables the membership
-# strip on its own (no need to also set freeipa_server_authoritative); if BOTH are set, this
-# wins and deletions stay suppressed.
+# Membership-only reconcile — the SAFE nightly drift-revoke mode. Strips undeclared group members
+# (like authoritative) but SUPPRESSES all object/user deletion (no group delete, no user archival,
+# no object reconcile). Safe per-tenant against a partial file. Enables the membership strip on its
+# own (no need for authoritative); if both are set, this wins and deletions stay suppressed.
 freeipa_idam_reconcile_memberships_only: false
 
-# Print an end-of-run IDAM summary (managed users/groups, what changed, what was
-# archived/deleted/pruned). On by default; set false to silence.
+# End-of-run IDAM summary (managed users/groups, what changed / archived / deleted / pruned).
 freeipa_idam_report: true
 
-# Scope marker for object pruning under freeipa_server_authoritative — only objects whose
-# NAME contains this literal substring are eligible for deletion (the matrix sets it to
-# '<tenant>-<environment>'). Blank = object pruning deletes NOTHING and the object-reconcile
-# phase is skipped (fail-safe — it never considers the whole realm).
+# Scope marker for object pruning under authoritative — only objects whose NAME contains this
+# substring are deletion-eligible (the matrix sets '<tenant>-<environment>'). Blank = object pruning
+# deletes NOTHING and is skipped (fail-safe — never considers the whole realm).
 freeipa_idam_reconcile_scope: ""
 
-# WHOLE-REALM prune (delete ALL undeclared managed objects, not just a scope). This is the
-# match-everything override of freeipa_idam_reconcile_scope — the "enforce only declared
-# exists" nuke. DOUBLE-GATED: it does nothing unless BOTH freeipa_idam_reconcile_all AND
-# freeipa_idam_reconcile_all_confirm are true (set the confirm via -e on the command line).
-# Protection is always the role's own declared lists (builtin_groups/hostgroups,
-# protected/unmodifiable users, builtin_hbac_rules, stock hbacsvcs, markers) — so
-# admins/editors/ipausers/trust admins/admin/ipaservers + allow_all/allow_systemd-user + the
-# stock HBAC services survive even with an empty desired set. iparoles/privileges/permissions
-# are NOT pruned by this (huge IPA built-in sets) — use --tags delete for those.
+# WHOLE-REALM prune — the match-everything override of reconcile_scope (delete ALL undeclared managed
+# objects). DOUBLE-GATED: needs BOTH reconcile_all AND reconcile_all_confirm true (set confirm via -e).
+# The role's own declared lists always protect built-ins (builtin_groups/hostgroups, protected/
+# unmodifiable users, builtin_hbac_rules, stock hbacsvcs, markers). iparoles/privileges/permissions
+# are NOT pruned here (huge IPA built-in sets) — use --tags delete for those.
 freeipa_idam_reconcile_all: false
 freeipa_idam_reconcile_all_confirm: false
 
-# Built-in HBAC rules that always exist on a realm → never pruned by reconcile (whole-realm mode).
+# Built-ins never pruned by reconcile (whole-realm mode).
 freeipa_server_idam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
-# Built-in HBAC service groups IPA ships (Sudo, ftp) → never pruned by reconcile (whole-realm mode).
 freeipa_server_idam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
 
-# Container-marker group for declarative GROUP-EXISTENCE reconcile: every declared group is
-# nested into this container during apply; under freeipa_server_authoritative any container
-# member NO LONGER in freeipa_idam_usergroups (and not protected) is DELETED — so removing a
-# group from the dict deletes it from IPA. Only ever touches groups WE enrolled (container
-# members); unmanaged/out-of-band groups and protected built-ins are never considered.
+# Container-marker group for GROUP-EXISTENCE reconcile: every declared group is nested here during
+# apply; under authoritative any container member no longer in freeipa_idam_usergroups (and not
+# protected) is DELETED — so removing a group from the dict deletes it from IPA. Only touches groups
+# WE enrolled; unmanaged/out-of-band groups and protected built-ins are never considered.
 freeipa_idam_managed_groups_group: "idam-managed-groups"
 
-# HARD-DELETE gate (tasks/delete.yml) — DESTRUCTIVE, default OFF. When true AND the run
-# is invoked with `--tags delete`, the role REMOVES (ipa *-del, not archive) every
-# object DECLARED in this run's freeipa_idam_* lists — protected users/groups excluded.
-# Intended ONLY for MOCK/test inventories (set it true there) so a demo run can create
-# real objects and then clean them up. NEVER set this true on a real inventory.
+# ── Hard-delete: ONE gate (freeipa_idam_delete), the operation chosen by tag ──
+# freeipa_idam_delete is THE single hard-delete (ipa *-del, irrecoverable) permission gate — set it
+# ONCE. Default OFF; MOCK/lab realms only (never a production realm). With it true, pick the operation
+# by `never`-tag; --check turns any into a read-only dry-run:
+#   --tags delete          — hard-delete every object DECLARED in this run's freeipa_idam_* lists
+#                            (protected users/groups excluded). Cleanup for a mock/demo run.
+#   --tags prune_preserved — hard-delete ORPHANED preserved (archived) users the reconcile left behind
+#                            (no longer in any freeipa_idam_* list, so --tags delete can't reach them).
+# The SOFT, recoverable counterpart (archive users + reconcile undeclared objects) is the "prune"
+# case — gated by freeipa_server_authoritative above, not here.
 freeipa_idam_delete: false
-# Users the reconcile must never DELETE (delete/archive). Break-glass accounts are
-# auto-added to this list. Append any system/service accounts you want shielded from
-# removal. (These ARE still created/updated — see unmodifiable_users for the opposite.)
+# Scope selectors for --tags prune_preserved — which preserved logins to SHIELD (not gates):
+freeipa_idam_prune_preserved_keep: []                 # explicit extra keeps, on top of protected_users
+freeipa_idam_prune_preserved_keep_regex: "^svc-"      # regex shield (default protects svc-* accounts); "" = none
+
+# Users the reconcile must never DELETE/archive (break-glass accounts auto-added). Still
+# created/updated — cf. unmodifiable_users, the opposite.
 freeipa_idam_protected_users:
   - admin
 
-# Users the role must never CREATE or user-mod (their attributes can't be set):
-# `admin` lacks the inetOrgPerson objectClass so its givenName/sn are rejected.
-# These are skipped in the user-create payload (group membership is still applied,
-# and a dedicated task can still set admin's shell). Distinct from protected_users:
-# protected = never removed; unmodifiable = never have attributes written.
+# Users the role must never CREATE or user-mod (attributes can't be set — e.g. `admin` lacks
+# inetOrgPerson so givenName/sn are rejected). Skipped in the create payload; group membership
+# still applied. Distinct from protected_users (never removed).
 freeipa_idam_unmodifiable_users:
   - admin
 
-# FreeIPA BUILT-IN groups the role must never delete (state: absent is refused for
-# these, so an accidental `state: absent` can't tear down core schema). Membership
-# can still be managed if you list them; deletion is what's blocked.
+# FreeIPA BUILT-IN groups the role must never delete (state: absent is refused, so an accidental
+# absent can't tear down core schema). Membership can still be managed; only deletion is blocked.
 freeipa_idam_protected_groups:
   - admins
   - editors
@@ -410,118 +317,80 @@ freeipa_idam_protected_groups:
   - trust admins
 
 # ── IDAM reference-integrity validation ──────────────────────────────────────
-# References (role→group, user→group/role, hbac→service, sudo→command) are checked
-# so a typo fails loudly instead of as a cryptic module error. Shape/typo checks
-# (missing name, no groups/roles, duplicate user) ALWAYS hard-fail; this governs
-# only the cross-object REFERENCE checks, so a scoped per-tenant slice can
-# reference a global object it does not declare/own:
-#   strict — a reference must be DECLARED here or a known built-in (default)
-#   warn   — report unknown references as a warning and continue
-#   off    — skip reference checks entirely
-#   live   — ALSO accept any reference that already exists on the realm (one set
-#            of `ipa *-find` queries; needs a ticket, so not usable under --check)
+# References (role→group, user→group/role, hbac→service, sudo→command) are checked so a typo fails
+# loudly. Shape/typo checks (missing name, no groups/roles, duplicate user) ALWAYS hard-fail; this
+# governs only cross-object REFERENCE checks (so a scoped tenant slice can reference a global object
+# it doesn't own):
+#   strict (default) — reference must be DECLARED here or a known built-in
+#   warn             — report unknown references, continue
+#   off              — skip reference checks
+#   live             — also accept any reference already on the realm (ipa *-find queries; not under --check)
 freeipa_server_idam_reference_validation: strict
-# Built-in objects that always exist on a realm → always valid reference targets,
-# so a scoped/tenant slice never has to declare them just to satisfy validation.
+# Built-ins that always exist → always-valid reference targets (so a scoped slice needn't declare them):
 freeipa_server_idam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
-# Built-in hostgroups that always exist on a realm (validation reference targets for
-# hbac/sudo hostgroup:, nested hostgroup:, and hostgroup automember targets).
-freeipa_server_idam_builtin_hostgroups: ["ipaservers"]
+freeipa_server_idam_builtin_hostgroups: ["ipaservers"]   # for hbac/sudo/nested/automember hostgroup: refs
 
 # ── Account types beyond human users ────────────────────────────────────────
-# SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user
-# (name, givenname, sn, groups, ...) but the role forces shell = the nologin shell.
-# Kept a SEPARATE list (not mixed into freeipa_idam_users) so intent is explicit;
-# they otherwise flow through the same create/group/marker/archive pipeline.
+# SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user, but the role forces
+# shell = nologin. Kept a SEPARATE list (not in freeipa_idam_users) so intent is explicit; otherwise
+# flows through the same create/group/marker/archive pipeline.
 freeipa_idam_service_accounts: []
 freeipa_idam_nologin_shell: "/sbin/nologin"
 
-# BREAK-GLASS — real named emergency accounts (NOT the built-in admin). Login STAYS
-# enabled (that is the point of break-glass); each is auto-added to
-# freeipa_idam_breakglass_group and auto-PROTECTED from the delete (never archived).
-# Pair with disable_admin_login below: day-to-day admin via named accounts, the
-# emergency path via these. Give each a strong password (per-account or the default).
+# BREAK-GLASS — real named emergency accounts (NOT built-in admin). Login STAYS enabled (the point);
+# each is auto-added to breakglass_group and auto-PROTECTED from delete/archive. Pair with
+# nologin/disabled controls below: day-to-day admin via named accounts, emergency via these.
 freeipa_idam_breakglass_accounts: []
+#  - { name: bg-breakglass, givenname: Break, sn: Glass, groups: [admins] }
 freeipa_idam_breakglass_group: "admins"
 
-# ── Account login / enabled state (agnostic, list-driven) ────────────────────
-# Two distinct, explicit controls for EXISTING accounts (default empty → no change):
-#
-#   freeipa_idam_nologin_accounts  — force these to the nologin shell. Interactive login
-#       is OFF, but the account stays ACTIVE (API/kinit still work — e.g. admin keeps its
-#       powers, just no shell login). The shell applied is freeipa_idam_nologin_shell.
-#   freeipa_idam_disabled_accounts — `ipa user-disable` these. The account is fully OFF
-#       and cannot authenticate at all. ('admin' is refused here — you'd lose API admin.)
-#
-# Append admin/any account as needed, e.g. freeipa_idam_nologin_accounts: [admin]. Lockout
-# guard: setting 'admin' to nologin requires at least one freeipa_idam_breakglass_account.
+# ── Account login / enabled state for EXISTING accounts (default empty → no change) ──
+#   nologin_accounts  — force to the nologin shell. Login OFF, account stays ACTIVE (API/kinit still
+#                       work — e.g. admin keeps its powers, just no shell). Shell = nologin_shell.
+#   disabled_accounts — `ipa user-disable`. Account fully OFF, cannot authenticate at all.
+#                       ('admin' is refused — you'd lose API admin.)
+# Lockout guard: setting 'admin' to nologin requires at least one break-glass account.
 freeipa_idam_nologin_accounts: []
 freeipa_idam_disabled_accounts: []
 
-# Reactivate (undel) a DECLARED user that currently exists only as a PRESERVED/archived
-# entry, so re-adding a previously-removed user RESTORES them instead of failing the run
-# (a preserved name is in cn=deleted; create no-ops and the membership add would otherwise
-# fail with "no such entry"). Bounded to declared names; default on.
+# Reactivate (undel) a DECLARED user that exists only as a PRESERVED/archived entry, so re-adding a
+# removed user RESTORES them instead of failing (preserved name is in cn=deleted → create no-ops and
+# membership add would fail "no such entry"). Bounded to declared names; default on.
 freeipa_idam_reactivate_preserved: true
 
-# Names of existing HBAC rules to DISABLE (state: disabled — reversible, not deleted).
-# Agnostic + scalable: pass any rule names, e.g. the stock allow-all rules:
-#   freeipa_idam_hbac_rules_disable: [allow_all, allow_all_hosts]
-# Applied AFTER your declarative rules so required access exists first. Lockout
-# guard: refuses if no rules are declared in freeipa_idam_hbac_rules (disabling the
-# default allow rules on an empty policy locks everyone out). To EMPTY a rule's
-# members instead of disabling it, declare it with `user: []` in
-# freeipa_idam_hbac_rules — the HBAC task reconciles members declaratively.
+# Existing HBAC rules to DISABLE (state: disabled — reversible, not deleted), e.g. the stock
+# allow-all rules: [allow_all, allow_all_hosts]. Applied AFTER declarative rules so required access
+# exists first. Lockout guard: refuses if freeipa_idam_hbac_rules is empty. To EMPTY a rule's members
+# instead, declare it with `user: []` (members reconcile declaratively).
 freeipa_idam_hbac_rules_disable: []
 
-# IDAM apply path. false = NATIVE (idam.yml, server-side ipalib) — the default and
-# the recommendation: benchmarked 2.67x FASTER than the API variant (native bulks
-# groups/users in one ipalib call; the API has none), manages the FULL object set
-# (community.general has no privilege/permission/hbacsvc/hbacsvcgroup/automember
-# modules), and bootstraps before DNS (connects by IP). true = API variant
-# (idam_api.yml, community.general over the API by freeipa_server_fqdn) — only for a
+# IDAM apply path. false = NATIVE (idam.yml, server-side ipalib) — default + recommended: ~2.67x
+# faster (bulks groups/users in one ipalib call), manages the FULL object set (community.general has
+# no privilege/permission/hbacsvc/hbacsvcgroup/automember modules), bootstraps before DNS (connects
+# by IP). true = API variant (idam_api.yml, community.general over the API by fqdn) — only for a
 # provisioned, DNS-resolvable server, and it refuses RBAC objects it can't manage.
 freeipa_idam_apply_via_api: false
 freeipa_idam_api_validate_certs: true   # API path only: verify the IPA server cert
 
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
-# Snapshot a LIVE FreeIPA into this role's declarative contract so you can adopt
-# an existing instance instead of rebuilding it. Read-only against FreeIPA.
-# Output path on the control node (move it into an inventory group_vars to apply).
+# Snapshot a LIVE FreeIPA into this role's declarative contract (read-only) to adopt an existing
+# instance. Output path on the control node (move into inventory group_vars to apply).
 freeipa_server_export_output: "freeipa.config.snapshot.yml"
-# Pin static hostgroup host rosters (default off — enrolment + automember own them).
-freeipa_server_export_include_host_membership: false
-# Emit per-user SSH public keys.
-freeipa_server_export_include_sshkeys: false
-# How list values are rendered in the snapshot (cosmetic — all styles reload
-# identically):
-#   block     — multi-line block YAML (one item per line)
-#   json      — hyphenated list, each item a single-line JSON dict, e.g.
-#                 freeipa_idam_hbacsvcs:
-#                   - {"name": "cockpit", "description": "…"}
-#   yaml_flow — hyphenated list, each item a single-line YAML flow dict (DEFAULT), e.g.
-#                 freeipa_idam_hbacsvcs:
-#                   - {name: cockpit, description: …}
-# (json/yaml_flow keep one item per line so groups/memberships scan easily.)
+freeipa_server_export_include_host_membership: false  # pin static hostgroup rosters (default: enrol/automember own them)
+freeipa_server_export_include_sshkeys: false          # emit per-user SSH public keys
+# List rendering in the snapshot (cosmetic — all reload identically): block | json | yaml_flow.
+# json/yaml_flow keep one item per line so groups/memberships scan easily.
 freeipa_server_export_list_style: yaml_flow
-# Export scope filter — carve a monolithic realm into per-tenant/env inventories.
-# Matches captured objects by NAME substring (DNS records by zone_name):
-#   include (default) — keep objects whose name CONTAINS any scope (the slice)
-#   exclude           — keep objects whose name contains NONE of the scopes (the
-#                       global 'outliers': users, DNS, platform-*, built-ins)
-# Empty list = no filter (full snapshot). Server identity (realm/domain/fqdn/
-# forwarders) is omitted from a scoped slice — it lives on the IPA host's own
-# group_vars, not a per-tenant file. Scope is a list of substrings, e.g.:
+# Export scope filter — carve a monolithic realm into per-tenant/env slices. Matches objects by NAME
+# substring (DNS by zone_name): include (default) keeps names containing any scope; exclude keeps
+# names containing none (the global outliers). Empty = no filter (full snapshot). Server identity
+# (realm/domain/fqdn/forwarders) is omitted from a scoped slice. Scope is a list of substrings:
 #   per tenant/env :  -e '{"freeipa_server_export_scope":["acme-prod-"]}'
-#   outliers/global:  -e '{"freeipa_server_export_scope":["acme-prod-","globex-dev-"],"freeipa_server_export_scope_mode":"exclude"}'
+#   outliers/global:  -e '{"freeipa_server_export_scope":["acme-prod-"],"freeipa_server_export_scope_mode":"exclude"}'
 freeipa_server_export_scope: []
 freeipa_server_export_scope_mode: include
-# The export is a FAITHFUL MIRROR of the live directory: every user is captured with
-# its real, literal `groups` list — no roles matrix is inferred (role STRUCTURE is
-# authored forward via the RBAC template engine, not guessed from the export).
-# Stock HBAC services that ship with FreeIPA — skipped by the export (only CUSTOM
-# services are captured). APPEND to this list if a newer FreeIPA version ships
-# additional stock services, so they aren't mis-captured as custom.
+# Stock HBAC services that ship with FreeIPA — skipped by the export (only CUSTOM services captured).
+# APPEND here if a newer FreeIPA ships more stock services, so they aren't mis-captured as custom.
 freeipa_server_export_hbacsvc_stock:
   - crond
   - ftp
@@ -541,20 +410,20 @@ freeipa_server_export_hbacsvc_stock:
   - vsftpd
 
 # ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
-# Runs ipa-migrate ON this (new-realm) primary, pulling identities from a source
-# (old) realm. Passwords are NOT migrated (Kerberos keys are realm-salted).
+# Runs ipa-migrate on this (new-realm) primary, pulling identities from a source (old) realm.
+# Passwords are NOT migrated (Kerberos keys are realm-salted).
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write
 freeipa_migrate_mode: "prod-mode"               # prod-mode (preserve SIDs/DNA) | stage-mode
 freeipa_migrate_bind_dn: "cn=Directory Manager"
-freeipa_migrate_bind_pw: ""                      # declared var first; else Vault fallback below
+freeipa_migrate_bind_pw: ""                     # declared var first, else Vault fallback
 freeipa_migrate_bind_pw_field: "dm_password"
 freeipa_migrate_source_ca_path: "/etc/ipa/ca.crt"   # CA cert path on the source host
 freeipa_migrate_log: "/var/log/ipa-migrate.log"
 freeipa_migrate_restart_sssd: true
 freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
 # ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
-# freeipa_migrate_source: "old-ipa.example.com"      # source IPA FQDN (ipa-migrate arg)
-# freeipa_migrate_source_host: "old-ipa"             # inventory host for CA slurp
+# freeipa_migrate_source: "ipa-source-01.example.com"  # source IPA FQDN (ipa-migrate arg)
+# freeipa_migrate_source_host: "ipa-source-01"         # inventory host for CA slurp
 # freeipa_migrate_bind_pw_vault: "kv-<env>/data/platform/freeipa/runtime"  # source DM pw path
 # Internal staged paths (behavioural):
 freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
@@ -562,10 +431,9 @@ freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
 freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"
 
 # ── SSSD identity-resolution self-heal (resilience.yml) ──────────────────────
-# Watchdog that expires the SSSD cache + restarts sssd if identity resolution is
-# wedged/offline (which sshd/sudo/login block on, and which a REBOOT does not
-# clear — the SSSD cache is persistent on disk). Guarded: acts only after N
-# consecutive failed checks and at most once per min_interval seconds.
+# Watchdog: expires the SSSD cache + restarts sssd if identity resolution is wedged (which sshd/sudo/
+# login block on, and which a reboot does NOT clear — the cache is persistent on disk). Acts only
+# after N consecutive failed checks and at most once per min_interval seconds.
 freeipa_server_sssd_selfheal: true
 freeipa_server_sssd_selfheal_canary: "admin"          # IPA user that must always resolve via SSSD
 freeipa_server_sssd_selfheal_strikes: 2               # consecutive failed checks before acting
