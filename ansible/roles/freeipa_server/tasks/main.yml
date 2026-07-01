@@ -57,15 +57,28 @@
   when: freeipa_server_is_primary | bool
   tags: [backup]
 
-# IDAM apply path. NATIVE (idam.yml, server-side ipalib) is the default and the
-# recommendation: it is 2.67x faster than the API variant on the same workload
-# (bulk groups/users), manages the full object set (iparole/privilege/permission/
-# hbacsvcgroup/sudocmdgroup have NO community module), and bootstraps before DNS
-# (connects by IP). Set freeipa_idam_apply_via_api: true ONLY to force the
-# control-node API path (idam_api.yml) on a provisioned, DNS-resolvable server.
-# Dynamic include (not import) so the runtime flag cleanly selects exactly one path
-# — import_tasks + a runtime `when` does not gate reliably.
-- name: Reconcile declarative IDAM data (primary only — native or API path)
+# IDAM pipeline — THREE phases, so a validate-and-prune-only run (-t reconcile) can
+# assemble the desired state WITHOUT applying, and the destructive prune can never run
+# without it (enforced by the interlock in reconcile.yml):
+#   1. desired  (idam_desired.yml) — load tenants, normalize, validate → the desired
+#      freeipa_idam_* lists. Tagged [idam, reconcile, ...] so it runs for BOTH a full
+#      apply AND a prune-only run; it MUST precede both apply and reconcile.
+#   2. apply    (idam.yml / idam_api.yml) — create/update the declared objects.
+#   3. prune    (reconcile.yml, below)    — delete in-scope objects no longer declared.
+- name: Assemble + validate declarative IDAM desired state (primary only)
+  ansible.builtin.import_tasks: idam_desired.yml
+  when: freeipa_server_is_primary | bool
+  tags: [idam, reconcile, users, groups, hbac, sudo]
+
+# APPLY. NATIVE (idam.yml, server-side ipalib) is the default and the recommendation:
+# it is 2.67x faster than the API variant on the same workload (bulk groups/users),
+# manages the full object set (iparole/privilege/permission/hbacsvcgroup/sudocmdgroup
+# have NO community module), and bootstraps before DNS (connects by IP). Set
+# freeipa_idam_apply_via_api: true ONLY to force the control-node API path (idam_api.yml)
+# on a provisioned, DNS-resolvable server. Dynamic include so the runtime flag cleanly
+# selects exactly one path. NOT tagged `reconcile` — a prune-only run skips apply.
+# Consumes the desired state assembled by idam_desired.yml above.
+- name: Apply declarative IDAM data (primary only — native or API path)
   ansible.builtin.include_tasks:
     file: "{{ 'idam_api.yml' if (freeipa_idam_apply_via_api | default(false) | bool) else 'idam.yml' }}"
     apply:
@@ -75,8 +88,10 @@
 
 # DECLARATIVE OBJECT reconcile — DELETE matrix-managed objects in this scope no longer
 # declared (orphans left after removing an app/grant): sudo rules, HBAC rules, hostgroups,
-# groups, AND automember rules. Runs AFTER idam so the desired set is fully applied before
-# orphans are computed. Driven by the ONE authoritative switch (freeipa_server_authoritative).
+# groups, AND automember rules. Runs AFTER the desired-assembly phase (idam_desired.yml) so
+# the freeipa_idam_* desired lists exist before orphans are computed — a hard interlock in
+# reconcile.yml aborts if that phase was skipped, so a prune can never delete the whole scope
+# for lack of a desired set. Driven by the ONE authoritative switch (freeipa_server_authoritative).
 # Tightly scoped + safe: only objects whose NAME contains freeipa_idam_reconcile_scope are
 # eligible, and only those not in this run's freeipa_idam_* lists / not protected are
 # removed. Gated on a NON-blank match, so an authoritative run without a scope marker

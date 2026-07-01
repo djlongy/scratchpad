@@ -19,6 +19,22 @@
       scope marker (would consider the WHOLE realm). NB: main.yml already skips this phase on a
       blank scope — this assert is belt-and-suspenders.
 
+# INTERLOCK — the desired-state assembly phase (idam_desired.yml) MUST have run this play.
+# It builds the freeipa_idam_* lists that define what is DECLARED; without it every in-scope
+# object looks undeclared and the orphan pass below would delete the entire scope. The sentinel
+# _freeipa_idam_desired_assembled is set at the end of idam_desired.yml. This is the guard for
+# the classic footgun of running the prune with a tag/selection that skipped assembly.
+- name: Reconcile | Refuse to prune unless the desired state was assembled this play (interlock)
+  ansible.builtin.assert:
+    that:
+      - _freeipa_idam_desired_assembled | default(false) | bool
+    fail_msg: >-
+      Reconcile requires the IDAM desired-state assembly phase (idam_desired.yml) to have run
+      first in THIS play — the sentinel _freeipa_idam_desired_assembled is unset, so the
+      freeipa_idam_* desired lists were NOT built. Computing orphans now would treat EVERY
+      in-scope object as undeclared and DELETE it. Run with -t reconcile or -t idam (both
+      include the assembly phase), never a selection that skips it.
+
 - name: Reconcile | Resolve admin password (declared var first, Vault fallback)
   ansible.builtin.set_fact:
     _freeipa_server_admin_password: >-
