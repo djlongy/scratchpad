@@ -61,8 +61,8 @@ other value in the same file**. Only two keys mean something to the loader itsel
 
 | Key | Purpose / effect |
 |---|---|
-| `tenant` | Ownership stamp — records who owns each user/group (feeds scoping/reporting). Also handy as `{{ tenant }}` in names. |
-| `shared` | Marks this slice's groups as grantable from any tenant (see `global.yml`). |
+| `tenant` | Ownership stamp — records who owns each user/group (feeds scoping/reporting). Also handy as `{{ tenant }}` in names. Optional (default `""`). |
+| `shared` | Stamps the slice's groups as realm-shared rather than tenant-owned. **Optional, default `false`** — bookkeeping only; nothing is blocked either way today. |
 
 Everything else is **yours to invent** — `globex.yml` demonstrates the two substitution styles:
 

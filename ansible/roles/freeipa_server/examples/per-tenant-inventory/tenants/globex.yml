@@ -15,6 +15,7 @@
 # stamp); every other header var is yours to invent. Root keys and entry fields match what
 # `--tags export` emits.
 tenant: globex
+shared: false        # optional; false is the default — groups stay tenant-owned
 local_env: dev
 
 # ── Compound naming helpers — change these, the whole file follows ──
@@ -23,6 +24,22 @@ hg_prefix: "hg-{{ tenant }}-{{ local_env }}"        # -> hg-globex-dev
 hbac_prefix: "hbac-{{ tenant }}-{{ local_env }}"    # -> hbac-globex-dev
 host_domain: "{{ local_env }}.{{ tenant }}.au"      # -> dev.globex.au       (host FQDNs)
 dns_zone: "ipa.{{ local_env }}.{{ tenant }}.au"     # -> ipa.dev.globex.au   (realm zone)
+
+# This tenant's RBAC overlay slice (not exported — authored by hand; concatenates with
+# acme.yml's across the tenant load).
+freeipa_server_rbac_roles:
+  - name: "role-{{ tenant }}-{{ local_env }}-platform-admin"   # the role group, created exactly as declared
+    description: "{{ tenant }}/{{ local_env }} platform admins"
+    policy_groups:                                             # nests into MULTIPLE existing ug-* groups
+      - "{{ ug_prefix }}-docker-operators"
+      - "{{ ug_prefix }}-grafana-readers"
+    members: ["{{ tenant }}.erin", "{{ tenant }}.dave"]        # granted users → indirect ug-* members
+  - name: "role-{{ tenant }}-{{ local_env }}-observer"
+    policy_groups: ["{{ ug_prefix }}-grafana-readers"]
+    # CROSS-TENANT grant: acme.dave lives in tenants/acme.yml — validation runs on the
+    # realm-wide merged lists, so any declared user is grantable from any tenant's slice
+    # (another tenant's name stays literal: it is not derived from THIS file's header).
+    members: ["{{ tenant }}.dave", acme.dave]
 
 freeipa_idam_usergroups:
   # individual-token style
@@ -68,18 +85,3 @@ freeipa_server_automember_rules:
   # rule name matches the hostgroup it feeds; the fqdn regex embeds the SAME header tokens
   - { name: "{{ hg_prefix }}-docker-operators", automember_type: hostgroup, description: "Auto-membership: Docker hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-docker\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
   - { name: "{{ hg_prefix }}-grafana-readers", automember_type: hostgroup, description: "Auto-membership: Grafana hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-grafana\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
-
-# This tenant's RBAC overlay slice (concatenates with acme.yml's across the tenant load).
-freeipa_server_rbac_roles:
-  - name: "role-{{ tenant }}-{{ local_env }}-platform-admin"   # the role group, created exactly as declared
-    description: "{{ tenant }}/{{ local_env }} platform admins"
-    policy_groups:                                             # nests into MULTIPLE existing ug-* groups
-      - "{{ ug_prefix }}-docker-operators"
-      - "{{ ug_prefix }}-grafana-readers"
-    members: ["{{ tenant }}.erin", "{{ tenant }}.dave"]        # granted users → indirect ug-* members
-  - name: "role-{{ tenant }}-{{ local_env }}-observer"
-    policy_groups: ["{{ ug_prefix }}-grafana-readers"]
-    # CROSS-TENANT grant: acme.dave lives in tenants/acme.yml — validation runs on the
-    # realm-wide merged lists, so any declared user is grantable from any tenant's slice
-    # (another tenant's name stays literal: it is not derived from THIS file's header).
-    members: ["{{ tenant }}.dave", acme.dave]

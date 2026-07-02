@@ -1,7 +1,8 @@
 ---
 # global — the shared / realm-wide slice: built-in groups ANY tenant may reference, the
 # platform-ops users, custom HBAC services, and the realm-stock HBAC rules. `shared: true`
-# marks this slice's groups as grantable from any tenant.
+# (optional; default false) stamps this slice's groups as realm-shared rather than
+# tenant-owned — ownership bookkeeping for reporting/scoping, nothing is blocked today.
 #
 # TEMPLATE: every object root key `--tags export` emits is listed below, IN EXPORT ORDER,
 # as an empty placeholder where this example has no data — after an export you can walk the

@@ -5,7 +5,20 @@
 # any built-in/global groups (owned in global.yml). One run sees every file and reconciles
 # the membership together.
 tenant: acme
+shared: false        # optional; false is the default — groups stay tenant-owned
 local_env: dev
+
+# This tenant's OWN slice of the RBAC overlay (not exported — authored by hand). Every
+# tenants/*.yml may carry one; the loader CONCATENATES freeipa_server_rbac_roles across
+# files and the role compiles the merged list AFTER the tenant load — globex.yml carries
+# the other half.
+freeipa_server_rbac_roles:
+  - name: role-acme-dev-platform-admin        # the role group, created exactly as declared
+    description: "acme/dev platform admins"
+    policy_groups: [ug-acme-dev-docker-operators]   # EXISTING ug-* group from this file
+    # members resolve against the realm-wide MERGED user list — ops.editor is declared
+    # in global.yml (shared slice), not in this file
+    members: [acme.erin, acme.dave, ops.editor]
 
 freeipa_idam_usergroups:
   - { name: acme-admins, description: Acme admins }
@@ -46,14 +59,3 @@ freeipa_idam_sudo_rules:
 
 freeipa_idam_pwpolicies:
   - { name: acme-admins, maxlife: 60, minlife: 1, history: 10, minclasses: 4, minlength: 14, priority: 141 }
-
-# This tenant's OWN slice of the RBAC overlay. Every tenants/*.yml may carry one; the
-# loader CONCATENATES freeipa_server_rbac_roles across files and the role compiles the
-# merged list AFTER the tenant load — globex.yml carries the other half.
-freeipa_server_rbac_roles:
-  - name: role-acme-dev-platform-admin        # the role group, created exactly as declared
-    description: "acme/dev platform admins"
-    policy_groups: [ug-acme-dev-docker-operators]   # EXISTING ug-* group from this file
-    # members resolve against the realm-wide MERGED user list — ops.editor is declared
-    # in global.yml (shared slice), not in this file
-    members: [acme.erin, acme.dave, ops.editor]
