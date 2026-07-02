@@ -56,6 +56,7 @@ A no-tag run runs everything except the `never`-tagged ops.
 | `dns` | Declarative DNS zones / forward-zones / records (primary, opt-in) |
 | `automember` | Auto group/hostgroup membership rules (primary, opt-in) |
 | `adtrust` (`trust`) | Active Directory trust(s) (primary, opt-in) |
+| `export` | Read-only config snapshot of a live realm (see [Adopt an existing instance](#adopt-an-existing-instance-config-export--snapshot)) |
 | `restore` | Break-glass restore from a backup (`never`) |
 | `delete` | HARD-DELETE declared IDAM objects (`never`; see [Destructive operations](#destructive-operations)) |
 | `prune_preserved` | HARD-DELETE orphaned preserved users (`never`; same section) |
@@ -109,6 +110,14 @@ Topology comes from inventory — no code change between sizes:
   never runs; backup/IDAM/hardening all run on it.
 - **Cluster:** add hosts to `freeipa` (optionally `freeipa_primary` / `freeipa_replica`
   for clarity). Non-primary hosts enrol as replicas.
+
+## Variable reference
+
+Every public variable has a one-line description in
+[`meta/argument_specs.yml`](meta/argument_specs.yml) (validated on role entry); item
+**shapes and worked examples** live beside each default in
+[`defaults/main.yml`](defaults/main.yml). This README covers the concepts and the
+variables you'll actually decide about.
 
 ## Install options (selected)
 
@@ -315,6 +324,15 @@ Don't confuse the overlay with **`freeipa_idam_roles`** (a flat bundle of groups
 to a user — no role group, no nesting) or native **`freeipa_idam_iparoles`** (delegation of
 IPA-management *privileges*).
 
+### Delegation building blocks & password policies
+
+For IPA-*management* delegation (helpdesk, self-service tooling) declare the native chain
+`freeipa_idam_permissions` (atomic right) → `freeipa_idam_privileges` (bundle of permissions)
+→ `freeipa_idam_iparoles` (bundle of privileges + members). Per-group password policies go in
+`freeipa_idam_pwpolicies` (`maxlife` in **days**, `minlife` in **hours**), and
+`freeipa_idam_password_expiration_floors` bumps a user's expiry when it drops below a floor
+(e.g. keep a bind account from expiring). Shapes in `defaults/main.yml`.
+
 ### Additive by default; one switch that prunes
 
 Creation is *additive* — `state: present` never deletes. **`freeipa_server_authoritative`**
@@ -352,7 +370,7 @@ safe to run per-tenant against a partial file — the right mode for a nightly c
 Before any change, the role validates the whole data set and reports *all* problems at once.
 Shape/typo errors (missing `name`, a user with no groups/roles, a duplicate user) **always
 hard-fail**. Cross-object *reference* checks (role→group, user→group/role, hbac→service,
-sudo→command) are governed by **`freeipa_server_idam_reference_validation`**:
+sudo→command) are governed by **`freeipa_idam_reference_validation`**:
 
 | Mode | Behaviour |
 |---|---|
@@ -361,7 +379,7 @@ sudo→command) are governed by **`freeipa_server_idam_reference_validation`**:
 | `off` | reference checks skipped |
 | `live` | also accept any reference already on the realm (`ipa *-find`; not usable under `--check`) |
 
-Built-ins (`freeipa_server_idam_builtin_groups`) are always valid targets, so a tenant slice
+Built-ins (`freeipa_idam_builtin_groups`) are always valid targets, so a tenant slice
 never has to redeclare them just to validate.
 
 ## Destructive operations
@@ -416,6 +434,11 @@ services, HBAC rules, sudo commands & rules, password policies, and automember r
 server** (users and custom HBAC services are created before the rules that reference them, so no
 first-run ordering race).
 
+**Scope carving**: `freeipa_server_export_scope` (name-substring list) slices a monolithic
+realm into per-tenant/env snapshots — `include` mode keeps matching objects,
+`freeipa_server_export_scope_mode: exclude` keeps the global outliers instead. Pair the two
+modes to split one realm into tenant files plus a shared/global file.
+
 **Not** captured by default (each has an opt-in): POSIX group GIDs
 (`freeipa_server_export_include_gids=true` to pin them for a same-realm DR rebuild), hostgroup
 host rosters (`freeipa_server_export_include_host_membership=true`; enrolment + automember
@@ -426,8 +449,19 @@ user passwords / Kerberos keys (unreadable), user UIDs (IPA reassigns — avoids
 FreeIPA's own `global_policy`. If a section could not be captured (unavailable plugin), the
 snapshot header carries a loud `# SKIPPED :` line — an empty section ≠ an empty realm.
 
+## IPA-to-IPA realm migration
+
+`freeipa_migrate_*` wraps `ipa-migrate` on this (new-realm) primary, pulling identities from
+a source realm over LDAPS (its CA is slurped from the source host automatically). Passwords
+are **not** migrated (Kerberos keys are realm-salted) — plan a password campaign.
+`freeipa_migrate_dryrun: true` is the safe default; set `freeipa_migrate_source`,
+`freeipa_migrate_source_host` and a bind-password source in inventory. Runs via
+`playbooks/L2_identity/freeipa_migrate.yml`.
+
 ## See also
 
 - [`freeipa_client`](../freeipa_client/) — host enrolment
 - [`hashicorp_vault`](../hashicorp_vault/) — credential source
-- A runnable 3-tenant × 3-environment RBAC-overlay template under `examples/rbac-overlay/`.
+- Runnable, sanitised templates under `examples/` (public mirror):
+  `per-tenant-inventory/` (unified per-realm identity in tenant files, incl. per-tenant
+  RBAC slices) and `rbac-overlay/` (the flat-list overlay on plain group_vars).

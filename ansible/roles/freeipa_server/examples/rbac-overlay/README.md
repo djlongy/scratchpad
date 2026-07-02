@@ -1,7 +1,7 @@
-# Thin RBAC overlay → FreeIPA (3 tenants × 3 environments)
+# Thin RBAC overlay → FreeIPA (3 tenants)
 
-A runnable, sanitised template for a **3-tenant × 3-environment** estate (acme / globex /
-initech × dev / test / prod).
+A runnable, sanitised template for a **3-tenant** estate (acme / globex / initech), one
+policy group per tenant — small on purpose; the model scales by adding entries, not code.
 
 **The overlay is a purely optional add-on, compiled by the role itself** (`tasks/rbac.yml`,
 inside the desired phase). The role consumes only the native `freeipa_idam_*` dicts; when
@@ -34,7 +34,7 @@ rbac-overlay/
 ```
 user ──member──▶ role-acme-prod-platform-admin   (role group — the overlay creates this)
                       └─nested into─▶ ug-acme-prod-gitlab-admins   (native policy group ◀ HBAC/sudo)
-                      └─nested into─▶ ug-acme-prod-docker-operators
+                      └─nested into─▶ ...                          (a role may nest several ug-*)
 ```
 
 A user is a **direct** member of only the role group, and an **indirect** member of every
@@ -51,19 +51,14 @@ names), a member not in `freeipa_idam_users`, a duplicate/protected name, an unk
 
 | role group (literal name) | nests into | members |
 |---|---|---|
-| `role-acme-prod-platform-admin` | `ug-acme-prod-gitlab-admins`, `ug-acme-prod-docker-operators` | alice.smith |
-| `role-acme-test-db-admin` | `ug-acme-test-postgres-admins` | — |
-| `role-acme-dev-ops` | `ug-acme-dev-monitoring-admins` | — |
-| `role-initech-prod-db-admin` | `ug-initech-prod-postgres-admins` | carol.fox |
-| `role-initech-dev-ops` | `ug-initech-dev-monitoring-admins` | dana.li |
-| `role-globex-{dev,test,prod}-viewer` | `ug-globex-<env>-grafana-readers` | bob.ng (+dana.li in prod) |
-| `role-globex-prod-ops` | `ug-globex-prod-monitoring-admins` | dana.li |
+| `role-acme-prod-platform-admin` | `ug-acme-prod-gitlab-admins` | alice.smith |
+| `role-globex-prod-viewer` | `ug-globex-prod-grafana-readers` | bob.ng, carol.fox |
+| `role-initech-prod-db-admin` | `ug-initech-prod-postgres-admins` | — (defined, nobody granted yet) |
 
-**WYSIWYG, so isolation is self-evident.** Every role is its own literal group —
-`role-initech-prod-db-admin` and `role-acme-test-db-admin` are two different names, so a grant
-can never fan out across tenants or environments. `carol.fox` holds initech's db-admin **only**;
-to span environments you list the user in each role entry explicitly (`bob.ng` appears in all
-three globex viewer entries). Granting a role is a one-line diff on that entry's `members:`.
+**WYSIWYG, so isolation is self-evident.** Every role is its own literal group — an
+`initech` role and an `acme` role are different names, so a grant can never fan out across
+tenants or environments. To span tenants/environments you list the user in each role entry
+explicitly. Granting a role is a one-line diff on that entry's `members:`.
 
 ## Run it
 

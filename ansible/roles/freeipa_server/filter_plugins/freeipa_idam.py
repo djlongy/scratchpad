@@ -818,7 +818,7 @@ def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
       builtin_hostgroups, stock_hbacsvcs, live ({type: [names]} from live mode).
 
     Returns {"shape": [...], "refs": [...]}: shape problems always hard-fail in the
-    role; reference problems obey freeipa_server_idam_reference_validation.
+    role; reference problems obey freeipa_idam_reference_validation.
     """
     known = _known_name_sets(data)
     users = _lst(data, "users")

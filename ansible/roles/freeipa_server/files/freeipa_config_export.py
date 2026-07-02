@@ -52,7 +52,7 @@ NOLOGIN_SHELLS = {"/sbin/nologin", "/usr/sbin/nologin", "/bin/false", "/usr/bin/
 # Built-in fallback set of stock FreeIPA HBAC services — shipped on every server,
 # so they are excluded from the snapshot (only CUSTOM services are captured, then
 # seeded on a fresh server before the HBAC rule memberships that reference them).
-# Overridable via --stock-hbacsvc (the role exposes freeipa_server_export_hbacsvc_stock)
+# Overridable via --stock-hbacsvc (the role exposes freeipa_server_export_stock_hbacsvcs)
 # so a newer FreeIPA that ships extra stock services can extend it without code edits.
 DEFAULT_HBACSVCS = {
     "crond", "ftp", "gdm", "gdm-password", "gssftp", "kdm", "login", "proftpd",

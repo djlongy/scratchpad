@@ -2,41 +2,58 @@
 # acme — a tenant written as LITERAL data: exactly what `--tags export` drops out of a live
 # realm (same root keys, same entry fields), so adopting an export is just adding the
 # `tenant:` header. A user is declared ONCE with their COMPLETE group list — tenant groups +
-# any built-in/global groups (which are owned in global.yml). One run sees both files and
-# reconciles the membership.
+# any built-in/global groups (owned in global.yml). One run sees every file and reconciles
+# the membership together.
 tenant: acme
 local_env: dev
+
 freeipa_idam_usergroups:
   - { name: acme-admins, description: Acme admins }
-  - { name: acme-editors, description: Acme editors }
   - { name: acme-viewers, description: Acme read-only }
-  # granular ug-* policy groups — HBAC/sudo target these; the RBAC overlay below nests
-  # role groups INTO them (policy groups must exist natively, so they live right here)
+  # granular ug-* policy group — HBAC/sudo target this; the RBAC overlay below nests into it
   - { name: ug-acme-dev-docker-operators, description: 'Operators on Docker hosts [acme/dev]' }
-  - { name: ug-acme-dev-artifactory-readers, description: 'Readers on Artifactory [acme/dev]' }
-  - { name: ug-acme-test-grafana-readers, description: 'Readers on Grafana [acme/test]' }
-freeipa_idam_hostgroups:
-  - { name: hg-acme, description: Acme hosts }
+
 freeipa_idam_users:
   - { name: acme.dave, givenname: Dave, sn: Dunn, email: [acme.dave@example.com], groups: [acme-admins, admins] }   # also a built-in admin
   - { name: acme.erin, givenname: Erin, sn: Ellis, email: [acme.erin@example.com], groups: [acme-viewers] }
+
+freeipa_idam_hostgroups:
+  - { name: hg-acme, description: Acme hosts }
+
+# Delegation building blocks: permission (atomic right) -> privilege (bundle) -> iparole
+# (bundle of privileges + members). Delegates IPA-management powers, not host access.
+freeipa_idam_iparoles:
+  - { name: acme-hostgroup-reader, privilege: [acme Hostgroup Ops], usergroup: [acme-admins] }
+
+freeipa_idam_privileges:
+  - { name: acme Hostgroup Ops, description: Manage acme hostgroups, permission: [acme Read Hostgroups] }
+
+freeipa_idam_permissions:
+  - { name: acme Read Hostgroups, right: [read, search], attrs: [cn, member], object_type: hostgroup }
+
 freeipa_idam_hbac_rules:
   - { name: hbac-acme-ssh, usergroup: [acme-admins], hostgroup: [hg-acme], service: [sshd] }
-  - { name: hbac-acme-docker, usergroup: [ug-acme-dev-docker-operators], hostgroup: [hg-acme], service: [sshd] }
+  - { name: hbac-acme-docker, usergroup: [ug-acme-dev-docker-operators], hostgroup: [hg-acme], service: [docker] }
 
-# This tenant's OWN slice of the RBAC overlay. Every tenants/*.yml may carry one;
-# the loader CONCATENATES freeipa_server_rbac_roles across all tenant files and the
-# role compiles the merged list AFTER the tenant load — see the globex.yml slice for
-# the other half of the realm-wide merge.
+# Bundle the SHARED sudo commands (declared once realm-wide via globex.yml's group_vars
+# pull) — cross-file references resolve on the realm-wide merged lists.
+freeipa_idam_sudocmdgroups:
+  - { name: acme-ops-cmds, description: Acme operational command bundle, sudocmd: [/usr/bin/systemctl, /usr/bin/journalctl] }
+
+freeipa_idam_sudo_rules:
+  - { name: sudo-acme-admin, description: Full sudo for acme admins, cmdcategory: all, runasusercategory: all, runasgroupcategory: all, usergroup: [acme-admins], hostgroup: [hg-acme] }
+  - { name: sudo-acme-ops, description: Acme operational sudo, usergroup: [ug-acme-dev-docker-operators], hostgroup: [hg-acme], cmdgroup: [acme-ops-cmds] }
+
+freeipa_idam_pwpolicies:
+  - { name: acme-admins, maxlife: 60, minlife: 1, history: 10, minclasses: 4, minlength: 14, priority: 141 }
+
+# This tenant's OWN slice of the RBAC overlay. Every tenants/*.yml may carry one; the
+# loader CONCATENATES freeipa_server_rbac_roles across files and the role compiles the
+# merged list AFTER the tenant load — globex.yml carries the other half.
 freeipa_server_rbac_roles:
-  - name: role-acme-dev-platform-admin       # the role group, created exactly as declared
+  - name: role-acme-dev-platform-admin        # the role group, created exactly as declared
     description: "acme/dev platform admins"
-    policy_groups:                           # EXISTING ug-* groups from this file, verbatim
-      - ug-acme-dev-docker-operators
-      - ug-acme-dev-artifactory-readers
-    members: [acme.erin, acme.dave]          # granted users → indirect ug-* members
-  - name: role-acme-test-observer
-    policy_groups: [ug-acme-test-grafana-readers]
+    policy_groups: [ug-acme-dev-docker-operators]   # EXISTING ug-* group from this file
     # members resolve against the realm-wide MERGED user list — ops.editor is declared
     # in global.yml (shared slice), not in this file
-    members: [acme.dave, ops.editor]
+    members: [acme.erin, acme.dave, ops.editor]

@@ -67,11 +67,11 @@
     _reconcile_match: "{{ '*' if (freeipa_idam_reconcile_all | default(false) | bool) else freeipa_idam_reconcile_scope }}"
     _reconcile_protected: >-
       {{ (freeipa_idam_protected_groups | default([]))
-         + (freeipa_server_idam_builtin_groups | default([]))
-         + (freeipa_server_idam_builtin_hostgroups | default([]))
-         + (freeipa_server_idam_builtin_hbac_rules | default([]))
-         + (freeipa_server_export_hbacsvc_stock | default([]))
-         + (freeipa_server_idam_builtin_hbacsvcgroups | default([]))
+         + (freeipa_idam_builtin_groups | default([]))
+         + (freeipa_idam_builtin_hostgroups | default([]))
+         + (freeipa_idam_builtin_hbac_rules | default([]))
+         + (freeipa_server_export_stock_hbacsvcs | default([]))
+         + (freeipa_idam_builtin_hbacsvcgroups | default([]))
          + (freeipa_idam_protected_users | default([]))
          + (freeipa_idam_unmodifiable_users | default([]))
          + [freeipa_idam_managed_group, freeipa_idam_managed_groups_group] }}

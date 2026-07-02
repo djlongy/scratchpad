@@ -11,51 +11,20 @@
 # --tags export snapshot / 00_native.yml, zero renaming. Scope (tenant/environment)
 # lives in the names you declare — role-<tenant>-<env>-<name> is the recommended
 # convention, and because every role is its own literal name, a grant can never
-# bleed into another tenant or environment: carol holds role-initech-prod-db-admin;
-# acme's role-acme-test-db-admin is a different group entirely.
+# bleed into another tenant or environment.
 #
 # Granting a role = adding the user to that entry's members: — a one-line diff.
 # The user's own groups: list in 00_native.yml is never touched.
 # ═════════════════════════════════════════════════════════════════════════════
 freeipa_server_rbac_roles:
-  # ── acme ──
   - name: role-acme-prod-platform-admin
     description: "Platform admin (acme/prod)"
-    policy_groups:
-      - ug-acme-prod-gitlab-admins
-      - ug-acme-prod-docker-operators
+    policy_groups: [ug-acme-prod-gitlab-admins]
     members: [alice.smith]
-  - name: role-acme-test-db-admin              # defined, nobody granted yet
-    description: "DB admin (acme/test)"
-    policy_groups: [ug-acme-test-postgres-admins]
-  - name: role-acme-dev-ops
-    description: "Ops on-call (acme/dev)"
-    policy_groups: [ug-acme-dev-monitoring-admins]
-
-  # ── initech ──
-  - name: role-initech-prod-db-admin           # carol's ONLY db-admin grant — acme/test's
-    description: "DB admin (initech/prod)"     # db-admin above is a different literal group
-    policy_groups: [ug-initech-prod-postgres-admins]
-    members: [carol.fox]
-  - name: role-initech-dev-ops
-    description: "Ops on-call (initech/dev)"
-    policy_groups: [ug-initech-dev-monitoring-admins]
-    members: [dana.li]
-
-  # ── globex — viewer per environment; bob explicitly granted all three ──
-  - name: role-globex-dev-viewer
-    description: "Grafana viewer (globex/dev)"
-    policy_groups: [ug-globex-dev-grafana-readers]
-    members: [bob.ng]
-  - name: role-globex-test-viewer
-    description: "Grafana viewer (globex/test)"
-    policy_groups: [ug-globex-test-grafana-readers]
-    members: [bob.ng]
   - name: role-globex-prod-viewer
     description: "Grafana viewer (globex/prod)"
     policy_groups: [ug-globex-prod-grafana-readers]
-    members: [bob.ng, dana.li]
-  - name: role-globex-prod-ops
-    description: "Ops on-call (globex/prod)"
-    policy_groups: [ug-globex-prod-monitoring-admins]
-    members: [dana.li]
+    members: [bob.ng, carol.fox]
+  - name: role-initech-prod-db-admin           # defined, nobody granted yet — a valid entry;
+    description: "DB admin (initech/prod)"     # granting later is a one-line members: diff
+    policy_groups: [ug-initech-prod-postgres-admins]

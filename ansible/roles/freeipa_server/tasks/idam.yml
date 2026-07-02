@@ -495,13 +495,12 @@
                                        (_freeipa_precheck_raw | default({})).get('sudocmd', '')) }}
   when: freeipa_idam_sudocmdgroups | length > 0
 
-# BULK calls, same declarative semantics as the old per-rule loop: the compiled
-# `sudorules:` payload creates every rule AND reconciles its members (hosts, users,
-# allow/deny cmds, options, runas) in ONE module invocation — each invocation on
-# the server costs a full Python + ipalib bootstrap, so N rules per call, not N
-# calls, is what keeps the CPU down. cmds referenced via allow/deny_sudocmd are
-# created in the sudo-commands task above, so they resolve here. Key renames +
-# unknown-key fail-fast live in freeipa_idam_sudorules_payload (filter_plugins).
+# BULK calls: the compiled `sudorules:` payload creates every rule AND reconciles
+# its members (hosts, users, allow/deny cmds, options, runas) in ONE module
+# invocation — each invocation on the server costs a full Python + ipalib
+# bootstrap, so N rules per call is what keeps the CPU down. cmds referenced via
+# allow/deny_sudocmd are created in the sudo-commands task above, so they resolve
+# here. Key renames + unknown-key fail-fast: freeipa_idam_sudorules_payload.
 - name: Compile bulk sudo-rule payloads (present/absent/enabled/disabled)
   ansible.builtin.set_fact:
     _freeipa_idam_sudorules: "{{ freeipa_idam_sudo_rules | freeipa_idam_sudorules_payload }}"
@@ -742,12 +741,11 @@
   changed_when: false
 
 # `ipa group-show --all --raw` returns members as raw LDAP `member:` DN lines
-# (member: uid=<user>,cn=users,...), NOT a friendly `member_user:` attribute — so
-# the old `member_user:` regex matched nothing and the delete was a silent no-op.
-# Select the user-DN lines by the literal `uid=` (skips nested group members,
-# which are cn=...,cn=groups) and pull out the uid. NB: avoid `\s`/`\d`-style
-# regex classes here — in a folded (>-) scalar YAML does not unescape them, so they
-# reach the regex as a literal backslash; stick to literal text + `[^,]`.
+# (member: uid=<user>,cn=users,...), NOT a `member_user:` attribute — matching the
+# latter silently selects nothing. Select user DNs by the literal `uid=` (skips
+# nested cn=...,cn=groups members) and pull out the uid. NB: avoid `\s`/`\d`-style
+# regex classes here — a folded (>-) scalar does not unescape them, so they reach
+# the regex as a literal backslash; stick to literal text + `[^,]`.
 - name: Build current marker-group user list
   ansible.builtin.set_fact:
     freeipa_idam_current_managed_users: >-
@@ -769,9 +767,9 @@
     _freeipa_idam_evict_payload: []
   no_log: "{{ ansible_verbosity < 2 }}"
 
-# ONE group-find for every group's current members (was a group-show COMMAND PER
-# candidate group — ~1 ipa CLI bootstrap each); the payload compile is a single
-# filter call (was a quadratic per-group set_fact accumulation).
+# ONE group-find covers every group's current members, and the payload compiles in
+# a single filter call — per-group queries/accumulation would cost one full ipa CLI
+# bootstrap per group.
 - name: Eviction | Read current members of all groups (one query)
   ansible.builtin.command: "ipa group-find --all --raw --sizelimit=0"
   register: _freeipa_idam_evict_current

@@ -158,7 +158,7 @@ freeipa_server_idmax: 0
 freeipa_server_no_hbac_allow: false       # keep allow_all at install; tear down in hardening
 freeipa_server_mkhomedir: true
 
-# ── Time (replaces the old hardcoded --no-ntp) ──────────────────────────────
+# ── Time ────────────────────────────────────────────────────────────────────
 freeipa_server_setup_ntp: true
 freeipa_server_ntp_servers: []            # e.g. ["ntp1.internal", "ntp2.internal"]
 freeipa_server_ntp_pool: ""
@@ -306,8 +306,8 @@ freeipa_idam_reconcile_all: false
 freeipa_idam_reconcile_all_confirm: false
 
 # Built-ins never pruned by reconcile (whole-realm mode).
-freeipa_server_idam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
-freeipa_server_idam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
+freeipa_idam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
+freeipa_idam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
 
 # Container-marker group for GROUP-EXISTENCE reconcile: every declared group is nested here during
 # apply; under authoritative any container member no longer in freeipa_idam_usergroups (and not
@@ -358,10 +358,10 @@ freeipa_idam_protected_groups:
 #   warn             — report unknown references, continue
 #   off              — skip reference checks
 #   live             — also accept any reference already on the realm (ipa *-find queries; not under --check)
-freeipa_server_idam_reference_validation: strict
+freeipa_idam_reference_validation: strict
 # Built-ins that always exist → always-valid reference targets (so a scoped slice needn't declare them):
-freeipa_server_idam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
-freeipa_server_idam_builtin_hostgroups: ["ipaservers"]   # for hbac/sudo/nested/automember hostgroup: refs
+freeipa_idam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
+freeipa_idam_builtin_hostgroups: ["ipaservers"]   # for hbac/sudo/nested/automember hostgroup: refs
 
 # ── Account types beyond human users ────────────────────────────────────────
 # SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user, but the role forces
@@ -423,7 +423,7 @@ freeipa_server_export_scope: []
 freeipa_server_export_scope_mode: include
 # Stock HBAC services that ship with FreeIPA — skipped by the export (only CUSTOM services captured).
 # APPEND here if a newer FreeIPA ships more stock services, so they aren't mis-captured as custom.
-freeipa_server_export_hbacsvc_stock:
+freeipa_server_export_stock_hbacsvcs:
   - crond
   - ftp
   - gdm

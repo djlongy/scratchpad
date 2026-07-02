@@ -24,62 +24,30 @@ hbac_prefix: "hbac-{{ tenant }}-{{ local_env }}"    # -> hbac-globex-dev
 host_domain: "{{ local_env }}.{{ tenant }}.au"      # -> dev.globex.au       (host FQDNs)
 dns_zone: "ipa.{{ local_env }}.{{ tenant }}.au"     # -> ipa.dev.globex.au   (realm zone)
 
-# The OPTIONAL RBAC overlay rides the tenant loader like any other freeipa_* list —
-# each tenant file carries its own slice; the lists concatenate across files and the
-# role compiles them AFTER the tenant load. (Declare the overlay in ONE place: tenant
-# files OR group_vars — a tenant-declared var replaces the group_vars value.)
-freeipa_server_rbac_roles:
-  - name: "role-{{ tenant }}-{{ local_env }}-platform-admin"   # the role group, created exactly as declared
-    description: "{{ tenant }}/{{ local_env }} platform admins"
-    policy_groups:                                             # EXISTING ug-* groups from this file
-      - "{{ ug_prefix }}-docker-operators"
-      - "{{ ug_prefix }}-artifactory-readers"
-    members: ["{{ tenant }}.erin", "{{ tenant }}.dave"]        # granted users → indirect ug-* members
-  - name: "role-{{ tenant }}-test-observer"
-    policy_groups: ["ug-{{ tenant }}-test-grafana-readers"]
-    # CROSS-TENANT grant: acme.dave lives in tenants/acme.yml — validation runs on the
-    # realm-wide merged lists, so any declared user is grantable from any tenant's slice
-    # (another tenant's name stays literal: it is not derived from THIS file's header).
-    members: ["{{ tenant }}.dave", acme.dave]
-
 freeipa_idam_usergroups:
   # individual-token style
   - { name: "{{ tenant }}-admins", description: "{{ tenant }} admins", gidnumber: 1647200509 }
-  - { name: "{{ tenant }}-editors", description: "{{ tenant }} editors" }
-  - { name: "{{ tenant }}-viewers", description: "{{ tenant }} read-only" }
   # compound-prefix style — granular policy groups targeted by the HBAC rules below
-  # and the RBAC overlay above
-  - { name: "{{ ug_prefix }}-artifactory-readers", description: "Readers on JFrog Artifactory [{{ tenant }}/{{ local_env }}]" }
+  # and the RBAC overlay slice
   - { name: "{{ ug_prefix }}-docker-operators", description: "Operators on Docker hosts [{{ tenant }}/{{ local_env }}]" }
-  - { name: "{{ ug_prefix }}-foreman-admins", description: "Admins on Foreman [{{ tenant }}/{{ local_env }}]" }
-  - { name: "{{ ug_prefix }}-gitlab-admins", description: "Admins on GitLab [{{ tenant }}/{{ local_env }}]" }
   - { name: "{{ ug_prefix }}-grafana-readers", description: "Readers on Grafana [{{ tenant }}/{{ local_env }}]" }
-  # a group from ANOTHER environment of the same tenant: spell the env out
-  - { name: "ug-{{ tenant }}-test-grafana-readers", description: "Readers on Grafana [{{ tenant }}/test]" }
 
 freeipa_idam_users:
-  - { name: "{{ tenant }}.dave", givenname: Dave, sn: Dunn, email: ["{{ tenant }}.dave@{{ tenant }}.au"], groups: [ipausers, "{{ tenant }}-admins", "{{ tenant }}-editors"] }
-  - { name: "{{ tenant }}.erin", givenname: Erin, sn: Ellis, email: ["{{ tenant }}.erin@{{ tenant }}.au"], groups: [ipausers, "{{ tenant }}-viewers"] }
-
-freeipa_idam_service_accounts: []
+  - { name: "{{ tenant }}.dave", givenname: Dave, sn: Dunn, email: ["{{ tenant }}.dave@{{ tenant }}.au"], groups: [ipausers, "{{ tenant }}-admins"] }
+  - { name: "{{ tenant }}.erin", givenname: Erin, sn: Ellis, email: ["{{ tenant }}.erin@{{ tenant }}.au"], groups: [ipausers] }
 
 freeipa_idam_hostgroups:
-  - { name: "{{ hg_prefix }}-artifactory-readers", description: "Hosts for JFrog Artifactory [{{ tenant }}/{{ local_env }}]" }
-  - { name: "{{ hg_prefix }}-docker-operators", description: "Hosts for Docker hosts [{{ tenant }}/{{ local_env }}]" }
-  - { name: "{{ hg_prefix }}-foreman-admins", description: "Hosts for Foreman [{{ tenant }}/{{ local_env }}]" }
-  - { name: "{{ hg_prefix }}-gitlab-admins", description: "Hosts for GitLab [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ hg_prefix }}-docker-operators", description: "Hosts for Docker [{{ tenant }}/{{ local_env }}]" }
   - { name: "{{ hg_prefix }}-grafana-readers", description: "Hosts for Grafana [{{ tenant }}/{{ local_env }}]" }
 
+# Bundle services (declared realm-wide in global.yml) so one rule grants the whole set.
+freeipa_idam_hbacsvcgroups:
+  - { name: "{{ tenant }}-remote", description: "Interactive remote login [{{ tenant }}]", hbacsvc: [sshd, xrdp-sesman] }
+
 freeipa_idam_hbac_rules:
-  # realm-stock rules — not tenant-derived, so they stay literal
-  - { name: allow_all, description: Allow all users to access any host from any host, usercategory: all, hostcategory: all, servicecategory: all, state: disabled }
-  - { name: allow_systemd-user, description: Allow pam_systemd to run user@.service to create a system user session, usercategory: all, hostcategory: all, service: [systemd-user] }
-  # tenant rules — name, member group and hostgroup ALL follow the header prefixes
-  - { name: "{{ hbac_prefix }}-artifactory-readers", description: "HBAC — readers login to JFrog Artifactory [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-artifactory-readers"], hostgroup: ["{{ hg_prefix }}-artifactory-readers"], service: [cockpit, sshd] }
-  - { name: "{{ hbac_prefix }}-docker-operators", description: "HBAC — operators login to Docker hosts [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-docker-operators"], hostgroup: ["{{ hg_prefix }}-docker-operators"], service: [sshd, cockpit] }
-  - { name: "{{ hbac_prefix }}-foreman-admins", description: "HBAC — admins login to Foreman [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-foreman-admins"], hostgroup: ["{{ hg_prefix }}-foreman-admins"], service: [sshd] }
-  - { name: "{{ hbac_prefix }}-gitlab-admins", description: "HBAC — admins login to GitLab [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-gitlab-admins"], hostgroup: ["{{ hg_prefix }}-gitlab-admins"], service: [sshd] }
-  - { name: "{{ hbac_prefix }}-grafana-readers", description: "HBAC — readers login to Grafana [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-grafana-readers"], hostgroup: ["{{ hg_prefix }}-grafana-readers"], service: [cockpit, sshd] }
+  # rule name, member group and hostgroup ALL follow the header prefixes — they can never drift apart
+  - { name: "{{ hbac_prefix }}-docker-operators", description: "Operators on Docker hosts [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-docker-operators"], hostgroup: ["{{ hg_prefix }}-docker-operators"], service: [sshd, docker] }
+  - { name: "{{ hbac_prefix }}-grafana-readers", description: "Readers on Grafana [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-grafana-readers"], hostgroup: ["{{ hg_prefix }}-grafana-readers"], servicegroup: ["{{ tenant }}-remote"] }
 
 # A WHOLE list pulled in from group_vars (group_vars/all/realm.yml) — stays a native list.
 freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"
@@ -88,23 +56,30 @@ freeipa_server_dns_zones:
   - { name: 100.51.198.in-addr.arpa., dynamic_update: true, allow_sync_ptr: false }
   - { name: "{{ dns_zone }}.", dynamic_update: true, allow_sync_ptr: false }
 
-freeipa_server_dns_forward_zones: []
-
 freeipa_server_dns_records:
-  - { zone_name: 100.51.198.in-addr.arpa., records: [{record_name: '17', ptr_record: ["deva-idm-01.{{ dns_zone }}."]}, {record_name: '18', ptr_record: ["deva-idm-02.{{ dns_zone }}."]}] }
+  - { zone_name: 100.51.198.in-addr.arpa., records: [{record_name: '17', ptr_record: ["deva-idm-01.{{ dns_zone }}."]}] }
   - zone_name: "{{ dns_zone }}."
     records:
       - { record_name: _kerberos, txt_record: ['"{{ dns_zone | upper }}"'] }
-      - { record_name: _kerberos._tcp, srv_record: ["0 100 88 deva-idm-01.{{ dns_zone }}.", "0 100 88 deva-idm-02.{{ dns_zone }}."] }
-      - { record_name: _kpasswd._tcp, srv_record: ["0 100 464 deva-idm-01.{{ dns_zone }}.", "0 100 464 deva-idm-02.{{ dns_zone }}."] }
-      - { record_name: _ldap._tcp, srv_record: ["0 100 389 deva-idm-01.{{ dns_zone }}.", "0 100 389 deva-idm-02.{{ dns_zone }}."] }
-      - { record_name: ipa-ca, a_record: [198.51.100.17, 198.51.100.18] }
+      - { record_name: _ldap._tcp, srv_record: ["0 100 389 deva-idm-01.{{ dns_zone }}."] }
       - { record_name: deva-idm-01, a_record: [198.51.100.17] }
-      - { record_name: deva-idm-02, a_record: [198.51.100.18] }
 
 freeipa_server_automember_rules:
   # rule name matches the hostgroup it feeds; the fqdn regex embeds the SAME header tokens
-  - { name: "{{ hg_prefix }}-artifactory-readers", automember_type: hostgroup, description: "Auto-membership: JFrog Artifactory hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-artifactory\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
   - { name: "{{ hg_prefix }}-docker-operators", automember_type: hostgroup, description: "Auto-membership: Docker hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-docker\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
-  - { name: "{{ hg_prefix }}-foreman-admins", automember_type: hostgroup, description: "Auto-membership: Foreman hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-foreman\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
-  - { name: "{{ hg_prefix }}-gitlab-admins", automember_type: hostgroup, description: "Auto-membership: GitLab hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-gitlab\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
+  - { name: "{{ hg_prefix }}-grafana-readers", automember_type: hostgroup, description: "Auto-membership: Grafana hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-grafana\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
+
+# This tenant's RBAC overlay slice (concatenates with acme.yml's across the tenant load).
+freeipa_server_rbac_roles:
+  - name: "role-{{ tenant }}-{{ local_env }}-platform-admin"   # the role group, created exactly as declared
+    description: "{{ tenant }}/{{ local_env }} platform admins"
+    policy_groups:                                             # nests into MULTIPLE existing ug-* groups
+      - "{{ ug_prefix }}-docker-operators"
+      - "{{ ug_prefix }}-grafana-readers"
+    members: ["{{ tenant }}.erin", "{{ tenant }}.dave"]        # granted users → indirect ug-* members
+  - name: "role-{{ tenant }}-{{ local_env }}-observer"
+    policy_groups: ["{{ ug_prefix }}-grafana-readers"]
+    # CROSS-TENANT grant: acme.dave lives in tenants/acme.yml — validation runs on the
+    # realm-wide merged lists, so any declared user is grantable from any tenant's slice
+    # (another tenant's name stays literal: it is not derived from THIS file's header).
+    members: ["{{ tenant }}.dave", acme.dave]

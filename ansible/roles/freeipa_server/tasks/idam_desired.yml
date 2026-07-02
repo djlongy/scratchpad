@@ -195,14 +195,23 @@
       - freeipa_idam_sudo_rules | selectattr('deny_sudocmdgroup', 'defined') | list | length == 0
       - freeipa_idam_sudo_rules | selectattr('sudooption', 'defined') | list | length == 0
       - freeipa_idam_iparoles | selectattr('group', 'defined') | list | length == 0
+      - freeipa_server_idam_builtin_groups is not defined
+      - freeipa_server_idam_builtin_hostgroups is not defined
+      - freeipa_server_idam_builtin_hbac_rules is not defined
+      - freeipa_server_idam_builtin_hbacsvcgroups is not defined
+      - freeipa_server_idam_reference_validation is not defined
+      - freeipa_server_export_hbacsvc_stock is not defined
     fail_msg: >-
       Deprecated FreeIPA IDAM field/var names detected. Schema was renamed to match
       the community module params (singular, unambiguous): top-level
       freeipa_idam_groups -> freeipa_idam_usergroups; rule fields group -> usergroup,
       hbacsvc -> service, hbacsvcgroup -> servicegroup, allow_sudocmd -> cmd,
       deny_sudocmd -> deny_cmd, allow_sudocmdgroup -> cmdgroup,
-      deny_sudocmdgroup -> deny_cmdgroup, sudooption -> sudoopt. Re-export the
-      snapshot or rename in place.
+      deny_sudocmdgroup -> deny_cmdgroup, sudooption -> sudoopt. Var renames
+      (2026/07): freeipa_server_idam_builtin_* -> freeipa_idam_builtin_*,
+      freeipa_server_idam_reference_validation -> freeipa_idam_reference_validation,
+      freeipa_server_export_hbacsvc_stock -> freeipa_server_export_stock_hbacsvcs.
+      Re-export the snapshot or rename in place.
 
 # SURGICAL VALIDATION: collect EVERY referential/structural problem in one pass and
 # report them all at once at the end — so a bad item 2000 lines into a large dict
@@ -210,12 +219,12 @@
 # scroll up through the log to find. Accepts first/givenname and last/sn (ipauser
 # aliases); protected users (admin) are exempt from the first/last requirement
 # because their attributes cannot be set (see the payload task below).
-# LIVE mode (freeipa_server_idam_reference_validation: live): query the realm once
+# LIVE mode (freeipa_idam_reference_validation: live): query the realm once
 # for existing object names so a reference to an object that EXISTS but isn't
 # declared in this (scoped) slice passes — only true typos fail. This is the
 # Terraform "data source" idea. Needs a Kerberos ticket, so it can't run --check.
 - name: Gather live realm object names for reference validation (live mode)
-  when: freeipa_server_idam_reference_validation == 'live'
+  when: freeipa_idam_reference_validation == 'live'
   no_log: true
   block:
     - name: live-validate | Resolve admin password (shared resolver)
@@ -264,7 +273,7 @@
 
 # SHAPE problems (missing name, no groups/roles, duplicate user, protected-absent)
 # ALWAYS hard-fail. REFERENCE problems (role→group, user→group/role, hbac→service,
-# sudo→command) are governed by freeipa_server_idam_reference_validation. The engine
+# sudo→command) are governed by freeipa_idam_reference_validation. The engine
 # lives in filter_plugins/freeipa_idam.py (freeipa_idam_validate — unit-tested); the
 # known-name sets add the built-in allow-list and, in live mode, the live realm names,
 # so a scoped slice can reference a global object it doesn't declare.
@@ -287,9 +296,9 @@
            'automember_rules': freeipa_server_automember_rules | default([]),
            'unmodifiable_users': freeipa_idam_unmodifiable_users,
            'protected_groups': freeipa_idam_protected_groups,
-           'builtin_groups': freeipa_server_idam_builtin_groups | default([]),
-           'builtin_hostgroups': freeipa_server_idam_builtin_hostgroups | default([]),
-           'stock_hbacsvcs': freeipa_server_export_hbacsvc_stock | default([]),
+           'builtin_groups': freeipa_idam_builtin_groups | default([]),
+           'builtin_hostgroups': freeipa_idam_builtin_hostgroups | default([]),
+           'stock_hbacsvcs': freeipa_server_export_stock_hbacsvcs | default([]),
            'live': _freeipa_live | default({}),
          } | freeipa_idam_validate }}
   # Problem strings only (no secrets) — suppressed normally, shown at -vv.
@@ -311,12 +320,12 @@
     quiet: true
     fail_msg: |-
       FreeIPA IDAM reference validation failed — fix these {{ _freeipa_idam_problems.refs | length }} item(s)
-      (declare them, add to freeipa_server_idam_builtin_groups, or relax
-       freeipa_server_idam_reference_validation to live/warn/off):
+      (declare them, add to freeipa_idam_builtin_groups, or relax
+       freeipa_idam_reference_validation to live/warn/off):
       {% for p in _freeipa_idam_problems.refs %}
         - {{ p }}
       {% endfor %}
-  when: freeipa_server_idam_reference_validation in ['strict', 'live']
+  when: freeipa_idam_reference_validation in ['strict', 'live']
 
 - name: Warn on IDAM reference problems (warn mode — continue)
   ansible.builtin.debug:
@@ -326,7 +335,7 @@
         - {{ p }}
       {% endfor %}
   when:
-    - freeipa_server_idam_reference_validation == 'warn'
+    - freeipa_idam_reference_validation == 'warn'
     - _freeipa_idam_problems.refs | length > 0
 
 # Interlock sentinel — the LAST thing this phase does. reconcile.yml asserts this fact

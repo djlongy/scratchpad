@@ -12,7 +12,7 @@ per-tenant-inventory/
 ├── group_vars/all/
 │   └── realm.yml                 # realm-level connection + tenants_dir + shared baselines
 └── tenants/                      # ← freeipa_idam_tenants_dir points here
-    ├── global.yml                # shared/built-in groups + ops users (shared: true)
+    ├── global.yml                # shared slice + EXPORT-ORDERED placeholder template (shared: true)
     ├── acme.yml                  # a tenant, LITERAL data (what --tags export emits) + its RBAC slice
     └── globex.yml                # the same, TEMPLATED (self-ref + group_var pull) + its RBAC slice
 ```
@@ -33,6 +33,14 @@ exactly as `--tags export` emits them** (`freeipa_idam_usergroups`, `freeipa_ida
 (`givenname`/`sn`/`email`), so an exported realm drops into a tenant file unchanged. The loader
 also accepts short hand-friendly aliases (`users`, `groups`, `hbac_rules`, …) if you prefer to
 hand-author, but the export-consistent form is what these examples show.
+
+### Adopting an export: global.yml is the copy-down template
+
+`global.yml` lists **every object root key the export emits, in export order** — the keys
+with no data in this example are empty `[]` placeholders. After running `--tags export`
+against your realm, walk the snapshot top-down and copy each list over one by one; the
+file's order matches the snapshot's. (The export's header vars — domain/realm/forwarders
+and the `export_scope` pair — belong in `group_vars/all/realm.yml`, not in a tenant file.)
 
 ### Two ways to write a tenant file — both are plain `.yml`
 
@@ -82,11 +90,11 @@ The optional RBAC overlay (`freeipa_server_rbac_roles`, the WYSIWYG flat list �
 them across files, and the role compiles + validates the merged list **after** the tenant load.
 In this example:
 
-- **`acme.yml`** declares `role-acme-dev-platform-admin` + `role-acme-test-observer`, nesting
-  into the `ug-acme-*` policy groups declared **in the same file**, and grants `ops.editor` —
-  a user owned by `global.yml`.
-- **`globex.yml`** declares its own roles and makes a **cross-tenant grant**: `acme.dave`
-  (owned by `acme.yml`) is a member of `role-globex-test-observer`.
+- **`acme.yml`** declares `role-acme-dev-platform-admin`, nesting into the `ug-acme-*` policy
+  group declared **in the same file**, and grants `ops.editor` — a user owned by `global.yml`.
+- **`globex.yml`** declares its own roles (one nesting into MULTIPLE policy groups) and makes
+  a **cross-tenant grant**: `acme.dave` (owned by `acme.yml`) is a member of
+  `role-globex-dev-observer`.
 
 Both resolve because validation runs on the **realm-wide merged** `freeipa_idam_usergroups` /
 `freeipa_idam_users` — a role's `policy_groups` and `members` may reference anything declared
@@ -148,12 +156,12 @@ Verify on the primary:
 
 ```bash
 ipa user-show acme.dave --all          # Member of group: acme-admins, admins
-ipa group-show ug-globex-admins        # Member users: globex.sam
-ipa dnsrecord-find ipa.example.com.    # app1, app2 A records
+ipa group-show globex-admins           # Member users: globex.dave
+ipa dnsrecord-find ipa.dev.globex.au.  # _kerberos / _ldap._tcp / deva-idm-01
 # RBAC overlay, merged across tenant files (cross-tenant grant included):
-ipa group-show role-globex-test-observer     # Member users: globex.dave, acme.dave
-ipa group-show ug-acme-test-grafana-readers  # Member groups: role-acme-test-observer
-ipa user-show ops.editor --all               # Indirect member of: ug-acme-test-grafana-readers
+ipa group-show role-globex-dev-observer       # Member users: globex.dave, acme.dave
+ipa group-show ug-acme-dev-docker-operators   # Member groups: role-acme-dev-platform-admin
+ipa user-show ops.editor --all                # Indirect member of: ug-acme-dev-docker-operators
 ```
 
 ## Pruning (optional)
