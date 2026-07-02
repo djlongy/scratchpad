@@ -3,13 +3,14 @@
 # users. `shared: true` marks this slice's groups as grantable from any tenant (under the
 # opt-in tenant boundary, only these and a tenant's OWN groups are grantable without a
 # boundary failure). Built-ins are declared here ONCE; tenants just reference them.
+# Root keys and entry fields match what `--tags export` emits.
 tenant: global
 shared: true
-groups:
-  - { name: admins, description: "Account administrators" }
-  - { name: editors, description: "Editors" }
-  - { name: ipausers, description: "Default user group" }
-  - { name: trust admins, description: "Trust administrators" }
-users:
-  - { name: ops.root, first: Ops, last: Root, groups: [admins] }
-  - { name: ops.editor, first: Ops, last: Editor, groups: [editors] }
+freeipa_idam_usergroups:
+  - { name: admins, description: Account administrators }
+  - { name: editors, description: Editors }
+  - { name: ipausers, description: Default user group }
+  - { name: trust admins, description: Trust administrators }
+freeipa_idam_users:
+  - { name: ops.root, givenname: Ops, sn: Root, email: [ops.root@example.com], groups: [admins] }
+  - { name: ops.editor, givenname: Ops, sn: Editor, email: [ops.editor@example.com], groups: [editors] }

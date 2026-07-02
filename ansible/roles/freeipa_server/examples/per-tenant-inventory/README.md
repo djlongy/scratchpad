@@ -26,10 +26,13 @@ lets a single declarative reconcile manage membership of even a **shared/built-i
 correctly — `acme.dave` is declared once with `[acme-admins, admins]`, and the run reconciles
 both his tenant group and the global `admins` (owned in `global.yml`) together.
 
-Each file may carry a tenant's **whole** config — not just `users`/`groups` but `hostgroups`,
-`hbac_rules`, `sudo_rules`, `roles`, `automember`, `dns_records`, … Use the short hand-friendly
-key (`users`, `groups`, `hbac_rules`, `dns_records`, …) or the full `freeipa_idam_*` /
-`freeipa_server_*` var (e.g. straight from an export snapshot).
+Each file may carry a tenant's **whole** config — users, groups, hostgroups, HBAC rules, sudo
+rules, roles, automember, DNS records, … Every tenant file here uses the **native root keys
+exactly as `--tags export` emits them** (`freeipa_idam_usergroups`, `freeipa_idam_users`,
+`freeipa_idam_hbac_rules`, `freeipa_server_dns_records`, …) with the export's entry fields
+(`givenname`/`sn`/`email`), so an exported realm drops into a tenant file unchanged. The loader
+also accepts short hand-friendly aliases (`users`, `groups`, `hbac_rules`, …) if you prefer to
+hand-author, but the export-consistent form is what these examples show.
 
 ### Two ways to write a tenant file — both are plain `.yml`
 
