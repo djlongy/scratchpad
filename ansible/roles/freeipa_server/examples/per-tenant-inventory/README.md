@@ -13,8 +13,8 @@ per-tenant-inventory/
 │   └── realm.yml                 # realm-level connection + tenants_dir + shared baselines
 └── tenants/                      # ← freeipa_idam_tenants_dir points here
     ├── global.yml                # shared/built-in groups + ops users (shared: true)
-    ├── acme.yml                  # a tenant, LITERAL data (what --tags export emits)
-    └── globex.yml                # the same, written with TEMPLATING (self-ref + group_var pull)
+    ├── acme.yml                  # a tenant, LITERAL data (what --tags export emits) + its RBAC slice
+    └── globex.yml                # the same, TEMPLATED (self-ref + group_var pull) + its RBAC slice
 ```
 
 ## The model
@@ -56,6 +56,29 @@ These feed **naming only** — none of them switches the target realm/host, chan
 scope, or alters service FQDNs. The header key is `env_override` (not `env`) precisely so it
 can't be mistaken for an environment switch. `{{ env }}` in a name becomes the `-prod-`/`-dev-`
 segment that a `freeipa_idam_reconcile_scope: "<tenant>-<env>-"` later matches on.
+
+### RBAC overlay — each tenant file carries its own slice, merged realm-wide
+
+The optional RBAC overlay (`freeipa_server_rbac_roles`, the WYSIWYG flat list — see
+[`../rbac-overlay/`](../rbac-overlay/) for the model) **rides the tenant loader like any other
+`freeipa_*` list**: every `tenants/*.yml` may declare its own slice, the loader **concatenates**
+them across files, and the role compiles + validates the merged list **after** the tenant load.
+In this example:
+
+- **`acme.yml`** declares `role-acme-dev-platform-admin` + `role-acme-test-observer`, nesting
+  into the `ug-acme-*` policy groups declared **in the same file**, and grants `ops.editor` —
+  a user owned by `global.yml`.
+- **`globex.yml`** declares its own roles and makes a **cross-tenant grant**: `acme.dave`
+  (owned by `acme.yml`) is a member of `role-globex-test-observer`.
+
+Both resolve because validation runs on the **realm-wide merged** `freeipa_idam_usergroups` /
+`freeipa_idam_users` — a role's `policy_groups` and `members` may reference anything declared
+by *any* tenant file in the run. Policy groups must still exist natively somewhere (typo trap
+stays armed); the overlay only ever creates the `role-*` groups themselves.
+
+**Declare the overlay in ONE place**: tenant files *or* `group_vars` — a tenant-declared
+`freeipa_server_rbac_roles` **replaces** a `group_vars` value (Ansible var precedence), it does
+not merge with it. Splitting slices across tenant files (as here) is the per-tenant way.
 
 ### Testing destructive plays: QA realm first, then live
 
@@ -110,6 +133,10 @@ Verify on the primary:
 ipa user-show acme.dave --all          # Member of group: acme-admins, admins
 ipa group-show ug-globex-admins        # Member users: globex.sam
 ipa dnsrecord-find ipa.example.com.    # app1, app2 A records
+# RBAC overlay, merged across tenant files (cross-tenant grant included):
+ipa group-show role-globex-test-observer     # Member users: globex.dave, acme.dave
+ipa group-show ug-acme-test-grafana-readers  # Member groups: role-acme-test-observer
+ipa user-show ops.editor --all               # Indirect member of: ug-acme-test-grafana-readers
 ```
 
 ## Pruning (optional)

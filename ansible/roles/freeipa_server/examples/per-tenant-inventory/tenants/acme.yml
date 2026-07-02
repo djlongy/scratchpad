@@ -9,6 +9,11 @@ groups:
   - { name: acme-admins, description: "Acme admins" }
   - { name: acme-editors, description: "Acme editors" }
   - { name: acme-viewers, description: "Acme read-only" }
+  # granular ug-* policy groups — HBAC/sudo target these; the RBAC overlay below nests
+  # role groups INTO them (policy groups must exist natively, so they live right here)
+  - { name: ug-acme-dev-docker-operators, description: "Operators on Docker hosts [acme/dev]" }
+  - { name: ug-acme-dev-artifactory-readers, description: "Readers on Artifactory [acme/dev]" }
+  - { name: ug-acme-test-grafana-readers, description: "Readers on Grafana [acme/test]" }
 hostgroups:
   - { name: hg-acme, description: "Acme hosts" }
 users:
@@ -16,13 +21,21 @@ users:
   - { name: acme.erin, first: Erin, last: Ellis, groups: [acme-viewers] }
 hbac_rules:
   - { name: hbac-acme-ssh, usergroup: [acme-admins], hostgroup: [hg-acme], service: [sshd] }
+  - { name: hbac-acme-docker, usergroup: [ug-acme-dev-docker-operators], hostgroup: [hg-acme], service: [sshd] }
+
+# This tenant's OWN slice of the RBAC overlay. Every tenants/*.yml may carry one;
+# the loader CONCATENATES freeipa_server_rbac_roles across all tenant files and the
+# role compiles the merged list AFTER the tenant load — see the globex.yml slice for
+# the other half of the realm-wide merge.
 freeipa_server_rbac_roles:
   - name: role-acme-dev-platform-admin       # the role group, created exactly as declared
     description: "acme/dev platform admins"
-    policy_groups:                             # EXISTING ug-* groups from this file, verbatim
+    policy_groups:                           # EXISTING ug-* groups from this file, verbatim
       - ug-acme-dev-docker-operators
       - ug-acme-dev-artifactory-readers
-    members: [acme.erin, acme.dave]        # granted users → indirect ug-* members
+    members: [acme.erin, acme.dave]          # granted users → indirect ug-* members
   - name: role-acme-test-observer
     policy_groups: [ug-acme-test-grafana-readers]
-    members: [acme.dave]
+    # members resolve against the realm-wide MERGED user list — ops.editor is declared
+    # in global.yml (shared slice), not in this file
+    members: [acme.dave, ops.editor]

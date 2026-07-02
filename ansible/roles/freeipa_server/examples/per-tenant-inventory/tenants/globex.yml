@@ -1,5 +1,5 @@
 ---
-# globex — the SAME kind of tenant as globex, but written with TEMPLATING to show that a
+# globex — the SAME kind of tenant as acme, but written with TEMPLATING to show that a
 # plain tenants/*.yml behaves like ANY inventory vars YAML. No special extension.
 #   * {{ tenant }} / {{ prefix }} self-reference the header keys below.
 #   * shared_sudo_commands is pulled WHOLE from group_vars (group_vars/all/realm.yml) and
@@ -22,7 +22,9 @@ freeipa_server_rbac_roles:
     members: [globex.erin, globex.dave]        # granted users → indirect ug-* members
   - name: role-globex-test-observer
     policy_groups: [ug-globex-test-grafana-readers]
-    members: [globex.dave]
+    # CROSS-TENANT grant: acme.dave lives in tenants/acme.yml — validation runs on the
+    # realm-wide merged lists, so any declared user is grantable from any tenant's slice
+    members: [globex.dave, acme.dave]
 
 freeipa_idam_usergroups:
   - { name: globex-admins, description: globex admins }
