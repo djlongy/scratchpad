@@ -282,13 +282,16 @@ group_vars or tenant files.)
 
 ```yaml
 # DEFINITIONS — tenant → environment → role → {description?, policy_groups}
+# A policy_groups entry is either a LITERAL existing group name — paste it straight
+# from the --tags export snapshot, zero renaming — or a {service, privilege} dict
+# expanded through the naming template. Both point at EXISTING native groups.
 freeipa_server_rbac_roles:
   acme:
     prod:
       platform-admin:
-        policy_groups:                     # point at EXISTING native ug-* groups
-          - { service: gitlab, privilege: admins }
-          - { service: docker, privilege: operators }
+        policy_groups:
+          - app-gitlab-admins                         # literal, exactly as exported
+          - { service: docker, privilege: operators } # templated → ug-acme-prod-docker-operators
 # ASSIGNMENTS — user → tenant → environment → [roles]  (every grant fully qualified)
 freeipa_server_rbac_user_assignments:
   alice: { acme: { prod: [platform-admin] } }   # → role-acme-prod-platform-admin → indirect ug-*

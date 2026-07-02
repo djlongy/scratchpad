@@ -28,7 +28,11 @@ nesting onto them.
 Input vars (role-prefixed per ansible-lint var-naming):
   freeipa_server_rbac_naming             role_template + policy_group_template
   freeipa_server_rbac_roles              {tenant: {environment: {role: {description?,
-                                          policy_groups: [{service, privilege}, ...]}}}}
+                                          policy_groups: [...]}}}} — each entry is either
+                                          a LITERAL existing group name (paste it straight
+                                          from the export, zero metamorphosis) or a
+                                          {service, privilege} dict fed to the naming
+                                          template
   freeipa_server_rbac_user_assignments   {user: {tenant: {environment: [role, ...]}}}
 
 Filters:
@@ -86,6 +90,10 @@ def _role_group_name(tenant, environment, name, naming):
 
 
 def _policy_group_name(tenant, environment, policy_group, naming):
+    # A literal string is used VERBATIM — the paste-from-export form: reference an
+    # exported freeipa_idam_usergroups entry by its exact name, no naming template.
+    if isinstance(policy_group, str):
+        return policy_group
     n = _naming(naming)
     return _fmt(n["policy_group_template"],
                 usergroup_prefix=n["usergroup_prefix"],
@@ -213,16 +221,21 @@ def _validate_policy_groups_shape(tenant, environment, name, role_def):
             f"role '{tenant}/{environment}/{name}' declares no policy_groups; a role must "
             f"grant at least one (it would otherwise grant nothing)")
     for policy_group in policy_groups:
+        if isinstance(policy_group, str) and policy_group.strip():
+            continue  # literal existing-group name (paste-from-export form)
         if not (isinstance(policy_group, dict)
                 and policy_group.get("service") and policy_group.get("privilege")):
             raise AnsibleFilterError(
-                f"role '{tenant}/{environment}/{name}': each policy_group needs both "
-                f"'service' and 'privilege' (got {policy_group!r})")
+                f"role '{tenant}/{environment}/{name}': each policy_group must be either a "
+                f"LITERAL existing group name (paste it from the export) or a dict with "
+                f"'service' and 'privilege' for the naming template (got {policy_group!r})")
 
 
-def _check_group_name(name, prefix, kind):
-    """Reject a generated name with the wrong prefix or that collides with a built-in."""
-    if not name.startswith(prefix):
+def _check_group_name(name, prefix, kind, enforce_prefix=True):
+    """Reject a generated name with the wrong prefix or that collides with a built-in.
+    Literal (paste-from-export) policy names skip the prefix check — they are existing
+    groups with whatever name the realm uses — but never a protected built-in."""
+    if enforce_prefix and not name.startswith(prefix):
         raise AnsibleFilterError(
             f"{kind} group '{name}' must start with the prefix '{prefix}' "
             f"(check the naming templates)")
@@ -235,7 +248,8 @@ def _validate_cell_policy_groups(tenant, environment, name, role_def, naming,
                                  native_names, ug_prefix, allow_missing, policy_group_names):
     for policy_group in role_def["policy_groups"]:
         ug = _check_group_name(
-            _policy_group_name(tenant, environment, policy_group, naming), ug_prefix, "policy")
+            _policy_group_name(tenant, environment, policy_group, naming), ug_prefix,
+            "policy", enforce_prefix=not isinstance(policy_group, str))
         policy_group_names.add(ug)
         if not allow_missing and ug not in native_names:
             raise AnsibleFilterError(

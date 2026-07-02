@@ -222,11 +222,15 @@ freeipa_idam_pwpolicies: []
 # is a HARD boundary: a role is defined in a tenant→environment cell and assigned by
 # naming that exact cell. Empty = pure baseline, zero behaviour change. Compiled AFTER
 # the tenant load, so it composes with freeipa_idam_tenants_dir. See tasks/rbac.yml.
+# policy_groups entries: paste a LITERAL group name straight from the export (zero
+# metamorphosis), or use the {service, privilege} dict for template-generated names.
 freeipa_server_rbac_roles: {}
 #  acme:
 #    prod:
 #      platform-admin:
-#        policy_groups: [{ service: gitlab, privilege: admins }, { service: docker, privilege: operators }]
+#        policy_groups:
+#          - app-gitlab-admins                            # literal, as exported
+#          - { service: docker, privilege: operators }    # or via the naming template
 freeipa_server_rbac_user_assignments: {}
 #  alice: { acme: { prod: [platform-admin] } }
 freeipa_server_rbac_naming: {}           # override the role-/ug- name templates (see freeipa_rbac.py)

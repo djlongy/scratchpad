@@ -22,18 +22,23 @@ freeipa_server_rbac_naming:
   role_template: "{role_prefix}-{tenant}-{environment}-{name}"
   policy_group_template: "{usergroup_prefix}-{tenant}-{environment}-{service}-{privilege}"
 
-# DEFINITIONS — tenant → environment → role → {description?, policy_groups: [{service, privilege}]}.
-# A role that should exist in several cells is declared in each cell (same label, separate
-# entries). The ug-* names the policy_groups resolve to must already exist in 00_native.yml.
+# DEFINITIONS — tenant → environment → role → {description?, policy_groups: [...]}.
+# A policy_groups entry is either a LITERAL existing group name — paste it exactly as
+# it appears in the --tags export snapshot / 00_native.yml, zero renaming — or a
+# {service, privilege} dict expanded through the naming template. A role that should
+# exist in several cells is declared in each cell (same label, separate entries).
+# Every referenced group must already exist natively (00_native.yml).
 freeipa_server_rbac_roles:
   acme:
     prod:
-      # platform-admin bundles two acme/prod policy groups.
+      # platform-admin bundles two acme/prod policy groups — one referenced by its
+      # literal exported name, one via the naming template. Both resolve to the same
+      # kind of nesting; pick whichever reads better for your estate.
       platform-admin:
         description: "Platform admin (acme/prod)"
         policy_groups:
-          - { service: gitlab, privilege: admins }
-          - { service: docker, privilege: operators }
+          - ug-acme-prod-gitlab-admins                   # literal, as exported
+          - { service: docker, privilege: operators }    # templated
     test:
       # db-admin in acme/test — a SEPARATE cell from initech/prod's db-admin below.
       db-admin:
