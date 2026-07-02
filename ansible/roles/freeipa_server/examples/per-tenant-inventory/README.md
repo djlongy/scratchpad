@@ -40,25 +40,39 @@ A tenant file is loaded with `include_vars`, so it behaves **exactly like any in
 YAML**. There is no special extension.
 
 - **`acme.yml`** — literal data. The natural form for an exported tenant: just names and values.
-- **`globex.yml`** — templated. `{{ tenant }}` / `{{ prefix }}` self-reference the file's own
-  header keys, and `freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"` pulls a whole list
-  **in from `group_vars`** (it stays a native list). Ordinary quoted Jinja, like any vars file.
+- **`globex.yml`** — fully header-driven. Every tenant/env-derived name, description, automember
+  regex and DNS name is templated from the header block, so **duplicating the tenant for a new
+  tenancy or environment means changing only the header vars** — the whole file follows. It also
+  shows `freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"` pulling a whole list **in
+  from `group_vars`** (it stays a native list). Ordinary quoted Jinja, like any vars file.
 
-### Header keys — `tenant`, `prefix`, `env_override` (naming aids only)
+### Header vars — `tenant`, `shared`, and your own naming tokens
 
-A tenant file may set a few scalar header keys that the loader exposes to the file's **own**
-Jinja, so object names can self-reference them:
+A tenant file is a normal vars file, so **any scalar declared in it can be referenced by every
+other value in the same file**. Only two keys mean something to the loader itself:
 
-| Key | `{{ … }}` in the file | Purpose / effect |
-|---|---|---|
-| `tenant` | `{{ tenant }}` | Per-tenant token **and** an ownership stamp (records who owns each user/group). |
-| `prefix` | `{{ prefix }}` | A naming prefix token, e.g. `ug`. |
-| `env_override` | `{{ env }}` | **Optional** per-file override of the inventory-wide `env`. Omit it and `{{ env }}` inherits the realm's `env` from inventory; set `env_override: dev` only when *this file's* object names must differ. |
+| Key | Purpose / effect |
+|---|---|
+| `tenant` | Ownership stamp — records who owns each user/group (feeds scoping/reporting). Also handy as `{{ tenant }}` in names. |
+| `shared` | Marks this slice's groups as grantable from any tenant (see `global.yml`). |
 
-These feed **naming only** — none of them switches the target realm/host, changes the reconcile
-scope, or alters service FQDNs. The header key is `env_override` (not `env`) precisely so it
-can't be mistaken for an environment switch. `{{ env }}` in a name becomes the `-prod-`/`-dev-`
-segment that a `freeipa_idam_reconcile_scope: "<tenant>-<env>-"` later matches on.
+Everything else is **yours to invent** — `globex.yml` demonstrates the two substitution styles:
+
+```yaml
+tenant: globex
+env_local: dev                                    # a per-file naming token (not a realm switch)
+ug_prefix: "ug-{{ tenant }}-{{ env_local }}"      # COMPOUND prefix: built once, used everywhere
+```
+
+- **Individual tokens** — `name: "{{ tenant }}-admins"`, `description: "... [{{ tenant }}/{{ env_local }}]"`
+- **Compound prefixes** — `name: "{{ ug_prefix }}-docker-operators"`: one header line defines
+  the whole naming scheme; HBAC rules reference the same `{{ ug_prefix }}`/`{{ hg_prefix }}`
+  so rule, member group and hostgroup can never drift apart.
+
+These feed **naming only** — no header var switches the target realm/host, changes the reconcile
+scope, or alters service FQDNs (`{{ env }}` still resolves to the inventory-wide `env` if you
+use it). The `-<tenant>-<env>-` segment they produce is what a
+`freeipa_idam_reconcile_scope: "<tenant>-<env>-"` later matches on.
 
 ### RBAC overlay — each tenant file carries its own slice, merged realm-wide
 
