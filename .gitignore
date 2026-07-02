@@ -47,6 +47,9 @@ secring.*
 *password*
 *passwords*
 *credentials*
+# exception: the freeipa_server shared credential RESOLVER (no secrets — pure var
+# indirection); the *credentials* blanket above would silently strip it from the role
+!ansible/roles/*/tasks/resolve_credentials.yml
 *token*
 *tokens*
 *.env
