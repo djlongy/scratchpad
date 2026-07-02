@@ -393,19 +393,33 @@ def _scalar_differs(declared, current_attrs, attr) -> bool:
     return str(declared) != str(current)
 
 
-# Declared-key -> comparator. A comparator returns True when the entry DIFFERS.
-# Keys that never affect the realm object (name/state) map to None. Any declared
-# key not listed => entry is included unconditionally (conservative).
+def _description_differs(d, c) -> bool:
+    return _scalar_differs(d["description"], c, "description")
+
+
+def _seconds_differs(declared, current_attrs, attr, factor) -> bool:
+    """Module takes days/hours; the realm stores seconds (pwpolicy)."""
+    try:
+        want = int(str(declared)) * factor
+    except (TypeError, ValueError):
+        return True
+    return str(want) != current_attrs.get(attr, [None])[0]
+
+
+# Declared-key -> comparator. A comparator gets the FULL declared entry + the
+# raw current attrs and returns True when the entry DIFFERS. Keys that never
+# affect the realm object (name/state) map to None. Any declared key not
+# listed => entry is included unconditionally (conservative).
 _HOSTGROUP_COMPARE = {
     "name": None, "state": None,
-    "description": lambda d, c: _scalar_differs(d["description"], c, "description"),
+    "description": _description_differs,
     "hostgroup": lambda d, c: _norm_set(d["hostgroup"]) != _dn_leaves(c, "member", "cn", "cn=hostgroups"),
     "host": lambda d, c: _norm_set(d["host"]) != _dn_leaves(c, "member", "fqdn", "cn=computers"),
 }
 
 _HBACRULE_COMPARE = {
     "name": None, "state": None,  # enabled/disabled handled by the op-state pass
-    "description": lambda d, c: _scalar_differs(d["description"], c, "description"),
+    "description": _description_differs,
     "usercategory": lambda d, c: _scalar_differs(d["usercategory"], c, "usercategory"),
     "hostcategory": lambda d, c: _scalar_differs(d["hostcategory"], c, "hostcategory"),
     "servicecategory": lambda d, c: _scalar_differs(d["servicecategory"], c, "servicecategory"),
@@ -424,39 +438,179 @@ def _automember_regex_set(declared_conditions) -> set:
 
 _AUTOMEMBER_COMPARE = {
     "name": None, "state": None, "automember_type": None,
-    "description": lambda d, c: _scalar_differs(d["description"], c, "description"),
+    "description": _description_differs,
     "inclusive": lambda d, c: _automember_regex_set(d["inclusive"]) != _norm_set(c.get("automemberinclusiveregex")),
     "exclusive": lambda d, c: _automember_regex_set(d["exclusive"]) != _norm_set(c.get("automemberexclusiveregex")),
 }
 
+_HBACSVC_COMPARE = {
+    "name": None, "state": None,
+    "description": _description_differs,
+}
+
+_HBACSVCGROUP_COMPARE = {
+    "name": None, "state": None,
+    "description": _description_differs,
+    "hbacsvc": lambda d, c: _norm_set(d["hbacsvc"]) != _dn_leaves(c, "member", "cn", "cn=hbacservices,"),
+}
+
+_SUDOCMD_COMPARE = {
+    "name": None, "state": None,
+    "description": _description_differs,
+}
+
+
+def _sudocmdgroup_compare(aux_raw: str) -> dict:
+    """Comparator table FACTORY: sudocmdgroup ``member`` DNs carry
+    ``ipaUniqueID=`` leaves, so resolving them to command names needs the
+    ``ipa sudocmd-find --all --raw`` output (``aux_raw``). An unresolvable
+    uuid (or empty aux) makes the entry differ — conservative."""
+    uuid_to_cmd = {
+        uuid: attrs.get("sudocmd", [""])[0].lower()
+        for uuid, attrs in _parse_raw_entries(aux_raw, key_attr="ipauniqueid").items()}
+
+    def members_differ(d, c):
+        current = set()
+        for uuid in _dn_leaves(c, "member", "ipauniqueid", "cn=sudocmds,"):
+            cmd = uuid_to_cmd.get(uuid)
+            if not cmd:
+                return True
+            current.add(cmd)
+        return _norm_set(d["sudocmd"]) != current
+
+    return {
+        "name": None, "state": None,
+        "description": _description_differs,
+        "sudocmd": members_differ,
+    }
+
+
+# pwpolicy: module takes maxlife in DAYS and minlife in HOURS; the realm stores
+# both in seconds (krbmaxpwdlife/krbminpwdlife) — verified live 2026/07/02.
+_PWPOLICY_COMPARE = {
+    "name": None, "state": None,
+    "maxlife": lambda d, c: _seconds_differs(d["maxlife"], c, "krbmaxpwdlife", 86400),
+    "minlife": lambda d, c: _seconds_differs(d["minlife"], c, "krbminpwdlife", 3600),
+    "history": lambda d, c: _scalar_differs(d["history"], c, "krbpwdhistorylength"),
+    "minclasses": lambda d, c: _scalar_differs(d["minclasses"], c, "krbpwdmindiffchars"),
+    "minlength": lambda d, c: _scalar_differs(d["minlength"], c, "krbpwdminlength"),
+    "priority": lambda d, c: _scalar_differs(d["priority"], c, "cospriority"),
+    "maxfail": lambda d, c: _scalar_differs(d["maxfail"], c, "krbpwdmaxfailure"),
+    "failinterval": lambda d, c: _scalar_differs(d["failinterval"], c, "krbpwdfailurecountinterval"),
+    "lockouttime": lambda d, c: _scalar_differs(d["lockouttime"], c, "krbpwdlockoutduration"),
+    "gracelimit": lambda d, c: _scalar_differs(d["gracelimit"], c, "passwordgracelimit"),
+}
+
+
+# permission object_type composes BOTH ipapermlocation and a fixed objectclass
+# targetfilter; extra_target_filter values land in ipapermtargetfilter alongside
+# it. Only types verified against live raw output are mapped — an unmapped
+# declared type keeps the entry included (conservative).
+_PERM_TYPE_LOCATION = {
+    "hostgroup": "cn=hostgroups,cn=accounts,",
+    "group": "cn=groups,cn=accounts,",
+}
+_PERM_TYPE_FILTERS = {
+    "hostgroup": {"(objectclass=ipahostgroup)"},
+    "group": {"(|(objectclass=ipausergroup)(objectclass=posixgroup))"},
+}
+
+
+def _perm_filters_differ(d, c) -> bool:
+    expected = _norm_set(d.get("extra_target_filter"))
+    otype = str(d.get("object_type", "")).lower()
+    if otype:
+        location = _PERM_TYPE_LOCATION.get(otype)
+        if location is None:
+            return True
+        expected |= _PERM_TYPE_FILTERS[otype]
+        if not (c.get("ipapermlocation", [""])[0] or "").lower().startswith(location):
+            return True
+    return expected != _norm_set(c.get("ipapermtargetfilter"))
+
+
+_PERMISSION_COMPARE = {
+    "name": None, "state": None,
+    "right": lambda d, c: _norm_set(d["right"]) != _norm_set(c.get("ipapermright")),
+    "attrs": lambda d, c: _norm_set(d["attrs"]) != _norm_set(c.get("ipapermincludedattr")),
+    "bindtype": lambda d, c: _scalar_differs(d["bindtype"], c, "ipapermbindruletype"),
+    "subtree": lambda d, c: str(d["subtree"]).lower() != (c.get("ipapermlocation", [""])[0] or "").lower(),
+    # joint comparator — either key declared checks location + full targetfilter
+    "object_type": _perm_filters_differ,
+    "extra_target_filter": _perm_filters_differ,
+    # memberof intentionally unmodeled (also lands in ipapermtargetfilter)
+}
+
+_PRIVILEGE_COMPARE = {
+    "name": None, "state": None,
+    "description": _description_differs,
+    "permission": lambda d, c: _norm_set(d["permission"]) != _dn_leaves(c, "memberof", "cn", "cn=permissions,"),
+}
+
+
+def _role_services_differ(d, c) -> bool:
+    current = {v.split("@", 1)[0]
+               for v in _dn_leaves(c, "member", "krbprincipalname", "cn=services,")}
+    declared = {str(v).strip().lower().split("@", 1)[0] for v in (d["service"] or [])}
+    return declared != current
+
+
+_ROLE_COMPARE = {
+    "name": None, "state": None,
+    "description": _description_differs,
+    "privilege": lambda d, c: _norm_set(d["privilege"]) != _dn_leaves(c, "memberof", "cn", "cn=privileges,"),
+    "user": lambda d, c: _norm_set(d["user"]) != _dn_leaves(c, "member", "uid", "cn=users,"),
+    "usergroup": lambda d, c: _norm_set(d["usergroup"]) != _dn_leaves(c, "member", "cn", "cn=groups,"),
+    "host": lambda d, c: _norm_set(d["host"]) != _dn_leaves(c, "member", "fqdn", "cn=computers,"),
+    "hostgroup": lambda d, c: _norm_set(d["hostgroup"]) != _dn_leaves(c, "member", "cn", "cn=hostgroups,"),
+    "service": _role_services_differ,
+}
+
+# kind -> comparator table, or a FACTORY called with aux_raw when the kind
+# needs a second find to resolve members. "key" overrides the raw attribute
+# entries are keyed on (default cn).
 _PRECHECK_KINDS = {
-    "hostgroup": _HOSTGROUP_COMPARE,
-    "hbacrule": _HBACRULE_COMPARE,
-    "automember": _AUTOMEMBER_COMPARE,
+    "hostgroup": {"compare": _HOSTGROUP_COMPARE},
+    "hbacrule": {"compare": _HBACRULE_COMPARE},
+    "automember": {"compare": _AUTOMEMBER_COMPARE},
+    "hbacsvc": {"compare": _HBACSVC_COMPARE},
+    "hbacsvcgroup": {"compare": _HBACSVCGROUP_COMPARE},
+    "sudocmd": {"compare": _SUDOCMD_COMPARE, "key": "sudocmd"},
+    "sudocmdgroup": {"compare": _sudocmdgroup_compare},
+    "pwpolicy": {"compare": _PWPOLICY_COMPARE},
+    "permission": {"compare": _PERMISSION_COMPARE},
+    "privilege": {"compare": _PRIVILEGE_COMPARE},
+    "role": {"compare": _ROLE_COMPARE},
 }
 
 
 def _entry_differs(declared: dict, current: dict, compare: dict) -> bool:
-    for key, value in declared.items():
+    for key in declared:
         comparator = compare.get(key, "unmodeled")
         if comparator is None:
             continue
-        if comparator == "unmodeled" or comparator({key: value}, current):
+        if comparator == "unmodeled" or comparator(declared, current):
             return True
     return False
 
 
-def freeipa_idam_changed_subset(declared: list[dict], find_raw: str, kind: str) -> list[dict]:
+def freeipa_idam_changed_subset(declared: list[dict], find_raw: str, kind: str,
+                                aux_raw: str = "") -> list[dict]:
     """Declared entries that DIFFER from the realm per ``ipa <kind>-find --all
     --raw`` output — feed this to the per-item module loop instead of the full
     list. ``state: absent`` entries are returned only while the object still
-    exists (a completed delete stops costing a module call every run)."""
-    compare = _PRECHECK_KINDS.get(kind)
-    if compare is None:
+    exists (a completed delete stops costing a module call every run).
+    ``aux_raw`` carries a second find's output for kinds whose members need
+    cross-referencing (sudocmdgroup -> sudocmd-find)."""
+    spec = _PRECHECK_KINDS.get(kind)
+    if spec is None:
         raise AnsibleFilterError(
             f"freeipa_idam_changed_subset: unknown kind '{kind}' "
             f"(expected one of {sorted(_PRECHECK_KINDS)})")
-    current_entries = _parse_raw_entries(find_raw)
+    compare = spec["compare"]
+    if callable(compare):
+        compare = compare(aux_raw)
+    current_entries = _parse_raw_entries(find_raw, key_attr=spec.get("key", "cn"))
     subset = []
     for entry in declared or []:
         name = (entry or {}).get("name")

@@ -203,9 +203,27 @@
 # ONLY for entries that differ from the realm (freeipa_idam_changed_subset — every
 # skipped iteration saves a full Python + ipalib bootstrap on the server). Fail
 # open: a failed/empty find yields raw "", the filter sees nothing current, and
-# the full declared list runs exactly as before this optimisation.
-- name: Precheck | Read current hostgroups and HBAC rules (one find each)
-  when: (freeipa_idam_hostgroups | length > 0) or (freeipa_idam_hbac_rules | length > 0)
+# the full declared list runs exactly as before this optimisation. sudocmd is
+# also read when only sudocmdgroups are declared — the group members carry
+# ipaUniqueID leaves that resolve through the sudocmd output (aux_raw).
+- name: Precheck | Read current realm objects (one find per object type)
+  vars:
+    _freeipa_precheck_specs:
+      - {find: hostgroup, run: "{{ freeipa_idam_hostgroups | length > 0 }}"}
+      - {find: hbacrule, run: "{{ (freeipa_idam_hbac_rules | length > 0) or (freeipa_idam_hbac_rules_disable | length > 0) }}"}
+      - {find: hbacsvc, run: "{{ freeipa_idam_hbacsvcs | length > 0 }}"}
+      - {find: hbacsvcgroup, run: "{{ freeipa_idam_hbacsvcgroups | length > 0 }}"}
+      - {find: sudocmd, run: "{{ (freeipa_idam_sudo_commands | length > 0) or (freeipa_idam_sudocmdgroups | length > 0) }}"}
+      - {find: sudocmdgroup, run: "{{ freeipa_idam_sudocmdgroups | length > 0 }}"}
+      - {find: pwpolicy, run: "{{ freeipa_idam_pwpolicies | length > 0 }}"}
+      - {find: permission, run: "{{ freeipa_idam_permissions | length > 0 }}"}
+      - {find: privilege, run: "{{ freeipa_idam_privileges | length > 0 }}"}
+      - {find: role, run: "{{ freeipa_idam_iparoles | length > 0 }}"}
+  when: >-
+    (freeipa_idam_hostgroups + freeipa_idam_hbac_rules + freeipa_idam_hbac_rules_disable
+     + freeipa_idam_hbacsvcs + freeipa_idam_hbacsvcgroups + freeipa_idam_sudo_commands
+     + freeipa_idam_sudocmdgroups + freeipa_idam_pwpolicies + freeipa_idam_permissions
+     + freeipa_idam_privileges + freeipa_idam_iparoles) | length > 0
   block:
     - name: Precheck | Acquire Kerberos ticket
       ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
@@ -215,21 +233,22 @@
       check_mode: false
       no_log: true
 
-    - name: Precheck | Read current hostgroups
-      ansible.builtin.command: "ipa hostgroup-find --all --raw --sizelimit=0"
-      register: _freeipa_precheck_hostgroups
+    - name: Precheck | Read current objects (skips undeclared types)
+      ansible.builtin.command: "ipa {{ item.find }}-find --all --raw --sizelimit=0"
+      register: _freeipa_precheck_finds
       changed_when: false
       check_mode: false
       failed_when: false
-      when: freeipa_idam_hostgroups | length > 0
+      loop: "{{ _freeipa_precheck_specs }}"
+      loop_control:
+        label: "{{ item.find }}"
+      when: item.run | bool
 
-    - name: Precheck | Read current HBAC rules
-      ansible.builtin.command: "ipa hbacrule-find --all --raw --sizelimit=0"
-      register: _freeipa_precheck_hbac
-      changed_when: false
-      check_mode: false
-      failed_when: false
-      when: freeipa_idam_hbac_rules | length > 0
+    - name: Precheck | Index find output by object type
+      ansible.builtin.set_fact:
+        _freeipa_precheck_raw: >-
+          {{ dict(_freeipa_precheck_finds.results | map(attribute='item.find')
+                  | zip(_freeipa_precheck_finds.results | map(attribute='stdout', default=''))) }}
 
     - name: Precheck | Destroy Kerberos ticket
       ansible.builtin.command: kdestroy
@@ -272,9 +291,14 @@
     lockouttime: "{{ item.lockouttime | default(omit) }}"
     gracelimit: "{{ item.gracelimit | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_pwpolicies }}"
+  # precheck-gated: only policies that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_pwpolicies_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_pwpolicies_changed: >-
+      {{ freeipa_idam_pwpolicies
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('pwpolicy', ''), 'pwpolicy') }}
   when: freeipa_idam_pwpolicies | length > 0
 
 # TWO passes so a hostgroup that NESTS another (hostgroup: [child]) never races ahead of the
@@ -295,7 +319,7 @@
   vars:
     _freeipa_idam_hostgroups_changed: >-
       {{ freeipa_idam_hostgroups
-         | freeipa_idam_changed_subset(_freeipa_precheck_hostgroups.stdout | default(''), 'hostgroup') }}
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hostgroup', ''), 'hostgroup') }}
   when: freeipa_idam_hostgroups | length > 0
 
 - name: Reconcile declarative FreeIPA hostgroup nesting (all hostgroups now exist)
@@ -309,7 +333,7 @@
   vars:
     _freeipa_idam_hostgroups_nesting_changed: >-
       {{ freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list
-         | freeipa_idam_changed_subset(_freeipa_precheck_hostgroups.stdout | default(''), 'hostgroup') }}
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hostgroup', ''), 'hostgroup') }}
   when: (freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list | length) > 0
 
 # Seed CUSTOM HBAC services before any rule membership references them. Stock
@@ -321,9 +345,14 @@
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_hbacsvcs }}"
+  # precheck-gated: only services that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_hbacsvcs_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_hbacsvcs_changed: >-
+      {{ freeipa_idam_hbacsvcs
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacsvc', ''), 'hbacsvc') }}
   when: freeipa_idam_hbacsvcs | length > 0
 
 # HBAC service GROUPS — bundle custom/stock services (e.g. docker + xrdp-sesman +
@@ -338,9 +367,14 @@
     description: "{{ item.description | default(omit) }}"
     hbacsvc: "{{ item.hbacsvc | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_hbacsvcgroups }}"
+  # precheck-gated: only groups that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_hbacsvcgroups_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_hbacsvcgroups_changed: >-
+      {{ freeipa_idam_hbacsvcgroups
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacsvcgroup', ''), 'hbacsvcgroup') }}
   when: freeipa_idam_hbacsvcgroups | length > 0
 
 # ONE rich-dict call per rule: state:present creates AND declaratively reconciles
@@ -370,7 +404,7 @@
   vars:
     _freeipa_idam_hbac_changed: >-
       {{ freeipa_idam_hbac_rules
-         | freeipa_idam_changed_subset(_freeipa_precheck_hbac.stdout | default(''), 'hbacrule') }}
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacrule', ''), 'hbacrule') }}
   when: freeipa_idam_hbac_rules | length > 0
 
 - name: Ensure declarative HBAC rule operational states
@@ -385,7 +419,7 @@
   vars:
     _freeipa_idam_hbac_state_mismatch: >-
       {{ freeipa_idam_hbac_rules
-         | freeipa_idam_hbac_state_mismatch(_freeipa_precheck_hbac.stdout | default('')) }}
+         | freeipa_idam_hbac_state_mismatch((_freeipa_precheck_raw | default({})).get('hbacrule', '')) }}
   when:
     - freeipa_idam_hbac_rules | length > 0
     - item.state is defined
@@ -409,20 +443,33 @@
           stock allow rules would lock everyone out. Declare your access policy first.
     - name: Disable each listed HBAC rule (reversible — state disabled)
       freeipa.ansible_freeipa.ipahbacrule:
-        name: "{{ item }}"
+        name: "{{ item.name }}"
         state: disabled
-      loop: "{{ freeipa_idam_hbac_rules_disable }}"
+      # precheck-gated: an already-disabled rule (realm ipaenabledflag FALSE)
+      # skips its module call; rules absent from the find are included
+      loop: "{{ _freeipa_idam_hbac_disable_pending }}"
       loop_control:
-        label: "{{ item }}"
+        label: "{{ item.name }}"
+      vars:
+        _freeipa_idam_hbac_disable_pending: >-
+          {{ freeipa_idam_hbac_rules_disable
+             | map('community.general.dict_kv', 'name')
+             | map('combine', {'state': 'disabled'}) | list
+             | freeipa_idam_hbac_state_mismatch((_freeipa_precheck_raw | default({})).get('hbacrule', '')) }}
 
 - name: Ensure declarative sudo commands are present
   freeipa.ansible_freeipa.ipasudocmd:
     name: "{{ item.name }}"
     description: "{{ item.description | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_sudo_commands }}"
+  # precheck-gated: only commands that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_sudo_commands_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_sudo_commands_changed: >-
+      {{ freeipa_idam_sudo_commands
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('sudocmd', ''), 'sudocmd') }}
   when: freeipa_idam_sudo_commands | length > 0
 
 # Sudo command GROUPS — bundle commands so a sudo rule can grant a whole set via
@@ -435,9 +482,17 @@
     description: "{{ item.description | default(omit) }}"
     sudocmd: "{{ item.sudocmd | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_sudocmdgroups }}"
+  # precheck-gated: member ipaUniqueID leaves resolve through the sudocmd find
+  # (aux_raw) — unresolvable members keep the group included (conservative)
+  loop: "{{ _freeipa_idam_sudocmdgroups_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_sudocmdgroups_changed: >-
+      {{ freeipa_idam_sudocmdgroups
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('sudocmdgroup', ''),
+                                       'sudocmdgroup',
+                                       (_freeipa_precheck_raw | default({})).get('sudocmd', '')) }}
   when: freeipa_idam_sudocmdgroups | length > 0
 
 # BULK calls, same declarative semantics as the old per-rule loop: the compiled
@@ -562,9 +617,14 @@
     extra_target_filter: "{{ item.extra_target_filter | default(omit) }}"
     memberof: "{{ item.memberof | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_permissions }}"
+  # precheck-gated: only permissions that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_permissions_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_permissions_changed: >-
+      {{ freeipa_idam_permissions
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('permission', ''), 'permission') }}
   when: freeipa_idam_permissions | length > 0
 
 - name: Ensure declarative IPA privileges are present (privilege + permissions in one pass)
@@ -573,9 +633,14 @@
     description: "{{ item.description | default(omit) }}"
     permission: "{{ item.permission | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_privileges }}"
+  # precheck-gated: only privileges that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_privileges_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_privileges_changed: >-
+      {{ freeipa_idam_privileges
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('privilege', ''), 'privilege') }}
   when: freeipa_idam_privileges | length > 0
 
 # Native IPA DELEGATION roles (privileges + members) — distinct from the group-
@@ -585,6 +650,7 @@
 - name: Ensure native IPA delegation roles are present
   freeipa.ansible_freeipa.iparole:
     name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
     privilege: "{{ item.privilege | default(omit) }}"
     user: "{{ item.user | default(omit) }}"
     group: "{{ item.usergroup | default(omit) }}"
@@ -592,9 +658,14 @@
     hostgroup: "{{ item.hostgroup | default(omit) }}"
     service: "{{ item.service | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_iparoles }}"
+  # precheck-gated: only roles that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_iparoles_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_iparoles_changed: >-
+      {{ freeipa_idam_iparoles
+         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('role', ''), 'role') }}
   when: freeipa_idam_iparoles | length > 0
 
 # Break-glass accounts join the break-glass group (default: admins) for full access.
