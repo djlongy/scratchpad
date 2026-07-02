@@ -268,40 +268,43 @@ A user in `role-x` is an **indirect** member of `ug-x`, so every rule pointing a
 ### The thin RBAC overlay (optional, built-in)
 
 Instead of hand-adding a person to dozens of granular policy groups, assign them an abstract
-**role**. The overlay generates **only** role groups, their nesting into **existing** `ug-*`
+**role**. The overlay generates **only** the role group, its nesting into **existing**
 policy groups, and user→role-group membership — nothing else. It is compiled **by the role
-itself** (`tasks/rbac.yml`, inside the desired phase): declare the two `freeipa_server_rbac_*`
-vars in group_vars and run the role — no playbook `pre_task` needed. With nothing declared it
+itself** (`tasks/rbac.yml`, inside the desired phase): declare `freeipa_server_rbac_roles`
+in group_vars and run the role — no playbook `pre_task` needed. With nothing declared it
 no-ops, so a pure-baseline realm runs untouched, and because it compiles **after** the tenant
 load it composes with `freeipa_idam_tenants_dir`. (Compiled objects are merged via `set_fact`,
 so supplying `freeipa_idam_users`/`_usergroups` as extra-vars would bypass the overlay — use
 group_vars or tenant files.)
 
-**Tenancy is a hard boundary**: a role is *defined* inside its `tenant → environment` cell and
-*assigned* by naming that exact cell, so one grant can never reach another tenant/environment.
+**WYSIWYG**: a flat list with the same visual shape as `freeipa_idam_usergroups` — every name
+is used verbatim, no naming templates. Paste policy group names straight from the
+`--tags export` snapshot, zero renaming. Scope (tenant/environment) lives in the names you
+declare — `role-<tenant>-<env>-<name>` is the recommended convention, not code.
 
 ```yaml
-# DEFINITIONS — tenant → environment → role → {description?, policy_groups}
-# A policy_groups entry is either a LITERAL existing group name — paste it straight
-# from the --tags export snapshot, zero renaming — or a {service, privilege} dict
-# expanded through the naming template. Both point at EXISTING native groups.
 freeipa_server_rbac_roles:
-  acme:
-    prod:
-      platform-admin:
-        policy_groups:
-          - app-gitlab-admins                         # literal, exactly as exported
-          - { service: docker, privilege: operators } # templated → ug-acme-prod-docker-operators
-# ASSIGNMENTS — user → tenant → environment → [roles]  (every grant fully qualified)
-freeipa_server_rbac_user_assignments:
-  alice: { acme: { prod: [platform-admin] } }   # → role-acme-prod-platform-admin → indirect ug-*
+  # acme
+  - name: role-acme-prod-platform-admin        # the role group, created exactly as declared
+    description: "acme/prod platform admins"
+    policy_groups:                             # EXISTING groups, pasted from the export
+      - ug-acme-prod-gitlab-admins
+      - ug-acme-prod-docker-operators
+    members: [alice, bob]                      # users granted the role → indirect ug-* member
+  # globex
+  - name: role-globex-test-observer
+    policy_groups: [ug-globex-test-grafana-readers]
+    members: [carol]
 ```
 
-`ug-*` groups **must already exist natively** (the overlay only nests onto them). Names come from
-`freeipa_server_rbac_naming`. `freeipa_rbac_validate` fails fast — naming the culprit — on an
-assignment to an undefined `(tenant, environment, role)` cell (this enforces isolation), a missing
-policy group, a built-in collision, or a user not in `freeipa_idam_users`. A runnable
-3-tenant × 3-environment example ships under `examples/rbac-overlay/`.
+One entry = one role: `members` replaces any separate assignment bookkeeping, so granting a
+role is a one-line diff on the role entry — the user's own `groups:` list is never touched.
+Policy groups **must already exist natively** (the overlay only nests onto them).
+`freeipa_rbac_validate` fails fast — naming the culprit — on a policy group not declared in
+`freeipa_idam_usergroups` (the typo trap for pasted names), a member not in
+`freeipa_idam_users`, a duplicate or protected name, an unknown key (`member` vs `members`),
+or a role name that is also a policy group (would cycle). The two escape hatches are
+`freeipa_server_rbac_allow_unknown_users` and `freeipa_server_rbac_allow_missing_policy_groups`.
 
 Don't confuse the overlay with **`freeipa_idam_roles`** (a flat bundle of groups added *directly*
 to a user — no role group, no nesting) or native **`freeipa_idam_iparoles`** (delegation of

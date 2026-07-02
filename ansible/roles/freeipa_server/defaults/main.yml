@@ -183,11 +183,9 @@ freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "
 #   freeipa_idam_iparoles — NATIVE IPA delegation role objects (`ipa role`): bundle PRIVILEGES
 #                           and assign to members. Delegates IPA-management powers (helpdesk).
 #
-# OPTIONAL thin RBAC overlay ("assign a user to an abstract role, not many groups") lives ENTIRELY
-# OUTSIDE this role — the role only consumes the native freeipa_idam_* dicts. Three decoupled pieces:
-# filter_plugins/freeipa_rbac.py (compiler), group_vars freeipa_server_rbac_* (your overlay data),
-# and a playbook PRE_TASK that compiles+merges into freeipa_idam_* before the role runs. Drop it and
-# you're back to raw dicts. Worked example: examples/rbac-overlay/.
+# OPTIONAL thin RBAC overlay ("assign a user to an abstract role, not many groups") is compiled
+# BY the role itself (tasks/rbac.yml + filter_plugins/freeipa_rbac.py) from the
+# freeipa_server_rbac_* vars below. Drop the vars and you're back to raw native dicts.
 #
 # Tenants (optional): a directory of per-tenant .yml files, each {tenant, shared?, <object lists>}.
 # The role reads + flattens ALL of them in one run so a single reconcile sees every tenant. A file
@@ -219,23 +217,20 @@ freeipa_idam_pwpolicies: []
 
 # ── Thin RBAC overlay (OPTIONAL; compiled inside the desired phase when declared) ──
 # Assign a user an abstract ROLE instead of many granular policy groups. The overlay
-# generates ONLY: role groups (role-*), their nesting into EXISTING ug-* policy groups,
-# and user→role-group membership — merged onto the native lists (baseline wins). Tenancy
-# is a HARD boundary: a role is defined in a tenant→environment cell and assigned by
-# naming that exact cell. Empty = pure baseline, zero behaviour change. Compiled AFTER
-# the tenant load, so it composes with freeipa_idam_tenants_dir. See tasks/rbac.yml.
-# policy_groups entries: paste a LITERAL group name straight from the export (zero
-# metamorphosis), or use the {service, privilege} dict for template-generated names.
-freeipa_server_rbac_roles: {}
-#  acme:
-#    prod:
-#      platform-admin:
-#        policy_groups:
-#          - app-gitlab-admins                            # literal, as exported
-#          - { service: docker, privilege: operators }    # or via the naming template
-freeipa_server_rbac_user_assignments: {}
-#  alice: { acme: { prod: [platform-admin] } }
-freeipa_server_rbac_naming: {}           # override the role-/ug- name templates (see freeipa_rbac.py)
+# generates ONLY: the role group, its nesting into EXISTING policy groups, and
+# user→role-group membership — merged onto the native lists (baseline wins).
+# WYSIWYG flat list, same shape as freeipa_idam_usergroups: every name is used
+# VERBATIM (no naming templates) — paste policy group names straight from the export.
+# Scope lives in the names you declare; role-<tenant>-<env>-<name> is convention, not
+# code. Empty = pure baseline, zero behaviour change. Compiled AFTER the tenant load,
+# so it composes with freeipa_idam_tenants_dir. See tasks/rbac.yml.
+freeipa_server_rbac_roles: []
+#  - name: role-acme-prod-platform-admin       # the role group, created exactly as declared
+#    description: "acme/prod platform admins"
+#    policy_groups:                            # EXISTING groups, pasted from the export
+#      - ug-acme-prod-gitlab-admins
+#      - ug-acme-prod-docker-operators
+#    members: [alice, bob]                     # users granted the role (membership added automatically)
 freeipa_server_rbac_allow_unknown_users: false           # permit assigning users not in freeipa_idam_users
 freeipa_server_rbac_allow_missing_policy_groups: false   # permit nesting onto undeclared ug-* groups
 

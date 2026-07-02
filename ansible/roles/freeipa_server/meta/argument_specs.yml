@@ -195,17 +195,10 @@ argument_specs:
         required: false
         description: Directory of per-tenant vars files loaded + flattened in one run (typically "{{ inventory_dir }}/tenants"). Empty = lists come straight from group_vars.
       freeipa_server_rbac_roles:
-        type: dict
+        type: list
+        elements: dict
         required: false
-        description: OPTIONAL RBAC overlay — role definitions, tenant→environment→role→{description?, policy_groups}. Empty/absent = overlay off, pure native baseline.
-      freeipa_server_rbac_user_assignments:
-        type: dict
-        required: false
-        description: OPTIONAL RBAC overlay — user→tenant→environment→[roles] assignments (every grant fully qualified; tenancy is a hard boundary).
-      freeipa_server_rbac_naming:
-        type: dict
-        required: false
-        description: OPTIONAL RBAC overlay — override the role-/ug- group name templates.
+        description: OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group ({name, description?, policy_groups, members?}); every name literal, no templates. Empty/absent = overlay off, pure native baseline.
       freeipa_server_idam_reference_validation:
         type: str
         required: false
