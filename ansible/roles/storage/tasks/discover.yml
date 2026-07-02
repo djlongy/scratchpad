@@ -91,6 +91,16 @@
     _parts: "{{ _storage_lsblk.blockdevices | selectattr('type', 'equalto', 'disk') | map(attribute='children') | select('defined') | flatten(levels=1) | list }}"
 
 # ── Existing LVM state ───────────────────────────────────────────────────
+# Activate any inactive VGs first: a data disk REATTACHED from a previous OS
+# install (e.g. an OL8→OL9 rebuild) may not be auto-activated yet — without
+# this, vgs/lvs would miss it, the volume would look absent, and an `auto`
+# selector could grab a different blank disk instead of adopting the old one.
+- name: Activate any inactive volume groups (reattached-disk safety)
+  ansible.builtin.command: vgchange -ay
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Get existing volume groups
   ansible.builtin.command: vgs --noheadings -o vg_name
   register: _storage_vgs_raw
@@ -123,6 +133,33 @@
   loop: "{{ _storage_pvs_raw.stdout_lines | map('trim') | select | list }}"
   loop_control:
     label: "{{ item }}"
+
+# by-size safety: refuse an AMBIGUOUS pin — two BLANK disks of the pinned size
+# means the role could build on the wrong one. Disambiguate with by-serial:/
+# by-wwn: or an explicit /dev path. (Skipped once the VG exists — adoption
+# never touches a disk, so ambiguity is harmless then.)
+- name: Assert by-size selectors match at most one blank disk
+  ansible.builtin.assert:
+    that: (_bysize_blank_matches | length) <= 1
+    fail_msg: >-
+      Volume '{{ item.name }}' pins disk {{ item.disk }} but
+      {{ _bysize_blank_matches | length }} blank disks match
+      ({{ _bysize_blank_matches | join(', ') }}). Disambiguate with
+      by-serial:/by-wwn: or an explicit /dev path.
+    quiet: true
+  vars:
+    _bysize_gib: >-
+      {{ ((item.disk | regex_replace('^by-size:', '') | human_to_bytes)
+          / 1073741824) | round(0, 'common') | int }}
+    _bysize_blank_matches: >-
+      {{ _storage_disks | selectattr('size_gib', 'equalto', _bysize_gib | int)
+         | selectattr('name', 'in', _storage_blank_disks)
+         | map(attribute='name') | list }}
+  loop: "{{ _storage_input | selectattr('disk', 'defined')
+            | selectattr('disk', 'match', '^by-size:') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: not ((item.lvm | default(true) | bool) and (item.vg | default('') in _storage_existing_vgs))
 
 # ── Resolve each volume ──────────────────────────────────────────────────
 - name: Resolve volume selectors and derive device names

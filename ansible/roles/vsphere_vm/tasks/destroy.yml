@@ -37,3 +37,7 @@
   when: vsphere_vm_allow_destroy | bool
   delegate_to: localhost
   become: false
+  # run_once: the destroy list is global — same per-host race as create.yml
+  # (a host-group play would otherwise delete each VM once PER HOST; the first
+  # host wins and the rest fail mid-delete on the vanished VM).
+  run_once: true

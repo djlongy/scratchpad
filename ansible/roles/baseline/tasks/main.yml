@@ -20,8 +20,9 @@
 
 # ── Identity ────────────────────────────────────────────────────────────────
 - name: Set hostname and timezone
-  ansible.builtin.include_tasks:
-    file: ../common/tasks/update_hostname.yml
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: update_hostname
     apply:
       tags: [baseline, hostname]
   tags: [baseline, hostname]
