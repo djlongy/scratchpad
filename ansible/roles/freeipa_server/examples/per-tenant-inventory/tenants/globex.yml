@@ -5,7 +5,7 @@
 # header block below — every object name, description, regex and DNS name follows.
 #
 # Two substitution styles, both shown below — use whichever reads better per value:
-#   * INDIVIDUAL tokens: {{ tenant }} / {{ env_local }} spliced into each name
+#   * INDIVIDUAL tokens: {{ tenant }} / {{ local_env }} spliced into each name
 #   * COMPOUND prefixes: {{ ug_prefix }} / {{ hg_prefix }} / {{ hbac_prefix }} — built ONCE
 #     in the header, substituted everywhere (one place to change the whole naming scheme)
 # Plus: freeipa_idam_sudo_commands pulls a WHOLE list in from group_vars
@@ -15,22 +15,22 @@
 # stamp); every other header var is yours to invent. Root keys and entry fields match what
 # `--tags export` emits.
 tenant: globex
-env_local: dev
+local_env: dev
 
 # ── Compound naming helpers — change these, the whole file follows ──
-ug_prefix: "ug-{{ tenant }}-{{ env_local }}"        # -> ug-globex-dev
-hg_prefix: "hg-{{ tenant }}-{{ env_local }}"        # -> hg-globex-dev
-hbac_prefix: "hbac-{{ tenant }}-{{ env_local }}"    # -> hbac-globex-dev
-host_domain: "{{ env_local }}.{{ tenant }}.au"      # -> dev.globex.au       (host FQDNs)
-dns_zone: "ipa.{{ env_local }}.{{ tenant }}.au"     # -> ipa.dev.globex.au   (realm zone)
+ug_prefix: "ug-{{ tenant }}-{{ local_env }}"        # -> ug-globex-dev
+hg_prefix: "hg-{{ tenant }}-{{ local_env }}"        # -> hg-globex-dev
+hbac_prefix: "hbac-{{ tenant }}-{{ local_env }}"    # -> hbac-globex-dev
+host_domain: "{{ local_env }}.{{ tenant }}.au"      # -> dev.globex.au       (host FQDNs)
+dns_zone: "ipa.{{ local_env }}.{{ tenant }}.au"     # -> ipa.dev.globex.au   (realm zone)
 
 # The OPTIONAL RBAC overlay rides the tenant loader like any other freeipa_* list —
 # each tenant file carries its own slice; the lists concatenate across files and the
 # role compiles them AFTER the tenant load. (Declare the overlay in ONE place: tenant
 # files OR group_vars — a tenant-declared var replaces the group_vars value.)
 freeipa_server_rbac_roles:
-  - name: "role-{{ tenant }}-{{ env_local }}-platform-admin"   # the role group, created exactly as declared
-    description: "{{ tenant }}/{{ env_local }} platform admins"
+  - name: "role-{{ tenant }}-{{ local_env }}-platform-admin"   # the role group, created exactly as declared
+    description: "{{ tenant }}/{{ local_env }} platform admins"
     policy_groups:                                             # EXISTING ug-* groups from this file
       - "{{ ug_prefix }}-docker-operators"
       - "{{ ug_prefix }}-artifactory-readers"
@@ -49,11 +49,11 @@ freeipa_idam_usergroups:
   - { name: "{{ tenant }}-viewers", description: "{{ tenant }} read-only" }
   # compound-prefix style — granular policy groups targeted by the HBAC rules below
   # and the RBAC overlay above
-  - { name: "{{ ug_prefix }}-artifactory-readers", description: "Readers on JFrog Artifactory [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ ug_prefix }}-docker-operators", description: "Operators on Docker hosts [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ ug_prefix }}-foreman-admins", description: "Admins on Foreman [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ ug_prefix }}-gitlab-admins", description: "Admins on GitLab [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ ug_prefix }}-grafana-readers", description: "Readers on Grafana [{{ tenant }}/{{ env_local }}]" }
+  - { name: "{{ ug_prefix }}-artifactory-readers", description: "Readers on JFrog Artifactory [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ ug_prefix }}-docker-operators", description: "Operators on Docker hosts [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ ug_prefix }}-foreman-admins", description: "Admins on Foreman [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ ug_prefix }}-gitlab-admins", description: "Admins on GitLab [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ ug_prefix }}-grafana-readers", description: "Readers on Grafana [{{ tenant }}/{{ local_env }}]" }
   # a group from ANOTHER environment of the same tenant: spell the env out
   - { name: "ug-{{ tenant }}-test-grafana-readers", description: "Readers on Grafana [{{ tenant }}/test]" }
 
@@ -64,22 +64,22 @@ freeipa_idam_users:
 freeipa_idam_service_accounts: []
 
 freeipa_idam_hostgroups:
-  - { name: "{{ hg_prefix }}-artifactory-readers", description: "Hosts for JFrog Artifactory [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ hg_prefix }}-docker-operators", description: "Hosts for Docker hosts [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ hg_prefix }}-foreman-admins", description: "Hosts for Foreman [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ hg_prefix }}-gitlab-admins", description: "Hosts for GitLab [{{ tenant }}/{{ env_local }}]" }
-  - { name: "{{ hg_prefix }}-grafana-readers", description: "Hosts for Grafana [{{ tenant }}/{{ env_local }}]" }
+  - { name: "{{ hg_prefix }}-artifactory-readers", description: "Hosts for JFrog Artifactory [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ hg_prefix }}-docker-operators", description: "Hosts for Docker hosts [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ hg_prefix }}-foreman-admins", description: "Hosts for Foreman [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ hg_prefix }}-gitlab-admins", description: "Hosts for GitLab [{{ tenant }}/{{ local_env }}]" }
+  - { name: "{{ hg_prefix }}-grafana-readers", description: "Hosts for Grafana [{{ tenant }}/{{ local_env }}]" }
 
 freeipa_idam_hbac_rules:
   # realm-stock rules — not tenant-derived, so they stay literal
   - { name: allow_all, description: Allow all users to access any host from any host, usercategory: all, hostcategory: all, servicecategory: all, state: disabled }
   - { name: allow_systemd-user, description: Allow pam_systemd to run user@.service to create a system user session, usercategory: all, hostcategory: all, service: [systemd-user] }
   # tenant rules — name, member group and hostgroup ALL follow the header prefixes
-  - { name: "{{ hbac_prefix }}-artifactory-readers", description: "HBAC — readers login to JFrog Artifactory [{{ tenant }}/{{ env_local }}]", usergroup: ["{{ ug_prefix }}-artifactory-readers"], hostgroup: ["{{ hg_prefix }}-artifactory-readers"], service: [cockpit, sshd] }
-  - { name: "{{ hbac_prefix }}-docker-operators", description: "HBAC — operators login to Docker hosts [{{ tenant }}/{{ env_local }}]", usergroup: ["{{ ug_prefix }}-docker-operators"], hostgroup: ["{{ hg_prefix }}-docker-operators"], service: [sshd, cockpit] }
-  - { name: "{{ hbac_prefix }}-foreman-admins", description: "HBAC — admins login to Foreman [{{ tenant }}/{{ env_local }}]", usergroup: ["{{ ug_prefix }}-foreman-admins"], hostgroup: ["{{ hg_prefix }}-foreman-admins"], service: [sshd] }
-  - { name: "{{ hbac_prefix }}-gitlab-admins", description: "HBAC — admins login to GitLab [{{ tenant }}/{{ env_local }}]", usergroup: ["{{ ug_prefix }}-gitlab-admins"], hostgroup: ["{{ hg_prefix }}-gitlab-admins"], service: [sshd] }
-  - { name: "{{ hbac_prefix }}-grafana-readers", description: "HBAC — readers login to Grafana [{{ tenant }}/{{ env_local }}]", usergroup: ["{{ ug_prefix }}-grafana-readers"], hostgroup: ["{{ hg_prefix }}-grafana-readers"], service: [cockpit, sshd] }
+  - { name: "{{ hbac_prefix }}-artifactory-readers", description: "HBAC — readers login to JFrog Artifactory [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-artifactory-readers"], hostgroup: ["{{ hg_prefix }}-artifactory-readers"], service: [cockpit, sshd] }
+  - { name: "{{ hbac_prefix }}-docker-operators", description: "HBAC — operators login to Docker hosts [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-docker-operators"], hostgroup: ["{{ hg_prefix }}-docker-operators"], service: [sshd, cockpit] }
+  - { name: "{{ hbac_prefix }}-foreman-admins", description: "HBAC — admins login to Foreman [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-foreman-admins"], hostgroup: ["{{ hg_prefix }}-foreman-admins"], service: [sshd] }
+  - { name: "{{ hbac_prefix }}-gitlab-admins", description: "HBAC — admins login to GitLab [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-gitlab-admins"], hostgroup: ["{{ hg_prefix }}-gitlab-admins"], service: [sshd] }
+  - { name: "{{ hbac_prefix }}-grafana-readers", description: "HBAC — readers login to Grafana [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-grafana-readers"], hostgroup: ["{{ hg_prefix }}-grafana-readers"], service: [cockpit, sshd] }
 
 # A WHOLE list pulled in from group_vars (group_vars/all/realm.yml) — stays a native list.
 freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"
@@ -104,7 +104,7 @@ freeipa_server_dns_records:
 
 freeipa_server_automember_rules:
   # rule name matches the hostgroup it feeds; the fqdn regex embeds the SAME header tokens
-  - { name: "{{ hg_prefix }}-artifactory-readers", automember_type: hostgroup, description: "Auto-membership: JFrog Artifactory hosts [{{ tenant }}/{{ env_local }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-artifactory\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
-  - { name: "{{ hg_prefix }}-docker-operators", automember_type: hostgroup, description: "Auto-membership: Docker hosts [{{ tenant }}/{{ env_local }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-docker\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
-  - { name: "{{ hg_prefix }}-foreman-admins", automember_type: hostgroup, description: "Auto-membership: Foreman hosts [{{ tenant }}/{{ env_local }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-foreman\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
-  - { name: "{{ hg_prefix }}-gitlab-admins", automember_type: hostgroup, description: "Auto-membership: GitLab hosts [{{ tenant }}/{{ env_local }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-gitlab\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
+  - { name: "{{ hg_prefix }}-artifactory-readers", automember_type: hostgroup, description: "Auto-membership: JFrog Artifactory hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-artifactory\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
+  - { name: "{{ hg_prefix }}-docker-operators", automember_type: hostgroup, description: "Auto-membership: Docker hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-docker\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
+  - { name: "{{ hg_prefix }}-foreman-admins", automember_type: hostgroup, description: "Auto-membership: Foreman hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-foreman\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }
+  - { name: "{{ hg_prefix }}-gitlab-admins", automember_type: hostgroup, description: "Auto-membership: GitLab hosts [{{ tenant }}/{{ local_env }}]", inclusive: [{key: fqdn, expression: '^{{ tenant }}\-gitlab\-[0-9]+\.{{ host_domain | regex_escape }}$'}] }

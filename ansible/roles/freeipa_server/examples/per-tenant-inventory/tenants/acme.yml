@@ -5,7 +5,7 @@
 # any built-in/global groups (which are owned in global.yml). One run sees both files and
 # reconciles the membership.
 tenant: acme
-env_local: dev
+local_env: dev
 freeipa_idam_usergroups:
   - { name: acme-admins, description: Acme admins }
   - { name: acme-editors, description: Acme editors }

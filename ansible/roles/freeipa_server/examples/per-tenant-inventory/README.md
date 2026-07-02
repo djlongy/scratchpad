@@ -60,11 +60,11 @@ Everything else is **yours to invent** — `globex.yml` demonstrates the two sub
 
 ```yaml
 tenant: globex
-env_local: dev                                    # a per-file naming token (not a realm switch)
-ug_prefix: "ug-{{ tenant }}-{{ env_local }}"      # COMPOUND prefix: built once, used everywhere
+local_env: dev                                    # a per-file naming token (not a realm switch)
+ug_prefix: "ug-{{ tenant }}-{{ local_env }}"      # COMPOUND prefix: built once, used everywhere
 ```
 
-- **Individual tokens** — `name: "{{ tenant }}-admins"`, `description: "... [{{ tenant }}/{{ env_local }}]"`
+- **Individual tokens** — `name: "{{ tenant }}-admins"`, `description: "... [{{ tenant }}/{{ local_env }}]"`
 - **Compound prefixes** — `name: "{{ ug_prefix }}-docker-operators"`: one header line defines
   the whole naming scheme; HBAC rules reference the same `{{ ug_prefix }}`/`{{ hg_prefix }}`
   so rule, member group and hostgroup can never drift apart.

@@ -237,14 +237,14 @@ files by target var; users/groups are stamped `_owner` + `_shared`. Loaded via a
 **any other var the file defines** (native self-reference) as well as group_vars, including
 pulling a whole list in from a group_var (stays a native list). No Jinja ⇒ loads verbatim.
 `{{ env }}` is the inventory-wide env; for a per-file naming variant just define your own scalar
-(e.g. `env_local: dev`) — no special header key.
+(e.g. `local_env: dev`) — no special header key.
 
 ```yaml
 # inventories/<env>/tenants/acme.yml  — a plain vars YAML, templated like any inventory file
 tenant: acme
 shared: false
-env_local: dev                        # any scalar; referable below like a normal var
-ug_prefix: "ug-{{ tenant }}-{{ env_local }}"   # file-local var referencing other file-local vars
+local_env: dev                        # any scalar; referable below like a normal var
+ug_prefix: "ug-{{ tenant }}-{{ local_env }}"   # file-local var referencing other file-local vars
 groups:
   - { name: "{{ ug_prefix }}-admins", description: "Acme admins" }   # -> ug-acme-dev-admins
 users:
