@@ -245,6 +245,14 @@ argument_specs:
         type: str
         required: false
         description: Control-node path for the config snapshot written by --tags export.
+      freeipa_server_export_include_gids:
+        type: bool
+        required: false
+        description: Capture group gidnumbers in the snapshot (default false — portable snapshots; enable to pin GIDs for a same-realm DR rebuild).
+      freeipa_server_export_stock_hbacsvcgroups:
+        type: bool
+        required: false
+        description: Also export the stock HBAC service groups (Sudo, ftp) — normally skipped; enable to capture customised stock-group membership.
       freeipa_server_export_scope:
         type: list
         elements: str

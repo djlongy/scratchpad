@@ -430,13 +430,14 @@ def export_iparoles():
     return out
 
 
-def export_hbacsvcgroups():
+def export_hbacsvcgroups(include_stock=False):
     """Custom HBAC service GROUPS — name + description + member services. Stock
-    groups that ship on every server ('Sudo', 'ftp') are skipped."""
+    groups that ship on every server ('Sudo', 'ftp') are skipped unless
+    include_stock (they only need exporting when their membership was customised)."""
     out = []
     for e in _find("hbacsvcgroup_find"):
         name = _str(e, "cn")
-        if not name or name in STOCK_HBACSVCGROUPS:
+        if not name or (name in STOCK_HBACSVCGROUPS and not include_stock):
             continue
         out.append(_prune({
             "name": name,
@@ -611,6 +612,11 @@ def main():
                          "enrolment + automember)")
     ap.add_argument("--include-sshkeys", action="store_true",
                     help="emit per-user ipasshpubkey values")
+    ap.add_argument("--include-stock-hbacsvcgroups", action="store_true",
+                    help="also export the stock HBAC service groups (Sudo, ftp) — "
+                         "normally skipped because they ship on every fresh server; "
+                         "include them to capture a realm where their membership "
+                         "was customised")
     ap.add_argument("--exclude-gids", action="store_true",
                     help="omit group gidnumber values (default: captured, so a DR "
                          "rebuild recreates the same GIDs; exclude for a portable "
@@ -700,7 +706,9 @@ def main():
         "freeipa_idam_hostgroups": _safe(
             "hostgroups", lambda: export_hostgroups(args.include_host_membership), []),
         "freeipa_idam_hbacsvcs": _safe("hbacsvcs", lambda: export_hbacsvcs(stock_hbacsvc), []),
-        "freeipa_idam_hbacsvcgroups": _safe("hbacsvcgroups", export_hbacsvcgroups, []),
+        "freeipa_idam_hbacsvcgroups": _safe(
+            "hbacsvcgroups",
+            lambda: export_hbacsvcgroups(args.include_stock_hbacsvcgroups), []),
         "freeipa_idam_hbac_rules": _safe("hbac_rules", export_hbac_rules, []),
         "freeipa_idam_sudo_commands": _safe("sudo_commands", export_sudo_commands, []),
         "freeipa_idam_sudocmdgroups": _safe("sudocmdgroups", export_sudocmdgroups, []),

@@ -405,10 +405,15 @@ services, HBAC rules, sudo commands & rules, password policies, and automember r
 server** (users and custom HBAC services are created before the rules that reference them, so no
 first-run ordering race).
 
-**Not** captured: user passwords / Kerberos keys (unreadable), POSIX uid/gid (IPA reassigns on
-rebuild — avoids collisions), hostgroup host rosters (enrolment + automember repopulate them; opt
-in with `freeipa_server_export_include_host_membership=true`), FreeIPA's own `global_policy`. SSH
-keys off by default (`freeipa_server_export_include_sshkeys=true` to include).
+**Not** captured by default (each has an opt-in): POSIX group GIDs
+(`freeipa_server_export_include_gids=true` to pin them for a same-realm DR rebuild), hostgroup
+host rosters (`freeipa_server_export_include_host_membership=true`; enrolment + automember
+normally repopulate them), SSH keys (`freeipa_server_export_include_sshkeys=true`), and the
+stock HBAC service groups Sudo/ftp (`freeipa_server_export_stock_hbacsvcgroups=true` — they ship
+on every fresh server, so only export them if their membership was customised). Never captured:
+user passwords / Kerberos keys (unreadable), user UIDs (IPA reassigns — avoids collisions),
+FreeIPA's own `global_policy`. If a section could not be captured (unavailable plugin), the
+snapshot header carries a loud `# SKIPPED :` line — an empty section ≠ an empty realm.
 
 ## See also
 
