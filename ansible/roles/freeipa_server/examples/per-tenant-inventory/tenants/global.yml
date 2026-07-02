@@ -81,10 +81,20 @@ freeipa_idam_sudo_rules: []
 
 freeipa_idam_pwpolicies: []
 
+# DNS minimal form — the reverse path is DERIVED, never hand-written: reverse zones by
+# name_from_ip (IPA computes in-addr.arpa), PTRs by create_reverse: true on the A record
+# (ADD-TIME only — never retro-created for existing records), and DDNS hosts get PTRs
+# synced by dynamic_update + allow_sync_ptr with nothing declared. When copying an
+# export in: DROP the realm zone's installer-owned plumbing (SRV / _kerberos TXT /
+# ipa-ca / the servers' own A records) and replace raw PTRs with create_reverse.
 freeipa_server_dns_zones: []
+#  - { name: "apps.example.com", dynamic_update: true, allow_sync_ptr: true }
+#  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true }   # reverse — name derived
 
 freeipa_server_dns_forward_zones: []
+#  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
 
 freeipa_server_dns_records: []
+#  - { zone_name: "apps.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20", create_reverse: true }
 
 freeipa_server_automember_rules: []

@@ -200,13 +200,13 @@ argument_specs:
       # ── DNS / automember (declarative, day-2; primary only) ────────────────
       freeipa_server_dns_zones:
         type: list
-        description: IPA-hosted DNS zones to manage (ipadnszone). Each item needs name (or name_from_ip for reverse).
+        description: IPA-hosted DNS zones (ipadnszone). Forward zones need name; reverse zones just name_from_ip (a CIDR — IPA derives the in-addr.arpa name). dynamic_update + allow_sync_ptr lets BIND sync DDNS hosts' PTRs automatically.
       freeipa_server_dns_forward_zones:
         type: list
         description: Conditional forward zones to manage (ipadnsforwardzone). Each item needs name.
       freeipa_server_dns_records:
         type: list
-        description: DNS records to manage (ipadnsrecord). Single records or whole-zone `records:` bulk form.
+        description: DNS records (ipadnsrecord), single or whole-zone `records:` bulk form. Minimal item = zone_name + name + record_type + record_value; add create_reverse true for the PTR (add-time only — never retro-creates for existing records). Do NOT re-declare installer-owned realm plumbing (SRV/_kerberos TXT/ipa-ca) from an export.
       freeipa_server_automember_rules:
         type: list
         description: Automember rules (ipaautomember). Each item needs name + automember_type (group|hostgroup); target must exist.

@@ -128,15 +128,24 @@ freeipa_server_no_dnssec_validation: true
 freeipa_server_allow_zone_overlap: true
 
 # Declarative DNS (primary only; needs integrated DNS) via upstream ipadns* modules; idempotent.
-# Zones — forward (name) OR reverse (name_from_ip: CIDR → IPA derives in-addr.arpa). To REMOVE
-# a reverse zone use its explicit name (state: absent + name: "0.0.10.in-addr.arpa."), not name_from_ip.
+# MINIMAL AUTHORING — the reverse path is derived, never hand-written:
+#   * reverse zone: name_from_ip: <CIDR> — IPA derives the in-addr.arpa name
+#   * PTRs: create_reverse: true on the A/AAAA record (needs the reverse zone to exist).
+#     ADD-TIME ONLY — it never retro-creates PTRs for records that already exist.
+#   * DDNS hosts: zone dynamic_update + allow_sync_ptr — BIND syncs their PTRs itself.
+# ADOPTING AN EXPORT: the snapshot is RAW. Drop the realm zone's installer-owned plumbing
+# (SRV / _kerberos TXT / ipa-ca / the servers' own A records — the installer creates and
+# IPA maintains them; re-applying an old snapshot can inject STALE server entries) and
+# replace raw PTRs with create_reverse on the forward records. Keep your zones + app records.
+# Zones — forward (name) OR reverse (name_from_ip). To REMOVE a reverse zone use its
+# explicit name (state: absent + name: "0.0.10.in-addr.arpa."), not name_from_ip.
 freeipa_server_dns_zones: []
 #  - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
 #  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true, skip_overlap_check: true }  # reverse
 freeipa_server_dns_forward_zones: []
 #  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
-# Records — record_value is list-typed (single or many, same field). create_reverse auto-builds
-# the PTR (needs the reverse zone + allow_sync_ptr). Or drive a whole zone via `records:`.
+# Records — record_value is list-typed (single or many, same field). Or drive a whole
+# zone via `records:`.
 freeipa_server_dns_records: []
 #  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
 #  - { zone_name: "internal.example.com", name: "vip",  record_type: "A", record_value: ["10.0.0.21", "10.0.0.22"] }

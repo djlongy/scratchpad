@@ -119,6 +119,11 @@ Every public variable has a one-line description in
 [`defaults/main.yml`](defaults/main.yml). This README covers the concepts and the
 variables you'll actually decide about.
 
+**The top-level reference example is
+`examples/per-tenant-inventory/tenants/global.yml`** (public mirror): every object root
+key the export emits, in export order, with worked values or empty placeholders — start
+there, then see the sibling `acme.yml` (literal) / `globex.yml` (templated) tenants.
+
 ## Install options (selected)
 
 `freeipa_server_ca_mode` (`self-signed`|`external-ca`|`ca-less`), `_setup_kra`,
@@ -166,16 +171,35 @@ freeipa_server_trusted_external_cas:
 
 ## Declarative DNS
 
-With integrated DNS, manage zones/records declaratively (primary only, idempotent):
+With integrated DNS, manage zones/records declaratively (primary only, idempotent). The
+**minimal authoring form** — the reverse path is derived, never hand-written:
 
 ```yaml
 freeipa_server_dns_zones:
   - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
+  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true }   # reverse — IPA derives in-addr.arpa
 freeipa_server_dns_forward_zones:
   - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
 freeipa_server_dns_records:
-  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
+  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20", create_reverse: true }
 ```
+
+Three layers of PTR automation, so you never write PTR data:
+
+1. **`name_from_ip: <CIDR>`** on a zone — IPA derives the `in-addr.arpa` name.
+2. **`create_reverse: true`** on an A/AAAA record — IPA creates the PTR at add time (the
+   reverse zone must exist — declared as above, or from install-time
+   `freeipa_server_auto_reverse`). **Add-time only: it never retro-creates PTRs for
+   records that already exist.**
+3. **`dynamic_update` + `allow_sync_ptr`** on the zone — hosts that DDNS-register get their
+   PTRs synced by BIND with nothing declared at all.
+
+**Adopting an export?** The snapshot's DNS section is deliberately **raw**. Drop the realm
+zone's installer-owned plumbing — the `_kerberos`/`_ldap` SRV records, `_kerberos` TXT,
+`ipa-ca`, and the IPA servers' own A records (the installer creates them and IPA maintains
+them as replicas join; re-applying an old snapshot can inject stale server entries) — and
+replace raw PTRs with `create_reverse` on the forward records. Keep only your zones,
+forward zones, and app records.
 
 ## Automember
 
