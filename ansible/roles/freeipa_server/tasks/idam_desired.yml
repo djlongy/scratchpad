@@ -96,18 +96,17 @@
     quiet: true
 
 # Fail fast on REQUIRED inventory vars BEFORE the no_log payload builds consume them —
-# else an undefined var (classically `domain`, via freeipa_idam_email_domain: "{{ domain }}")
-# surfaces as a cryptic, no_log-CENSORED 'undefined variable' crash with no clue which var.
-# List the missing ones plainly instead.
+# else a missing value surfaces as a cryptic, no_log-CENSORED crash with no clue which
+# var. List the missing ones plainly instead.
 - name: Assert required IDAM connection/identity variables are defined
   vars:
-    # Only check what can genuinely be undefined: freeipa_server_domain/realm/admin_principal
-    # all carry defaults (is defined is always true), so they are not checked. `domain` has NO
-    # default and derives freeipa_server_domain/realm AND freeipa_idam_email_domain — it is the
-    # var that actually crashes when missing. Admin credentials are resolvable iff the password
-    # is supplied directly OR a Vault path is given (the role's declared-first / Vault-fallback).
+    # The role's OWN identity var is freeipa_server_domain; the broad inventory-convention
+    # var `domain` is only its DEFAULT SOURCE (defaults/main.yml: "{{ domain | default('') }}").
+    # So the check is on the resolved freeipa_server_domain — a portable inventory can set it
+    # directly and never define a bare `domain` at all. Admin credentials are resolvable iff
+    # the password is supplied directly OR a Vault path is given (declared-first / Vault-fallback).
     _freeipa_required_vars:
-      domain: "{{ domain is defined }}"
+      freeipa_server_domain: "{{ (freeipa_server_domain | default('') | length) > 0 }}"
       admin_credentials: >-
         {{ (freeipa_server_admin_password | default('') | length > 0)
            or (freeipa_server_vault_secret is defined) }}
@@ -116,11 +115,12 @@
     that: _freeipa_missing_vars | length == 0
     fail_msg: >-
       Required configuration missing: {{ _freeipa_missing_vars | join(', ') }}.
-      'domain' must be set in the inventory (group_vars/all/) per the hostname convention —
-      it derives freeipa_server_domain/realm and the IDAM email domain. 'admin_credentials'
-      means set freeipa_server_admin_password OR freeipa_server_vault_secret so the role can
-      obtain the IPA admin password. These feed no_log tasks, so asserting here turns a
-      censored 'undefined variable' crash into this clear message.
+      'freeipa_server_domain' means set it directly (portable inventories), or set the
+      repo-convention `domain` var it defaults from (group_vars/all/) — it derives the
+      realm and the IDAM email domain. 'admin_credentials' means set
+      freeipa_server_admin_password OR freeipa_server_vault_secret so the role can obtain
+      the IPA admin password. These feed no_log tasks, so asserting here turns a censored
+      'undefined variable' crash into this clear message.
     quiet: true
 
 # Accept bare-string shorthand for the name-only object lists: a `cockpit` entry is

@@ -21,6 +21,7 @@ other object stays native; see roles/freeipa_server/README.md.)
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 
 try:                                          # real Ansible at runtime …
     from ansible.errors import AnsibleFilterError
@@ -356,8 +357,9 @@ def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
 _RAW_ATTR_RE = re.compile(r"^\s*([A-Za-z][\w;-]*):\s+(.*)$")
 
 
-def _parse_raw_entries(raw: str) -> dict:
-    """``{cn: {attr_lower: [values]}}`` from ``ipa *-find --all --raw`` output."""
+def _parse_raw_entries(raw: str, key_attr: str = "cn") -> dict:
+    """``{<key_attr>: {attr_lower: [values]}}`` from ``ipa *-find --all --raw``
+    output (users key on ``uid``; everything else on ``cn``)."""
     entries = {}
     for block in (raw or "").split("\n\n"):
         attrs: dict[str, list[str]] = {}
@@ -365,9 +367,9 @@ def _parse_raw_entries(raw: str) -> dict:
             match = _RAW_ATTR_RE.match(line)
             if match:
                 attrs.setdefault(match.group(1).lower(), []).append(match.group(2).strip())
-        cn = attrs.get("cn", [None])[0]
-        if cn:
-            entries[cn] = attrs
+        key = attrs.get(key_attr, [None])[0]
+        if key:
+            entries[key] = attrs
     return entries
 
 
@@ -486,6 +488,44 @@ def freeipa_idam_hbac_state_mismatch(declared: list[dict], find_raw: str) -> lis
         if (state == "enabled") != (flag == "true"):
             mismatched.append(rule)
     return mismatched
+
+
+def freeipa_idam_pwexp_bumps(floors: list[dict], user_find_raw: str) -> list[dict]:
+    """Bulk ``ipauser`` payload enforcing password-expiration FLOORS: for each
+    ``{user, min_days_remaining, bump_to_days}`` whose current
+    ``krbPasswordExpiration`` (from ONE ``ipa user-find --all --raw``) leaves
+    fewer than ``min_days_remaining`` days, emit ``{name, passwordexpiration}``
+    bumped ``bump_to_days`` from now. No module implements the conditional floor,
+    but the WRITE is native (``ipauser passwordexpiration``) — this replaces a
+    per-user shell read-compare-set loop. Users absent from the output or
+    without an expiration attribute are skipped (matches the old NO_EXPIRY_FIELD
+    behaviour)."""
+    entries = _parse_raw_entries(user_find_raw, key_attr="uid")
+    now = datetime.now(timezone.utc)
+    bumps = []
+    for floor in floors or []:
+        missing = {"user", "min_days_remaining", "bump_to_days"} - set(floor or {})
+        if missing:
+            raise AnsibleFilterError(
+                f"password_expiration_floors entry {floor!r} is missing "
+                f"required key(s) {sorted(missing)}")
+        entry = entries.get(floor["user"])
+        expiry = (entry or {}).get("krbpasswordexpiration", [None])[0]
+        if not expiry:
+            continue
+        try:
+            current = datetime.strptime(expiry, "%Y%m%d%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AnsibleFilterError(
+                f"user '{floor['user']}': cannot parse krbPasswordExpiration "
+                f"{expiry!r}: {exc}") from exc
+        days_left = int((current - now).total_seconds() // 86400)
+        if days_left < int(floor["min_days_remaining"]):
+            target = now + timedelta(days=int(floor["bump_to_days"]))
+            # ipauser appends the trailing Z itself — emit bare %Y%m%d%H%M%S
+            bumps.append({"name": floor["user"],
+                          "passwordexpiration": target.strftime("%Y%m%d%H%M%S")})
+    return bumps
 
 
 # ── desired-state validation (shape + references) ─────────────────────────────
@@ -688,5 +728,6 @@ class FilterModule:
             "freeipa_idam_evict_payload": freeipa_idam_evict_payload,
             "freeipa_idam_changed_subset": freeipa_idam_changed_subset,
             "freeipa_idam_hbac_state_mismatch": freeipa_idam_hbac_state_mismatch,
+            "freeipa_idam_pwexp_bumps": freeipa_idam_pwexp_bumps,
             "freeipa_idam_validate": freeipa_idam_validate,
         }

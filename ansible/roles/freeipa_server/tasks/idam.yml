@@ -801,31 +801,29 @@
     - freeipa_server_authoritative | bool
     - (_freeipa_idam_groups_to_remove | default([])) | length > 0
 
-- name: Enforce password-expiration floor for listed users
-  ansible.builtin.shell: |
-    set -eu
-    cur=$(ipa user-show "{{ item.user }}" --raw 2>/dev/null \
-          | awk -F': ' '/krbPasswordExpiration:/ {print $2; exit}')
-    if [ -z "$cur" ]; then echo "NO_EXPIRY_FIELD"; exit 0; fi
-    cur_iso="${cur:0:4}-${cur:4:2}-${cur:6:2}T${cur:8:2}:${cur:10:2}:${cur:12:2}Z"
-    cur_epoch=$(date -u -d "$cur_iso" +%s)
-    now=$(date -u +%s)
-    days_left=$(( (cur_epoch - now) / 86400 ))
-    if [ "$days_left" -lt "{{ item.min_days_remaining | int }}" ]; then
-      new=$(date -u -d "{{ item.bump_to_days | int }} days" +%Y%m%d%H%M%SZ)
-      ipa user-mod "{{ item.user }}" --setattr=krbPasswordExpiration="$new" >/dev/null
-      echo "BUMPED days_left=$days_left -> $new"
-    else
-      echo "OK days_left=$days_left"
-    fi
-  args:
-    executable: /bin/bash
-  register: _freeipa_idam_pwexp
-  changed_when: "'BUMPED' in (_freeipa_idam_pwexp.stdout | default(''))"
-  loop: "{{ freeipa_idam_password_expiration_floors }}"
-  loop_control:
-    label: "{{ item.user | default('missing-user') }}"
+# Password-expiration FLOOR: no module implements the conditional (only bump when
+# fewer than min_days_remaining are left), but the read is ONE user-find and the
+# write is the NATIVE ipauser passwordexpiration option in one bulk call — this
+# replaced a per-user shell read-compare-set loop (GNU-date dependent).
+- name: Read current password expirations (one query)
+  ansible.builtin.command: "ipa user-find --all --raw --sizelimit=0"
+  register: _freeipa_idam_pwexp_find
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  no_log: true
   when: freeipa_idam_password_expiration_floors | length > 0
+
+- name: Enforce password-expiration floor for listed users (native bulk call)
+  freeipa.ansible_freeipa.ipauser:
+    users: "{{ _freeipa_idam_pwexp_bumps }}"
+  vars:
+    _freeipa_idam_pwexp_bumps: >-
+      {{ freeipa_idam_password_expiration_floors
+         | freeipa_idam_pwexp_bumps(_freeipa_idam_pwexp_find.stdout | default('')) }}
+  when:
+    - freeipa_idam_password_expiration_floors | length > 0
+    - _freeipa_idam_pwexp_bumps | length > 0
 
 - name: Destroy temporary Kerberos ticket
   ansible.builtin.command: kdestroy

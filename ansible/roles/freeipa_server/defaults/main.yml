@@ -8,7 +8,10 @@
 # at the include_role calls in tasks/primary.yml and tasks/replica.yml.
 
 # ── Identity (derived; override in inventory only to break convention) ───────
-freeipa_server_domain: "{{ domain }}"
+# `domain` is the repo-convention inventory var (group_vars/all) this defaults
+# from; portable inventories may instead set freeipa_server_domain directly and
+# never define a bare `domain` (asserted with a clear message in idam_desired).
+freeipa_server_domain: "{{ domain | default('') }}"
 freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
 # This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
 freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
@@ -255,7 +258,7 @@ freeipa_idam_password_expiration_floors: []
 
 # Email = <name>@<email_domain> when a user has no explicit `email:` (the mail domain is often
 # not the realm domain, hence its own var). A per-user email always overrides this.
-freeipa_idam_email_domain: "{{ domain }}"
+freeipa_idam_email_domain: "{{ domain | default(freeipa_server_domain) }}"
 
 # Initial password on user CREATE only (update_password: on_create — existing users never reset).
 # Empty = create with no password. Set from Vault in inventory. A per-user `password:` overrides.

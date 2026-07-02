@@ -15,8 +15,9 @@
 # Types covered: sudo rules, HBAC rules, HBAC service groups, sudo command groups, HBAC
 # services, sudo commands, hostgroups, groups, automember rules — deleted in reverse-dependency
 # order (rules → member-groups → services/commands → hostgroups → groups).
-# NOT covered (large IPA built-in sets, no safe allow-list): iparoles, privileges, permissions
-# — use --tags delete (delete-declared) for those. Users are handled by the marker archival.
+# NOT covered: iparoles, privileges, permissions (large IPA built-in sets, no safe allow-list)
+# and pwpolicies (keyed by group; global_policy must never be touched) — use --tags delete
+# (delete-declared) for those. Users are handled by the marker archival.
 
 - name: Reconcile | Refuse to run without a scope marker OR explicit all-undeclared mode
   ansible.builtin.assert:
