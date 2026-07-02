@@ -19,7 +19,7 @@
                + (item.roles | default([]) | map('extract', _freeipa_role_groups) | flatten)
              ) | unique })
          ] }}
-  loop: "{{ _freeipa_idam_users_base }}"
+  loop: "{{ _freeipa_idam_users_base | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_roles | length > 0
@@ -45,7 +45,10 @@
 - name: Build requested user->group memberships from user entries
   ansible.builtin.set_fact:
     freeipa_idam_user_group_pairs: "{{ (freeipa_idam_user_group_pairs | default([])) + [ {'user': item.0.name, 'group': item.1} ] }}"
-  loop: "{{ _freeipa_idam_users | subelements('groups', skip_missing=True) }}"
+  # default([]) matters: Ansible templates a task's loop even when the phase is
+  # skipped by `when` (this role running on a REPLICA in a cluster play — the
+  # primary-only desired phase never set _freeipa_idam_users there).
+  loop: "{{ _freeipa_idam_users | default([]) | subelements('groups', skip_missing=True) }}"
   loop_control:
     label: "{{ item.0.name }} -> {{ item.1 }}"
   # name pairs only (no secrets) — shown at -vv.
@@ -140,7 +143,7 @@
     _freeipa_idam_pw_default: >-
       {{ {} if (item.password is defined or (freeipa_idam_default_user_password | length == 0))
          else {'password': freeipa_idam_default_user_password} }}
-  loop: "{{ _freeipa_idam_users | rejectattr('name', 'in', freeipa_idam_unmodifiable_users) | list }}"
+  loop: "{{ _freeipa_idam_users | default([]) | rejectattr('name', 'in', freeipa_idam_unmodifiable_users) | list }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   no_log: true
@@ -185,7 +188,7 @@
 
     - name: Reactivate (undel) preserved users that are re-declared
       ansible.builtin.command: "ipa user-undel {{ item | quote }}"
-      loop: "{{ _freeipa_idam_to_reactivate }}"
+      loop: "{{ _freeipa_idam_to_reactivate | default([]) }}"
       loop_control:
         label: "{{ item }}"
       changed_when: true
@@ -587,7 +590,7 @@
         name: "{{ item }}"
         shell: "{{ freeipa_idam_nologin_shell }}"
         state: present
-      loop: "{{ _freeipa_idam_nologin_effective }}"
+      loop: "{{ _freeipa_idam_nologin_effective | default([]) }}"
       loop_control:
         label: "{{ item }}"
       when: _freeipa_idam_nologin_effective | length > 0
@@ -652,7 +655,7 @@
 - name: C2 | Read current members of candidate groups
   ansible.builtin.command: "ipa group-show {{ item.name }} --all --raw"
   register: _freeipa_idam_evict_current
-  loop: "{{ _freeipa_idam_evict_candidates }}"
+  loop: "{{ _freeipa_idam_evict_candidates | default([]) }}"
   loop_control:
     label: "{{ item.name }}"
   changed_when: false

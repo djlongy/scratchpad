@@ -102,7 +102,7 @@
     _reconcile_found: "{{ _reconcile_found | default({}) | combine({item.item: _names}) }}"
   vars:
     _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
-  loop: "{{ _reconcile_find.results }}"
+  loop: "{{ _reconcile_find.results | default([]) }}"
   loop_control:
     label: "{{ item.item }}"
 
@@ -151,7 +151,7 @@
     _reconcile_am_found: "{{ _reconcile_am_found | default({}) | combine({item.item: _names}) }}"
   vars:
     _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
-  loop: "{{ _reconcile_am_find.results }}"
+  loop: "{{ _reconcile_am_find.results | default([]) }}"
   loop_control:
     label: "{{ item.item }}"
 
@@ -174,14 +174,14 @@
 
 - name: Reconcile | Delete orphaned automember rules (no longer declared)
   ansible.builtin.command: "ipa automember-del {{ item.1 | quote }} --type={{ item.0.key }}"
-  loop: "{{ _reconcile_am_orphans | dict2items | subelements('value') }}"
+  loop: "{{ _reconcile_am_orphans | default({}) | dict2items | subelements('value') }}"
   loop_control:
     label: "{{ item.0.key }} → {{ item.1 }}"
   changed_when: true
 
 - name: Reconcile | Delete orphaned objects (no longer declared)
   ansible.builtin.command: "ipa {{ item.0.key }}-del {{ item.1 | quote }}"
-  loop: "{{ _reconcile_orphans | dict2items | subelements('value') }}"
+  loop: "{{ _reconcile_orphans | default({}) | dict2items | subelements('value') }}"
   loop_control:
     label: "{{ item.0.key }} → {{ item.1 }}"
   changed_when: true

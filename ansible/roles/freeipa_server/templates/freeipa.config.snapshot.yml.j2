@@ -53,9 +53,10 @@ freeipa_server_export_scope_mode: {{ freeipa_server_export_scope_mode | default(
 freeipa_server_domain: {{ _freeipa_export.freeipa_server_domain }}
 freeipa_server_realm: {{ _freeipa_export.freeipa_server_realm }}
 
-# This server's FQDN (captured). Overridable — used as module/DNS input (e.g. the
-# IPA host a DNS record targets). Change it when reapplying onto a different host.
-freeipa_server_fqdn: {{ _freeipa_export.freeipa_server_fqdn }}
+# freeipa_server_fqdn is PER-HOST — the role derives it (inventory_hostname + domain).
+# Captured value kept for reference only; NEVER uncomment in a multi-host group file
+# (it would rename every other host in the group to this one on install).
+# freeipa_server_fqdn: {{ _freeipa_export.freeipa_server_fqdn }}
 
 # Upstream DNS forwarder(s) for the IPA-managed zone (captured from THIS server's
 # dnsserver config — forwarders live per-server, not in the global dnsconfig).
