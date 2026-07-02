@@ -19,14 +19,24 @@
   # `always` so the guest list exists for both create and destroy.
   tags: [vsphere_vm, always]
 
+# vCenter connection for every community.vmware module task, injected once per
+# phase via module_defaults (password is resolved by preflight, which is
+# `always`-tagged, before any module task runs).
 - name: Read current state and compute the plan
   ansible.builtin.import_tasks: state.yml
   # `always` so the plan exists for both create and destroy phases.
   tags: [vsphere_vm, state, always]
+  module_defaults: &vcenter_connection
+    group/community.vmware.vmware:
+      hostname: "{{ vsphere_vm_server }}"
+      username: "{{ vsphere_vm_username }}"
+      password: "{{ vsphere_vm_password }}"
+      validate_certs: "{{ vsphere_vm_validate_certs }}"
 
 - name: Build missing VMs
   ansible.builtin.import_tasks: create.yml
   tags: [vsphere_vm, create]
+  module_defaults: *vcenter_connection
 
 # Reconnect + verify NICs for ALL managed VMs (created this run AND already
 # present). Its own phase — not buried in create — so `--tags connect` can heal
@@ -35,7 +45,9 @@
 - name: Reconnect and verify VM NICs
   ansible.builtin.import_tasks: connect.yml
   tags: [vsphere_vm, create, connect]
+  module_defaults: *vcenter_connection
 
 - name: Destroy VMs marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml
   tags: [never, destroy]
+  module_defaults: *vcenter_connection

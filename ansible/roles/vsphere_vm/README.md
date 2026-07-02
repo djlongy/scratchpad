@@ -33,17 +33,21 @@ phase handles this automatically:
 
 1. the clone itself does **not** wait for an IP (`wait_for_ip_address: false`),
    so a disconnected NIC can't block it;
-2. every NIC on each newly built VM is force-reconnected by MAC
-   (`vsphere_vm_connect_nics`, multi-NIC safe), wrapped in a rescue;
-3. the IP wait is **bounded** — `vsphere_vm_ip_wait_retries × vsphere_vm_ip_wait_delay`
-   seconds (default 30 × 10 = 5 min) — and reports a clear message instead of
-   hanging if a NIC is genuinely misconfigured.
+2. a bounded **multi-pass** poll-and-reconnect (the `connect` phase) then runs over
+   every desired-present VM: each pass force-reconnects every still-disconnected
+   NIC by MAC (multi-NIC safe, wrapped in a rescue) and briefly polls for an IP —
+   whichever pass lands just after the async guest customization finishes makes
+   the reconnect stick;
+3. the total wait is **bounded** — `connect_passes × connect_pass_retries ×
+   connect_pass_delay` seconds (default 8 × 5 × 10 = ~400 s max) — and reports a
+   clear message instead of hanging if a NIC is genuinely misconfigured.
 
 | Var | Default | Purpose |
 |---|---|---|
 | `vsphere_vm_connect_nics` | `true` | reconnect NICs after build |
-| `vsphere_vm_ip_wait_retries` | `30` | bounded IP-wait attempts |
-| `vsphere_vm_ip_wait_delay` | `10` | seconds between attempts |
+| `vsphere_vm_connect_passes` | `8` | reconnect+poll cycles before giving up |
+| `vsphere_vm_connect_pass_retries` | `5` | IP polls per pass |
+| `vsphere_vm_connect_pass_delay` | `10` | seconds between polls within a pass |
 | `vsphere_vm_create_retries` | `3` | retry transient vCenter errors |
 | `vsphere_vm_create_delay` | `15` | seconds between create retries |
 

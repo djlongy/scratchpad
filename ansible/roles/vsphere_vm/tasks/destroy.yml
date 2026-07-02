@@ -19,10 +19,6 @@
 
 - name: Destroy | Remove planned VMs ({{ _vsphere_to_destroy | map(attribute='name') | list }})
   community.vmware.vmware_guest:
-    hostname: "{{ vsphere_vm_server }}"
-    username: "{{ vsphere_vm_username }}"
-    password: "{{ vsphere_vm_password }}"
-    validate_certs: "{{ vsphere_vm_validate_certs }}"
     datacenter: "{{ vsphere_vm_datacenter }}"
     name: "{{ item.name }}"
     # Match by NAME across the datacenter (folder omitted unless the guest pins

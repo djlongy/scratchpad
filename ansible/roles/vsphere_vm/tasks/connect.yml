@@ -17,16 +17,6 @@
 # pass-interval rather than a single long timeout. Every pass is idempotent and
 # bounded; gated by vsphere_vm_connect_nics.
 
-- name: Connect | Skip (vsphere_vm_connect_nics is false or no targets)
-  ansible.builtin.debug:
-    msg: "NIC reconnect skipped (connect_nics false or no managed VMs)."
-  when: >-
-    not (vsphere_vm_connect_nics | bool)
-    or (_vsphere_to_connect | default([]) | length) == 0
-  run_once: true
-  delegate_to: localhost
-  become: false
-
 - name: Connect | Reconnect NICs for all managed VMs (bounded multi-pass)
   when:
     - vsphere_vm_connect_nics | bool

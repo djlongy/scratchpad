@@ -6,10 +6,6 @@
 
 - name: State | Gather current VM inventory from vCenter
   community.vmware.vmware_vm_info:
-    hostname: "{{ vsphere_vm_server }}"
-    username: "{{ vsphere_vm_username }}"
-    password: "{{ vsphere_vm_password }}"
-    validate_certs: "{{ vsphere_vm_validate_certs }}"
   register: _vsphere_vm_info
   run_once: true
   delegate_to: localhost

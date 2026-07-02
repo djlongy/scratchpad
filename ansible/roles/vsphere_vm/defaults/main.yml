@@ -59,11 +59,6 @@ vsphere_vm_create_delay: 15
 vsphere_vm_connect_passes: 8                     # reconnect+wait cycles before giving up
 vsphere_vm_connect_pass_retries: 5               # IP polls per pass
 vsphere_vm_connect_pass_delay: 10                # seconds between polls within a pass
-# Deprecated (kept for back-compat; the connect path now uses the per-pass knobs
-# above). Left defined so any external override does not break.
-vsphere_vm_ip_wait_retries: 30
-vsphere_vm_ip_wait_delay: 10
-
 # ── Guests to manage ─────────────────────────────────────────────────────────
 # Each item (only name + template are required; the rest fall back to the
 # hardware defaults above):
