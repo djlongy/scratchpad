@@ -12,8 +12,27 @@
 tenant: global
 shared: true
 
-# Not exported — the RBAC overlay is authored by hand (see acme.yml / globex.yml slices).
+# ── Authored keys (not exported) ──────────────────────────────────────────────
+# The RBAC overlay is authored by hand (see acme.yml / globex.yml slices).
 freeipa_server_rbac_roles: []
+
+# BREAK-GLASS: a named emergency admin. Login stays ENABLED; auto-added to
+# freeipa_idam_breakglass_group (default: admins) and auto-protected from
+# delete/archive. Sequence: 1) apply, then VERIFY — `kinit bg-emergency` (the
+# create-time password must be changed on first use; do it now, not mid-incident);
+# 2) only then enable the admin lockdown below.
+freeipa_idam_breakglass_accounts:
+  - { name: bg-emergency, givenname: Break, sn: Glass, groups: [admins], password: "<set-from-vault>" }
+
+# Keep the break-glass password from silently expiring (bump when <30 days left) —
+# an expired break-glass password is the classic emergency-day failure.
+freeipa_idam_password_expiration_floors:
+  - { user: bg-emergency, min_days_remaining: 30, bump_to_days: 180 }
+
+# Admin lockdown — shell login off, account stays ACTIVE (API/kinit/Web UI still
+# work). The role REFUSES this until a break-glass account is declared, and always
+# refuses fully DISABLING admin (it would kill API admin). Enable after step 1 above.
+# freeipa_idam_nologin_accounts: [admin]
 
 freeipa_idam_usergroups:
   - { name: admins, description: Account administrators }
@@ -24,7 +43,13 @@ freeipa_idam_users:
   - { name: ops.root, givenname: Ops, sn: Root, email: [ops.root@example.com], groups: [admins] }
   - { name: ops.editor, givenname: Ops, sn: Editor, email: [ops.editor@example.com], groups: [editors] }
 
-freeipa_idam_service_accounts: []
+# Non-human accounts — shell is FORCED to nologin (API/kinit still work: exactly what
+# an automation bind account needs). svc-* names are shielded from --tags
+# prune_preserved by default. To retire the built-in admin from automation entirely,
+# point freeipa_server_admin_principal: svc-freeipa-automation (+ its password /
+# Vault field) once this account exists and holds admins.
+freeipa_idam_service_accounts:
+  - { name: svc-freeipa-automation, givenname: FreeIPA, sn: Automation, groups: [admins], password: "<set-from-vault>" }
 
 freeipa_idam_hostgroups: []
 

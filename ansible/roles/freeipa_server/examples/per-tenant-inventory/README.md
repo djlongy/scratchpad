@@ -42,6 +42,22 @@ against your realm, walk the snapshot top-down and copy each list over one by on
 file's order matches the snapshot's. (The export's header vars — domain/realm/forwarders
 and the `export_scope` pair — belong in `group_vars/all/realm.yml`, not in a tenant file.)
 
+### Break-glass admin + retiring the built-in admin (global.yml)
+
+`global.yml` also wires the emergency-access pattern:
+
+- **`bg-emergency`** (`freeipa_idam_breakglass_accounts`) — login stays enabled, auto-added
+  to `admins`, auto-protected from delete/archive, and an expiration **floor** keeps its
+  password from silently expiring. Verify it first (`kinit bg-emergency` — change the
+  create-time password NOW, not mid-incident), then uncomment
+  `freeipa_idam_nologin_accounts: [admin]` to take admin's shell away (its API/kinit keep
+  working — the role refuses this lockdown until a break-glass account exists, and always
+  refuses fully *disabling* admin).
+- **`svc-freeipa-automation`** (`freeipa_idam_service_accounts`) — a nologin automation
+  account holding `admins`. To retire the built-in admin from automation, point
+  `freeipa_server_admin_principal: svc-freeipa-automation` (plus its password/Vault field)
+  at it; `svc-*` names are shielded from `--tags prune_preserved` by default.
+
 ### Two ways to write a tenant file — both are plain `.yml`
 
 A tenant file is loaded with `include_vars`, so it behaves **exactly like any inventory vars
