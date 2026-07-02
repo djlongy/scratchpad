@@ -199,6 +199,44 @@
       check_mode: false
       failed_when: false
 
+# ── Precheck: ONE find per remaining per-item object type; those loops then run
+# ONLY for entries that differ from the realm (freeipa_idam_changed_subset — every
+# skipped iteration saves a full Python + ipalib bootstrap on the server). Fail
+# open: a failed/empty find yields raw "", the filter sees nothing current, and
+# the full declared list runs exactly as before this optimisation.
+- name: Precheck | Read current hostgroups and HBAC rules (one find each)
+  when: (freeipa_idam_hostgroups | length > 0) or (freeipa_idam_hbac_rules | length > 0)
+  block:
+    - name: Precheck | Acquire Kerberos ticket
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+      args:
+        stdin: "{{ _freeipa_admin_password }}"
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Precheck | Read current hostgroups
+      ansible.builtin.command: "ipa hostgroup-find --all --raw --sizelimit=0"
+      register: _freeipa_precheck_hostgroups
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      when: freeipa_idam_hostgroups | length > 0
+
+    - name: Precheck | Read current HBAC rules
+      ansible.builtin.command: "ipa hbacrule-find --all --raw --sizelimit=0"
+      register: _freeipa_precheck_hbac
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      when: freeipa_idam_hbac_rules | length > 0
+
+    - name: Precheck | Destroy Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
 # BULK create — one ipagroup call for ALL groups (name/description/gidnumber/posix),
 # replacing the per-group loop. Runs before HBAC/sudo so rules can reference groups.
 - name: Ensure declarative FreeIPA groups are present (bulk create)
@@ -250,9 +288,14 @@
     description: "{{ item.description | default(omit) }}"
     host: "{{ item.host | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_hostgroups }}"
+  # precheck-gated: only hostgroups that differ from the realm invoke the module
+  loop: "{{ _freeipa_idam_hostgroups_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_hostgroups_changed: >-
+      {{ freeipa_idam_hostgroups
+         | freeipa_idam_changed_subset(_freeipa_precheck_hostgroups.stdout | default(''), 'hostgroup') }}
   when: freeipa_idam_hostgroups | length > 0
 
 - name: Reconcile declarative FreeIPA hostgroup nesting (all hostgroups now exist)
@@ -260,9 +303,13 @@
     name: "{{ item.name }}"
     hostgroup: "{{ item.hostgroup }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list }}"
+  loop: "{{ _freeipa_idam_hostgroups_nesting_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_hostgroups_nesting_changed: >-
+      {{ freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list
+         | freeipa_idam_changed_subset(_freeipa_precheck_hostgroups.stdout | default(''), 'hostgroup') }}
   when: (freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list | length) > 0
 
 # Seed CUSTOM HBAC services before any rule membership references them. Stock
@@ -314,18 +361,31 @@
     hbacsvc: "{{ item.service | default(omit) }}"
     hbacsvcgroup: "{{ item.servicegroup | default(omit) }}"
     state: "{{ 'absent' if (item.state | default('present')) == 'absent' else 'present' }}"
-  loop: "{{ freeipa_idam_hbac_rules }}"
+  # precheck-gated: only rules that differ from the realm invoke the module.
+  # NOTE: enabled/disabled entries compare on their OTHER keys here (state itself
+  # is the op-state pass's job below, gated on the realm's ipaenabledflag).
+  loop: "{{ _freeipa_idam_hbac_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_hbac_changed: >-
+      {{ freeipa_idam_hbac_rules
+         | freeipa_idam_changed_subset(_freeipa_precheck_hbac.stdout | default(''), 'hbacrule') }}
   when: freeipa_idam_hbac_rules | length > 0
 
 - name: Ensure declarative HBAC rule operational states
   freeipa.ansible_freeipa.ipahbacrule:
     name: "{{ item.name }}"
     state: "{{ item.state }}"
-  loop: "{{ freeipa_idam_hbac_rules }}"
+  # precheck-gated: only rules whose realm ipaenabledflag mismatches the declared
+  # state (rules created THIS run are conservatively included — they start enabled)
+  loop: "{{ _freeipa_idam_hbac_state_mismatch }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
+  vars:
+    _freeipa_idam_hbac_state_mismatch: >-
+      {{ freeipa_idam_hbac_rules
+         | freeipa_idam_hbac_state_mismatch(_freeipa_precheck_hbac.stdout | default('')) }}
   when:
     - freeipa_idam_hbac_rules | length > 0
     - item.state is defined
@@ -380,50 +440,36 @@
     label: "{{ item.name | default('missing-name') }}"
   when: freeipa_idam_sudocmdgroups | length > 0
 
-# ONE rich-dict call per rule, same pattern as the HBAC rules above: the default
-# action ('sudorule') with state: present creates the rule AND reconciles its
-# members (hosts, users, allow/deny cmds, options, runas) in the same call —
-# declarative add+del. cmds referenced via allow/deny_sudocmd are created in the
-# sudo-commands task above, so they resolve here. Operational state
-# (enabled/disabled) is a separate pass below.
-- name: Ensure declarative sudo rules are present (rule + members in one pass)
-  freeipa.ansible_freeipa.ipasudorule:
-    name: "{{ item.name }}"
-    description: "{{ item.description | default(omit) }}"
-    usercategory: "{{ item.usercategory | default(omit) }}"
-    hostcategory: "{{ item.hostcategory | default(omit) }}"
-    cmdcategory: "{{ item.cmdcategory | default(omit) }}"
-    runasusercategory: "{{ item.runasusercategory | default(omit) }}"
-    runasgroupcategory: "{{ item.runasgroupcategory | default(omit) }}"
-    host: "{{ item.host | default(omit) }}"
-    hostgroup: "{{ item.hostgroup | default(omit) }}"
-    user: "{{ item.user | default(omit) }}"
-    group: "{{ item.usergroup | default(omit) }}"
-    allow_sudocmd: "{{ item.cmd | default(omit) }}"
-    deny_sudocmd: "{{ item.deny_cmd | default(omit) }}"
-    allow_sudocmdgroup: "{{ item.cmdgroup | default(omit) }}"
-    deny_sudocmdgroup: "{{ item.deny_cmdgroup | default(omit) }}"
-    sudooption: "{{ item.sudoopt | default(omit) }}"
-    order: "{{ item.order | default(omit) }}"
-    runasuser: "{{ item.runasuser | default(omit) }}"
-    runasgroup: "{{ item.runasgroup | default(omit) }}"
-    state: "{{ 'absent' if (item.state | default('present')) == 'absent' else 'present' }}"
-  loop: "{{ freeipa_idam_sudo_rules }}"
-  loop_control:
-    label: "{{ item.name | default('missing-name') }}"
+# BULK calls, same declarative semantics as the old per-rule loop: the compiled
+# `sudorules:` payload creates every rule AND reconciles its members (hosts, users,
+# allow/deny cmds, options, runas) in ONE module invocation — each invocation on
+# the server costs a full Python + ipalib bootstrap, so N rules per call, not N
+# calls, is what keeps the CPU down. cmds referenced via allow/deny_sudocmd are
+# created in the sudo-commands task above, so they resolve here. Key renames +
+# unknown-key fail-fast live in freeipa_idam_sudorules_payload (filter_plugins).
+- name: Compile bulk sudo-rule payloads (present/absent/enabled/disabled)
+  ansible.builtin.set_fact:
+    _freeipa_idam_sudorules: "{{ freeipa_idam_sudo_rules | freeipa_idam_sudorules_payload }}"
   when: freeipa_idam_sudo_rules | length > 0
 
-- name: Ensure declarative sudo rule operational states
+- name: Ensure declarative sudo rules are present (rules + members, one bulk call)
   freeipa.ansible_freeipa.ipasudorule:
-    name: "{{ item.name }}"
-    state: "{{ item.state }}"
-  loop: "{{ freeipa_idam_sudo_rules }}"
-  loop_control:
-    label: "{{ item.name | default('missing-name') }}"
-  when:
-    - freeipa_idam_sudo_rules | length > 0
-    - item.state is defined
-    - item.state in ['enabled', 'disabled']
+    sudorules: "{{ _freeipa_idam_sudorules.present }}"
+    state: present
+  when: ((_freeipa_idam_sudorules | default({})).present | default([])) | length > 0
+
+- name: Remove sudo rules declared state absent (one bulk call)
+  freeipa.ansible_freeipa.ipasudorule:
+    sudorules: "{{ _freeipa_idam_sudorules.absent }}"
+    state: absent
+  when: ((_freeipa_idam_sudorules | default({})).absent | default([])) | length > 0
+
+- name: Ensure declarative sudo rule operational states (one bulk call per state)
+  freeipa.ansible_freeipa.ipasudorule:
+    sudorules: "{{ _freeipa_idam_sudorules[item] }}"
+    state: "{{ item }}"
+  loop: [enabled, disabled]
+  when: ((_freeipa_idam_sudorules | default({}))[item] | default([])) | length > 0
 
 - name: Ensure managed marker group exists
   freeipa.ansible_freeipa.ipagroup:
@@ -643,7 +689,7 @@
 # declare it (e.g. GUI self-add). freeipa_idam_evictions returns only
 # (current ∩ managed) − desired, so unmanaged/out-of-band members are never touched;
 # automember-target groups and the marker containers are excluded.
-- name: C2 | Build eviction candidate groups (declared, not automember-populated)
+- name: Eviction | Build candidate groups (declared, not automember-populated)
   ansible.builtin.set_fact:
     _freeipa_idam_evict_candidates: >-
       {{ _freeipa_idam_usergroups_members | default([])
@@ -652,32 +698,27 @@
     _freeipa_idam_evict_payload: []
   no_log: "{{ ansible_verbosity < 2 }}"
 
-- name: C2 | Read current members of candidate groups
-  ansible.builtin.command: "ipa group-show {{ item.name }} --all --raw"
+# ONE group-find for every group's current members (was a group-show COMMAND PER
+# candidate group — ~1 ipa CLI bootstrap each); the payload compile is a single
+# filter call (was a quadratic per-group set_fact accumulation).
+- name: Eviction | Read current members of all groups (one query)
+  ansible.builtin.command: "ipa group-find --all --raw --sizelimit=0"
   register: _freeipa_idam_evict_current
-  loop: "{{ _freeipa_idam_evict_candidates | default([]) }}"
-  loop_control:
-    label: "{{ item.name }}"
   changed_when: false
   failed_when: false
   no_log: true
+  when: (_freeipa_idam_evict_candidates | default([])) | length > 0
 
-- name: C2 | Compute managed-subset eviction payload (evict managed droppers only)
+- name: Eviction | Compute managed-subset payload (evict managed droppers only)
   ansible.builtin.set_fact:
     _freeipa_idam_evict_payload: >-
-      {{ (_freeipa_idam_evict_payload | default([]))
-         + ([{'name': item.item.name, 'user': _evict}] if (_evict | length > 0) else []) }}
-  vars:
-    _current: >-
-      {{ (item.stdout_lines | default([])) | map('trim')
-         | select('search', 'uid=') | map('regex_replace', '.*uid=([^,]+).*', '\1') | list }}
-    _evict: "{{ _current | freeipa_idam_evictions(freeipa_idam_current_managed_users, item.item.user | default([])) }}"
-  loop: "{{ _freeipa_idam_evict_current.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item.name | default('?') }}"
+      {{ (_freeipa_idam_evict_current.stdout | default(''))
+         | freeipa_idam_evict_payload(_freeipa_idam_evict_candidates | default([]),
+                                      freeipa_idam_current_managed_users) }}
+  when: (_freeipa_idam_evict_candidates | default([])) | length > 0
   no_log: "{{ ansible_verbosity < 2 }}"
 
-- name: C2 | Evict managed users from groups they no longer declare (managed-subset)
+- name: Eviction | Remove managed users from groups they no longer declare
   freeipa.ansible_freeipa.ipagroup:
     groups: "{{ _freeipa_idam_evict_payload }}"
     action: member

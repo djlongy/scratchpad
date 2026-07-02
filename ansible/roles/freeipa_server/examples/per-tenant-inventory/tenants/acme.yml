@@ -4,6 +4,7 @@
 # with their COMPLETE group list — tenant groups + any built-in/global groups (which are
 # owned in global.yml). One run sees both files and reconciles the membership.
 tenant: acme
+local_env: dev
 groups:
   - { name: acme-admins, description: "Acme admins" }
   - { name: acme-editors, description: "Acme editors" }
@@ -15,3 +16,13 @@ users:
   - { name: acme.erin, first: Erin, last: Ellis, groups: [acme-viewers] }
 hbac_rules:
   - { name: hbac-acme-ssh, usergroup: [acme-admins], hostgroup: [hg-acme], service: [sshd] }
+freeipa_server_rbac_roles:
+  - name: role-acme-dev-platform-admin       # the role group, created exactly as declared
+    description: "acme/dev platform admins"
+    policy_groups:                             # EXISTING ug-* groups from this file, verbatim
+      - ug-acme-dev-docker-operators
+      - ug-acme-dev-artifactory-readers
+    members: [acme.erin, acme.dave]        # granted users → indirect ug-* members
+  - name: role-acme-test-observer
+    policy_groups: [ug-acme-test-grafana-readers]
+    members: [acme.dave]

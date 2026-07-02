@@ -20,6 +20,14 @@ other object stays native; see roles/freeipa_server/README.md.)
 """
 from __future__ import annotations
 
+import re
+
+try:                                          # real Ansible at runtime …
+    from ansible.errors import AnsibleFilterError
+except ImportError:                           # … plain Python under pytest
+    class AnsibleFilterError(Exception):
+        pass
+
 
 # ── merge generated objects onto the baseline (native keys) ───────────────────
 def _union_into(target, item, fields):
@@ -254,6 +262,232 @@ def freeipa_idam_evictions(current: list[str], managed: list[str], desired: list
     return sorted(m for m in (current or []) if m in managed_set and m not in desired_set)
 
 
+# ── bulk-call payload compilers (each ansible_freeipa module invocation costs a
+#    full Python + ipalib bootstrap on the server; these turn per-item loops into
+#    ONE module call, which is where the CPU/wall-clock goes) ────────────────────
+
+# Inventory rule key -> ipasudorule per-entry option (None = same name).
+_SUDORULE_KEYMAP = {
+    "name": None, "description": None, "usercategory": None, "hostcategory": None,
+    "cmdcategory": None, "runasusercategory": None, "runasgroupcategory": None,
+    "host": None, "hostgroup": None, "hostmask": None, "user": None,
+    "usergroup": "group", "cmd": "allow_sudocmd", "deny_cmd": "deny_sudocmd",
+    "cmdgroup": "allow_sudocmdgroup", "deny_cmdgroup": "deny_sudocmdgroup",
+    "sudoopt": "sudooption", "order": None, "runasuser": None, "runasgroup": None,
+    "runasuser_group": None, "state": None,  # state consumed here, never forwarded
+}
+
+
+def freeipa_idam_sudorules_payload(rules: list[dict]) -> dict:
+    """Compile the sudo-rule list into bulk ``ipasudorule`` payloads.
+
+    Returns ``{present: [entry, ...], absent: [{name}, ...], enabled: [...],
+    disabled: [...]}`` — one module call per non-empty list instead of one per
+    rule (plus a second per-rule pass for operational state). ``present``
+    entries carry the module's option names; declared-but-unknown keys fail
+    fast naming the rule and key.
+    """
+    payload = {"present": [], "absent": [], "enabled": [], "disabled": []}
+    for rule in rules or []:
+        name = (rule or {}).get("name")
+        if not name:
+            raise AnsibleFilterError(
+                f"sudo rule without a usable 'name': {rule!r}")
+        unknown = set(rule) - set(_SUDORULE_KEYMAP)
+        if unknown:
+            raise AnsibleFilterError(
+                f"sudo rule '{name}': unknown key(s) {sorted(unknown)}; "
+                f"allowed: {sorted(_SUDORULE_KEYMAP)}")
+        state = rule.get("state", "present")
+        if state == "absent":
+            payload["absent"].append({"name": name})
+            continue
+        entry = {(_SUDORULE_KEYMAP[k] or k): v
+                 for k, v in rule.items() if k != "state"}
+        payload["present"].append(entry)
+        if state in ("enabled", "disabled"):
+            payload[state].append({"name": name})
+    return payload
+
+
+def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
+                               managed: list[str]) -> list[dict]:
+    """Compile the managed-subset eviction payload from ONE ``ipa group-find
+    --all --raw`` output (replaces a per-group ``group-show`` command loop plus
+    a quadratic per-group set_fact accumulation).
+
+    For each candidate group (declared, not automember-populated), current user
+    members are read from its raw entry block (``member: uid=<login>,...``) and
+    ``freeipa_idam_evictions`` keeps only managed-and-no-longer-desired logins.
+    Returns ``[{name, user: [login, ...]}, ...]`` for groups needing eviction;
+    a candidate group absent from the output (not created yet) contributes
+    nothing — exactly like the old per-group query's failed_when: false.
+    """
+    member_re = re.compile(r"^\s*member:\s+uid=([^,]+)", re.IGNORECASE)
+    cn_re = re.compile(r"^\s*cn:\s+(\S+)", re.IGNORECASE | re.MULTILINE)
+    current_by_group: dict[str, list[str]] = {}
+    for block in (group_find_raw or "").split("\n\n"):
+        cn_match = cn_re.search(block)
+        if not cn_match:
+            continue
+        current_by_group[cn_match.group(1)] = [
+            m.group(1) for line in block.splitlines()
+            if (m := member_re.match(line))]
+    payload = []
+    for group in candidates or []:
+        name = (group or {}).get("name")
+        if not name or name not in current_by_group:
+            continue
+        evict = freeipa_idam_evictions(
+            current_by_group[name], managed, group.get("user") or [])
+        if evict:
+            payload.append({"name": name, "user": evict})
+    return payload
+
+
+# ── precheck: gate per-item module loops on an actual diff ─────────────────────
+# ONE `ipa <type>-find --all --raw` (cheap) feeds these comparators; the per-item
+# module loops then run ONLY for entries that differ from the realm. Every skipped
+# invocation saves a full Python + ipalib bootstrap on the server. CONSERVATIVE BY
+# CONSTRUCTION: an entry absent from the output, an unparseable block, a declared
+# key the comparator doesn't model, or an empty/failed find (raw="") all INCLUDE
+# the entry — the worst case is a redundant module call, never a skipped change.
+
+_RAW_ATTR_RE = re.compile(r"^\s*([A-Za-z][\w;-]*):\s+(.*)$")
+
+
+def _parse_raw_entries(raw: str) -> dict:
+    """``{cn: {attr_lower: [values]}}`` from ``ipa *-find --all --raw`` output."""
+    entries = {}
+    for block in (raw or "").split("\n\n"):
+        attrs: dict[str, list[str]] = {}
+        for line in block.splitlines():
+            match = _RAW_ATTR_RE.match(line)
+            if match:
+                attrs.setdefault(match.group(1).lower(), []).append(match.group(2).strip())
+        cn = attrs.get("cn", [None])[0]
+        if cn:
+            entries[cn] = attrs
+    return entries
+
+
+def _dn_leaves(attrs: dict, attr: str, leaf_key: str, container: str) -> set:
+    """Leaf values of ``attr`` DNs matching ``leaf_key=`` under ``container``."""
+    out = set()
+    for dn in attrs.get(attr, []):
+        leaf, _, rest = dn.partition(",")
+        key, _, value = leaf.partition("=")
+        if key.strip().lower() == leaf_key and container in rest.lower():
+            out.add(value.strip().lower())
+    return out
+
+
+def _norm_set(values) -> set:
+    return {str(v).strip().lower() for v in (values or [])}
+
+
+def _scalar_differs(declared, current_attrs, attr) -> bool:
+    current = current_attrs.get(attr, [None])[0]
+    return str(declared) != str(current)
+
+
+# Declared-key -> comparator. A comparator returns True when the entry DIFFERS.
+# Keys that never affect the realm object (name/state) map to None. Any declared
+# key not listed => entry is included unconditionally (conservative).
+_HOSTGROUP_COMPARE = {
+    "name": None, "state": None,
+    "description": lambda d, c: _scalar_differs(d["description"], c, "description"),
+    "hostgroup": lambda d, c: _norm_set(d["hostgroup"]) != _dn_leaves(c, "member", "cn", "cn=hostgroups"),
+    "host": lambda d, c: _norm_set(d["host"]) != _dn_leaves(c, "member", "fqdn", "cn=computers"),
+}
+
+_HBACRULE_COMPARE = {
+    "name": None, "state": None,  # enabled/disabled handled by the op-state pass
+    "description": lambda d, c: _scalar_differs(d["description"], c, "description"),
+    "usercategory": lambda d, c: _scalar_differs(d["usercategory"], c, "usercategory"),
+    "hostcategory": lambda d, c: _scalar_differs(d["hostcategory"], c, "hostcategory"),
+    "servicecategory": lambda d, c: _scalar_differs(d["servicecategory"], c, "servicecategory"),
+    "user": lambda d, c: _norm_set(d["user"]) != _dn_leaves(c, "memberuser", "uid", "cn=users"),
+    "usergroup": lambda d, c: _norm_set(d["usergroup"]) != _dn_leaves(c, "memberuser", "cn", "cn=groups"),
+    "host": lambda d, c: _norm_set(d["host"]) != _dn_leaves(c, "memberhost", "fqdn", "cn=computers"),
+    "hostgroup": lambda d, c: _norm_set(d["hostgroup"]) != _dn_leaves(c, "memberhost", "cn", "cn=hostgroups"),
+    "service": lambda d, c: _norm_set(d["service"]) != _dn_leaves(c, "memberservice", "cn", "cn=hbacservices,"),
+    "servicegroup": lambda d, c: _norm_set(d["servicegroup"]) != _dn_leaves(c, "memberservice", "cn", "cn=hbacservicegroups"),
+}
+
+
+def _automember_regex_set(declared_conditions) -> set:
+    return {f"{c.get('key')}={c.get('expression')}".lower()
+            for c in (declared_conditions or [])}
+
+_AUTOMEMBER_COMPARE = {
+    "name": None, "state": None, "automember_type": None,
+    "description": lambda d, c: _scalar_differs(d["description"], c, "description"),
+    "inclusive": lambda d, c: _automember_regex_set(d["inclusive"]) != _norm_set(c.get("automemberinclusiveregex")),
+    "exclusive": lambda d, c: _automember_regex_set(d["exclusive"]) != _norm_set(c.get("automemberexclusiveregex")),
+}
+
+_PRECHECK_KINDS = {
+    "hostgroup": _HOSTGROUP_COMPARE,
+    "hbacrule": _HBACRULE_COMPARE,
+    "automember": _AUTOMEMBER_COMPARE,
+}
+
+
+def _entry_differs(declared: dict, current: dict, compare: dict) -> bool:
+    for key, value in declared.items():
+        comparator = compare.get(key, "unmodeled")
+        if comparator is None:
+            continue
+        if comparator == "unmodeled" or comparator({key: value}, current):
+            return True
+    return False
+
+
+def freeipa_idam_changed_subset(declared: list[dict], find_raw: str, kind: str) -> list[dict]:
+    """Declared entries that DIFFER from the realm per ``ipa <kind>-find --all
+    --raw`` output — feed this to the per-item module loop instead of the full
+    list. ``state: absent`` entries are returned only while the object still
+    exists (a completed delete stops costing a module call every run)."""
+    compare = _PRECHECK_KINDS.get(kind)
+    if compare is None:
+        raise AnsibleFilterError(
+            f"freeipa_idam_changed_subset: unknown kind '{kind}' "
+            f"(expected one of {sorted(_PRECHECK_KINDS)})")
+    current_entries = _parse_raw_entries(find_raw)
+    subset = []
+    for entry in declared or []:
+        name = (entry or {}).get("name")
+        current = current_entries.get(name)
+        if str(entry.get("state", "present")) == "absent":
+            if current is not None:
+                subset.append(entry)
+            continue
+        if current is None or _entry_differs(entry, current, compare):
+            subset.append(entry)
+    return subset
+
+
+def freeipa_idam_hbac_state_mismatch(declared: list[dict], find_raw: str) -> list[dict]:
+    """HBAC rules whose declared enabled/disabled state differs from the realm
+    (``ipaenabledflag``) — gates the operational-state pass. A rule absent from
+    the output (created this run) is included: fresh rules start enabled."""
+    current_entries = _parse_raw_entries(find_raw)
+    mismatched = []
+    for rule in declared or []:
+        state = rule.get("state")
+        if state not in ("enabled", "disabled"):
+            continue
+        current = current_entries.get(rule.get("name"))
+        if current is None:
+            mismatched.append(rule)
+            continue
+        flag = (current.get("ipaenabledflag", [""])[0] or "").lower()
+        if (state == "enabled") != (flag == "true"):
+            mismatched.append(rule)
+    return mismatched
+
+
 # ── desired-state validation (shape + references) ─────────────────────────────
 # Python port of the (formerly inline-Jinja) validation engine in idam_desired.yml:
 # collect EVERY structural + referential problem in one pass so the operator gets a
@@ -450,5 +684,9 @@ class FilterModule:
             "freeipa_export_scope": freeipa_export_scope,
             "freeipa_idam_identity_merge": freeipa_idam_identity_merge,
             "freeipa_idam_evictions": freeipa_idam_evictions,
+            "freeipa_idam_sudorules_payload": freeipa_idam_sudorules_payload,
+            "freeipa_idam_evict_payload": freeipa_idam_evict_payload,
+            "freeipa_idam_changed_subset": freeipa_idam_changed_subset,
+            "freeipa_idam_hbac_state_mismatch": freeipa_idam_hbac_state_mismatch,
             "freeipa_idam_validate": freeipa_idam_validate,
         }

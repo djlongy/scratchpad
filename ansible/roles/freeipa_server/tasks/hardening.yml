@@ -70,8 +70,10 @@
 
 # allow_all teardown — GUARDED: only proceed if replacement HBAC rules exist,
 # so the run cannot lock operators out.
-- name: Count enabled non-allow_all HBAC rules
-  ansible.builtin.command: ipa hbacrule-find --enabled --raw
+# hbacrule-find has NO --enabled filter (it errors "Usage: ..."); fetch all rules
+# raw and filter on each entry block's ipaenabledflag instead.
+- name: List HBAC rules with enabled state
+  ansible.builtin.command: ipa hbacrule-find --raw --all
   register: _freeipa_server_hbac
   changed_when: false
   when: freeipa_server_disable_allow_all | bool
@@ -79,8 +81,11 @@
 - name: Assert a replacement HBAC rule exists before disabling allow_all
   ansible.builtin.assert:
     that:
-      - (_freeipa_server_hbac.stdout
-         | regex_findall('cn:\\s+(?!allow_all)\\S+')) | length > 0
+      # entry blocks are blank-line separated; keep ENABLED blocks, drop allow_all
+      - (_freeipa_server_hbac.stdout.split('\n\n')
+         | select('search', '(?i)ipaenabledflag:\\s+true')
+         | reject('search', 'cn:\\s+allow_all(\\s|$)')
+         | list | length) > 0
     fail_msg: >-
       Refusing to disable allow_all: no other enabled HBAC rule found. Create
       and test replacement HBAC rules (freeipa_idam_hbac_rules) first, or you

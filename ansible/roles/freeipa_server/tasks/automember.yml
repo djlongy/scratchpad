@@ -10,6 +10,37 @@
   vars:
     _freeipa_resolve: [admin]
 
+# ── Precheck: ONE find per declared automember type; the per-rule module loop
+# then runs ONLY for rules that differ (each skipped iteration saves a full
+# Python + ipalib bootstrap on the server). Fail open: a failed find yields raw
+# "" and the full declared list runs exactly as before.
+- name: Automember | Read current rules (one find per type)
+  when: freeipa_server_automember_rules | length > 0
+  block:
+    - name: Automember | Acquire Kerberos ticket
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+      args:
+        stdin: "{{ _freeipa_admin_password }}"
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Automember | Read current rules per type
+      ansible.builtin.command: "ipa automember-find --type={{ item | quote }} --all --raw"
+      register: _freeipa_precheck_automember
+      loop: "{{ freeipa_server_automember_rules | map(attribute='automember_type') | unique | list }}"
+      loop_control:
+        label: "{{ item }}"
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Automember | Destroy Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
 - name: Automember | Reconcile rules
   freeipa.ansible_freeipa.ipaautomember:
     name: "{{ item.name }}"
@@ -18,10 +49,24 @@
     inclusive: "{{ item.inclusive | default(omit) }}"
     exclusive: "{{ item.exclusive | default(omit) }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ freeipa_server_automember_rules }}"
+  # precheck-gated per type: a rule name can exist for BOTH types, so each type's
+  # declared subset is compared against ITS OWN find output only
+  loop: "{{ _freeipa_automember_changed }}"
   loop_control:
     label: "{{ item.automember_type }}:{{ item.name }}"
+  vars:
+    _freeipa_automember_changed: >-
+      {%- set changed = [] -%}
+      {%- for find in (_freeipa_precheck_automember.results | default([])) -%}
+        {%- set _ = changed.extend(
+              freeipa_server_automember_rules
+              | selectattr('automember_type', 'equalto', find.item)
+              | list
+              | freeipa_idam_changed_subset(find.stdout | default(''), 'automember')) -%}
+      {%- endfor -%}
+      {{ changed }}
   register: _freeipa_automember_result
+  when: freeipa_server_automember_rules | length > 0
 
 # A host that enrols AFTER its rule exists is placed automatically by the IPA
 # automember plugin at host-create time — no rebuild needed. A rebuild only
