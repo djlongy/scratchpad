@@ -46,6 +46,20 @@
     mode: "0644"
   when: not _freeipa_server_replica_configured.stat.exists
 
+# DNS options only for an integrated-DNS replica — upstream's ipareplica_test
+# rejects them ("... without the --setup-dns option") when setup_dns is false,
+# so they must stay UNDEFINED for a no-DNS install.
+- name: Map ipareplica DNS inputs (integrated DNS only)
+  ansible.builtin.set_fact:
+    ipareplica_forwarders: "{{ freeipa_server_forwarders }}"
+    ipareplica_forward_policy: "{{ freeipa_server_forward_policy }}"
+    ipareplica_no_forwarders: "{{ freeipa_server_no_forwarders }}"
+    # Replicas must NOT auto-create reverse zones — the primary already created
+    # them and they replicate in. Auto-reverse here fails the install with
+    # "DNS zone <reverse> already exists". Reverse zones are a primary concern.
+    ipareplica_auto_reverse: false
+  when: freeipa_server_setup_dns | bool
+
 - name: Install FreeIPA replica via upstream ipareplica role
   ansible.builtin.include_role:
     name: freeipa.ansible_freeipa.ipareplica
@@ -60,13 +74,6 @@
     ipareplica_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
     ipareplica_setup_kra: "{{ freeipa_server_setup_kra }}"
     ipareplica_setup_dns: "{{ freeipa_server_setup_dns }}"
-    ipareplica_forwarders: "{{ freeipa_server_forwarders }}"
-    ipareplica_forward_policy: "{{ freeipa_server_forward_policy }}"
-    ipareplica_no_forwarders: "{{ freeipa_server_no_forwarders }}"
-    # Replicas must NOT auto-create reverse zones — the primary already created
-    # them and they replicate in. Auto-reverse here fails the install with
-    # "DNS zone <reverse> already exists". Reverse zones are a primary concern.
-    ipareplica_auto_reverse: false
     ipareplica_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
 
 - name: Ensure IPA service is enabled and started

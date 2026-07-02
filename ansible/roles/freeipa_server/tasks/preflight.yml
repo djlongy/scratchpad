@@ -39,6 +39,24 @@
     - freeipa_server_fips_required | bool
     - not _freeipa_server_configured.stat.exists
 
+# Fail FAST with an actionable message — upstream otherwise dies mid-install
+# with "You must specify at least one of --forwarder, --auto-forwarders, or
+# --no-forwarders options" only after several setup phases have already run.
+- name: Assert DNS forwarder inputs are coherent for an integrated-DNS install
+  ansible.builtin.assert:
+    that:
+      - (freeipa_server_forwarders | length > 0)
+        or (freeipa_server_no_forwarders | bool)
+    fail_msg: >-
+      freeipa_server_setup_dns is true but no forwarder choice is declared.
+      Set freeipa_server_forwarders (e.g. ["192.0.2.1"]) OR
+      freeipa_server_no_forwarders: true (root servers only) — or disable
+      integrated DNS with freeipa_server_setup_dns: false.
+    quiet: true
+  # Not gated on "already configured": upstream validates these options before
+  # its own configured-check, so an incoherent re-run fails there too.
+  when: freeipa_server_setup_dns | bool
+
 - name: Ensure chrony time synchronisation is active
   ansible.builtin.command: chronyc tracking
   register: _freeipa_server_chrony

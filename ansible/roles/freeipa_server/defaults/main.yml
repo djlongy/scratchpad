@@ -113,6 +113,8 @@ freeipa_server_ad_trusts: []
 #  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }
 
 # ── DNS ─────────────────────────────────────────────────────────────────────
+# With setup_dns: false the role maps NONE of the DNS options below to the
+# installer (upstream rejects them without --setup-dns) — leave them as-is.
 freeipa_server_setup_dns: true
 freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["192.0.2.1"]
 freeipa_server_forward_policy: "only"    # only | first

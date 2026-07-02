@@ -27,6 +27,18 @@
     ipaserver_setup_kra: "{{ freeipa_server_setup_kra }}"
     ipaserver_no_pkinit: "{{ freeipa_server_no_pkinit }}"
     ipaserver_setup_dns: "{{ freeipa_server_setup_dns }}"
+    ipaserver_no_hbac_allow: "{{ freeipa_server_no_hbac_allow }}"
+    ipaclient_mkhomedir: "{{ freeipa_server_mkhomedir }}"
+    ipaserver_setup_ntp: "{{ freeipa_server_setup_ntp }}"
+    ipaclient_ntp_servers: "{{ freeipa_server_ntp_servers }}"
+  no_log: true
+
+# DNS options are mapped ONLY for an integrated-DNS install: upstream's
+# ipaserver_test hard-rejects any of them ("You cannot specify a --... option
+# without the --setup-dns option") when setup_dns is false — they must stay
+# UNDEFINED, not merely empty/false, for a no-DNS install to pass validation.
+- name: Map ipaserver DNS inputs (integrated DNS only)
+  ansible.builtin.set_fact:
     ipaserver_forwarders: "{{ freeipa_server_forwarders }}"
     ipaserver_forward_policy: "{{ freeipa_server_forward_policy }}"
     ipaserver_no_forwarders: "{{ freeipa_server_no_forwarders }}"
@@ -34,11 +46,7 @@
     ipaserver_reverse_zones: "{{ freeipa_server_reverse_zones }}"
     ipaserver_no_dnssec_validation: "{{ freeipa_server_no_dnssec_validation }}"
     ipaserver_allow_zone_overlap: "{{ freeipa_server_allow_zone_overlap }}"
-    ipaserver_no_hbac_allow: "{{ freeipa_server_no_hbac_allow }}"
-    ipaclient_mkhomedir: "{{ freeipa_server_mkhomedir }}"
-    ipaserver_setup_ntp: "{{ freeipa_server_setup_ntp }}"
-    ipaclient_ntp_servers: "{{ freeipa_server_ntp_servers }}"
-  no_log: true
+  when: freeipa_server_setup_dns | bool
 
 # Optional inputs are set ONLY when non-empty/non-zero (one filtered loop), leaving
 # them undefined for upstream's own `| default(omit)` — see the header note on omit.
