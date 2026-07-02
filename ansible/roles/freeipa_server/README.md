@@ -299,6 +299,11 @@ freeipa_server_rbac_roles:
 
 One entry = one role: `members` replaces any separate assignment bookkeeping, so granting a
 role is a one-line diff on the role entry — the user's own `groups:` list is never touched.
+In tenants mode each `tenants/*.yml` may carry its own `freeipa_server_rbac_roles` slice —
+the loader concatenates the lists across files and the overlay compiles after the tenant
+load, so cross-file references (a member declared in another tenant) resolve realm-wide.
+Declare the overlay in ONE place: tenant files **or** group_vars (a tenant-declared var
+replaces the group_vars value).
 Policy groups **must already exist natively** (the overlay only nests onto them).
 `freeipa_rbac_validate` fails fast — naming the culprit — on a policy group not declared in
 `freeipa_idam_usergroups` (the typo trap for pasted names), a member not in

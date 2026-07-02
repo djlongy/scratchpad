@@ -223,7 +223,10 @@ freeipa_idam_pwpolicies: []
 # VERBATIM (no naming templates) — paste policy group names straight from the export.
 # Scope lives in the names you declare; role-<tenant>-<env>-<name> is convention, not
 # code. Empty = pure baseline, zero behaviour change. Compiled AFTER the tenant load,
-# so it composes with freeipa_idam_tenants_dir. See tasks/rbac.yml.
+# so it composes with freeipa_idam_tenants_dir — tenant files may carry their own
+# freeipa_server_rbac_roles slice (lists concatenate across files). Declare the overlay
+# in ONE place: tenant files OR group_vars — a tenant-declared var REPLACES the
+# group_vars value. See tasks/rbac.yml.
 freeipa_server_rbac_roles: []
 #  - name: role-acme-prod-platform-admin       # the role group, created exactly as declared
 #    description: "acme/prod platform admins"

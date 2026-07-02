@@ -1,25 +1,77 @@
 ---
-# globex — the SAME kind of tenant as acme, but written with TEMPLATING to show that a
+# globex — the SAME kind of tenant as globex, but written with TEMPLATING to show that a
 # plain tenants/*.yml behaves like ANY inventory vars YAML. No special extension.
 #   * {{ tenant }} / {{ prefix }} self-reference the header keys below.
 #   * shared_sudo_commands is pulled WHOLE from group_vars (group_vars/all/realm.yml) and
 #     stays a native list — not a stringified one.
 # Use whichever style you like per file; the loader treats them identically.
 tenant: globex
+local_env: dev
 prefix: ug
-groups:
-  - { name: "{{ prefix }}-{{ tenant }}-admins", description: "Globex admins" }
-  - { name: "{{ prefix }}-{{ tenant }}-viewers", description: "Globex read-only" }
-hostgroups:
-  - { name: "hg-{{ tenant }}", description: "Globex hosts" }
-users:
-  - { name: "{{ tenant }}.sam", first: Sam, last: Stone, groups: ["{{ prefix }}-{{ tenant }}-admins", admins] }
-  - { name: "{{ tenant }}.val", first: Val, last: Vega,  groups: ["{{ prefix }}-{{ tenant }}-viewers"] }
-hbac_rules:
-  - { name: "hbac-{{ tenant }}-ssh", usergroup: ["{{ prefix }}-{{ tenant }}-admins"], hostgroup: ["hg-{{ tenant }}"], service: [sshd] }
-freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"   # whole list pulled from group_vars
-dns_records:
-  - zone_name: ipa.example.com.
-    records:
-      - { record_name: app1, a_record: [10.0.0.40] }
-      - { record_name: app2, a_record: [10.0.0.41] }
+
+# The OPTIONAL RBAC overlay rides the tenant loader like any other freeipa_* list —
+# each tenant file carries its own slice; the lists concatenate across files and the
+# role compiles them AFTER the tenant load. (Declare the overlay in ONE place: tenant
+# files OR group_vars — a tenant-declared var replaces the group_vars value.)
+freeipa_server_rbac_roles:
+  - name: role-globex-dev-platform-admin       # the role group, created exactly as declared
+    description: "globex/dev platform admins"
+    policy_groups:                             # EXISTING ug-* groups from this file, verbatim
+      - ug-globex-dev-docker-operators
+      - ug-globex-dev-artifactory-readers
+    members: [globex.erin, globex.dave]        # granted users → indirect ug-* members
+  - name: role-globex-test-observer
+    policy_groups: [ug-globex-test-grafana-readers]
+    members: [globex.dave]
+
+freeipa_idam_usergroups:
+  - { name: globex-admins, description: globex admins }
+  - { name: globex-editors, description: globex editors }
+  - { name: globex-idam-managed-users, description: Users managed declaratively from Git, gidnumber: 1647200509 }
+  # granular policy groups — targeted by the HBAC rules below and the RBAC overlay above
+  - { name: ug-globex-dev-artifactory-readers, description: 'Readers on JFrog Artifactory [globex/dev]' }
+  - { name: ug-globex-dev-docker-operators, description: 'Operators on Docker hosts [globex/dev]' }
+  - { name: ug-globex-dev-foreman-admins, description: 'Admins on Foreman [globex/dev]' }
+  - { name: ug-globex-dev-gitlab-admins, description: 'Admins on GitLab [globex/dev]' }
+  - { name: ug-globex-dev-grafana-readers, description: 'Readers on Grafana [globex/dev]' }
+  - { name: ug-globex-test-grafana-readers, description: 'Readers on Grafana [globex/test]' }
+
+freeipa_idam_users:
+  - { name: globex.dave, givenname: Dave, sn: Dunn, email: [globex.dave@globex.au], groups: [ipausers, globex-admins, idam-managed-groups, globex-editors, globex-idam-managed-users] }
+  - { name: globex.erin, givenname: Erin, sn: Ellis, email: [globex.erin@globex.au], groups: [ipausers, globex-viewers, idam-managed-groups, globex-idam-managed-users] }
+  - { name: admin, givenname: admin, sn: Administrator, groups: [admins, trust admins, idam-globex-managed, idam-managed-groups] }
+
+freeipa_idam_service_accounts: []
+
+freeipa_idam_hostgroups:
+  - { name: hg-globex-dev-artifactory-readers, description: 'Hosts for JFrog Artifactory [globex/dev]' }
+  - { name: hg-globex-dev-docker-operators, description: 'Hosts for Docker hosts [globex/dev]' }
+  - { name: hg-globex-dev-foreman-admins, description: 'Hosts for Foreman [globex/dev]' }
+
+freeipa_idam_hbac_rules:
+  - { name: allow_all, description: Allow all users to access any host from any host, usercategory: all, hostcategory: all, servicecategory: all, state: disabled }
+  - { name: allow_systemd-user, description: Allow pam_systemd to run user@.service to create a system user session, usercategory: all, hostcategory: all, service: [systemd-user] }
+  - { name: hbac-globex-dev-artifactory-readers, description: 'HBAC — readers login to JFrog Artifactory [globex/dev]', usergroup: [ug-globex-dev-artifactory-readers], hostgroup: [hg-globex-dev-artifactory-readers], service: [cockpit, sshd] }
+  - { name: hbac-globex-dev-docker-operators, description: 'HBAC — operators login to Docker hosts [globex/dev]', usergroup: [ug-globex-dev-docker-operators], hostgroup: [hg-globex-dev-docker-operators], service: [sshd, cockpit] }
+  - { name: hbac-globex-dev-foreman-admins, description: 'HBAC — admins login to Foreman [globex/dev]', usergroup: [ug-globex-dev-foreman-admins], hostgroup: [hg-globex-dev-foreman-admins], service: [sshd] }
+  - { name: hbac-globex-dev-gitlab-admins, description: 'HBAC — admins login to GitLab [globex/dev]', usergroup: [ug-globex-dev-gitlab-admins], hostgroup: [hg-globex-dev-gitlab-admins], service: [sshd] }
+  - { name: hbac-globex-dev-grafana-readers, description: 'HBAC — readers login to Grafana [globex/dev]', usergroup: [ug-globex-dev-grafana-readers], hostgroup: [hg-globex-dev-grafana-readers], service: [cockpit, sshd] }
+
+freeipa_server_dns_zones:
+  - { name: 2.0.192.in-addr.arpa., dynamic_update: false, allow_sync_ptr: true }
+  - { name: 100.51.198.in-addr.arpa., dynamic_update: true, allow_sync_ptr: false }
+  - { name: ipa.dev.globex.au., dynamic_update: true, allow_sync_ptr: false }
+  - { name: zt-dns.test., dynamic_update: true, allow_sync_ptr: true }
+freeipa_server_dns_forward_zones: []
+
+freeipa_server_dns_records:
+  - { zone_name: 2.0.192.in-addr.arpa., records: [{record_name: '30', ptr_record: [vcenter.zt-dns.test]}, {record_name: '31', ptr_record: [esx01.zt-dns.test]}] }
+  - { zone_name: 100.51.198.in-addr.arpa., records: [{record_name: '17', ptr_record: [deva-idm-01.ipa.dev.globex.au.]}, {record_name: '18', ptr_record: [deva-idm-02.ipa.dev.globex.au.]}] }
+  - { zone_name: ipa.dev.globex.au., records: [{record_name: _kerberos, txt_record: ['"IPA.dev.globex.AU"']}, {record_name: _kerberos._tcp, srv_record: [0 100 88 deva-idm-01.ipa.dev.globex.au., 0 100 88 deva-idm-02.ipa.dev.globex.au.]}, {record_name: _kerberos-master._tcp, srv_record: [0 100 88 deva-idm-01.ipa.dev.globex.au., 0 100 88 deva-idm-02.ipa.dev.globex.au.]}, {record_name: _kpasswd._tcp, srv_record: [0 100 464 deva-idm-01.ipa.dev.globex.au., 0 100 464 deva-idm-02.ipa.dev.globex.au.]}, {record_name: _ldap._tcp, srv_record: [0 100 389 deva-idm-01.ipa.dev.globex.au., 0 100 389 deva-idm-02.ipa.dev.globex.au.]}, {record_name: _kerberos._udp, srv_record: [0 100 88 deva-idm-01.ipa.dev.globex.au., 0 100 88 deva-idm-02.ipa.dev.globex.au.]}, {record_name: _kerberos-master._udp, srv_record: [0 100 88 deva-idm-01.ipa.dev.globex.au., 0 100 88 deva-idm-02.ipa.dev.globex.au.]}, {record_name: _kpasswd._udp, srv_record: [0 100 464 deva-idm-01.ipa.dev.globex.au., 0 100 464 deva-idm-02.ipa.dev.globex.au.]}, {record_name: ipa-ca, a_record: [198.51.100.17, 198.51.100.18]}, {record_name: deva-idm-01, a_record: [198.51.100.17]}, {record_name: deva-idm-02, a_record: [198.51.100.18]}, {record_name: zt-am-host4, a_record: [198.51.100.60]}] }
+  - { zone_name: zt-dns.test., records: [{record_name: _kerberos, txt_record: [IPA.dev.globex.AU]}, {record_name: dualstack, a_record: [192.0.2.80], aaaa_record: ['2001:db8::80']}, {record_name: esx01, a_record: [192.0.2.31]}, {record_name: host1, a_record: [192.0.2.10]}, {record_name: vcenter, a_record: [192.0.2.30]}, {record_name: vip, a_record: [192.0.2.20, 192.0.2.21]}] }
+freeipa_server_automember_rules:
+  - { name: ztlab-app, automember_type: group, description: ztlab auto, inclusive: [{key: uid, expression: ^ztlab-}] }
+  - { name: hg-globex-dev-artifactory-readers, automember_type: hostgroup, description: 'Auto-membership: JFrog Artifactory hosts [globex/dev]', inclusive: [{key: fqdn, expression: '^globex\-artifactory\-[0-9]+\.dev\.globex\.au$'}] }
+  - { name: hg-globex-dev-docker-operators, automember_type: hostgroup, description: 'Auto-membership: Docker hosts hosts [globex/dev]', inclusive: [{key: fqdn, expression: '^globex\-docker\-[0-9]+\.dev\.globex\.au$'}] }
+  - { name: hg-globex-dev-foreman-admins, automember_type: hostgroup, description: 'Auto-membership: Foreman hosts [globex/dev]', inclusive: [{key: fqdn, expression: '^globex\-foreman\-[0-9]+\.dev\.globex\.au$'}] }
+  - { name: hg-globex-dev-gitlab-admins, automember_type: hostgroup, description: 'Auto-membership: GitLab hosts [globex/dev]', inclusive: [{key: fqdn, expression: '^globex\-gitlab\-[0-9]+\.dev\.globex\.au$'}] }

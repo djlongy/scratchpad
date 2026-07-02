@@ -23,7 +23,7 @@ rbac-overlay/
 ├── site.yml                         # just the role — it compiles the overlay itself
 └── group_vars/all/
     ├── 00_native.yml                # NATIVE ug-* policy groups + HBAC/sudo/hostgroups + users
-    └── 10_rbac.yml                  # the overlay data: freeipa_server_rbac_roles tree + assignments
+    └── 10_rbac.yml                  # the overlay data: freeipa_server_rbac_roles flat list (WYSIWYG)
 ```
 
 > **Fall back to raw dicts any time:** drop `10_rbac.yml` and you have a plain native-dict
@@ -43,26 +43,27 @@ Add/remove a person ⇒ one role assignment, not edits across many groups.
 
 **Policy groups must already exist natively** (that is where the HBAC/sudo point). The overlay
 only nests onto them — it never invents `ug-*` groups. `freeipa_rbac_validate` fails the run
-(naming the culprit) if a role nests into a `ug-*` not declared in `00_native.yml`, if an
-assignment targets an **undefined** `(tenant, environment, role)` cell — the check that enforces
-tenant isolation — or if a user is not in `freeipa_idam_users`.
+(naming the culprit) on a policy group not declared in `00_native.yml` (the typo trap for pasted
+names), a member not in `freeipa_idam_users`, a duplicate/protected name, an unknown key
+(`member` vs `members`), or a role name that is also a policy group.
 
 ## Roles in this example
 
-| role | cells (tenant/env) | nests into |
+| role group (literal name) | nests into | members |
 |---|---|---|
-| `platform-admin` | acme/prod | `ug-acme-prod-gitlab-admins`, `ug-acme-prod-docker-operators` |
-| `viewer` | globex/dev, globex/test, globex/prod | `ug-globex-<env>-grafana-readers` |
-| `db-admin` | initech/prod, acme/test | `ug-<t>-<e>-postgres-admins` |
-| `ops` | acme/dev, globex/prod, initech/dev | `ug-<t>-<e>-monitoring-admins` |
+| `role-acme-prod-platform-admin` | `ug-acme-prod-gitlab-admins`, `ug-acme-prod-docker-operators` | alice.smith |
+| `role-acme-test-db-admin` | `ug-acme-test-postgres-admins` | — |
+| `role-acme-dev-ops` | `ug-acme-dev-monitoring-admins` | — |
+| `role-initech-prod-db-admin` | `ug-initech-prod-postgres-admins` | carol.fox |
+| `role-initech-dev-ops` | `ug-initech-dev-monitoring-admins` | dana.li |
+| `role-globex-{dev,test,prod}-viewer` | `ug-globex-<env>-grafana-readers` | bob.ng (+dana.li in prod) |
+| `role-globex-prod-ops` | `ug-globex-prod-monitoring-admins` | dana.li |
 
-**Tenancy is a hard boundary.** Each cell above is an *independent* definition — `db-admin` in
-`initech/prod` and `db-admin` in `acme/test` are two separate role groups, and `ops` is defined
-once per cell. An assignment names a full `tenant → environment → [roles]` path, so a grant can
-never fan out across tenants or environments. `carol.fox` is `db-admin` in `initech/prod` **only**
-— she gets nothing in `acme/test` even though the same role label exists there. To span cells you
-list each one explicitly: `bob.ng` names `viewer` in all three globex envs; `dana.li` names `ops`
-in `initech/dev` and `globex/prod` plus `viewer` in `globex/prod`.
+**WYSIWYG, so isolation is self-evident.** Every role is its own literal group —
+`role-initech-prod-db-admin` and `role-acme-test-db-admin` are two different names, so a grant
+can never fan out across tenants or environments. `carol.fox` holds initech's db-admin **only**;
+to span environments you list the user in each role entry explicitly (`bob.ng` appears in all
+three globex viewer entries). Granting a role is a one-line diff on that entry's `members:`.
 
 ## Run it
 
