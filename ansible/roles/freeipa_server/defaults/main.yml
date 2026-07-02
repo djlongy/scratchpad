@@ -396,6 +396,9 @@ freeipa_idam_hbac_rules_disable: []
 freeipa_server_export_output: "freeipa.config.snapshot.yml"
 freeipa_server_export_include_host_membership: false  # pin static hostgroup rosters (default: enrol/automember own them)
 freeipa_server_export_include_sshkeys: false          # emit per-user SSH public keys
+# Group gidnumber capture (true keeps GIDs stable across DR rebuilds; set false for
+# a portable snapshot destined for a different realm where GIDs should re-assign).
+freeipa_server_export_include_gids: true
 # List rendering in the snapshot (cosmetic — all reload identically): block | json | yaml_flow.
 # json/yaml_flow keep one item per line so groups/memberships scan easily.
 freeipa_server_export_list_style: yaml_flow

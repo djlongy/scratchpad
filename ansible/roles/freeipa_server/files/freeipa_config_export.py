@@ -171,7 +171,7 @@ def _is_marker(name):
     return "idam" in n and "managed" in n
 
 
-def export_groups(skip=frozenset()):
+def export_groups(skip=frozenset(), include_gids=True):
     groups, names = [], set()
     for e in _find("group_find"):
         name = _str(e, "cn")
@@ -189,7 +189,8 @@ def export_groups(skip=frozenset()):
             # Capture the GID so a DR rebuild recreates the SAME gidnumber — group
             # GIDs drive /etc/group + SSSD/NSS and must stay consistent across hosts
             # (unlike user UIDs, which IPA may re-assign without cross-host impact).
-            "gidnumber": _int(e, "gidnumber"),
+            # --exclude-gids omits them (portable snapshot for a different realm).
+            "gidnumber": _int(e, "gidnumber") if include_gids else None,
             "group": nested,  # nested member groups only; user membership lives on users
             # Member managers — users/groups allowed to manage THIS group's
             # membership without being admins (e.g. a PAM/JIT toggler service).
@@ -610,6 +611,10 @@ def main():
                          "enrolment + automember)")
     ap.add_argument("--include-sshkeys", action="store_true",
                     help="emit per-user ipasshpubkey values")
+    ap.add_argument("--exclude-gids", action="store_true",
+                    help="omit group gidnumber values (default: captured, so a DR "
+                         "rebuild recreates the same GIDs; exclude for a portable "
+                         "snapshot destined for a different realm)")
     ap.add_argument("--stock-hbacsvc", default=None, metavar="JSON",
                     help="JSON array of stock HBAC service names to skip (already "
                          "exist on a fresh server); extend it for newer FreeIPA "
@@ -630,7 +635,10 @@ def main():
     api.Backend.rpcclient.connect()
 
     _SKIPPED.clear()
-    groups, group_names = _safe("usergroups", lambda: export_groups(skip_groups), ([], set()))
+    groups, group_names = _safe(
+        "usergroups",
+        lambda: export_groups(skip_groups, include_gids=not args.exclude_gids),
+        ([], set()))
     users, service_accounts, used_fallback = _safe(
         "users", lambda: export_users(group_names, args.include_sshkeys), ([], [], False))
     dns_forwarders, dns_forward_policy = _safe(

@@ -11,6 +11,11 @@
 # Source  : {{ _freeipa_export.meta.source }}  (realm {{ _freeipa_export.meta.realm }})
 # Captured: {{ _freeipa_export.meta.captured_at }}
 # Counts  : {{ _freeipa_export.meta.counts | to_json }}
+{% if _freeipa_export.meta.skipped | default([]) | length > 0 %}
+# SKIPPED : {{ _freeipa_export.meta.skipped | to_json }}
+#   ^ these sections could NOT be captured on this server (unavailable plugin /
+#     command error) and are EMPTY below — not necessarily empty on the realm!
+{% endif %}
 # Export scope this snapshot was captured with (recorded below as real vars).
 {% if _fexport_scoped and (freeipa_server_export_scope_mode | default('include')) == 'exclude' %}
 #   OUTLIERS slice: objects whose name matches NONE of the scopes — the shared/
