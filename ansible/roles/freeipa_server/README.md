@@ -324,11 +324,25 @@ freeipa_server_rbac_roles:
       - ug-acme-prod-gitlab-admins
       - ug-acme-prod-docker-operators
     members: [alice, bob]                      # users granted the role → indirect ug-* member
+    hbac_rules:                                # OPTIONAL role-scoped rules (see below)
+      - name: hbac-acme-prod-platform-ssh      # rule name declared EXPLICITLY (WYSIWYG)
+        hostgroup: [hg-acme-prod]
+        service: [sshd]
   # globex
   - name: role-globex-test-observer
     policy_groups: [ug-globex-test-grafana-readers]
     members: [carol]
 ```
+
+**Role-scoped HBAC rules** (`hbac_rules` on a role entry): each rule's `name` is declared
+explicitly — WYSIWYG, no generated names — and the compiler injects
+`usergroup: [<the role group>]` (binding the rule to the role is the point). You declare
+`hostgroup`/`host`/`service`/`servicegroup`/`description`/`state` verbatim;
+`usergroup`/`user` are rejected. Rules merge onto `freeipa_idam_hbac_rules` and go through
+the same reference validation; a rule name may live under exactly ONE role, and a name
+that is also declared natively is rejected (one place only). Policy-group nesting remains
+the primary model — use `hbac_rules` when a rule genuinely belongs to the role itself
+rather than to a reusable `ug-*` policy group.
 
 One entry = one role: `members` replaces any separate assignment bookkeeping, so granting a
 role is a one-line diff on the role entry — the user's own `groups:` list is never touched.
@@ -388,6 +402,15 @@ safe to run per-tenant against a partial file — the right mode for a nightly c
 `_nologin_accounts` / `_disabled_accounts` (with admin-lockout guards), `_default_user_password`,
 `_group_gids` (deterministic GIDs), `_hbac_rules_disable` (guarded), `_reactivate_preserved`
 (undelete a re-declared archived user). The `idam` phase is fully idempotent.
+
+### Apply mode: bulk vs per-item
+
+Users, groups, memberships and sudo rules apply as **one bulk module call per type** by
+default — fastest, since every server-side invocation costs a full Python+ipalib
+bootstrap, but silent while a large payload applies. Set
+**`freeipa_idam_per_item_apply: true`** for one call per item: real-time per-item task
+output (same payloads, same end state) at per-invocation cost. Useful for watching a big
+first apply or comparing timings; keep bulk for routine runs.
 
 ### Reference-integrity validation
 

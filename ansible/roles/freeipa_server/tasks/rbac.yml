@@ -36,6 +36,7 @@
          | freeipa_rbac_validate(
              freeipa_idam_usergroups,
              native_users=freeipa_idam_users,
+             native_hbac_rules=freeipa_idam_hbac_rules,
              allow_unknown_users=freeipa_server_rbac_allow_unknown_users | bool,
              allow_missing_policy_groups=freeipa_server_rbac_allow_missing_policy_groups | bool) }}
   when: (freeipa_server_rbac_roles | default([], true)) | length > 0
@@ -56,4 +57,15 @@
          | freeipa_idam_merge((freeipa_server_rbac_roles | default([], true))
                               | freeipa_rbac_memberships,
                               union_fields=['groups']) }}
+  when: (freeipa_server_rbac_roles | default([], true)) | length > 0
+
+# Role-scoped HBAC rules: explicit (WYSIWYG) rule names, usergroup: [<role>] injected
+# by the compiler. Merged like the role groups (a native rule of the same name is
+# rejected at validate — the overlay owns its rules); refs validated downstream.
+- name: RBAC overlay | Compile role-scoped HBAC rules onto native rules
+  ansible.builtin.set_fact:
+    freeipa_idam_hbac_rules: >-
+      {{ freeipa_idam_hbac_rules
+         | freeipa_idam_merge((freeipa_server_rbac_roles | default([], true))
+                              | freeipa_rbac_hbac_rules) }}
   when: (freeipa_server_rbac_roles | default([], true)) | length > 0

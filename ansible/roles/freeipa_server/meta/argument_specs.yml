@@ -363,7 +363,7 @@ argument_specs:
       freeipa_server_rbac_roles:
         type: list
         elements: dict
-        description: OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group ({name, description?, policy_groups, members?}); every name literal. Empty/absent = overlay off.
+        description: OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group ({name, description?, policy_groups, members?, hbac_rules?}); every name literal. hbac_rules items carry an EXPLICIT rule name; usergroup [<role>] is injected. Empty/absent = overlay off.
       freeipa_server_rbac_allow_unknown_users:
         type: bool
         description: Permit role members not declared in freeipa_idam_users.
@@ -390,6 +390,9 @@ argument_specs:
       freeipa_idam_report:
         type: bool
         description: Print the end-of-run IDAM summary (managed/changed/archived/deleted).
+      freeipa_idam_per_item_apply:
+        type: bool
+        description: true = one module call PER ITEM for users/groups/memberships/sudo rules (real-time feedback, per-invocation cost). false (default) = one bulk call per type — fastest.
       freeipa_idam_managed_group:
         type: str
         description: Marker group every managed user is enrolled in (drives reconcile bookkeeping).

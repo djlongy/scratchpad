@@ -256,14 +256,27 @@
       check_mode: false
       failed_when: false
 
-# BULK create — one ipagroup call for ALL groups (name/description/gidnumber/posix),
-# replacing the per-group loop. Runs before HBAC/sudo so rules can reference groups.
+# BULK create — one ipagroup call for ALL groups (name/description/gidnumber/posix).
+# Runs before HBAC/sudo so rules can reference groups. freeipa_idam_per_item_apply
+# switches to one call per item (real-time feedback, per-invocation cost).
 - name: Ensure declarative FreeIPA groups are present (bulk create)
   freeipa.ansible_freeipa.ipagroup:
     groups: "{{ _freeipa_idam_usergroups_create }}"
     state: present
-  when: (_freeipa_idam_usergroups_create | default([])) | length > 0
+  when:
+    - not freeipa_idam_per_item_apply | bool
+    - (_freeipa_idam_usergroups_create | default([])) | length > 0
   register: _freeipa_idam_changed_groups
+
+- name: Ensure declarative FreeIPA groups are present (per item)
+  freeipa.ansible_freeipa.ipagroup:
+    groups: ["{{ item }}"]
+    state: present
+  loop: "{{ _freeipa_idam_usergroups_create | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
+  register: _freeipa_idam_changed_groups_items
 
 # Users are created HERE — before any HBAC/sudo rule-membership task that
 # references them. On a fresh server they would otherwise not exist yet and the
@@ -274,8 +287,21 @@
     users: "{{ freeipa_idam_users_effective | default([]) }}"
     update_password: on_create
     state: present
-  when: (freeipa_idam_users_effective | default([])) | length > 0
+  when:
+    - not freeipa_idam_per_item_apply | bool
+    - (freeipa_idam_users_effective | default([])) | length > 0
   register: _freeipa_idam_changed_users
+
+- name: Ensure declarative users are present (per item)
+  freeipa.ansible_freeipa.ipauser:
+    users: ["{{ item }}"]
+    update_password: on_create
+    state: present
+  loop: "{{ freeipa_idam_users_effective | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
+  register: _freeipa_idam_changed_users_items
 
 - name: Ensure declarative FreeIPA password policies are present
   freeipa.ansible_freeipa.ipapwpolicy:
@@ -510,20 +536,62 @@
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: "{{ _freeipa_idam_sudorules.present }}"
     state: present
-  when: ((_freeipa_idam_sudorules | default({})).present | default([])) | length > 0
+  when:
+    - not freeipa_idam_per_item_apply | bool
+    - ((_freeipa_idam_sudorules | default({})).present | default([])) | length > 0
+
+- name: Ensure declarative sudo rules are present (per item)
+  freeipa.ansible_freeipa.ipasudorule:
+    sudorules: ["{{ item }}"]
+    state: present
+  loop: "{{ (_freeipa_idam_sudorules | default({})).present | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
 
 - name: Remove sudo rules declared state absent (one bulk call)
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: "{{ _freeipa_idam_sudorules.absent }}"
     state: absent
-  when: ((_freeipa_idam_sudorules | default({})).absent | default([])) | length > 0
+  when:
+    - not freeipa_idam_per_item_apply | bool
+    - ((_freeipa_idam_sudorules | default({})).absent | default([])) | length > 0
+
+- name: Remove sudo rules declared state absent (per item)
+  freeipa.ansible_freeipa.ipasudorule:
+    sudorules: ["{{ item }}"]
+    state: absent
+  loop: "{{ (_freeipa_idam_sudorules | default({})).absent | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
 
 - name: Ensure declarative sudo rule operational states (one bulk call per state)
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: "{{ _freeipa_idam_sudorules[item] }}"
     state: "{{ item }}"
   loop: [enabled, disabled]
-  when: ((_freeipa_idam_sudorules | default({}))[item] | default([])) | length > 0
+  when:
+    - not freeipa_idam_per_item_apply | bool
+    - ((_freeipa_idam_sudorules | default({}))[item] | default([])) | length > 0
+
+- name: Ensure enabled sudo rule operational states (per item)
+  freeipa.ansible_freeipa.ipasudorule:
+    sudorules: ["{{ item }}"]
+    state: enabled
+  loop: "{{ (_freeipa_idam_sudorules | default({})).enabled | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
+
+- name: Ensure disabled sudo rule operational states (per item)
+  freeipa.ansible_freeipa.ipasudorule:
+    sudorules: ["{{ item }}"]
+    state: disabled
+  loop: "{{ (_freeipa_idam_sudorules | default({})).disabled | default([]) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
 
 - name: Ensure managed marker group exists
   freeipa.ansible_freeipa.ipagroup:
@@ -587,8 +655,21 @@
     state: present
   vars:
     _members_additive: "{{ _freeipa_idam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
-  when: _members_additive | length > 0
+  when:
+    - not freeipa_idam_per_item_apply | bool
+    - _members_additive | length > 0
   register: _freeipa_idam_changed_members_add
+
+- name: Ensure group memberships present — ADDITIVE (per item)
+  freeipa.ansible_freeipa.ipagroup:
+    groups: ["{{ item }}"]
+    action: member
+    state: present
+  loop: "{{ _freeipa_idam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when: freeipa_idam_per_item_apply | bool
+  register: _freeipa_idam_changed_members_add_items
 
 - name: Reconcile group memberships DECLARATIVELY — non-protected managed groups (removes undeclared)
   freeipa.ansible_freeipa.ipagroup:
@@ -596,9 +677,22 @@
     # default action (group) → gen_add_del_lists reconciles user + nested-group membership
     state: present
   when:
+    - not freeipa_idam_per_item_apply | bool
     - _freeipa_idam_strip_memberships
     - _freeipa_members_declarative | length > 0
   register: _freeipa_idam_changed_members_decl
+
+- name: Reconcile group memberships DECLARATIVELY (per item)
+  freeipa.ansible_freeipa.ipagroup:
+    groups: ["{{ item }}"]
+    state: present
+  loop: "{{ _freeipa_members_declarative }}"
+  loop_control:
+    label: "{{ item.name | default('missing-name') }}"
+  when:
+    - freeipa_idam_per_item_apply | bool
+    - _freeipa_idam_strip_memberships
+  register: _freeipa_idam_changed_members_decl_items
 
 # RBAC daisychain bottom-up: permission → privilege → role. Custom PERMISSIONS
 # first (the atomic "can do X to Y" grants), then PRIVILEGES that bundle them, then

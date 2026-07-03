@@ -301,6 +301,13 @@ freeipa_idam_reconcile_memberships_only: false
 # End-of-run IDAM summary (managed users/groups, what changed / archived / deleted / pruned).
 freeipa_idam_report: true
 
+# Apply mode for the bulk object types (users, groups, memberships, sudo rules).
+# false (default) = ONE module call per type — fastest (each server-side invocation
+# costs a full Python+ipalib bootstrap) but silent while a large payload applies.
+# true = one call PER ITEM: real-time per-item task feedback, identical payloads and
+# end state, at per-invocation cost. Use to watch/compare; keep bulk for speed.
+freeipa_idam_per_item_apply: false
+
 # Scope marker for object pruning under authoritative — only objects whose NAME contains this
 # substring are deletion-eligible (the matrix sets '<tenant>-<environment>'). Blank = object pruning
 # deletes NOTHING and is skipped (fail-safe — never considers the whole realm).

@@ -21,6 +21,10 @@ freeipa_server_rbac_roles:
     description: "Platform admin (acme/prod)"
     policy_groups: [ug-acme-prod-gitlab-admins]
     members: [alice.smith]
+    # OPTIONAL role-scoped HBAC rules: the rule NAME is declared explicitly (WYSIWYG);
+    # the compiler injects usergroup: [<this role group>] — everything else verbatim.
+    hbac_rules:
+      - { name: hbac-acme-prod-platform-ssh, description: "Platform admins ssh", hostgroup: [hg-acme-prod], service: [sshd] }
   - name: role-globex-prod-viewer
     description: "Grafana viewer (globex/prod)"
     policy_groups: [ug-globex-prod-grafana-readers]

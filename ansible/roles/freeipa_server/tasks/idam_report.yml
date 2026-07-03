@@ -18,11 +18,16 @@
       # MANAGED this run (the declared desired set the role is responsible for)
       users_managed: "{{ freeipa_idam_desired_usernames | default([]) }}"
       groups_managed: "{{ freeipa_idam_group_names | default([]) }}"
-      # CHANGED this run (aggregate per phase — was anything created/updated?)
-      users_changed: "{{ (_freeipa_idam_changed_users | default({})) is changed }}"
-      groups_changed: "{{ (_freeipa_idam_changed_groups | default({})) is changed }}"
+      # CHANGED this run (aggregate per phase — was anything created/updated?
+      # each phase has a bulk register and a per_item_apply register; either counts)
+      users_changed: "{{ ((_freeipa_idam_changed_users | default({})) is changed)
+                         or ((_freeipa_idam_changed_users_items | default({})) is changed) }}"
+      groups_changed: "{{ ((_freeipa_idam_changed_groups | default({})) is changed)
+                          or ((_freeipa_idam_changed_groups_items | default({})) is changed) }}"
       members_changed: "{{ ((_freeipa_idam_changed_members_add | default({})) is changed)
-                           or ((_freeipa_idam_changed_members_decl | default({})) is changed) }}"
+                           or ((_freeipa_idam_changed_members_add_items | default({})) is changed)
+                           or ((_freeipa_idam_changed_members_decl | default({})) is changed)
+                           or ((_freeipa_idam_changed_members_decl_items | default({})) is changed) }}"
       # REMOVED / PRUNED this run (itemised, exact)
       users_archived: "{{ freeipa_idam_users_to_remove | default([]) }}"
       groups_deleted: "{{ _freeipa_idam_groups_to_remove | default([]) }}"
