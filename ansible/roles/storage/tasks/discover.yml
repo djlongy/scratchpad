@@ -48,6 +48,22 @@
   loop_control:
     label: "{{ item.name }}"
 
+# Per-disk blank/why-not report for diagnostics: a disk is only a blank
+# candidate when lsblk shows no fstype, no mountpoint and no children.
+- name: Build per-disk blank-candidacy report
+  ansible.builtin.set_fact:
+    _storage_disk_report: "{{ _storage_disk_report | default({}) | combine({item.name: _why}) }}"
+  vars:
+    _why: >-
+      {{ 'has partitions: ' ~ (item.children | map(attribute='name') | join(', '))
+         if (item.children is defined)
+         else 'mounted at ' ~ item.mountpoint if item.mountpoint
+         else 'carries fstype ' ~ item.fstype if item.fstype
+         else 'candidate' }}
+  loop: "{{ _storage_lsblk.blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('name', 'in', _storage_root_disks) | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 # A disk is blank when it has no filesystem signature, no child partitions,
 # and is not mounted (null fstype/mountpoint, no 'children' key in lsblk).
 - name: Identify candidate blank disks (lsblk view)
@@ -76,6 +92,19 @@
 - name: Keep only genuinely empty disks as blank
   ansible.builtin.set_fact:
     _storage_blank_disks: "{{ _storage_blank_probe.results | selectattr('rc', 'equalto', 2) | map(attribute='item') | list }}"
+
+# Fold the probe verdicts into the report (a candidate with a deep signature
+# is disqualified here, invisibly to lsblk — name the signature).
+- name: Record hidden-signature probe verdicts
+  ansible.builtin.set_fact:
+    _storage_disk_report: >-
+      {{ _storage_disk_report | default({})
+         | combine({item.item: ('BLANK' if item.rc == 2
+                                else 'hidden signature: ' ~ (item.stdout | trim | default('unknown', true))
+                                     ~ ' (wipefs after manual inspection to reuse)')}) }}
+  loop: "{{ _storage_blank_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
 
 # Flat list of devices that already carry a real filesystem (for plain
 # volume existence checks). LVM2_member PVs are not filesystems.
@@ -134,10 +163,14 @@
   loop_control:
     label: "{{ item }}"
 
-# by-size safety: refuse an AMBIGUOUS pin — two BLANK disks of the pinned size
-# means the role could build on the wrong one. Disambiguate with by-serial:/
-# by-wwn: or an explicit /dev path. (Skipped once the VG exists — adoption
-# never touches a disk, so ambiguity is harmless then.)
+# by-size matches BOTH size conventions: '50G' is accepted as 50 GiB (binary,
+# human_to_bytes) AND as 50 GB (decimal, 50e9 B ≈ 47 GiB) — hypervisors and
+# clouds disagree on which a "50G disk" is, and a convention mismatch used to
+# make the selector silently match nothing.
+# by-size safety: refuse an AMBIGUOUS pin — two BLANK disks matching the pinned
+# size means the role could build on the wrong one. Disambiguate with
+# by-serial:/by-wwn: or an explicit /dev path. (Skipped once the VG exists —
+# adoption never touches a disk, so ambiguity is harmless then.)
 - name: Assert by-size selectors match at most one blank disk
   ansible.builtin.assert:
     that: (_bysize_blank_matches | length) <= 1
@@ -148,11 +181,18 @@
       by-serial:/by-wwn: or an explicit /dev path.
     quiet: true
   vars:
-    _bysize_gib: >-
-      {{ ((item.disk | regex_replace('^by-size:', '') | human_to_bytes)
-          / 1073741824) | round(0, 'common') | int }}
+    _bysize_sel: "{{ item.disk | regex_replace('^by-size:', '') }}"
+    _bysize_number: "{{ _bysize_sel | regex_replace('[^0-9.]', '') }}"
+    _bysize_unit: "{{ (_bysize_sel | regex_replace('[^A-Za-z]', '') | upper)[:1] | default('G', true) }}"
+    _bysize_dec_bytes: >-
+      {{ (_bysize_number | float)
+         * ({'K': 10**3, 'M': 10**6, 'G': 10**9, 'T': 10**12}.get(_bysize_unit, 10**9)) }}
+    _bysize_gib_targets: >-
+      {{ [((_bysize_sel | human_to_bytes) / 1073741824) | round(0, 'common') | int,
+          ((_bysize_dec_bytes | float) / 1073741824) | round(0, 'common') | int]
+         | unique }}
     _bysize_blank_matches: >-
-      {{ _storage_disks | selectattr('size_gib', 'equalto', _bysize_gib | int)
+      {{ _storage_disks | selectattr('size_gib', 'in', _bysize_gib_targets)
          | selectattr('name', 'in', _storage_blank_disks)
          | map(attribute='name') | list }}
   loop: "{{ _storage_input | selectattr('disk', 'defined')
@@ -172,10 +212,20 @@
     _existing_pv: "{{ (_storage_pv_map | selectattr('vg', 'equalto', item.vg) | map(attribute='pv') | list | first) | default('') }}"
     _sel: "{{ item.disk | default('') }}"
     _free_blank: "{{ _storage_blank_disks | difference(_consumed) }}"
-    # by-size matches on rounded GiB so a VMDK/cloud disk whose reported
-    # capacity differs from human_to_bytes() by a rounding margin still pins.
-    _size_gib: "{{ (((_sel | regex_replace('^by-size:', '') | human_to_bytes) / 1073741824) | round(0, 'common') | int) if _sel.startswith('by-size:') else 0 }}"
-    _match_size: "{{ ((_storage_disks | selectattr('size_gib', 'equalto', _size_gib | int) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-size:') else '' }}"
+    # by-size matches on rounded GiB, accepting BOTH size conventions: the
+    # binary reading (human_to_bytes: 50G = 50 GiB) AND the decimal one
+    # (50G = 50e9 B ≈ 47 GiB) — hypervisors disagree on what a "50G disk" is.
+    _size_sel: "{{ _sel | regex_replace('^by-size:', '') if _sel.startswith('by-size:') else '' }}"
+    _size_number: "{{ _size_sel | regex_replace('[^0-9.]', '') if _size_sel else '0' }}"
+    _size_unit: "{{ (_size_sel | regex_replace('[^A-Za-z]', '') | upper)[:1] | default('G', true) }}"
+    _size_dec_bytes: >-
+      {{ (_size_number | float)
+         * ({'K': 10**3, 'M': 10**6, 'G': 10**9, 'T': 10**12}.get(_size_unit, 10**9)) }}
+    _size_gib_targets: >-
+      {{ ([((_size_sel | human_to_bytes) / 1073741824) | round(0, 'common') | int,
+           ((_size_dec_bytes | float) / 1073741824) | round(0, 'common') | int] | unique)
+         if _size_sel else [] }}
+    _match_size: "{{ ((_storage_disks | selectattr('size_gib', 'in', _size_gib_targets) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-size:') else '' }}"
     _match_serial: "{{ ((_storage_disks | selectattr('serial', 'equalto', _sel | regex_replace('^by-serial:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-serial:') else '' }}"
     _match_wwn: "{{ ((_storage_disks | selectattr('wwn', 'equalto', _sel | regex_replace('^by-wwn:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-wwn:') else '' }}"
     _resolved_disk: >-
@@ -233,6 +283,46 @@
   loop_control:
     label: "{{ item.name }}"
   when: storage_provision | bool
+
+# Full diagnostic dump — printed ONLY when a pending volume failed to resolve,
+# so the assert below never fails without the complete picture on screen.
+- name: Dump discovery diagnostics for unresolved volumes
+  ansible.builtin.debug:
+    msg:
+      - "UNRESOLVED volumes: {{ _unresolved | map(attribute='name') | list }}"
+      - "Root disk(s): {{ _storage_root_disks }} (root VGs: {{ _storage_root_vgs }})"
+      - >-
+        Non-root disks:
+        {{ _storage_disks | default([])
+           | map(attribute='name')
+           | zip(_storage_disks | default([]) | map(attribute='size_bytes'),
+                 _storage_disks | default([]) | map(attribute='size_gib'),
+                 _storage_disks | default([]) | map(attribute='serial')) | list }}
+        (name, bytes, rounded GiB, serial)
+      - "Blank verdicts: {{ _storage_disk_report | default({}) }}"
+      - "Blank disks usable by selectors: {{ _storage_blank_disks }}"
+      - "Existing VGs: {{ _storage_existing_vgs }}; PV map: {{ _storage_pv_map | default([]) }}"
+      - >-
+        Per-volume resolution:
+        {{ _storage_resolved
+           | map(attribute='name')
+           | zip(_storage_resolved | map(attribute='disk'),
+                 _storage_resolved | map(attribute='_disk'),
+                 _storage_resolved | map(attribute='_vg_exists'),
+                 _storage_resolved | map(attribute='_exists')) | list }}
+        (name, selector, resolved disk, vg_exists, exists)
+      - >-
+        by-size hint: '50G' is tried as BOTH 50 GiB (binary) and 50 GB
+        (decimal ≈ 47 GiB) — compare with the rounded-GiB column above; a disk
+        whose GiB matches neither needs the selector adjusted (or use
+        by-serial:/an explicit /dev path).
+  vars:
+    _unresolved: >-
+      {{ _storage_resolved | selectattr('provision') | rejectattr('_exists')
+         | selectattr('_disk', 'equalto', '') | list }}
+  when:
+    - storage_provision | bool
+    - _unresolved | length > 0
 
 # Anything still pending (provision-enabled, does not exist) MUST have a
 # resolved target — otherwise provision.yml would skip it silently and mount
