@@ -181,20 +181,24 @@
       by-serial:/by-wwn: or an explicit /dev path.
     quiet: true
   vars:
-    _bysize_sel: "{{ item.disk | regex_replace('^by-size:', '') }}"
+    _bysize_sel: "{{ item.disk | regex_replace('^by-size:', '') | trim }}"
     _bysize_number: "{{ _bysize_sel | regex_replace('[^0-9.]', '') }}"
     _bysize_unit: "{{ (_bysize_sel | regex_replace('[^A-Za-z]', '') | upper)[:1] | default('G', true) }}"
     _bysize_dec_bytes: >-
       {{ (_bysize_number | float)
          * ({'K': 10**3, 'M': 10**6, 'G': 10**9, 'T': 10**12}.get(_bysize_unit, 10**9)) }}
+    # compared as STRINGS on both sides — whether set_fact preserved size_gib as
+    # int or str varies across ansible-core versions, and int-vs-str never matches
     _bysize_gib_targets: >-
       {{ [((_bysize_sel | human_to_bytes) / 1073741824) | round(0, 'common') | int,
           ((_bysize_dec_bytes | float) / 1073741824) | round(0, 'common') | int]
-         | unique }}
+         | unique | map('string') | list }}
     _bysize_blank_matches: >-
-      {{ _storage_disks | selectattr('size_gib', 'in', _bysize_gib_targets)
-         | selectattr('name', 'in', _storage_blank_disks)
-         | map(attribute='name') | list }}
+      {{ (_storage_disks | map(attribute='name') | list)
+         | zip(_storage_disks | map(attribute='size_gib') | map('string') | list)
+         | selectattr('1', 'in', _bysize_gib_targets)
+         | map(attribute='0')
+         | select('in', _storage_blank_disks) | list }}
   loop: "{{ _storage_input | selectattr('disk', 'defined')
             | selectattr('disk', 'match', '^by-size:') | list }}"
   loop_control:
@@ -215,17 +219,26 @@
     # by-size matches on rounded GiB, accepting BOTH size conventions: the
     # binary reading (human_to_bytes: 50G = 50 GiB) AND the decimal one
     # (50G = 50e9 B ≈ 47 GiB) — hypervisors disagree on what a "50G disk" is.
-    _size_sel: "{{ _sel | regex_replace('^by-size:', '') if _sel.startswith('by-size:') else '' }}"
+    _size_sel: "{{ (_sel | regex_replace('^by-size:', '') | trim) if _sel.startswith('by-size:') else '' }}"
     _size_number: "{{ _size_sel | regex_replace('[^0-9.]', '') if _size_sel else '0' }}"
     _size_unit: "{{ (_size_sel | regex_replace('[^A-Za-z]', '') | upper)[:1] | default('G', true) }}"
     _size_dec_bytes: >-
       {{ (_size_number | float)
          * ({'K': 10**3, 'M': 10**6, 'G': 10**9, 'T': 10**12}.get(_size_unit, 10**9)) }}
+    # compared as STRINGS on both sides — set_fact int/str preservation varies
+    # across ansible-core versions, and int-vs-str silently never matches
     _size_gib_targets: >-
       {{ ([((_size_sel | human_to_bytes) / 1073741824) | round(0, 'common') | int,
-           ((_size_dec_bytes | float) / 1073741824) | round(0, 'common') | int] | unique)
+           ((_size_dec_bytes | float) / 1073741824) | round(0, 'common') | int]
+          | unique | map('string') | list)
          if _size_sel else [] }}
-    _match_size: "{{ ((_storage_disks | selectattr('size_gib', 'in', _size_gib_targets) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-size:') else '' }}"
+    _match_size: >-
+      {{ (((_storage_disks | map(attribute='name') | list)
+           | zip(_storage_disks | map(attribute='size_gib') | map('string') | list)
+           | selectattr('1', 'in', _size_gib_targets)
+           | map(attribute='0') | list
+           | difference(_consumed) | first) | default(''))
+         if _sel.startswith('by-size:') else '' }}
     _match_serial: "{{ ((_storage_disks | selectattr('serial', 'equalto', _sel | regex_replace('^by-serial:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-serial:') else '' }}"
     _match_wwn: "{{ ((_storage_disks | selectattr('wwn', 'equalto', _sel | regex_replace('^by-wwn:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-wwn:') else '' }}"
     _resolved_disk: >-
