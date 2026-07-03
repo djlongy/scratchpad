@@ -104,9 +104,10 @@
     - freeipa_idam_report | default(true) | bool
   tags: [idam, report]
 
-- name: Manage declarative DNS zones/records (primary only)
+- name: Manage declarative DNS zones/records (primary only; needs integrated DNS)
   ansible.builtin.import_tasks: dns_records.yml
   when:
+    - freeipa_server_setup_dns | bool
     - freeipa_server_is_primary | bool
     - (freeipa_server_dns_zones | length > 0) or
       (freeipa_server_dns_forward_zones | length > 0) or

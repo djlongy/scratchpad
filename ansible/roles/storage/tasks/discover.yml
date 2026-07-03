@@ -202,11 +202,72 @@
   loop_control:
     label: "{{ item.name }}"
 
+# ── Resilience guards — a volume must never silently dead-end ─────────────
+# VGs whose PVs live on a root disk (e.g. 'ol' on /dev/sda3, 'rl', 'vg00').
+- name: Identify volume groups living on the root disk(s)
+  ansible.builtin.set_fact:
+    _storage_root_vgs: >-
+      {{ [] if (_storage_root_disks | length == 0)
+         else (_storage_pv_map | default([])
+               | selectattr('pv', 'match', '^(' ~ (_storage_root_disks | map('regex_escape') | join('|')) ~ ')')
+               | map(attribute='vg') | unique | list) }}
+
+# Naming a PENDING volume's vg after the OS volume group makes the VG-adoption
+# path adopt the ROOT VG: disk resolution is skipped (the blank data disk is
+# ignored), the LV is never created, and mount ends "no filesystem yet".
+# The vg does NOT need to match anything existing — it names the NEW VG the
+# role creates on the resolved data disk. (EXISTING stacks in the root VG are
+# fine — growing the root LV is a supported use; only creation is refused.)
+- name: Refuse to CREATE data volumes inside the OS root volume group
+  ansible.builtin.assert:
+    that: item.vg not in _storage_root_vgs
+    fail_msg: >-
+      Volume '{{ item.name }}' declares vg '{{ item.vg }}', which is the OS ROOT
+      volume group ({{ _storage_pv_map | default([]) | selectattr('vg', 'equalto', item.vg)
+      | map(attribute='pv') | join(', ') }} on the root disk). The role never carves
+      NEW data volumes out of the root VG. Give the data disk its OWN vg name — it
+      does not need to match any existing VG; the role creates it on the resolved
+      disk (e.g. vg: vg_{{ item.name }}).
+    quiet: true
+  loop: "{{ _storage_resolved | selectattr('lvm') | selectattr('provision') | rejectattr('_exists') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: storage_provision | bool
+
+# Anything still pending (provision-enabled, does not exist) MUST have a
+# resolved target — otherwise provision.yml would skip it silently and mount
+# would report "no filesystem yet" with no explanation.
+- name: Assert every pending volume resolved a target (no silent dead ends)
+  ansible.builtin.assert:
+    that: (item._exists | bool) or (item._disk | length > 0)
+    fail_msg: >-
+      Volume '{{ item.name }}' cannot be provisioned:
+      {% if item._vg_exists | bool -%}
+      vg '{{ item.vg }}' already exists (PVs: {{ _storage_pv_map | default([])
+      | selectattr('vg', 'equalto', item.vg) | map(attribute='pv') | join(', ') }})
+      but LV '{{ item.lv }}' is missing — the VG-adoption path expects a reattached
+      disk already carrying the full stack. Create the LV manually, remove/rename
+      the stray VG, or use a different vg name so the role provisions a blank disk
+      fresh.
+      {%- else -%}
+      disk selector '{{ item.disk | default('auto', true) }}' matched no available
+      blank disk. Blank disks: {{ _storage_blank_disks | join(', ') | default('none', true) }};
+      non-root disks: {{ _storage_disks | default([]) | map(attribute='name') | join(', ') }}
+      (sizes: {{ _storage_disks | default([]) | map(attribute='size_gib') | join(', ') }} GiB).
+      Check the size/serial, and that the disk is truly empty (an old signature
+      blocks blank detection — wipefs it after manual inspection).
+      {%- endif %}
+    quiet: true
+  loop: "{{ _storage_resolved | selectattr('provision') | rejectattr('_exists') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: storage_provision | bool
+
 - name: Show discovery results
   ansible.builtin.debug:
     msg:
       - "Root disks: {{ _storage_root_disks }}"
       - "Blank disks: {{ _storage_blank_disks }}"
-      - "Existing VGs: {{ _storage_existing_vgs }}"
+      - "Existing VGs: {{ _storage_existing_vgs }} (root: {{ _storage_root_vgs }})"
       - "Resolved: {{ _storage_resolved | map(attribute='name') | zip(_storage_resolved | map(attribute='_disk'), _storage_resolved | map(attribute='_exists')) | list }}"
   when: storage_debug | bool
