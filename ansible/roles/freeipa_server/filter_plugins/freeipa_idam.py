@@ -708,9 +708,14 @@ def _as_set(*sources) -> set:
 
 
 def _known_name_sets(data: dict) -> dict[str, set[str]]:
-    """Known names per type = declared + built-in allow-lists + live realm names."""
+    """Known names per type = declared + built-in allow-lists + live realm names.
+    Each ref check below MUST read the set matching its object type — e.g. an HBAC
+    rule's servicegroup refs check hbacsvcgroups (whose built-ins are Sudo/ftp),
+    never the user-group built-ins."""
     live = data.get("live") or {}
     return {
+        "users": _as_set(_names(data.get("users")),
+                         data.get("unmodifiable_users"), live.get("users")),
         "groups": _as_set(_names(data.get("usergroups")),
                           data.get("builtin_groups"), live.get("groups")),
         "hostgroups": _as_set(_names(data.get("hostgroups")),
@@ -718,7 +723,8 @@ def _known_name_sets(data: dict) -> dict[str, set[str]]:
         "roles": _as_set(_names(data.get("roles")), live.get("roles")),
         "hbacsvcs": _as_set(data.get("stock_hbacsvcs"),
                             _names(data.get("hbacsvcs")), live.get("hbacsvcs")),
-        "hbacsvcgroups": _as_set(_names(data.get("hbacsvcgroups")), live.get("hbacsvcgroups")),
+        "hbacsvcgroups": _as_set(_names(data.get("hbacsvcgroups")),
+                                 data.get("builtin_hbacsvcgroups"), live.get("hbacsvcgroups")),
         "sudocmds": _as_set(_names(data.get("sudo_commands")), live.get("sudocmds")),
         "sudocmdgroups": _as_set(_names(data.get("sudocmdgroups")), live.get("sudocmdgroups")),
     }
@@ -815,7 +821,8 @@ def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
       users, usergroups, roles, hostgroups, hbacsvcs, hbacsvcgroups, hbac_rules,
       sudo_commands, sudocmdgroups, sudo_rules, iparoles, pwpolicies,
       automember_rules, unmodifiable_users, protected_groups, builtin_groups,
-      builtin_hostgroups, stock_hbacsvcs, live ({type: [names]} from live mode).
+      builtin_hostgroups, builtin_hbacsvcgroups, stock_hbacsvcs,
+      live ({type: [names]} from live mode).
 
     Returns {"shape": [...], "refs": [...]}: shape problems always hard-fail in the
     role; reference problems obey freeipa_idam_reference_validation.
@@ -846,14 +853,20 @@ def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
                        "not declared or on the realm")
         + _ref_missing(hbac_rules, ["usergroup"], known["groups"],
                        "HBAC rule '{name}' references unknown user group '{ref}'")
+        + _ref_missing(hbac_rules, ["user"], known["users"],
+                       "HBAC rule '{name}' references unknown user '{ref}'")
         + _ref_missing(hbac_rules, ["hostgroup"], known["hostgroups"],
                        "HBAC rule '{name}' references unknown host group '{ref}'")
         + _ref_missing(sudo_rules, ["usergroup"], known["groups"],
                        "sudo rule '{name}' references unknown user group '{ref}'")
+        + _ref_missing(sudo_rules, ["user"], known["users"],
+                       "sudo rule '{name}' references unknown user '{ref}'")
         + _ref_missing(sudo_rules, ["hostgroup"], known["hostgroups"],
                        "sudo rule '{name}' references unknown host group '{ref}'")
         + _ref_missing(_lst(data, "iparoles"), ["usergroup"], known["groups"],
                        "iparole '{name}' references unknown user group '{ref}'")
+        + _ref_missing(_lst(data, "iparoles"), ["user"], known["users"],
+                       "iparole '{name}' references unknown user '{ref}'")
         + _ref_missing(_lst(data, "hbacsvcgroups"), ["hbacsvc"], known["hbacsvcs"],
                        "HBAC service group '{name}' references unknown HBAC service '{ref}'")
         + _ref_missing(_lst(data, "sudocmdgroups"), ["sudocmd"], known["sudocmds"],

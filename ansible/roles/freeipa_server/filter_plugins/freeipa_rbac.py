@@ -15,7 +15,7 @@ generates ONLY:
   * OPTIONAL role-scoped HBAC rules (the entry's ``hbac_rules`` list): each rule's
     name is declared EXPLICITLY (WYSIWYG); the compiler injects
     ``usergroup: [<the role group>]`` — binding the rule to the role is the point —
-    and everything else (hostgroup/host/service/servicegroup) passes through verbatim
+    and everything else (hostgroup/host/user/service/servicegroup) passes through verbatim
 
 WYSIWYG: every name in the input is used VERBATIM. There are no naming templates —
 scope (tenant/environment/service) lives in the names you declare, so a
@@ -69,7 +69,8 @@ ALLOWED_KEYS = frozenset({"name", "description", "policy_groups", "members", "hb
 
 # The shape of one role-scoped HBAC rule. usergroup/group are FORBIDDEN — the compiler
 # injects usergroup: [<the role group>]; binding the rule to the role is the point.
-HBAC_RULE_KEYS = frozenset({"name", "description", "hostgroup", "host",
+# `user` IS allowed: extra specific users on the rule beyond the role (edge case).
+HBAC_RULE_KEYS = frozenset({"name", "description", "hostgroup", "host", "user",
                             "service", "servicegroup", "state"})
 
 
@@ -201,7 +202,7 @@ def _iter_role_hbac_rules(role, entry):
         unknown = set(rule) - HBAC_RULE_KEYS
         if unknown:
             hint = (" (the compiler injects usergroup: [<the role group>] itself)"
-                    if unknown & {"usergroup", "group", "user"} else "")
+                    if unknown & {"usergroup", "group"} else "")
             raise AnsibleFilterError(
                 f"role '{role}' hbac_rules #{idx + 1} ({rule.get('name', '?')}): unknown "
                 f"key(s) {sorted(unknown)}; allowed: {sorted(HBAC_RULE_KEYS)}{hint}")

@@ -244,6 +244,7 @@
       changed_when: false
       failed_when: false
       loop:
+        - { key: users, cmd: user-find }
         - { key: groups, cmd: group-find }
         - { key: roles, cmd: role-find }
         - { key: hbacsvcs, cmd: hbacsvc-find }
@@ -298,6 +299,7 @@
            'protected_groups': freeipa_idam_protected_groups,
            'builtin_groups': freeipa_idam_builtin_groups | default([]),
            'builtin_hostgroups': freeipa_idam_builtin_hostgroups | default([]),
+           'builtin_hbacsvcgroups': freeipa_idam_builtin_hbacsvcgroups | default([]),
            'stock_hbacsvcs': freeipa_server_export_stock_hbacsvcs | default([]),
            'live': _freeipa_live | default({}),
          } | freeipa_idam_validate }}

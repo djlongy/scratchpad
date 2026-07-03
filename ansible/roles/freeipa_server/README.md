@@ -337,8 +337,9 @@ freeipa_server_rbac_roles:
 **Role-scoped HBAC rules** (`hbac_rules` on a role entry): each rule's `name` is declared
 explicitly — WYSIWYG, no generated names — and the compiler injects
 `usergroup: [<the role group>]` (binding the rule to the role is the point). You declare
-`hostgroup`/`host`/`service`/`servicegroup`/`description`/`state` verbatim;
-`usergroup`/`user` are rejected. Rules merge onto `freeipa_idam_hbac_rules` and go through
+`hostgroup`/`host`/`user`/`service`/`servicegroup`/`description`/`state` verbatim (`user`
+covers the edge case of one extra specific user beyond the role); `usergroup` is rejected.
+Rules merge onto `freeipa_idam_hbac_rules` and go through
 the same reference validation; a rule name may live under exactly ONE role, and a name
 that is also declared natively is rejected (one place only). Policy-group nesting remains
 the primary model — use `hbac_rules` when a rule genuinely belongs to the role itself
