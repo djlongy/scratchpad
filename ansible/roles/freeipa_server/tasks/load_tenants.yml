@@ -11,6 +11,21 @@
   ansible.builtin.set_fact:
     _freeipa_tenant_files: "{{ query('ansible.builtin.fileglob', freeipa_idam_tenants_dir ~ '/*.yml') | sort }}"
 
+# HARD FAIL on an empty glob. freeipa_idam_tenants_dir is DECLARED, so finding no
+# tenant files is always a misconfiguration (typo'd path, wrong inventory_dir) — and
+# proceeding would assemble an EMPTY desired state, which under authoritative would
+# archive every user and delete every managed object on the realm.
+- name: tenants | Refuse an empty tenants directory (typo guard)
+  ansible.builtin.assert:
+    that: _freeipa_tenant_files | length > 0
+    fail_msg: >-
+      freeipa_idam_tenants_dir is set to '{{ freeipa_idam_tenants_dir }}' but NO
+      *.yml tenant files were found there (resolved on the control node). Refusing
+      to continue — an empty desired state under freeipa_server_authoritative would
+      archive every user and delete every managed object. Fix the path (typo?) or
+      unset freeipa_idam_tenants_dir for group_vars mode.
+    quiet: true
+
 # One include per file: each file's vars are injected, resolved, and snapshotted before the next
 # file's include overwrites them — so every tenant's Jinja resolves in ITS OWN scope.
 - name: tenants | Load + capture each tenant file (native templating, own tenant scope)
@@ -36,3 +51,17 @@
   loop_control:
     label: "{{ item.key }} ({{ item.value | length }})"
   no_log: true
+
+# The files existed — now prove they carried REAL identity: at least one user must
+# have assembled (files of comments/empty dicts/nulls contribute nothing). Zero users
+# means the load was hollow, and authoritative would archive the whole realm.
+- name: tenants | Refuse a tenant load that assembled zero users
+  ansible.builtin.assert:
+    that: (freeipa_idam_users | default([])) | length > 0
+    fail_msg: >-
+      {{ _freeipa_tenant_files | length }} tenant file(s) loaded from
+      '{{ freeipa_idam_tenants_dir }}' ({{ _freeipa_tenant_files | map('basename') | join(', ') }})
+      but ZERO users were assembled. Refusing to continue — an empty user set under
+      freeipa_server_authoritative would archive every user on the realm. Check the
+      files carry freeipa_idam_users / users lists (not empty, not commented out).
+    quiet: true

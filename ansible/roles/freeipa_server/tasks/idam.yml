@@ -889,6 +889,23 @@
   when: (_freeipa_idam_evict_payload | default([])) | length > 0
   register: _freeipa_idam_changed_members_evict
 
+# EMPTY-DESIRED-STATE circuit breaker: with zero desired users, EVERY managed user
+# is "removed" — a wiped realm from a typo'd tenants dir or hollow group_vars, not a
+# plausible intent. The tenants loader has its own guards; this one covers every
+# route to an empty desired set on a destructive run.
+- name: Refuse destructive reconcile against an EMPTY desired user set
+  ansible.builtin.assert:
+    that: freeipa_idam_desired_usernames | length > 0
+    fail_msg: >-
+      freeipa_server_authoritative is enabled but ZERO users are declared — the
+      reconcile would archive every managed user and delete every managed object on
+      the realm. Refusing. Check the identity source (tenants dir path, group_vars)
+      actually loaded.
+    quiet: true
+  when:
+    - freeipa_server_authoritative | bool
+    - freeipa_idam_current_managed_users | default([]) | length > 0
+
 - name: Build declarative user delete list
   ansible.builtin.set_fact:
     freeipa_idam_users_to_remove: >-
