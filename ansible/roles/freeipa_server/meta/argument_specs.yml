@@ -363,13 +363,13 @@ argument_specs:
       freeipa_server_rbac_roles:
         type: list
         elements: dict
-        description: OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group ({name, description?, policy_groups, members?, hbac_rules?}); every name literal. hbac_rules items carry an EXPLICIT rule name; usergroup [<role>] is injected. Empty/absent = overlay off.
+        description: OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group ({name, description?, member_of, members?, hbac_rules?}). member_of = EXISTING groups the role group nests into; members = users granted the role; hbac_rules carry an EXPLICIT rule name with usergroup [<role>] injected. Empty/absent = overlay off.
       freeipa_server_rbac_allow_unknown_users:
         type: bool
         description: Permit role members not declared in freeipa_idam_users.
-      freeipa_server_rbac_allow_missing_policy_groups:
+      freeipa_server_rbac_allow_missing_member_of:
         type: bool
-        description: Permit nesting onto policy groups not declared in freeipa_idam_usergroups.
+        description: Permit member_of target groups not declared in freeipa_idam_usergroups.
 
       # ── Reconcile / pruning controls (read README "Destructive operations") ─
       freeipa_server_authoritative:

@@ -228,9 +228,9 @@ freeipa_idam_sudo_rules: []
 freeipa_idam_pwpolicies: []
 
 # ── Thin RBAC overlay (OPTIONAL; compiled inside the desired phase when declared) ──
-# Assign a user an abstract ROLE instead of many granular policy groups. The overlay
-# generates ONLY: the role group, its nesting into EXISTING policy groups, and
-# user→role-group membership — merged onto the native lists (baseline wins).
+# Assign a user an abstract ROLE instead of many granular target groups. The overlay
+# generates ONLY: the role group, its nesting into the EXISTING groups it is member_of,
+# and user→role-group membership — merged onto the native lists (baseline wins).
 # WYSIWYG flat list, same shape as freeipa_idam_usergroups: every name is used
 # VERBATIM (no naming templates) — paste policy group names straight from the export.
 # Scope lives in the names you declare; role-<tenant>-<env>-<name> is convention, not
@@ -242,12 +242,12 @@ freeipa_idam_pwpolicies: []
 freeipa_server_rbac_roles: []
 #  - name: role-acme-prod-platform-admin       # the role group, created exactly as declared
 #    description: "acme/prod platform admins"
-#    policy_groups:                            # EXISTING groups, pasted from the export
+#    member_of:                                 # EXISTING groups the role nests into
 #      - ug-acme-prod-gitlab-admins
 #      - ug-acme-prod-docker-operators
-#    members: [alice, bob]                     # users granted the role (membership added automatically)
+#    members: [alice, bob]                      # users granted the role
 freeipa_server_rbac_allow_unknown_users: false           # permit assigning users not in freeipa_idam_users
-freeipa_server_rbac_allow_missing_policy_groups: false   # permit nesting onto undeclared ug-* groups
+freeipa_server_rbac_allow_missing_member_of: false       # permit member_of targets not declared natively
 
 # Custom RBAC building blocks for delegation roles: permission (atomic right) → privilege
 # (bundle of permissions) → iparole (bundle of privileges, below). Built-ins are never declared.

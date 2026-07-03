@@ -2,14 +2,14 @@
 """FreeIPA RBAC overlay compiler (Ansible filter plugins).
 
 A THIN, PURELY OPTIONAL overlay. It lets a human assign users to an abstract ROLE
-instead of hand-adding them to many granular policy groups. It compiles INTO the
+instead of hand-adding them to many granular target groups. It compiles INTO the
 role's native ``freeipa_idam_usergroups`` / ``freeipa_idam_users`` lists and
 generates ONLY:
 
   * the role group itself (a plain usergroup, name declared literally)
-  * its NESTING into EXISTING policy groups (the policy group carries
-    ``group: [<role group>]``; a user in the role group is then an INDIRECT member
-    of the policy group, so the native HBAC/sudo rules that target it apply
+  * its NESTING into the EXISTING groups listed in ``member_of`` (each target group
+    carries ``group: [<role group>]``; a user in the role group is then an INDIRECT
+    member of the target group, so the native HBAC/sudo rules that target it apply
     unchanged — proven on the live realm)
   * user -> role-group membership (from the entry's ``members`` list)
   * OPTIONAL role-scoped HBAC rules (the entry's ``hbac_rules`` list): each rule's
@@ -33,7 +33,7 @@ visual shape as ``freeipa_idam_usergroups``:
   freeipa_server_rbac_roles:
     - name: role-acme-prod-platform-admin      # the role group, exactly as created
       description: "acme/prod platform admins"
-      policy_groups:                           # EXISTING groups, pasted from the export
+      member_of:                           # EXISTING groups, pasted from the export
         - ug-acme-prod-gitlab-admins
         - ug-acme-prod-docker-operators
       members: [alice, bob]                    # users granted the role
@@ -44,7 +44,7 @@ visual shape as ``freeipa_idam_usergroups``:
 
 Filters:
   freeipa_rbac_role_groups(roles)
-      -> [ {name: <role>, description?}, {name: <policy group>, group: [<role>]}, ... ]
+      -> [ {name: <role>, description?}, {name: <target group>, group: [<role>]}, ... ]
   freeipa_rbac_memberships(roles)
       -> [ {name: <user>, groups: [<role>, ...]}, ... ]
   freeipa_rbac_hbac_rules(roles)
@@ -65,7 +65,7 @@ except ImportError:                           # … plain Python under pytest
 PROTECTED_GROUPS = frozenset({"admins", "editors", "ipausers", "trust admins"})
 
 # The full public shape of one role entry — anything else is a typo, not an option.
-ALLOWED_KEYS = frozenset({"name", "description", "policy_groups", "members", "hbac_rules"})
+ALLOWED_KEYS = frozenset({"name", "description", "member_of", "members", "hbac_rules"})
 
 # The shape of one role-scoped HBAC rule. usergroup/group are FORBIDDEN — the compiler
 # injects usergroup: [<the role group>]; binding the rule to the role is the point.
@@ -83,7 +83,7 @@ def _iter_roles(roles):
     if isinstance(roles, dict):
         raise AnsibleFilterError(
             "freeipa_server_rbac_roles is now a flat LIST (WYSIWYG — one entry per role "
-            "group with its literal name, policy_groups and members, same shape as "
+            "group with its literal name, member_of and members, same shape as "
             "freeipa_idam_usergroups). The nested tenant→environment tree was removed; "
             "migrate per the role README.")
     if not isinstance(roles, (list, tuple)):
@@ -96,7 +96,7 @@ def _iter_roles(roles):
         if name in seen:
             raise AnsibleFilterError(
                 f"rbac role '{name}' is declared more than once "
-                f"(merge its policy_groups/members into one entry)")
+                f"(merge its member_of/members into one entry)")
         seen.add(name)
         yield name, entry
 
@@ -107,9 +107,11 @@ def _entry_name(entry, idx):
             f"rbac role #{idx + 1} must be a mapping with a 'name', got {entry!r}")
     unknown = set(entry) - ALLOWED_KEYS
     if unknown:
+        hint = (" (renamed 2026/07: policy_groups -> member_of)"
+                if "policy_groups" in unknown else "")
         raise AnsibleFilterError(
             f"rbac role #{idx + 1} ({entry.get('name', '?')}): unknown key(s) "
-            f"{sorted(unknown)}; allowed: {sorted(ALLOWED_KEYS)}")
+            f"{sorted(unknown)}; allowed: {sorted(ALLOWED_KEYS)}{hint}")
     name = entry.get("name")
     if not isinstance(name, str) or not name.strip():
         raise AnsibleFilterError(
@@ -122,7 +124,7 @@ def _string_list(value, what, required=False):
     if not value:
         if required:
             raise AnsibleFilterError(
-                f"{what} declares no policy_groups; a role must grant at least one "
+                f"{what} declares no member_of groups; a role must grant at least one "
                 f"(it would otherwise grant nothing)")
         return []
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
@@ -138,8 +140,8 @@ def _string_list(value, what, required=False):
 # ── filter 1: generated usergroups (role groups + their nesting) ──────────────
 def freeipa_rbac_role_groups(roles):
     """Generated native usergroup dicts, deterministic order, deduped by name: each
-    role group plus each policy group gaining the role group as a nested member
-    (``group: [<role>]``). Two roles nesting into the same policy group share one
+    role group plus each member_of target group gaining the role group as a nested
+    member (``group: [<role>]``). Two roles nesting into the same target group share one
     entry with both roles in its ``group`` list."""
     out, order = {}, []
     for name, entry in _iter_roles(roles):
@@ -149,17 +151,17 @@ def freeipa_rbac_role_groups(roles):
         out[name] = rec
         order.append(name)
     for name, entry in _iter_roles(roles):
-        _nest_into_policy_groups(out, order, name, entry)
+        _nest_into_member_of(out, order, name, entry)
     return [out[n] for n in order]
 
 
-def _nest_into_policy_groups(out, order, role, entry):
-    for ug in _string_list(entry.get("policy_groups"), f"role '{role}'", required=True):
+def _nest_into_member_of(out, order, role, entry):
+    for ug in _string_list(entry.get("member_of"), f"role '{role}'", required=True):
         rec = out.get(ug)
         if rec is not None and "group" not in rec:
             raise AnsibleFilterError(
                 f"role '{role}' nests into '{ug}', which is itself declared as a role "
-                f"(a role group can never also be a policy group)")
+                f"(a role group can never also be a member_of target)")
         if rec is None:
             rec = {"name": ug, "group": []}
             out[ug] = rec
@@ -232,7 +234,7 @@ def freeipa_rbac_hbac_rules(roles):
 
 # ── filter 4: validate (fail fast, before any apply) ──────────────────────────
 def _validate_role(name, entry, native_names, known_users, allow):
-    """Validate one role entry; return its policy-group name set."""
+    """Validate one role entry; return its member_of target-name set."""
     if name in PROTECTED_GROUPS:
         raise AnsibleFilterError(
             f"role group '{name}' collides with a protected FreeIPA built-in")
@@ -240,54 +242,54 @@ def _validate_role(name, entry, native_names, known_users, allow):
         raise AnsibleFilterError(
             f"role group '{name}' is also declared in freeipa_idam_usergroups — the "
             f"overlay owns the role group; declare it in exactly one place")
-    policy_groups = set()
-    for ug in _string_list(entry.get("policy_groups"), f"role '{name}'", required=True):
+    member_of = set()
+    for ug in _string_list(entry.get("member_of"), f"role '{name}'", required=True):
         if ug in PROTECTED_GROUPS:
             raise AnsibleFilterError(
                 f"role '{name}' nests into protected built-in group '{ug}'")
-        if not allow["missing_policy_groups"] and ug not in native_names:
+        if not allow["missing_member_of"] and ug not in native_names:
             raise AnsibleFilterError(
-                f"role '{name}' nests into policy group '{ug}', which is not declared "
+                f"role '{name}' is member_of group '{ug}', which is not declared "
                 f"in freeipa_idam_usergroups. Paste/declare it (with its HBAC/sudo) "
-                f"natively first, or set allow_missing_policy_groups.")
-        policy_groups.add(ug)
+                f"natively first, or set allow_missing_member_of.")
+        member_of.add(ug)
     for user in _string_list(entry.get("members"), f"role '{name}' members"):
         if not allow["unknown_users"] and known_users and user not in known_users:
             raise AnsibleFilterError(
                 f"role '{name}' member '{user}' is not in freeipa_idam_users "
                 f"(set allow_unknown_users to permit)")
-    return policy_groups
+    return member_of
 
 
 def freeipa_rbac_validate(roles, native_usergroups=None, native_users=None,
                           native_hbac_rules=None, allow_unknown_users=False,
-                          allow_missing_policy_groups=False):
+                          allow_missing_member_of=False):
     """Raise AnsibleFilterError on any rule break; return True when the overlay is
-    sound. Checks list shape, duplicate/unknown keys, that every referenced policy
+    sound. Checks list shape, duplicate/unknown keys, that every member_of target
     group exists natively (typo trap for pasted names), that no role group name is
-    also a policy group name (would cycle) or a native/protected group, that every
+    also a member_of target (would cycle) or a native/protected group, that every
     member is a declared user, and that a role-scoped HBAC rule name is not also
     declared natively (the overlay owns its rules; declare in exactly one place)."""
     native_names = {g.get("name") for g in (native_usergroups or []) if isinstance(g, dict)}
     known_users = {u.get("name") for u in (native_users or []) if isinstance(u, dict)}
     native_rules = {r.get("name") for r in (native_hbac_rules or []) if isinstance(r, dict)}
     allow = {"unknown_users": allow_unknown_users,
-             "missing_policy_groups": allow_missing_policy_groups}
-    role_names, policy_names = set(), set()
+             "missing_member_of": allow_missing_member_of}
+    role_names, target_names = set(), set()
     for name, entry in _iter_roles(roles):
         role_names.add(name)
-        policy_names |= _validate_role(name, entry, native_names, known_users, allow)
+        target_names |= _validate_role(name, entry, native_names, known_users, allow)
         for rule_name, _rule in _iter_role_hbac_rules(name, entry):
             if rule_name in native_rules:
                 raise AnsibleFilterError(
                     f"role '{name}' hbac rule '{rule_name}' is also declared in "
                     f"freeipa_idam_hbac_rules — the overlay owns its role-scoped "
                     f"rules; declare it in exactly one place")
-    clash = role_names & policy_names
+    clash = role_names & target_names
     if clash:
         raise AnsibleFilterError(
-            f"role group name(s) collide with policy group name(s): {sorted(clash)} "
-            f"(a role group can never also be a policy group)")
+            f"role group name(s) collide with member_of target(s): {sorted(clash)} "
+            f"(a role group can never also be a member_of target)")
     return True
 
 

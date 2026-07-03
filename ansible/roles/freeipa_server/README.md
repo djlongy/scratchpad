@@ -320,7 +320,7 @@ freeipa_server_rbac_roles:
   # acme
   - name: role-acme-prod-platform-admin        # the role group, created exactly as declared
     description: "acme/prod platform admins"
-    policy_groups:                             # EXISTING groups, pasted from the export
+    member_of:                                 # EXISTING groups the role nests into
       - ug-acme-prod-gitlab-admins
       - ug-acme-prod-docker-operators
     members: [alice, bob]                      # users granted the role → indirect ug-* member
@@ -330,7 +330,7 @@ freeipa_server_rbac_roles:
         service: [sshd]
   # globex
   - name: role-globex-test-observer
-    policy_groups: [ug-globex-test-grafana-readers]
+    member_of: [ug-globex-test-grafana-readers]
     members: [carol]
 ```
 
@@ -341,9 +341,9 @@ explicitly — WYSIWYG, no generated names — and the compiler injects
 covers the edge case of one extra specific user beyond the role); `usergroup` is rejected.
 Rules merge onto `freeipa_idam_hbac_rules` and go through
 the same reference validation; a rule name may live under exactly ONE role, and a name
-that is also declared natively is rejected (one place only). Policy-group nesting remains
+that is also declared natively is rejected (one place only). `member_of` nesting remains
 the primary model — use `hbac_rules` when a rule genuinely belongs to the role itself
-rather than to a reusable `ug-*` policy group.
+rather than to a reusable `ug-*` target group.
 
 One entry = one role: `members` replaces any separate assignment bookkeeping, so granting a
 role is a one-line diff on the role entry — the user's own `groups:` list is never touched.
@@ -352,12 +352,13 @@ the loader concatenates the lists across files and the overlay compiles after th
 load, so cross-file references (a member declared in another tenant) resolve realm-wide.
 Declare the overlay in ONE place: tenant files **or** group_vars (a tenant-declared var
 replaces the group_vars value).
-Policy groups **must already exist natively** (the overlay only nests onto them).
-`freeipa_rbac_validate` fails fast — naming the culprit — on a policy group not declared in
-`freeipa_idam_usergroups` (the typo trap for pasted names), a member not in
-`freeipa_idam_users`, a duplicate or protected name, an unknown key (`member` vs `members`),
-or a role name that is also a policy group (would cycle). The two escape hatches are
-`freeipa_server_rbac_allow_unknown_users` and `freeipa_server_rbac_allow_missing_policy_groups`.
+The `member_of` target groups **must already exist natively** (the overlay only nests
+onto them). `freeipa_rbac_validate` fails fast — naming the culprit — on a target group
+not declared in `freeipa_idam_usergroups` (the typo trap for pasted names), a member not
+in `freeipa_idam_users`, a duplicate or protected name, an unknown key (`member` vs
+`members`; the pre-rename `policy_groups` key gets a rename hint), or a role name that is
+also a `member_of` target (would cycle). The two escape hatches are
+`freeipa_server_rbac_allow_unknown_users` and `freeipa_server_rbac_allow_missing_member_of`.
 
 Don't confuse the overlay with **`freeipa_idam_roles`** (a flat bundle of groups added *directly*
 to a user — no role group, no nesting) or native **`freeipa_idam_iparoles`** (delegation of

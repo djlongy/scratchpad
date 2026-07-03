@@ -15,7 +15,7 @@ local_env: dev
 freeipa_server_rbac_roles:
   - name: role-acme-dev-platform-admin        # the role group, created exactly as declared
     description: "acme/dev platform admins"
-    policy_groups: [ug-acme-dev-docker-operators]   # EXISTING ug-* group from this file
+    member_of: [ug-acme-dev-docker-operators]   # EXISTING ug-* group from this file
     # members resolve against the realm-wide MERGED user list — ops.editor is declared
     # in global.yml (shared slice), not in this file
     members: [acme.erin, acme.dave, ops.editor]

@@ -30,12 +30,12 @@ dns_zone: "ipa.{{ local_env }}.{{ tenant }}.au"     # -> ipa.dev.globex.au   (re
 freeipa_server_rbac_roles:
   - name: "role-{{ tenant }}-{{ local_env }}-platform-admin"   # the role group, created exactly as declared
     description: "{{ tenant }}/{{ local_env }} platform admins"
-    policy_groups:                                             # nests into MULTIPLE existing ug-* groups
+    member_of:                                             # nests into MULTIPLE existing ug-* groups
       - "{{ ug_prefix }}-docker-operators"
       - "{{ ug_prefix }}-grafana-readers"
     members: ["{{ tenant }}.erin", "{{ tenant }}.dave"]        # granted users → indirect ug-* members
   - name: "role-{{ tenant }}-{{ local_env }}-observer"
-    policy_groups: ["{{ ug_prefix }}-grafana-readers"]
+    member_of: ["{{ ug_prefix }}-grafana-readers"]
     # CROSS-TENANT grant: acme.dave lives in tenants/acme.yml — validation runs on the
     # realm-wide merged lists, so any declared user is grantable from any tenant's slice
     # (another tenant's name stays literal: it is not derived from THIS file's header).

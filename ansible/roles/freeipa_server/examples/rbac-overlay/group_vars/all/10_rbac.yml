@@ -19,7 +19,7 @@
 freeipa_server_rbac_roles:
   - name: role-acme-prod-platform-admin
     description: "Platform admin (acme/prod)"
-    policy_groups: [ug-acme-prod-gitlab-admins]
+    member_of: [ug-acme-prod-gitlab-admins]
     members: [alice.smith]
     # OPTIONAL role-scoped HBAC rules: the rule NAME is declared explicitly (WYSIWYG);
     # the compiler injects usergroup: [<this role group>] — everything else verbatim.
@@ -27,8 +27,8 @@ freeipa_server_rbac_roles:
       - { name: hbac-acme-prod-platform-ssh, description: "Platform admins ssh", hostgroup: [hg-acme-prod], service: [sshd] }
   - name: role-globex-prod-viewer
     description: "Grafana viewer (globex/prod)"
-    policy_groups: [ug-globex-prod-grafana-readers]
+    member_of: [ug-globex-prod-grafana-readers]
     members: [bob.ng, carol.fox]
   - name: role-initech-prod-db-admin           # defined, nobody granted yet — a valid entry;
     description: "DB admin (initech/prod)"     # granting later is a one-line members: diff
-    policy_groups: [ug-initech-prod-postgres-admins]
+    member_of: [ug-initech-prod-postgres-admins]

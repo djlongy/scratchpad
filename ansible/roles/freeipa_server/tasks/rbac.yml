@@ -16,15 +16,18 @@
       - freeipa_server_rbac_role_sets is not defined
       - freeipa_server_rbac_user_assignments is not defined
       - freeipa_server_rbac_naming is not defined
+      - freeipa_server_rbac_allow_missing_policy_groups is not defined
       - (freeipa_server_rbac_roles | default([], true)) is not mapping
     fail_msg: >-
       The RBAC overlay is now WYSIWYG: freeipa_server_rbac_roles is a flat LIST — one
-      entry per role group, carrying its LITERAL name, policy_groups (existing group
+      entry per role group, carrying its LITERAL name, member_of (existing group
       names, pasted verbatim from the export) and members (the users granted the role).
       The nested tenant→environment tree, the separate freeipa_server_rbac_user_assignments
       dict and the freeipa_server_rbac_naming templates have been removed — scope lives
-      in the names you declare (e.g. role-<tenant>-<env>-<name> by convention). Migrate
-      per the role README.
+      in the names you declare (e.g. role-<tenant>-<env>-<name> by convention). Renames
+      (2026/07): entry key policy_groups -> member_of; var
+      freeipa_server_rbac_allow_missing_policy_groups -> freeipa_server_rbac_allow_missing_member_of.
+      Migrate per the role README.
     quiet: true
 
 # Everything below is gated on a non-empty roles list (null-safe: a bare
@@ -38,7 +41,7 @@
              native_users=freeipa_idam_users,
              native_hbac_rules=freeipa_idam_hbac_rules,
              allow_unknown_users=freeipa_server_rbac_allow_unknown_users | bool,
-             allow_missing_policy_groups=freeipa_server_rbac_allow_missing_policy_groups | bool) }}
+             allow_missing_member_of=freeipa_server_rbac_allow_missing_member_of | bool) }}
   when: (freeipa_server_rbac_roles | default([], true)) | length > 0
 
 - name: RBAC overlay | Compile role groups + nesting onto native usergroups

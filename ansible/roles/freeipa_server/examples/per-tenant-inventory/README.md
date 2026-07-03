@@ -113,7 +113,7 @@ In this example:
   `role-globex-dev-observer`.
 
 Both resolve because validation runs on the **realm-wide merged** `freeipa_idam_usergroups` /
-`freeipa_idam_users` — a role's `policy_groups` and `members` may reference anything declared
+`freeipa_idam_users` — a role's `member_of` and `members` may reference anything declared
 by *any* tenant file in the run. Policy groups must still exist natively somewhere (typo trap
 stays armed); the overlay only ever creates the `role-*` groups themselves.
 
