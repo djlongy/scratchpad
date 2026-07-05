@@ -18,7 +18,7 @@
 #     on with the NIC already live, so cloud-init reads guestinfo.metadata at first
 #     boot and applies the static network. All native community.vmware modules — no
 #     govc, no GOSC, and connect.yml converges on its first pass. See the role README
-#     + the Notes "GOSC / cloud-init GuestInfo" note.
+#     + the README references.
 
 # ─── Per-guest mode split ─────────────────────────────────────────────────────
 # Each guest may set provision_via_guestinfo (derive.yml resolves it per host);

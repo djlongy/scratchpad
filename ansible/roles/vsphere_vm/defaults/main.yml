@@ -70,8 +70,7 @@ vsphere_vm_connect_pass_delay: 10                # seconds between polls within 
 # setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
 # becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
 # (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the Notes note "vSphere — Cloned VM NIC Disconnects
-# Under GOSC; Use cloud-init GuestInfo" and the role README.
+# no new inventory. See the role README.
 #
 # REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
 # (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
