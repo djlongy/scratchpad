@@ -1,0 +1,68 @@
+# Dynamic inventory for VMware vCenter — grouped by TAG, cached, powered-on only.
+#
+# A lean, copy-and-go companion to the kitchen-sink template in
+# ../vsphere-vms-dynamic/. Where that one groups tenants by folder path, this one
+# groups straight off vCenter TAG CATEGORIES (Tenant / Environment) — the natural
+# pairing with the `vsphere_vm` role, which stamps those tags on the VMs it creates.
+#
+# Usage:  ansible-inventory -i inventories/vmware/vsphere-tag-grouped/ --graph
+#         ansible-playbook   -i inventories/vmware/vsphere-tag-grouped/ site.yml --limit env_prod
+#
+# Filename MUST end in `vms.yml` (the vmware.vmware.vms plugin's verify_file).
+# The plugin is the official vmware.vmware collection (NOT community.vmware):
+#   ansible-galaxy collection install vmware.vmware
+---
+plugin: vmware.vmware.vms
+
+# ── vCenter connection ───────────────────────────────────────────────────────
+# Point at your vCenter. Authenticate as a LEAST-PRIVILEGE read-only account —
+# e.g. the `svc-inventory` account the `vcenter_svc_accounts` role provisions,
+# whose password it writes to Vault at <mount>/<prefix>/<account>. Swap the
+# lookup for `{{ lookup('env', 'VMWARE_PASSWORD') }}` if you prefer env vars.
+hostname: vcenter.example.com
+username: svc-inventory@vsphere.local
+password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=secret/data/vsphere/vcenter/svc-inventory:password') }}"
+validate_certs: false
+
+# ── Tags + only the properties we need (leaner = faster fetch) ───────────────
+gather_tags: true
+properties:
+  - name
+  - guest.ipAddress
+  - guest.hostName
+  - summary.runtime.powerState
+
+# ── Only powered-ON VMs. NOTE: filter_expressions is an EXCLUDE filter — a host
+# matching the expression is DROPPED — so we exclude poweredOff to keep poweredOn.
+filter_expressions:
+  - 'summary.runtime.powerState == "poweredOff"'
+
+# ── Naming + convenience vars ────────────────────────────────────────────────
+hostnames:
+  - name
+compose:
+  ansible_host: guest.ipAddress
+  power_state: summary.runtime.powerState
+
+# ── Group by tag. `tags` is {urn: name}; `tags_by_category.<Cat>` is [{urn: name}],
+# so extract the readable names with dict2items|flatten|map(value). ──
+keyed_groups:
+  - key: tags_by_category.Tenant | default([]) | map('dict2items') | flatten | map(attribute='value') | list
+    prefix: tenant
+    separator: "_"
+  - key: tags_by_category.Environment | default([]) | map('dict2items') | flatten | map(attribute='value') | list
+    prefix: env
+    separator: "_"
+  - key: tags.values() | list
+    prefix: tag
+    separator: "_"
+
+# ── Cache so a play doesn't re-hit vCenter (the ~40s cold fetch) every run. ──
+# Cache lives under $HOME (not /tmp) so it survives reboots and /tmp janitors;
+# cache_prefix keeps this file's cache distinct from the sibling vmware configs
+# that share the same directory. Force a refresh with --flush-cache.
+cache: true
+cache_plugin: jsonfile
+cache_connection: ~/.ansible/tmp/inventory_cache
+cache_prefix: vmware_tags_
+cache_timeout: 1800
