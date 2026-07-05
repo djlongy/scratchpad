@@ -336,3 +336,91 @@ Template prerequisites (Packer-baked): guestId `rhel9_64Guest` (never `other*`),
 open-vm-tools + perl, cloud-init with `datasource_list: [VMware, OVF, None]`,
 `allow_raw_data: true`, `disable_vmware_customization: true`, sealed with
 `cloud-init clean --logs --seed`. Verify in a clone: `cloud-init query platform` → `vmware`.
+
+## Examples — both provisioning modes
+
+### Mode 1: GOSC (classic vSphere Guest OS Customization — the default)
+
+Works exactly like a typical corporate setup. Requires a template with a correct
+guestId (`rhel9_64Guest` / `oracleLinux9_64Guest` — never `other*`, which breaks
+the NIC reconnect-on-success) and open-vm-tools + perl.
+
+```yaml
+vsphere_vm_guests:
+  - name: soe-desktop-01
+    template: linux-almalinux-9-main
+    cpus: 2
+    memory_mb: 4096
+    disk_gb: 60
+    networks:
+      - name: "VLAN10-SVC"
+        type: static
+        ip: 192.0.2.50
+        netmask: 255.255.255.0
+        gateway: 192.0.2.1
+    customization:                 # ← presence of GOSC spec = Mode 1
+      hostname: soe-desktop-01
+      domain: example.com
+      dns_servers: [192.0.2.53]
+```
+
+The NIC briefly disconnects during first-boot customization and vCenter
+reconnects it automatically (~30 s); the bounded reconnect phase covers stragglers.
+
+### Mode 2: cloud-init GuestInfo (GOSC-free — NIC never disconnects)
+
+Same guest spec — just flip the flag. The role clones with no customization spec
+and delivers hostname + network via `guestinfo.metadata` instead.
+
+```yaml
+vsphere_vm_provision_via_guestinfo: true   # role-wide…
+
+vsphere_vm_guests:
+  - name: web-01
+    template: linux-almalinux-9-main
+    networks:
+      - name: "VLAN10-SVC"
+        type: static
+        ip: 192.0.2.60
+        netmask: 255.255.255.0
+        gateway: 192.0.2.1
+    customization:                 # same fields — consumed as cloud-init metadata
+      hostname: web-01
+      dns_servers: [192.0.2.53]
+```
+
+### Mixing modes per guest (one inventory, both engines)
+
+```yaml
+vsphere_vm_guests:
+  - name: legacy-app-01            # Mode 1: GOSC (flag unset → role default false)
+    template: linux-almalinux-9-main
+    networks: [{name: "VLAN10-SVC", type: static, ip: 192.0.2.70, netmask: 255.255.255.0, gateway: 192.0.2.1}]
+    customization: {hostname: legacy-app-01, dns_servers: [192.0.2.53]}
+
+  - name: k8s-node-01              # Mode 2: GuestInfo (per-guest override)
+    provision_via_guestinfo: true
+    template: linux-almalinux-9-main
+    networks: [{name: "VLAN10-SVC", type: static, ip: 192.0.2.71, netmask: 255.255.255.0, gateway: 192.0.2.1}]
+    customization: {hostname: k8s-node-01, dns_servers: [192.0.2.53]}
+```
+
+Inventory-derived model: set `vsphere_vm_provision_via_guestinfo: true` in a
+host's `host_vars` to flip just that host.
+
+### Multi-NIC (GuestInfo mode): mgt + ingress + storage
+
+```yaml
+# host_vars/app-01.yml
+ansible_host: 192.0.2.50                     # Ansible connects via the mgt NIC
+vsphere_vm_provision_via_guestinfo: true
+vsphere_vm_networks:
+  - {name: "VLAN10-MGT",     type: static, ip: 192.0.2.50, netmask: 255.255.255.0, gateway: 192.0.2.1}  # default route + DNS
+  - {name: "VLAN40-INGRESS", type: static, ip: 198.51.100.50, netmask: 255.255.255.0}                    # no gateway
+  - {name: "VLAN30-STORAGE", type: dhcp}                                                                 # per-NIC DHCP is fine
+```
+
+NICs get deterministic guest device names in list order (`ens192`, `ens224`,
+`ens256`; override per NIC with `interface:`). Only the gateway-bearing NIC
+carries the default route and resolvers — bind firewalld zones per interface in
+a separate OS-config role.
