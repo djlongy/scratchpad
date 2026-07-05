@@ -1,0 +1,184 @@
+---
+# roles/vcenter_svc_accounts/defaults/main.yml
+#
+# Data-driven provisioning of dedicated svc-* vCenter SSO accounts with scoped,
+# least-privilege Roles, so automation never authenticates as the SSO
+# administrator (administrator@vsphere.local). Each entry gets:
+#   - a local SSO user (created via dir-cli over VCSA SSH) — created ONCE, never
+#     rotated on re-run
+#   - a custom vCenter Role converged to EXACTLY its privilege list
+#   - a permission grant at the vCenter root (recursive)
+#   - its generated password written to HashiCorp Vault BEFORE the account is
+#     usable (a live credential never exists without being in Vault)
+
+# ── vCenter target + admin credentials (REQUIRED — set in inventory) ─────────
+# vCenter REST/SOAP endpoint used to manage Roles + permissions.
+vcenter_svc_hostname: ""            # e.g. vcenter.example.com
+# SSO administrator used to create users (dir-cli) and manage RBAC. Supply from
+# a secret store — never hardcode. Example (HashiCorp Vault):
+#   vcenter_svc_admin_username: "{{ lookup('community.hashi_vault.hashi_vault',
+#       'secret=secret/data/vsphere/admin:username') }}"
+vcenter_svc_admin_username: ""      # e.g. administrator@vsphere.local
+vcenter_svc_admin_password: ""
+# vCenter API TLS verification. Default false suits self-signed lab vCenters;
+# set true where the cert chain is trusted.
+vcenter_svc_validate_certs: false
+
+# ── VCSA appliance SSH (REQUIRED — for dir-cli user creation) ────────────────
+# dir-cli lives on the VCSA appliance, so user creation is driven over SSH. The
+# controller needs `sshpass` installed and SSH enabled on the appliance.
+vcenter_svc_vcsa_ssh_host: "{{ vcenter_svc_hostname }}"
+vcenter_svc_vcsa_ssh_user: "root"
+vcenter_svc_vcsa_ssh_password: ""
+
+# ── SSO domain the svc accounts live in (vCenter built-in SSO) ───────────────
+vcenter_sso_domain: "vsphere.local"
+
+# ── HashiCorp Vault target for the generated credentials ─────────────────────
+# The generated password is written here BEFORE the account is created, so the
+# credential is always recoverable. Requires the `community.hashi_vault`
+# collection and a reachable Vault (token via VAULT_TOKEN or ~/.vault-token).
+# Secret path per account = <mount>/<prefix>/<account>  (KV v2 logical path).
+vcenter_svc_vault_addr: "https://vault.example.com:8200"
+vcenter_svc_vault_mount: "secret"
+vcenter_svc_vault_path_prefix: "vsphere/vcenter"
+
+# ── RBAC reconciliation behaviour ────────────────────────────────────────────
+vcenter_svc_permission_object: "rootFolder"   # grant at vCenter root
+vcenter_svc_permission_recursive: true        # propagate down the inventory
+vcenter_svc_privilege_action: "set"           # converge Role to EXACTLY the list
+
+# Generated-password shape (avoid shell-hostile characters for the dir-cli call).
+# Cap at 20: the vSphere SSO / vmdir password policy rejects longer passwords
+# (>20 → "LDAP error: Constraint violation"). 20 mixed-class chars is ample.
+vcenter_svc_password_length: 20
+
+# ── The accounts to provision ────────────────────────────────────────────────
+# Add an entry to create another scoped svc account. `privileges` is a list of
+# vSphere privilege IDs (see the sets below).
+vcenter_service_accounts:
+  - account: svc-ansible
+    role_name: svc-automation
+    description: "Ansible VM lifecycle + network automation (provisioning)"
+    privileges: "{{ vcenter_priv_automation }}"
+  - account: svc-inventory
+    role_name: svc-readonly-inventory
+    description: "Least-priv read-only for dynamic vSphere inventory export"
+    privileges: "{{ vcenter_priv_inventory }}"
+
+# ── Privilege sets (vSphere 8 privilege IDs; override in inventory to tune) ──
+# Broad automation set: full VM + network + datastore + resource + folder
+# lifecycle. Deliberately EXCLUDES Authorization.* (permission mgmt),
+# Certificate.*, licensing, host add/remove, and SSO/user administration.
+# System.Anonymous/View/Read are implicit on every role and need not be listed.
+vcenter_priv_automation:
+  # Datastore
+  - Datastore.AllocateSpace
+  - Datastore.Browse
+  - Datastore.FileManagement
+  - Datastore.DeleteFile
+  # Network
+  - Network.Assign
+  # Distributed switch + portgroup (create/manage networks)
+  - DVSwitch.Create
+  - DVSwitch.Modify
+  - DVSwitch.Delete
+  - DVSwitch.PortConfig
+  - DVSwitch.PortSetting
+  - DVPortgroup.Create
+  - DVPortgroup.Modify
+  - DVPortgroup.Delete
+  - DVPortgroup.PolicyOp
+  - DVPortgroup.ScopeOp
+  # Resource pools + migration
+  - Resource.AssignVMToPool
+  - Resource.ColdMigrate
+  - Resource.HotMigrate
+  - Resource.CreatePool
+  - Resource.DeletePool
+  - Resource.RenamePool
+  - Resource.MovePool
+  - Resource.EditPool
+  # Folders
+  - Folder.Create
+  - Folder.Delete
+  - Folder.Move
+  - Folder.Rename
+  # VM inventory (create/register/delete/move)
+  - VirtualMachine.Inventory.Create
+  - VirtualMachine.Inventory.CreateFromExisting
+  - VirtualMachine.Inventory.Register
+  - VirtualMachine.Inventory.Delete
+  - VirtualMachine.Inventory.Unregister
+  - VirtualMachine.Inventory.Move
+  # VM interaction (power, console, media, tools)
+  - VirtualMachine.Interact.PowerOn
+  - VirtualMachine.Interact.PowerOff
+  - VirtualMachine.Interact.Suspend
+  - VirtualMachine.Interact.Reset
+  - VirtualMachine.Interact.ConsoleInteract
+  - VirtualMachine.Interact.DeviceConnection
+  - VirtualMachine.Interact.SetCDMedia
+  - VirtualMachine.Interact.SetFloppyMedia
+  - VirtualMachine.Interact.ToolsInstall
+  - VirtualMachine.Interact.GuestControl
+  - VirtualMachine.Interact.AnswerQuestion
+  # VM reconfigure (CPU/mem/disk/devices/advanced/extraConfig)
+  - VirtualMachine.Config.AddExistingDisk
+  - VirtualMachine.Config.AddNewDisk
+  - VirtualMachine.Config.RemoveDisk
+  - VirtualMachine.Config.AddRemoveDevice
+  - VirtualMachine.Config.EditDevice
+  - VirtualMachine.Config.CPUCount
+  - VirtualMachine.Config.Memory
+  - VirtualMachine.Config.Settings
+  - VirtualMachine.Config.Rename
+  - VirtualMachine.Config.Annotation
+  - VirtualMachine.Config.AdvancedConfig
+  - VirtualMachine.Config.ResetGuestInfo
+  - VirtualMachine.Config.DiskLease
+  - VirtualMachine.Config.DiskExtend
+  - VirtualMachine.Config.ChangeTracking
+  - VirtualMachine.Config.HostUSBDevice
+  - VirtualMachine.Config.RawDevice
+  - VirtualMachine.Config.ManagedBy
+  - VirtualMachine.Config.SwapPlacement
+  - VirtualMachine.Config.Resource
+  - VirtualMachine.Config.UpgradeVirtualHardware
+  - VirtualMachine.Config.ReloadFromPath
+  - VirtualMachine.Config.MksControl
+  # VM provisioning (clone/customize/template/deploy) — core for IaC cloning
+  - VirtualMachine.Provisioning.Clone
+  - VirtualMachine.Provisioning.CloneTemplate
+  - VirtualMachine.Provisioning.CreateTemplateFromVM
+  - VirtualMachine.Provisioning.DeployTemplate
+  - VirtualMachine.Provisioning.Customize
+  - VirtualMachine.Provisioning.ReadCustSpecs
+  - VirtualMachine.Provisioning.ModifyCustSpecs
+  - VirtualMachine.Provisioning.MarkAsTemplate
+  - VirtualMachine.Provisioning.MarkAsVM
+  - VirtualMachine.Provisioning.PromoteDisks
+  - VirtualMachine.Provisioning.DiskRandomAccess
+  - VirtualMachine.Provisioning.DiskRandomRead
+  - VirtualMachine.Provisioning.FileRandomAccess
+  - VirtualMachine.Provisioning.GetVmFiles
+  - VirtualMachine.Provisioning.PutVmFiles
+  # VM snapshots
+  - VirtualMachine.State.CreateSnapshot
+  - VirtualMachine.State.RevertToSnapshot
+  - VirtualMachine.State.RemoveSnapshot
+  - VirtualMachine.State.RenameSnapshot
+  # In-guest operations (customization, tools-driven config)
+  - VirtualMachine.GuestOperations.Query
+  - VirtualMachine.GuestOperations.Modify
+  - VirtualMachine.GuestOperations.Execute
+  # vApp (OVF/OVA import + vApp properties used by guestinfo/cloud-init)
+  - VApp.Import
+  - VApp.Export
+  - VApp.ApplicationConfig
+  - VApp.InstanceConfig
+
+# Least-privilege inventory set: read-only (System.* base is implicit) plus the
+# in-guest query privilege for inventory grouping that reads guest facts.
+vcenter_priv_inventory:
+  - VirtualMachine.GuestOperations.Query

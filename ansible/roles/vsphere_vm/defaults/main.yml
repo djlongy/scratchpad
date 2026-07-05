@@ -70,8 +70,8 @@ vsphere_vm_connect_pass_delay: 10                # seconds between polls within 
 # setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
 # becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
 # (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the the role README references"vSphere — Cloned VM NIC Disconnects
-# Under GOSC; Use cloud-init GuestInfo" and the role README.
+# no new inventory. See the role README "Known vSphere quirk" section for the
+# GOSC NIC-disconnect root cause and the cloud-init GuestInfo cure.
 #
 # REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
 # (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
@@ -146,6 +146,15 @@ vsphere_vm_network: ""                        # dvPortGroup / network name
 vsphere_vm_netmask: "255.255.255.0"
 # vsphere_vm_gateway: ""                       # default: .1 of the host's /24
 vsphere_vm_dns: []                            # DNS servers for guest customization
+
+# ── vSphere tags (tenant / environment / …) ──────────────────────────────────
+# vCenter tags applied to created VMs, as a {Category: tag} map. The role ensures
+# each category + tag exists, then associates them. Hand-authored guests set
+# `tags:` per item; inventory-derived guests set vsphere_vm_tags per host/group.
+#   vsphere_vm_tags: {Tenant: prod, Environment: alma}
+# The VM folder (vsphere_vm_folder / item.folder) may be a NESTED path — e.g.
+# /Datacenter/vm/prod/alma — the role creates the whole tree first (one call).
+vsphere_vm_tags: {}
 
 # ── Destroy safety ───────────────────────────────────────────────────────────
 # Destroying (state: absent) is refused unless this is true — a guard against

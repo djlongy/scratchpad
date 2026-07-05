@@ -1,0 +1,17 @@
+---
+# Provision least-privilege vCenter SSO service accounts + scoped RBAC roles, so
+# automation never authenticates as administrator@vsphere.local.
+#
+# Runs against vCenter from the control node (localhost). Supply the vCenter admin
+# + VCSA SSH credentials and the Vault target via inventory / group_vars (from a
+# secret store — never hardcode). See the role README for the full variable
+# reference and requirements (community.vmware, community.hashi_vault, sshpass).
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/vcenter_svc_accounts.yml
+
+- name: Provision vCenter service accounts + RBAC roles
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: vcenter_svc_accounts

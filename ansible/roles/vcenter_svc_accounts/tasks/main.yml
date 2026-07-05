@@ -1,0 +1,36 @@
+---
+# roles/vcenter_svc_accounts/tasks/main.yml
+#
+# Provision dedicated svc-* SSO accounts + scoped vCenter Roles so automation
+# never authenticates as the SSO administrator.
+#
+# For each entry in vcenter_service_accounts this:
+#   1. creates a local SSO user (dir-cli over VCSA SSH) — once, never rotated
+#   2. writes its generated password to HashiCorp Vault (first create only)
+#   3. converges a custom vCenter Role to exactly the entry's privilege list
+#   4. grants that Role to the principal at the vCenter root (recursive)
+#
+# Runs against vCenter from the control node — target a localhost play.
+
+- name: Service accounts | Validate required inputs are present
+  ansible.builtin.assert:
+    that:
+      - vcenter_service_accounts | length > 0
+      - vcenter_svc_hostname | default('') | length > 0
+      - vcenter_svc_admin_username | default('') | length > 0
+      - vcenter_svc_admin_password | default('') | length > 0
+      - vcenter_svc_vcsa_ssh_user | default('') | length > 0
+      - vcenter_svc_vcsa_ssh_password | default('') | length > 0
+    fail_msg: >-
+      Service-account provisioning needs vcenter_svc_hostname, the admin SSO
+      credentials (vcenter_svc_admin_username/password), the VCSA SSH credentials
+      (vcenter_svc_vcsa_ssh_user/password), and a non-empty
+      vcenter_service_accounts list. Supply these from inventory / a secret store.
+    quiet: true
+
+- name: Service accounts | Provision each svc account + role + permission
+  ansible.builtin.include_tasks: service_account_one.yml
+  loop: "{{ vcenter_service_accounts }}"
+  loop_control:
+    loop_var: _svc
+    label: "{{ _svc.account }} → role {{ _svc.role_name }}"

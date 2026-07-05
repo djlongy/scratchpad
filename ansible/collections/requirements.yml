@@ -14,5 +14,9 @@ collections:
     version: ">=3.8.0"
   - name: community.crypto       # openssl_* — self-signed TLS (vault_container)
     version: ">=2.18.0"
-  - name: community.hashi_vault  # vault_write — vault_container post-setup
+  - name: community.hashi_vault  # vault_write — vault_container post-setup, vcenter_svc_accounts
     version: ">=6.1.0"
+  - name: community.vmware        # vmware_guest / networking / tags / roles (vsphere_vm, vcenter_svc_accounts)
+    version: ">=4.0.0"
+  - name: vmware.vmware           # vm_advanced_settings / deploy_folder_template / folder (vsphere_vm)
+    version: ">=2.0.0"

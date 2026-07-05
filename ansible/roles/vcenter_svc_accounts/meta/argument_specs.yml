@@ -1,0 +1,89 @@
+---
+argument_specs:
+  main:
+    short_description: Provision least-privilege vCenter SSO service accounts + RBAC roles.
+    description:
+      - For each entry in C(vcenter_service_accounts), create a local SSO user via
+        C(dir-cli) over VCSA SSH (once, never rotated), write its generated password
+        to HashiCorp Vault before the account is usable, converge a custom vCenter
+        Role to exactly the entry's privilege list, and grant that Role at the
+        vCenter root.
+      - Run against vCenter from the control node — target a localhost play.
+    options:
+      vcenter_svc_hostname:
+        type: str
+        required: true
+        description: vCenter REST/SOAP endpoint used to manage Roles + permissions.
+      vcenter_svc_admin_username:
+        type: str
+        required: true
+        description: SSO administrator (e.g. administrator@vsphere.local). Supply from a secret store.
+      vcenter_svc_admin_password:
+        type: str
+        required: true
+        description: Password for the SSO administrator.
+      vcenter_svc_validate_certs:
+        type: bool
+        required: false
+        default: false
+        description: Verify the vCenter API TLS certificate.
+      vcenter_svc_vcsa_ssh_host:
+        type: str
+        required: false
+        description: VCSA appliance SSH host for dir-cli. Defaults to vcenter_svc_hostname.
+      vcenter_svc_vcsa_ssh_user:
+        type: str
+        required: true
+        default: root
+        description: VCSA appliance SSH user (dir-cli lives on the appliance).
+      vcenter_svc_vcsa_ssh_password:
+        type: str
+        required: true
+        description: VCSA appliance SSH password.
+      vcenter_sso_domain:
+        type: str
+        required: false
+        default: vsphere.local
+        description: SSO domain the svc accounts live in.
+      vcenter_svc_vault_addr:
+        type: str
+        required: false
+        description: HashiCorp Vault URL the generated credentials are written to.
+      vcenter_svc_vault_mount:
+        type: str
+        required: false
+        default: secret
+        description: Vault KV v2 mount point.
+      vcenter_svc_vault_path_prefix:
+        type: str
+        required: false
+        description: >-
+          Vault path prefix; the per-account secret is written to
+          <mount>/<prefix>/<account>.
+      vcenter_svc_permission_object:
+        type: str
+        required: false
+        default: rootFolder
+        description: Inventory object the Role is granted on.
+      vcenter_svc_permission_recursive:
+        type: bool
+        required: false
+        default: true
+        description: Propagate the permission down the inventory hierarchy.
+      vcenter_svc_privilege_action:
+        type: str
+        required: false
+        default: set
+        description: How the custom Role's privileges are reconciled (set = converge to exactly the list).
+      vcenter_svc_password_length:
+        type: int
+        required: false
+        default: 20
+        description: >-
+          Generated password length. Capped at 20 — the vmdir password policy
+          rejects longer passwords (LDAP Constraint violation).
+      vcenter_service_accounts:
+        type: list
+        elements: dict
+        required: true
+        description: The svc accounts to provision (account, role_name, privileges, optional description).

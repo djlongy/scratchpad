@@ -289,7 +289,7 @@ The first NIC with a gateway (else NIC 0) carries the resolvers.
 ```yaml
 # host_vars/monster-01.yml — a (deliberately gnarly) 3-NIC guest
 vsphere_vm_networks:
-  - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.10, netmask: 255.255.255.0, gateway: 192.0.2.10}
+  - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.60, netmask: 255.255.255.0, gateway: 192.0.2.1}
   - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.60,    netmask: 255.255.255.0}   # data plane, no gateway
   - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.60,    netmask: 255.255.255.0}   # ingress plane
 ```
@@ -300,10 +300,28 @@ vsphere_vm_networks:
 Optional: set a guest's `guestinfo_userdata` to a raw `#cloud-config` string to also inject
 `guestinfo.userdata` (packages, users, an authoritative resolv.conf, …).
 
+## vCenter tags & nested folders
+
+Created VMs can be **placed in a nested folder tree** and **tagged** in the same run
+(both provisioning modes):
+
+- **Folders** — `vsphere_vm_folder` (or per-guest `folder:`) may be a nested path, e.g.
+  `/Datacenter/vm/prod/app`. The role creates the whole tree in one call
+  (`vmware.vmware.folder`) before placing the VM, so intermediate folders need not
+  pre-exist.
+- **Tags** — set `vsphere_vm_tags` (host/group scope) or per-guest `tags:` as a
+  `{Category: Tag}` map, e.g. `{Tenant: prod, Environment: alma}`. The role ensures each
+  category (single-cardinality) and tag exists, then associates them with the VM.
+
+```yaml
+vsphere_vm_folder: "/Datacenter/vm/prod/app"
+vsphere_vm_tags: {Tenant: prod, Environment: alma}
+```
+
 ## Variables
 
 See `defaults/main.yml` for the full surface and per-guest overrides (cpus,
-memory_mb, disk_gb, disk_type, firmware, folder, datastore, networks,
+memory_mb, disk_gb, disk_type, firmware, folder, datastore, networks, tags,
 customization, state, wait_for_ip).
 
 ---

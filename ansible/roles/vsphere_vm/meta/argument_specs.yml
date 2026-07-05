@@ -126,3 +126,10 @@ argument_specs:
           as base64 guestinfo.metadata. Requires a GuestInfo-ready template. Reads
           the same per-guest fields as the GOSC path; each NIC may set `interface`
           (default ens192/ens224/ens256… in vmware slot order).
+      vsphere_vm_tags:
+        type: dict
+        required: false
+        description: >-
+          vCenter tags applied to created VMs as a {Category: tag} map (e.g. tenant/
+          environment). The role ensures each category + tag exists then associates
+          them. Per-guest via item.tags; inventory-derived via vsphere_vm_tags.

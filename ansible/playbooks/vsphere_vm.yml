@@ -1,0 +1,22 @@
+---
+# Create / destroy vCenter VMs (clone from template) via community.vmware.
+#
+# Runs against vCenter from the control node (localhost). Describe the guests in
+# vsphere_vm_guests (or derive one VM per inventory host with
+# vsphere_vm_from_inventory: true). See the role README for the full variable
+# reference, the two provisioning modes (GOSC vs cloud-init GuestInfo), and the
+# NIC-reconnect handling.
+#
+#   # create / ensure guests
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/vsphere_vm.yml
+#
+#   # destroy (mark the guest state: absent first)
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/vsphere_vm.yml \
+#       --tags destroy -e vsphere_vm_allow_destroy=true
+
+- name: Create / destroy vCenter VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: vsphere_vm
