@@ -18,7 +18,7 @@
 #     on with the NIC already live, so cloud-init reads guestinfo.metadata at first
 #     boot and applies the static network. All native community.vmware modules — no
 #     govc, no GOSC, and connect.yml converges on its first pass. See the role README
-#     + the README references.
+#     + the the role README references"GOSC / cloud-init GuestInfo" note.
 
 # ─── Per-guest mode split ─────────────────────────────────────────────────────
 # Each guest may set provision_via_guestinfo (derive.yml resolves it per host);
@@ -119,18 +119,6 @@
 # Step 1b: hardware/disk + guestinfo injection as a plain RECONFIGURE of the
 # existing powered-off VM (no clone → vmware_guest attaches no GOSC spec here).
 - name: Create | Reconfigure hardware + inject cloud-init GuestInfo
-  vars:
-    _guestinfo_advanced: >-
-      {{ [
-           {'key': 'guestinfo.metadata',
-            'value': (lookup('template', 'guestinfo_metadata.yaml.j2') | b64encode)},
-           {'key': 'guestinfo.metadata.encoding', 'value': 'base64'}
-         ]
-         + ([
-             {'key': 'guestinfo.userdata',
-              'value': (item.guestinfo_userdata | b64encode)},
-             {'key': 'guestinfo.userdata.encoding', 'value': 'base64'}
-            ] if (item.guestinfo_userdata | default('') | length > 0) else []) }}
   community.vmware.vmware_guest:
     datacenter: "{{ vsphere_vm_datacenter }}"
     folder: "{{ item.folder | default(vsphere_vm_folder) }}"
@@ -145,7 +133,33 @@
       {{ [{'size_gb': item.disk_gb | default(vsphere_vm_disk_gb),
            'type': item.disk_type | default(vsphere_vm_disk_type)}]
          + (item.extra_disks | default([])) }}
-    advanced_settings: "{{ _guestinfo_advanced }}"
+  loop: "{{ _vsphere_create_gi }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+# Step 1c: inject the cloud-init GuestInfo. NOTE: community.vmware.vmware_guest
+# advanced_settings is a SILENT NO-OP on a reconfigure of an existing VM (keys
+# never persist) — use the purpose-built vm_advanced_settings module instead.
+# Acceptance check: govc object.collect -s <vm> 'config.extraConfig["guestinfo.metadata"]'
+# | base64 -d must show the rendered metadata BEFORE power-on.
+- name: Create | Inject cloud-init GuestInfo (persists on existing VM)
+  vmware.vmware.vm_advanced_settings:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ item.name }}"
+    state: present
+    settings: >-
+      {{ {'guestinfo.metadata': (lookup('template', 'guestinfo_metadata.yaml.j2') | b64encode),
+          'guestinfo.metadata.encoding': 'base64'}
+         | combine({'guestinfo.userdata': (item.guestinfo_userdata | default('') | b64encode),
+                    'guestinfo.userdata.encoding': 'base64'}
+                   if (item.guestinfo_userdata | default('') | length > 0) else {}) }}
   loop: "{{ _vsphere_create_gi }}"
   loop_control:
     label: "{{ item.name }}"

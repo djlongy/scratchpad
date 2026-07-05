@@ -234,8 +234,7 @@ but **not sufficient** — GOSC reverts it after the clone returns. That is why 
 bounded **multi-pass** reconnect over all managed VMs (the pass that lands just after customization
 finishes makes it stick). If you still see a disconnected NIC: `govc device.connect -vm <name> ethernet-0`.
 
-**Root cause references:** Broadcom KB 425280 (cloned VM NIC toggles connected),
-hashicorp/terraform-provider-vsphere#388, and the cloud-init VMware datasource docs.
+**Root cause references:** Broadcom KB 425280, terraform-provider-vsphere#388, cloud-init VMware datasource docs.
 The durable cure — **now implemented** as `vsphere_vm_provision_via_guestinfo` (see next section) —
 is to stop using GOSC and drive first-boot config via the cloud-init VMware GuestInfo datasource.
 
@@ -279,7 +278,7 @@ the static hostname + network. Verified end-to-end (NIC `Connected: true` throug
 
 **Requires a GuestInfo-ready template** (Packer-baked): cloud-init with `datasource_list: [VMware, OVF,
 None]`, `allow_raw_data: true`, and `disable_vmware_customization: true`. Verify on a built host with
-`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every VLAN here has
+`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every lab VLAN has
 DHCP, so that means an IP-conflict risk; pick target IPs not already allocated in inventory).
 
 **Multi-NIC** — every entry in a guest's `networks` becomes its own cloud-init ethernet, keyed by an
@@ -307,120 +306,64 @@ See `defaults/main.yml` for the full surface and per-guest overrides (cpus,
 memory_mb, disk_gb, disk_type, firmware, folder, datastore, networks,
 customization, state, wait_for_ip).
 
-## Quick start (GuestInfo mode, static IP)
+---
+
+## Dual-mode usage guide
+
+The role provisions each guest through ONE of two engines. Both consume the **same
+guest dict** — the flag picks the engine.
+
+| | Mode 1: GOSC (default) | Mode 2: cloud-init GuestInfo |
+|---|---|---|
+| Mechanism | clone + vSphere customization spec | GOSC-free clone + `guestinfo.metadata` |
+| NIC behaviour | disconnects, auto-reconnects (~30 s) | never disconnects |
+| Template needs | correct guestId (`rhel9_64Guest`, never `other*`), open-vm-tools + perl | + cloud-init, `datasource_list: [VMware, OVF, None]`, `allow_raw_data: true`, `disable_vmware_customization: true` |
+| `resource_pool` | pool **name** | name or **MOID** (MOID required if ambiguous, e.g. nested "Resources") |
+| Flag | (unset / `false`) | `provision_via_guestinfo: true` per guest, or `vsphere_vm_provision_via_guestinfo: true` role-wide |
+
+Resolution order: **per-guest / per-host flag → role-wide flag → `false` (GOSC)**.
+One run can mix both modes; the guest list is split internally.
+
+### The guest dict (identical for both modes)
 
 ```yaml
-# group_vars/vmware_vms.yml
-vsphere_vm_server: "vcenter.example.com"
-vsphere_vm_password: "{{ vault_vcenter_password }}"
-vsphere_vm_datacenter: "Datacenter"
-vsphere_vm_esxi_host: "192.0.2.10"
-vsphere_vm_resource_pool: "resgroup-123"     # standalone host: ROOT pool MOID
-vsphere_vm_datastore: "datastore1"
-vsphere_vm_template: "linux-almalinux-9-main"
-vsphere_vm_network: "VLAN10-SVC"
-vsphere_vm_dns: [192.0.2.53]
-vsphere_vm_provision_via_guestinfo: true     # GOSC-free mode (per-host overridable)
-vsphere_vm_from_inventory: true
-vsphere_vm_inventory_group: vmware_vms
-
-# host_vars/web01.yml — the only unique bit
-ansible_host: 192.0.2.50                     # becomes the VM's static IP
+- name: web-01                      # vCenter VM name            (required)
+  template: linux-almalinux-9-main  # source template            (required)
+  provision_via_guestinfo: true     # engine override            (optional)
+  cpus: 2                           # hardware                   (optional, role defaults)
+  memory_mb: 4096
+  disk_gb: 60
+  extra_disks: [{size_gb: 50, type: thin}]
+  networks:                         # one entry per vNIC, in slot order (ens192/ens224/ens256)
+    - name: "VLAN10-SVC"            #   portgroup                (required)
+      type: static                  #   static | dhcp            (dhcp / missing ip → dhcp4)
+      ip: 192.0.2.50                #   required for static
+      netmask: 255.255.255.0
+      gateway: 192.0.2.1            #   ONLY on the primary NIC (default route + DNS)
+      interface: ens192             #   override guest device name (optional)
+  customization:                    # consumed as GOSC spec (mode 1) OR cloud-init metadata (mode 2)
+    hostname: web-01
+    domain: example.com             #   mode 1 FQDN suffix; harmless in mode 2
+    dns_servers: [192.0.2.53]
+  guestinfo_userdata: |             # mode 2 only (optional raw #cloud-config)
+    #cloud-config
+    packages: [chrony]
+  state: poweredon
 ```
+
+**Mode-specific field notes**
+- *GOSC:* `customization.domain` is used; `guestinfo_userdata`/`interface:` are ignored.
+- *GuestInfo:* `customization.hostname` + `dns_servers` feed the metadata (`domain` unused);
+  every NIC needs `type: static` **and** `ip`, or that NIC intentionally renders `dhcp4: true` —
+  a missing/typo'd `ip` silently becomes DHCP, so verify statics after first boot.
+
+### Verifying a GuestInfo provision (acceptance checks)
 
 ```bash
-ansible-playbook -i inventories/example/hosts.yml playbook.yml   # create
+# 1. metadata actually injected (BEFORE power-on):
+govc object.collect -s /DC/vm/<vm> 'config.extraConfig["guestinfo.metadata"]' | base64 -d
+# 2. no GOSC fired:
+govc events -n 20 /DC/vm/<vm> | grep -ciE 'customiz|deployPkg'    # want 0
+# 3. in-guest datasource:
+cloud-init query platform                                          # want: vmware
 ```
-
-Template prerequisites (Packer-baked): guestId `rhel9_64Guest` (never `other*`),
-open-vm-tools + perl, cloud-init with `datasource_list: [VMware, OVF, None]`,
-`allow_raw_data: true`, `disable_vmware_customization: true`, sealed with
-`cloud-init clean --logs --seed`. Verify in a clone: `cloud-init query platform` → `vmware`.
-
-## Examples — both provisioning modes
-
-### Mode 1: GOSC (classic vSphere Guest OS Customization — the default)
-
-Works exactly like a typical corporate setup. Requires a template with a correct
-guestId (`rhel9_64Guest` / `oracleLinux9_64Guest` — never `other*`, which breaks
-the NIC reconnect-on-success) and open-vm-tools + perl.
-
-```yaml
-vsphere_vm_guests:
-  - name: soe-desktop-01
-    template: linux-almalinux-9-main
-    cpus: 2
-    memory_mb: 4096
-    disk_gb: 60
-    networks:
-      - name: "VLAN10-SVC"
-        type: static
-        ip: 192.0.2.50
-        netmask: 255.255.255.0
-        gateway: 192.0.2.1
-    customization:                 # ← presence of GOSC spec = Mode 1
-      hostname: soe-desktop-01
-      domain: example.com
-      dns_servers: [192.0.2.53]
-```
-
-The NIC briefly disconnects during first-boot customization and vCenter
-reconnects it automatically (~30 s); the bounded reconnect phase covers stragglers.
-
-### Mode 2: cloud-init GuestInfo (GOSC-free — NIC never disconnects)
-
-Same guest spec — just flip the flag. The role clones with no customization spec
-and delivers hostname + network via `guestinfo.metadata` instead.
-
-```yaml
-vsphere_vm_provision_via_guestinfo: true   # role-wide…
-
-vsphere_vm_guests:
-  - name: web-01
-    template: linux-almalinux-9-main
-    networks:
-      - name: "VLAN10-SVC"
-        type: static
-        ip: 192.0.2.60
-        netmask: 255.255.255.0
-        gateway: 192.0.2.1
-    customization:                 # same fields — consumed as cloud-init metadata
-      hostname: web-01
-      dns_servers: [192.0.2.53]
-```
-
-### Mixing modes per guest (one inventory, both engines)
-
-```yaml
-vsphere_vm_guests:
-  - name: legacy-app-01            # Mode 1: GOSC (flag unset → role default false)
-    template: linux-almalinux-9-main
-    networks: [{name: "VLAN10-SVC", type: static, ip: 192.0.2.70, netmask: 255.255.255.0, gateway: 192.0.2.1}]
-    customization: {hostname: legacy-app-01, dns_servers: [192.0.2.53]}
-
-  - name: k8s-node-01              # Mode 2: GuestInfo (per-guest override)
-    provision_via_guestinfo: true
-    template: linux-almalinux-9-main
-    networks: [{name: "VLAN10-SVC", type: static, ip: 192.0.2.71, netmask: 255.255.255.0, gateway: 192.0.2.1}]
-    customization: {hostname: k8s-node-01, dns_servers: [192.0.2.53]}
-```
-
-Inventory-derived model: set `vsphere_vm_provision_via_guestinfo: true` in a
-host's `host_vars` to flip just that host.
-
-### Multi-NIC (GuestInfo mode): mgt + ingress + storage
-
-```yaml
-# host_vars/app-01.yml
-ansible_host: 192.0.2.50                     # Ansible connects via the mgt NIC
-vsphere_vm_provision_via_guestinfo: true
-vsphere_vm_networks:
-  - {name: "VLAN10-MGT",     type: static, ip: 192.0.2.50, netmask: 255.255.255.0, gateway: 192.0.2.1}  # default route + DNS
-  - {name: "VLAN40-INGRESS", type: static, ip: 198.51.100.50, netmask: 255.255.255.0}                    # no gateway
-  - {name: "VLAN30-STORAGE", type: dhcp}                                                                 # per-NIC DHCP is fine
-```
-
-NICs get deterministic guest device names in list order (`ens192`, `ens224`,
-`ens256`; override per NIC with `interface:`). Only the gateway-bearing NIC
-carries the default route and resolvers — bind firewalld zones per interface in
-a separate OS-config role.
