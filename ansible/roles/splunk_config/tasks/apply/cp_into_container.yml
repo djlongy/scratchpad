@@ -1,0 +1,47 @@
+---
+# Reusable: stage a control-node snapshot subdir onto this node, then docker cp
+# its CONTENTS into the target container path (merge). Skips silently when the
+# snapshot subdir is absent (e.g. an instance with no users/ or no system-local).
+#
+# Params (vars): _cp_name (label), _cp_src (control-node dir), _cp_dest
+# (container path), _cp_stage (node scratch dir), _container.name (service).
+
+- name: Apply | Stat snapshot source {{ _cp_name }}
+  ansible.builtin.stat:
+    path: "{{ _cp_src }}"
+  delegate_to: localhost
+  become: false
+  register: _cp_srcstat
+
+- name: Apply | {{ _container.label }} — place {{ _cp_name }}
+  when:
+    - _cp_srcstat.stat.exists
+    - _cp_srcstat.stat.isdir
+  block:
+    - name: Apply | {{ _container.label }} — stage {{ _cp_name }} onto node
+      ansible.builtin.copy:
+        src: "{{ _cp_src }}/"
+        dest: "{{ _cp_stage }}/"
+        mode: "0644"
+        directory_mode: "0755"
+      become: true
+
+    - name: Apply | {{ _container.label }} — docker cp {{ _cp_name }} into {{ _container.service }}
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
+          [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 1; }
+          docker exec "$CID" mkdir -p {{ _cp_dest | quote }}
+          docker cp {{ _cp_stage | quote }}/. "$CID":{{ _cp_dest | quote }}/
+          docker exec -u 0 "$CID" chown -R {{ splunk_config_container_owner | quote }} \
+            {{ _cp_dest | quote }} || true
+        executable: /bin/bash
+      become: true
+      changed_when: true
+
+    - name: Apply | {{ _container.label }} — clean stage {{ _cp_name }}
+      ansible.builtin.file:
+        path: "{{ _cp_stage }}"
+        state: absent
+      become: true

@@ -1,0 +1,64 @@
+---
+# Trigger the config-activation action for one container, chosen by its role:
+#   cluster_manager   → splunk apply cluster-bundle
+#   shc_deployer      → splunk apply shcluster-bundle
+#   deployment_server → splunk reload deploy-server
+#   search_head/indexer/standalone → optional restart (no control tier owns them)
+#
+# Needs the estate admin credential (splunk_config_admin_password). When it is
+# unset, pushes are SKIPPED with a warning — a safe first-apply default.
+
+- name: Apply | {{ _container.label }} — resolve snapshot role
+  ansible.builtin.set_fact:
+    _entry: >-
+      {{ (splunk_config_snapshot.tiers.instances
+          | selectattr('service', 'equalto', _container.service)
+          | list | first) | default({}) }}
+
+- name: Apply | {{ _container.label }} — warn that push is skipped (no admin credential)
+  ansible.builtin.debug:
+    msg: >-
+      Config placed for {{ _container.service }} but no splunk_config_admin_password
+      set — skipping bundle push/reload. Push manually or set the credential.
+  when:
+    - _entry | length > 0
+    - splunk_config_admin_password | length == 0
+
+- name: Apply | {{ _container.label }} — push / reload
+  when:
+    - _entry | length > 0
+    - splunk_config_admin_password | length > 0
+    - _push_cmd | length > 0
+  vars:
+    _push_map:
+      cluster_manager: apply cluster-bundle --answer-yes
+      shc_deployer: apply shcluster-bundle --answer-yes
+      deployment_server: reload deploy-server
+    _push_cmd: "{{ _push_map[_entry.role] | default('') }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
+      [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 1; }
+      docker exec -u splunk "$CID" {{ splunk_config_container_splunk_bin }} {{ _push_cmd }} \
+        -auth admin:{{ splunk_config_admin_password }}
+    executable: /bin/bash
+  become: true
+  register: _push
+  changed_when: true
+  no_log: true
+
+- name: Apply | {{ _container.label }} — restart simple instance to load config
+  when:
+    - _entry | length > 0
+    - _entry.role in ['search_head', 'indexer', 'standalone']
+    - splunk_config_apply_restart_instances | bool
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
+      [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 1; }
+      docker exec -u splunk "$CID" {{ splunk_config_container_splunk_bin }} restart
+    executable: /bin/bash
+  become: true
+  changed_when: true

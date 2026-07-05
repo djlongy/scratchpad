@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: mattermost_swarm
-  author: lab
+  author: longy
   description: >-
     Deploy Mattermost (app + PostgreSQL) as a Docker Swarm stack. Thin
     compose-first wrapper over the swarm_stack engine — ships a compose.yml.j2

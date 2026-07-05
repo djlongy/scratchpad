@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: nfs_server
-  author: longy lab
+  author: longy
   description: Dedicated NFS storage server with per-user/shared exports and krb5p|sys toggle.
   license: MIT
   min_ansible_version: "2.15"

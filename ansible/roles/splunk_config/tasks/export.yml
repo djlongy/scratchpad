@@ -1,0 +1,35 @@
+---
+# Export orchestrator — capture the live Splunk estate into a committable
+# snapshot on the control node.
+#
+# Runs against the swarm nodes (the play's hosts). Ansible executes each task
+# across ALL hosts before the next, so every node's containers are captured
+# before the run_once scrub/manifest step aggregates them on the control node.
+#
+# Flow: reset control-node raw dir (once) → discover Splunk containers on each
+# node → tar each container's etc subtree out and fetch it → scrub + classify +
+# render manifest + push splunk.secret to Vault (once).
+
+- name: Export | Reset the control-node raw capture dir (once)
+  ansible.builtin.file:
+    path: "{{ splunk_config_raw_dir }}"
+    state: "{{ item }}"
+    mode: "0750"
+  loop: [absent, directory]
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Export | Discover Splunk containers on this node
+  ansible.builtin.include_tasks: export/detect_containers.yml
+
+- name: Export | Capture each Splunk container's config
+  ansible.builtin.include_tasks: export/capture_container.yml
+  loop: "{{ _splunk_containers | default([]) }}"
+  loop_control:
+    loop_var: _container
+    label: "{{ _container.label }}"
+
+- name: Export | Scrub, classify, render the snapshot, push splunk.secret (once)
+  ansible.builtin.include_tasks: export/scrub_manifest.yml
+  run_once: true

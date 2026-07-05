@@ -1,0 +1,108 @@
+---
+# splunk_config — capture a live Splunk estate into a committable, re-appliable
+# snapshot, and apply it back. Reaches Splunk THROUGH the swarm containers
+# (docker exec / docker cp), auto-detects topology, and scrubs every secret
+# before anything is written to the repo. See docs/designs/2026-07-04-splunk-config-iac.md.
+#
+# TWO-MODE TOOL. Unlike a normal reconcile role, a bare run does nothing useful —
+# pick a mode explicitly:
+#   --tags export   capture the live estate → snapshot on the control node
+#   --tags apply    place a snapshot back + reseed secrets + trigger bundle pushes
+# Both modes are `never`-gated (sanctioned enablement exception) so neither fires
+# by accident on a full converge.
+
+# ── Discovery ────────────────────────────────────────────────────────────────
+# docker ps name filter that selects the Splunk container set (swarm prefixes
+# service containers with "<stack>_"). Override per estate.
+splunk_config_stack: splunk
+
+# Path to Splunk's config root INSIDE the container.
+splunk_config_container_etc: /opt/splunk/etc
+
+# Splunk binary inside the container (used for bundle-push / reload on apply).
+splunk_config_container_splunk_bin: /opt/splunk/bin/splunk
+
+# owner:group applied to config placed into a container on apply.
+splunk_config_container_owner: splunk:splunk
+
+# The `etc/` subtrees harvested from each container. `apps` is handled specially
+# (see below); the rest are copied wholesale when present. Non-existent paths are
+# skipped per container (a search head has no manager-apps, etc.).
+splunk_config_capture_paths:
+  - system/local
+  - apps
+  - users
+  - manager-apps
+  - shcluster/apps
+  - deployment-apps
+  - auth/splunk.secret
+  - passwd
+
+# Stock-app globs: for these apps only `local/` + `metadata/` are captured, never
+# `default/` (that ships with Splunk / the app and is not operator state). Custom
+# apps are captured whole. Applied at CAPTURE time so the tarball stays small —
+# skipping every stock TA's multi-hundred-MB default/ that would just be
+# discarded later. Kept ALIGNED with STOCK_APP_* in files/splunk_config_export.py
+# (the scrubber re-enforces scope authoritatively on whatever was captured).
+splunk_config_stock_app_globs:
+  - "splunk_*"
+  - "Splunk_*"
+  - "TA-*"
+  - "SA-*"
+  - "DA-ITSI-*"
+  - search
+  - launcher
+  - learned
+  - legacy
+  - framework
+  - gettingstarted
+  - appsbrowser
+  - user-prefs
+  - SplunkForwarder
+  - SplunkLightForwarder
+
+# ── Snapshot location (control node) ─────────────────────────────────────────
+# Committed reference snapshot. Override to an inventory-managed path to keep a
+# per-environment capture outside the role.
+splunk_config_snapshot_dir: "{{ role_path }}/files/snapshots/{{ splunk_config_stack }}"
+
+# Scratch dir on the control node for the raw (pre-scrub) capture. Kept out of
+# the repo; cleaned unless splunk_config_keep_raw is true (debugging only).
+splunk_config_raw_dir: "/tmp/splunk_config_raw/{{ splunk_config_stack }}"
+splunk_config_keep_raw: false
+
+# ── Secrets (HashiCorp Vault) ────────────────────────────────────────────────
+# Where splunk.secret (per instance-label field) is stored/read. Dedicated path
+# — a single full PUT of all secret_<label> fields, so no partial-clobber risk.
+# vault_kv_mount is defined per-inventory in group_vars/all.yml (kv-<env>).
+splunk_config_vault_mount: "{{ vault_kv_mount }}"
+splunk_config_vault_path: apps/splunk/config
+
+# Capture each instance's splunk.secret to Vault on export (restored on apply to
+# keep $7$-encrypted conf values decryptable). Turn off for a portable snapshot
+# destined for a brand-new realm where encrypted values will be re-created.
+splunk_config_export_push_splunk_secret: true
+
+# ── Apply behaviour ──────────────────────────────────────────────────────────
+# Reseed scrubbed secrets from Vault during apply (splunk.secret restore keeps
+# $7$-encrypted conf values valid). Turn off only for a config-only dry test.
+splunk_config_apply_reseed_secrets: true
+
+# Trigger each tier's bundle push after placing config. Off = stage the files
+# but let an operator push manually (safer first apply against a live estate).
+splunk_config_apply_push_bundles: true
+
+# Restart non-control instances (search head / indexer / standalone) after
+# placing config so system/local + apps take effect. Off by default — restarts
+# interrupt; enable once you've reviewed a first apply.
+splunk_config_apply_restart_instances: false
+
+# Admin credential for CLI bundle-push / reload auth. Supply via a Vault lookup
+# in inventory (the estate's own admin path). Empty → pushes are SKIPPED with a
+# warning telling the operator to push manually (safe default for a first apply).
+splunk_config_admin_password: ""
+
+# ── Inventory must provide (no safe defaults) ────────────────────────────────
+# The swarm nodes to scan for Splunk containers are simply the hosts this role
+# runs against — target them via the playbook's `hosts:` (e.g. swarm_managers +
+# swarm_workers, or a dedicated splunk group). See README.

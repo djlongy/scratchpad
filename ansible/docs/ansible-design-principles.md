@@ -1,10 +1,5 @@
 # Ansible Design Principles
 
-> **Canonical copy lives at `~/.config/skills/ansible-design/REFERENCE.md`** — that
-> file is loaded by the global `ansible-design` the tool skill. This copy in the repo
-> is a mirror for in-repo discoverability. **Keep both in sync** — when editing,
-> update both files in the same commit, or update the skill copy and re-copy here.
-
 A reference for designing maintainable Ansible repositories at scale. Synthesized
 from current (2024–2026) community ground truth — Red Hat Communities of Practice,
 official Ansible documentation, ansible-lint rules, and the conventions used by

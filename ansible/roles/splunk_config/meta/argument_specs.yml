@@ -1,0 +1,56 @@
+---
+argument_specs:
+  main:
+    short_description: Capture & re-apply a Splunk-on-Swarm estate's configuration as IaC.
+    description:
+      - Two-mode tool role. With C(--tags export) it harvests every Splunk
+        container's config subtree, scrubs secrets, and writes a snapshot
+        (manifest + native app bundles) on the control node. With C(--tags apply)
+        it places a snapshot back into the correct tier staging dirs, reseeds
+        secrets from Vault, and triggers each tier's bundle push.
+      - Neither mode runs on a bare converge (both are C(never)-gated). Target the
+        swarm nodes via the playbook's C(hosts:).
+    options:
+      splunk_config_stack:
+        type: str
+        default: splunk
+        description: docker ps name filter selecting the Splunk container set.
+      splunk_config_container_etc:
+        type: str
+        default: /opt/splunk/etc
+        description: Splunk config root inside the container.
+      splunk_config_container_splunk_bin:
+        type: str
+        default: /opt/splunk/bin/splunk
+        description: Path to the splunk binary inside the container (bundle push/reload).
+      splunk_config_capture_paths:
+        type: list
+        elements: str
+        description: >-
+          etc/ subtrees harvested from each container. Non-existent paths are
+          skipped per container.
+      splunk_config_snapshot_dir:
+        type: str
+        description: >-
+          Control-node directory for the committable snapshot
+          (default C(<role>/files/snapshots/<stack>)).
+      splunk_config_raw_dir:
+        type: str
+        description: Control-node scratch dir for the raw (pre-scrub) capture.
+      splunk_config_keep_raw:
+        type: bool
+        default: false
+        description: Keep the raw pre-scrub capture (debugging only).
+      splunk_config_vault_path:
+        type: str
+        description: >-
+          HashiCorp Vault KV path holding splunk.secret and local-user
+          credentials (default C(<vault_kv_mount>/apps/splunk/config)).
+      splunk_config_apply_reseed_secrets:
+        type: bool
+        default: true
+        description: Reseed scrubbed secrets from Vault during apply.
+      splunk_config_apply_push_bundles:
+        type: bool
+        default: true
+        description: Trigger each tier's bundle push after placing config on apply.

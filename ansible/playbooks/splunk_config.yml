@@ -1,0 +1,30 @@
+---
+# Capture / re-apply a Splunk-on-Swarm estate's configuration as IaC.
+#
+# Two-mode tool role (both modes are `never`-gated — a bare run does nothing):
+#   --tags export   capture the live estate -> committable snapshot on the control node
+#   --tags apply    place a snapshot back + reseed secrets + trigger tier bundle pushes
+#
+# Runs against every swarm node (a container is exec-reachable only on the node
+# hosting it). Point -i at an inventory whose hosts are the swarm nodes.
+#
+# Usage:
+#   # Capture the live estate into roles/splunk_config/files/snapshots/<stack>/
+#   ansible-playbook -i inventories/swarm/hosts.yml \
+#       playbooks/splunk_config.yml --tags export
+#
+#   # Restore (dry: stage files only, skip bundle pushes)
+#   ansible-playbook -i inventories/swarm/hosts.yml \
+#       playbooks/splunk_config.yml --tags apply \
+#       -e splunk_config_apply_push_bundles=false
+#
+# Requires HashiCorp Vault reachable (splunk.secret is stored/read there):
+# set vault_addr + vault_kv_mount in inventory. See the role README for the full
+# variable reference.
+
+- name: Capture / re-apply the Splunk estate configuration
+  hosts: swarm_managers:swarm_workers
+  gather_facts: true
+  become: true
+  roles:
+    - role: splunk_config

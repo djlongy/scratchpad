@@ -171,8 +171,10 @@ yarn-error.log*
 *.sqlite3
 *.db
 
-# ── Local agent instructions ──────────────────────────────────────────────────────
+# ── Local agent instructions / harness (never publish — internal tooling notes) ────
 AGENTS.md
+CLAUDE.md
+/.agent/
 
 # ── Browser-automation / agent tool artifacts ─────────────────────────────────────
 .playwright-cli/
@@ -193,7 +195,7 @@ ansible/inventories/**/local.yml
 # into group_vars deliberately if you want to commit one)
 **/freeipa.config.snapshot.yml
 
-# the tool/superpowers planning artifacts — never publish prompts/plans/specs
+# Local planning artifacts — never publish prompts/plans/specs
 docs/superpowers/
 
 # Live FreeIPA export snapshots — REAL realm data, never commit to public repo

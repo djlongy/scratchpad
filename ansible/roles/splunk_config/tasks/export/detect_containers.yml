@@ -1,0 +1,47 @@
+---
+# Discover Splunk service containers on this swarm node and build a capture list
+# with a coarse role_hint (server.conf classification in the scrubber is
+# authoritative; the hint is only a fallback when server.conf is absent).
+
+- name: Detect | List Splunk container names on {{ inventory_hostname }}
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      docker ps --filter name={{ splunk_config_stack }}
+      --format '{% raw %}{{.Names}}{% endraw %}' || true
+    executable: /bin/bash
+  become: true
+  register: _docker_ps
+  changed_when: false
+
+- name: Detect | Reset this node's container list
+  ansible.builtin.set_fact:
+    _splunk_containers: []
+
+- name: Detect | Build the container capture list
+  ansible.builtin.set_fact:
+    _splunk_containers: "{{ _splunk_containers + [_entry] }}"
+  vars:
+    _service: "{{ item | regex_replace('\\.[0-9]+\\..*$', '') }}"
+    _svc_l: "{{ _service | lower }}"
+    _entry:
+      name: "{{ item }}"
+      service: "{{ _service }}"
+      # label == sanitized service. Swarm service names are unique across the
+      # stack, so the label is stable across export→apply (matched by service).
+      label: "{{ _service | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
+      role_hint: >-
+        {{ 'indexer' if ('idx' in _svc_l or 'indexer' in _svc_l)
+           else 'cluster_manager' if ('manager' in _svc_l or '-cm' in _svc_l)
+           else 'shc_deployer' if 'deployer' in _svc_l
+           else 'deployment_server' if ('deploy' in _svc_l or _svc_l.endswith('-ds'))
+           else 'search_head' if ('search' in _svc_l or '-sh' in _svc_l)
+           else 'forwarder' if ('uf' in _svc_l or 'forwarder' in _svc_l)
+           else '' }}
+  loop: "{{ _docker_ps.stdout_lines | select | list }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Detect | Report discovered containers
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: {{ _splunk_containers | map(attribute='service') | list }}"

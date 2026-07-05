@@ -1,6 +1,6 @@
 # Scratchpad
 
-Reference kit for sysadmin / DevOps work. Quick references, runnable
+A reference kit for sysadmin / DevOps work. Quick references, runnable
 snippets, and small self-contained projects — organised so things can
 be found in their relevant places and dropped into real deployments
 without surgery.
@@ -28,6 +28,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | [`vault_container`](ansible/roles/vault_container/) | 3-node HashiCorp Vault Raft HA cluster as a Docker container. Self-signed TLS, Shamir unseal, KV mounts, ACL policies, optional FreeIPA LDAP. | `ansible/roles/` |
 | [`swarm_stack`](ansible/roles/swarm_stack/) | Generic engine for deploying any application stack onto Docker Swarm. Encrypted overlays, NFS volumes, content-versioned secrets/configs, redeploy + teardown via tags. | `ansible/roles/` |
 | [`mattermost_swarm`](ansible/roles/mattermost_swarm/) | Worked-example wrapper over `swarm_stack` deploying Mattermost (postgres + app) with optional FreeIPA LDAP/SSO. | `ansible/roles/` |
+| [`splunk_config`](ansible/roles/splunk_config/) | Capture a live Splunk-on-Swarm estate's **entire configuration** into a committable, re-appliable snapshot (readable `manifest.yml` + native app bundles), and apply it back. Reaches Splunk through the containers (`docker exec`/`docker cp`), auto-detects topology (cluster manager / SHC deployer / deployment server / search head / indexer), and **scrubs every secret** before anything touches git — re-seeding from HashiCorp Vault on apply. | `ansible/roles/` |
 | [`common`](ansible/roles/common/) | Function-like task helpers callable as `tasks_from:` — passphrase generation, vault-backed secret bootstrapping, audit-log shipping (rsyslog/splunk/fluentd/elasticsearch/file/cloudwatch/syslog), fapolicyd rule deploy. | `ansible/roles/` |
 | [`get_cli_args`](ansible/plugins/action/get_cli_args.README.md) | Action plugin exposing `ansible-playbook` CLI args, Semaphore extra-vars, and runtime git status to tasks. | `ansible/plugins/action/` |
 | [`vsphere dynamic inventory`](ansible/inventories/vmware/) | Two flavours of vSphere inventory plugin config (community.vmware + the official vmware.vmware), wired up with persistent caching. | `ansible/inventories/` |

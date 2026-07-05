@@ -1,0 +1,26 @@
+---
+# splunk_config — two-mode tool role. A bare converge does nothing but print
+# guidance; pick a mode with a tag:
+#   --tags export   capture the live estate → snapshot on the control node
+#   --tags apply    place a snapshot back + reseed secrets + push bundles
+#
+# Both modes are `never`-gated: this is a capture/restore tool, not a
+# continuous reconcile, so neither mode may fire by accident on a full
+# playbook run. (Sanctioned enablement exception — see the ansible-design tag
+# rules: `never` for ops that must require explicit opt-in.)
+
+- name: Show usage when no mode tag is selected
+  ansible.builtin.debug:
+    msg: >-
+      splunk_config is a two-mode tool. Re-run with --tags export (capture the
+      live estate) or --tags apply (restore a snapshot). Nothing to do without a
+      mode tag.
+  tags: [always]
+
+- name: Capture the live Splunk estate into a snapshot
+  ansible.builtin.import_tasks: export.yml
+  tags: [never, export]
+
+- name: Apply a snapshot back onto the estate
+  ansible.builtin.import_tasks: apply.yml
+  tags: [never, apply]

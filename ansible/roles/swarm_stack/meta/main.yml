@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: swarm_stack
-  author: lab
+  author: longy
   description: >-
     Generic Docker Swarm stack engine — reconciles networks, configs, secrets
     (with Vault-backed bootstrap), volumes, bind/NFS subpaths, and deploys a

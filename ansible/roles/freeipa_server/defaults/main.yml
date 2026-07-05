@@ -110,7 +110,7 @@ freeipa_server_no_pkinit: false
 # ── Active Directory trust (cross-forest identity; opt-in, default off) ──────
 # Trust an AD forest so AD users authenticate against IPA resources. Needs setup_adtrust
 # (passes --setup-adtrust), reachable AD DCs, and two-way DNS. Each trust → upstream ipatrust;
-# IPA admin + each AD admin password from Vault. Not exercised in this lab (no AD).
+# IPA admin + each AD admin password from Vault. Not exercised by default (no AD).
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
 #  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }

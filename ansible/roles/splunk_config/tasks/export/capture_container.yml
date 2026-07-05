@@ -1,0 +1,114 @@
+---
+# Capture one container's config subtree. The CID is re-resolved from the
+# service name (swarm can recreate the task any time, so a frozen CID goes
+# stale). Only the capture paths that actually exist in this container are
+# tarred — a search head has no manager-apps, an indexer no shcluster/apps.
+
+- name: Capture | Resolve control-node paths for {{ _container.label }}
+  ansible.builtin.set_fact:
+    _node_tar: "/tmp/splunk_cfg_{{ _container.label }}.tar"
+    _raw_inst: "{{ splunk_config_raw_dir }}/{{ _container.label }}"
+
+# Build a FILTERED file list inside the container, then tar only that. Fixed
+# subtrees (system/local, users, staging dirs) are taken wholesale; each app
+# contributes local/ + metadata/ always, and default/ only when it is not a
+# stock app — so the tarball stays small (no multi-hundred-MB stock TA defaults
+# that the scrubber would discard anyway). SPLUNK_HOME differs by image (full
+# Splunk /opt/splunk vs universal forwarder /opt/splunkforwarder), so the etc
+# dir is detected in-container. The tar is gzipped + world-readable.
+- name: Capture | {{ _container.label }} — tar filtered config out of the container
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
+      [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 1; }
+      ETC=$(docker exec "$CID" sh -c 'for e in /opt/splunk/etc /opt/splunkforwarder/etc; do [ -d "$e" ] && echo "$e" && break; done')
+      [ -n "$ETC" ] || { echo "no etc dir in {{ _container.name }}"; exit 0; }
+      # -u 0 (root): splunk.secret / passwd / some confs are root-owned 0400 —
+      # the default splunk user can't read them, and those are exactly the secret
+      # files we must capture to scrub + re-seed. tar as root reads everything.
+      docker exec -e CFG_ETC="$ETC" -u 0 "$CID" sh -c '
+        cd "$CFG_ETC" || exit 1
+        : > /tmp/cfg_list
+        for p in {{ splunk_config_capture_paths | reject("equalto", "apps") | join(" ") }}; do
+          [ -e "$p" ] && printf "%s\n" "$p" >> /tmp/cfg_list
+        done
+        if [ -d apps ]; then
+          for a in apps/*/; do
+            a=${a%/}; n=$(basename "$a")
+            for s in local metadata; do [ -e "$a/$s" ] && printf "%s\n" "$a/$s" >> /tmp/cfg_list; done
+            case "$n" in
+              {{ splunk_config_stock_app_globs | join("|") }}) ;;
+              *) [ -e "$a/default" ] && printf "%s\n" "$a/default" >> /tmp/cfg_list;;
+            esac
+          done
+        fi
+        [ -s /tmp/cfg_list ] || exit 0
+        tar -czf /tmp/splunk_cfg.tar -T /tmp/cfg_list
+        rm -f /tmp/cfg_list'
+      docker cp "$CID":/tmp/splunk_cfg.tar {{ _node_tar | quote }} 2>/dev/null \
+        || { echo "nothing captured"; exit 0; }
+      docker exec "$CID" rm -f /tmp/splunk_cfg.tar || true
+      chmod 0644 {{ _node_tar | quote }}
+    executable: /bin/bash
+  become: true
+  register: _capture
+  changed_when: true
+
+- name: Capture | {{ _container.label }} — stat the node tarball
+  ansible.builtin.stat:
+    path: "{{ _node_tar }}"
+  become: true
+  register: _cap_stat
+
+- name: Capture | {{ _container.label }} — bring the capture onto the control node
+  when: _cap_stat.stat.exists
+  block:
+    - name: Capture | {{ _container.label }} — ensure raw instance etc dir
+      ansible.builtin.file:
+        path: "{{ _raw_inst }}/etc"
+        state: directory
+        mode: "0750"
+      delegate_to: localhost
+      become: false
+
+    # fetch is fine now: capture-time filtering keeps the tarball small (local
+    # config + custom apps only), so no memory blow-up and no rsync dependency
+    # (the swarm nodes have no rsync).
+    - name: Capture | {{ _container.label }} — fetch tarball to control node
+      ansible.builtin.fetch:
+        src: "{{ _node_tar }}"
+        dest: "{{ _raw_inst }}/capture.tar"
+        flat: true
+      become: true
+
+    - name: Capture | {{ _container.label }} — unpack raw etc on control node
+      ansible.builtin.unarchive:
+        src: "{{ _raw_inst }}/capture.tar"
+        dest: "{{ _raw_inst }}/etc"
+        remote_src: true
+      delegate_to: localhost
+      become: false
+
+    - name: Capture | {{ _container.label }} — write capture metadata
+      ansible.builtin.copy:
+        dest: "{{ _raw_inst }}/_capture.json"
+        content: >-
+          {{ {'service': _container.service, 'node': inventory_hostname,
+              'role_hint': _container.role_hint} | to_nice_json }}
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+
+    - name: Capture | {{ _container.label }} — drop the local tar copy
+      ansible.builtin.file:
+        path: "{{ _raw_inst }}/capture.tar"
+        state: absent
+      delegate_to: localhost
+      become: false
+
+    - name: Capture | {{ _container.label }} — remove the node tarball
+      ansible.builtin.file:
+        path: "{{ _node_tar }}"
+        state: absent
+      become: true

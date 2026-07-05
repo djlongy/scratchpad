@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: nfs_client
-  author: longy lab
+  author: longy
   description: Mounts the nfs_server tree on demand at /net via fail-fast autofs.
   license: MIT
   min_ansible_version: "2.15"

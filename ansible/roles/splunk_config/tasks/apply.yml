@@ -1,0 +1,52 @@
+---
+# Apply orchestrator — place a captured snapshot back onto the estate and
+# trigger each tier's bundle push. Runs against the swarm nodes; per-node work
+# targets the Splunk containers currently on that node, matched to the snapshot
+# by service name.
+#
+# Placement OVERWRITES the container's config from the snapshot and each push is
+# safe to repeat, so apply is convergent/re-appliable (a second run restores the
+# same state). It is NOT a fine-grained no-op diff — it re-copies every run.
+
+- name: Apply | Assert the snapshot manifest exists (once)
+  ansible.builtin.stat:
+    path: "{{ splunk_config_snapshot_dir }}/manifest.yml"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: _snap_stat
+
+- name: Apply | Fail early when no snapshot is present
+  ansible.builtin.assert:
+    that: [_snap_stat.stat.exists]
+    fail_msg: >-
+      No snapshot at {{ splunk_config_snapshot_dir }}/manifest.yml. Run
+      --tags export first, or point splunk_config_snapshot_dir at one.
+  run_once: true
+
+# include_vars exposes splunk_config_snapshot on every node (cheap local read)
+- name: Apply | Load the snapshot manifest
+  ansible.builtin.include_vars:
+    file: "{{ splunk_config_snapshot_dir }}/manifest.yml"
+
+- name: Apply | Discover Splunk containers on this node
+  ansible.builtin.include_tasks: export/detect_containers.yml
+
+- name: Apply | Reseed splunk.secret into local containers from Vault
+  ansible.builtin.include_tasks: apply/reseed_secrets.yml
+  when: splunk_config_apply_reseed_secrets | bool
+
+- name: Apply | Place snapshot bundles into local containers
+  ansible.builtin.include_tasks: apply/place_bundles.yml
+  loop: "{{ _splunk_containers | default([]) }}"
+  loop_control:
+    loop_var: _container
+    label: "{{ _container.label }}"
+
+- name: Apply | Trigger tier bundle pushes / reloads
+  ansible.builtin.include_tasks: apply/push.yml
+  loop: "{{ _splunk_containers | default([]) }}"
+  loop_control:
+    loop_var: _container
+    label: "{{ _container.label }}"
+  when: splunk_config_apply_push_bundles | bool

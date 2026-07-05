@@ -2,7 +2,7 @@
 
 Reference implementation for Ansible dynamic inventory against VMware vCenter using the `community.vmware.vmware_vm_inventory` plugin.
 
-Designed for real-world labs and enterprise environments with multi-environment (prod/staging/dev/DR) and multi-tenant vSphere clusters.
+Designed for real-world lab and enterprise environments with multi-environment (prod/staging/dev/DR) and multi-tenant vSphere clusters.
 
 ## Files
 
