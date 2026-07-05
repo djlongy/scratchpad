@@ -59,6 +59,42 @@ vsphere_vm_create_delay: 15
 vsphere_vm_connect_passes: 8                     # reconnect+wait cycles before giving up
 vsphere_vm_connect_pass_retries: 5               # IP polls per pass
 vsphere_vm_connect_pass_delay: 10                # seconds between polls within a pass
+
+# ── Provisioning mode: GOSC (default) vs cloud-init GuestInfo ─────────────────
+# The NIC-disconnect above is caused by vSphere Guest OS Customization (GOSC) —
+# the clone-time `customization:` spec that sets the static IP/hostname ALSO fires
+# an async first-boot event that drops the NIC. The multi-pass reconnect heals it.
+#
+# GuestInfo mode is the DURABLE CURE: clone with NO customization spec and hand the
+# hostname + static network to cloud-init via the guestinfo.metadata advanced
+# setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
+# becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
+# (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
+# no new inventory. See the Notes note "vSphere — Cloned VM NIC Disconnects
+# Under GOSC; Use cloud-init GuestInfo" and the role README.
+#
+# REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
+# (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
+# `disable_vmware_customization: true`. Verify on a host with
+# `cloud-init query platform` → must return `vmware`.
+vsphere_vm_provision_via_guestinfo: false
+# GuestInfo networking is MULTI-NIC: every entry in a guest's `networks` becomes a
+# cloud-init ethernet keyed by an EXPLICIT guest device name. cloud-init's RHEL/
+# NetworkManager renderer ignores netplan `match:` globs (an unmatched block is
+# dropped and the NIC DHCPs), so each NIC names its device. The default names
+# follow the VMware VMXNET3 slot order — ens192, ens224, ens256, … in list order —
+# so a single-NIC guest needs nothing extra. Override per NIC with `interface:`
+# when the template uses different names (eth0, ens160, …):
+#   networks:
+#     - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.10,  netmask: 255.255.255.0, gateway: 192.0.2.1}
+#     - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.10,  netmask: 255.255.255.0}   # no gateway
+#     - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.10,  netmask: 255.255.255.0}
+# The primary NIC (first one with a gateway; else NIC 0) carries the resolvers.
+# Per-NIC firewalld zones/services/rules are NOT this role's job — a firewalld/
+# baseline role wires those post-provision, keyed off these interface names.
+# Optional per-guest raw #cloud-config user-data: set item.guestinfo_userdata on a
+# guest to inject guestinfo.userdata alongside the metadata (packages, users, an
+# authoritative resolv.conf, …). Left unset → only metadata (network + hostname).
 # ── Guests to manage ─────────────────────────────────────────────────────────
 # Each item (only name + template are required; the rest fall back to the
 # hardware defaults above):

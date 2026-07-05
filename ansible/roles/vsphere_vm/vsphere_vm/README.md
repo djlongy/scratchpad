@@ -225,13 +225,81 @@ Use **either** `vsphere_vm_cluster` (DRS cluster) **or** `vsphere_vm_esxi_host`
 (standalone host). For standalone hosts also set `vsphere_vm_resource_pool` to
 that host's default pool ("Resources").
 
-## Known vSphere quirk (handled)
+## Known vSphere quirk (handled — but see the permanent fix)
 
-Clone + guest-customization can leave the new VM's NIC **disconnected** (a
-long-standing vSphere bug), so the guest never gets an IP and `wait_for_ip`
-hangs. The role forces every NIC `connected: true` + `start_connected: true` to
-avoid this. If you still see a disconnected NIC, connect it in vCenter (or
-`govc device.connect -vm <name> ethernet-0`).
+Clone **with a vSphere Guest OS Customization (GOSC) spec** (`customization:`) toggles the new
+VM's NIC **disconnected** during the guest's async first-boot customization, so it never gets an
+IP and `wait_for_ip` hangs. Forcing `connected/start_connected: true` at create time is necessary
+but **not sufficient** — GOSC reverts it after the clone returns. That is why `connect.yml` runs a
+bounded **multi-pass** reconnect over all managed VMs (the pass that lands just after customization
+finishes makes it stick). If you still see a disconnected NIC: `govc device.connect -vm <name> ethernet-0`.
+
+**Root cause + permanent fix (documented once, cross-environment):** Notes →
+`60-Domains/Infrastructure/vSphere — Cloned VM NIC Disconnects Under GOSC; Use cloud-init GuestInfo.md`.
+The durable cure — **now implemented** as `vsphere_vm_provision_via_guestinfo` (see next section) —
+is to stop using GOSC and drive first-boot config via the cloud-init VMware GuestInfo datasource.
+
+## Provisioning mode: cloud-init GuestInfo (recommended — retires the reconnect race)
+
+Set `vsphere_vm_provision_via_guestinfo: true` (e.g. in `group_vars/all.yml` for the inventory) and
+the role provisions with **zero GOSC**, so the NIC never disconnects — no reconnect race, `connect.yml`
+converges on its first pass. It reads the **same per-guest fields** as the default path (nothing new
+to specify for the common case):
+
+```yaml
+# group_vars/<vm_group>.yml
+vsphere_vm_provision_via_guestinfo: true      # the only change vs the GOSC default
+```
+
+How it stays all-native (no `govc`): `create.yml` (1) clones **powered-off with no `networks:` and no
+`customization:`** — so `vmware_guest` attaches no GOSC spec — injecting the rendered cloud-init metadata
+as `guestinfo.metadata`; (2) sets each vNIC's portgroup + `start_connected` with `vmware_guest_network`
+(also no GOSC); (3) powers on. The NIC is live at first boot, so cloud-init's `vmware` datasource applies
+the static hostname + network. Verified end-to-end (NIC `Connected: true` throughout, exact static IP,
+`cloud-init query platform` → `vmware`).
+
+### Dual-mode specifics (post-synthesis)
+
+- **Per-guest mode choice** — the flag also works per guest: set `vsphere_vm_provision_via_guestinfo`
+  in a host's vars (inventory-derived model) or `provision_via_guestinfo:` on a hand-curated guest.
+  One inventory can mix GOSC and GuestInfo guests; unset falls back to the role-wide flag.
+- **Clone engine** — GuestInfo mode clones with `vmware.vmware.deploy_folder_template`, which has NO
+  customization surface (GOSC-proof by construction; `vmware_guest` attaches a GOSC spec to template
+  clones even without `customization:`). Hardware/disk/guestinfo are applied by a follow-up plain
+  reconfigure. Requires the `vmware.vmware` collection (already in requirements.yml).
+- **Standalone-host gotcha** — `deploy_folder_template` resolves `vsphere_vm_resource_pool` by name
+  OR MOID; if the host has an ambiguous pool name (nested "Resources"), set the host ROOT pool MOID
+  (e.g. `resgroup-123`, via `govc object.collect -s /DC/host/<h> resourcePool`). The GOSC path
+  (`vmware_guest`) wants the NAME — keep both notes in mind when mixing modes.
+- **Per-NIC DHCP fallback** — a `networks:` entry with `type: dhcp` (or no `ip`) renders
+  `dhcp4: true` for that NIC only; static and DHCP NICs can mix in one guest.
+- **Both modes live-verified** (AlmaLinux 9.8, 2026-07): GOSC auto-reconnects (~30s) when the
+  template guestId is correct (`rhel9_64Guest` — "other*" guestIds break the reconnect); GuestInfo
+  shows zero customization events with the NIC connected throughout.
+
+**Requires a GuestInfo-ready template** (Packer-baked): cloud-init with `datasource_list: [VMware, OVF,
+None]`, `allow_raw_data: true`, and `disable_vmware_customization: true`. Verify on a built host with
+`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every lab VLAN has
+DHCP, so that means an IP-conflict risk; pick target IPs not already allocated in inventory).
+
+**Multi-NIC** — every entry in a guest's `networks` becomes its own cloud-init ethernet, keyed by an
+**explicit** guest device name (cloud-init's RHEL renderer ignores netplan `match:` globs). Defaults follow
+VMware VMXNET3 slot order (`ens192`, `ens224`, `ens256`, … in list order); override per NIC with `interface:`.
+The first NIC with a gateway (else NIC 0) carries the resolvers.
+
+```yaml
+# host_vars/monster-01.yml — a (deliberately gnarly) 3-NIC guest
+vsphere_vm_networks:
+  - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.10, netmask: 255.255.255.0, gateway: 192.0.2.10}
+  - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.60,    netmask: 255.255.255.0}   # data plane, no gateway
+  - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.60,    netmask: 255.255.255.0}   # ingress plane
+```
+
+`vsphere_vm` provisions the vNICs + IPs; **per-NIC firewalld zones/services/rules are a `firewalld`/
+`baseline` role's job** (guest-side, post-provision), keyed off these interface names — not this role.
+
+Optional: set a guest's `guestinfo_userdata` to a raw `#cloud-config` string to also inject
+`guestinfo.userdata` (packages, users, an authoritative resolv.conf, …).
 
 ## Variables
 

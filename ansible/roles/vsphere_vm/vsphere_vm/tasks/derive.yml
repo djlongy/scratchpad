@@ -41,6 +41,7 @@
       state: "{{ _hv.vsphere_vm_state | default(vsphere_vm_state) }}"
       networks: "{{ _hv.vsphere_vm_networks | default([_derived_nic]) }}"
       customization: "{{ _hv.vsphere_vm_customization | default(_derived_cust) }}"
+      provision_via_guestinfo: "{{ _hv.vsphere_vm_provision_via_guestinfo | default(vsphere_vm_provision_via_guestinfo) | bool }}"
     _derived_nic:
       name: "{{ _hv.vsphere_vm_network | default(vsphere_vm_network) }}"
       type: static

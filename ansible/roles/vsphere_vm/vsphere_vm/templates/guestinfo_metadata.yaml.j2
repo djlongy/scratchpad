@@ -1,0 +1,56 @@
+#jinja2: trim_blocks:True, lstrip_blocks:True
+{#
+  cloud-init metadata for the VMware GuestInfo datasource — rendered per guest and
+  injected (base64) as guestinfo.metadata by tasks/create.yml when
+  vsphere_vm_provision_via_guestinfo is true. Drives first-boot hostname + static
+  networking WITHOUT a vSphere GOSC customization spec, so the NIC never
+  async-disconnects (see the role README + the Notes GOSC note).
+
+  Multi-NIC: every entry in item.networks becomes its own cloud-init ethernet,
+  keyed by an EXPLICIT interface name. cloud-init's RHEL/NetworkManager renderer
+  does NOT honour netplan `match:` globs — an unmatched block is silently dropped
+  and the guest falls back to DHCP — so each NIC must name its guest device.
+  Default device names follow the VMware VMXNET3 slot order (ens192, ens224,
+  ens256, …); override per NIC with `interface:` when the template differs.
+
+  Reads the same per-guest fields the GOSC path uses (no new inventory needed):
+    item.customization.hostname, item.customization.dns_servers,
+    item.networks[*].{ip, netmask, gateway, interface}.
+#}
+{%- set _host = item.customization.hostname | default(item.name) -%}
+{%- set _dns = item.customization.dns_servers | default([]) -%}
+{%- set _nics = item.networks | default([]) -%}
+{#- Primary NIC = first with a gateway (its resolvers become the system's); else NIC 0. -#}
+{%- set _ns = namespace(primary=-1) -%}
+{%- for n in _nics %}
+{%-   if _ns.primary < 0 and n.gateway is defined and n.gateway | string | length > 0 %}
+{%-     set _ns.primary = loop.index0 %}
+{%-   endif %}
+{%- endfor %}
+{%- if _ns.primary < 0 %}{% set _ns.primary = 0 %}{% endif -%}
+instance-id: {{ _host }}
+local-hostname: {{ _host }}
+network:
+  version: 2
+  ethernets:
+{% for _nic in _nics %}
+{%   set _iface = _nic.interface | default('ens' ~ (192 + 32 * loop.index0)) %}
+{%   set _prefix = _nic.netmask | default('255.255.255.0') | string | split('.') | map('extract', vsphere_vm_netmask_bits) | sum %}
+    {{ _iface }}:
+{%   if (_nic.type | default('static')) == 'static' and (_nic.ip | default('') | string | length > 0) %}
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - {{ _nic.ip }}/{{ _prefix }}
+{%   if _nic.gateway is defined and _nic.gateway | string | length > 0 %}
+      gateway4: {{ _nic.gateway }}
+{%   endif %}
+{%   if _dns | length > 0 and loop.index0 == _ns.primary %}
+      nameservers:
+        addresses: [{{ _dns | join(', ') }}]
+{%   endif %}
+{%   else %}
+      dhcp4: true
+      dhcp6: false
+{%   endif %}
+{% endfor %}

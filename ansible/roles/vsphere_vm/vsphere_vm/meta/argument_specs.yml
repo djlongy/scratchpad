@@ -116,3 +116,13 @@ argument_specs:
         elements: str
         required: false
         description: Default DNS servers for auto-derived guest customization.
+      vsphere_vm_provision_via_guestinfo:
+        type: bool
+        required: false
+        description: >-
+          Provision via the cloud-init VMware GuestInfo datasource instead of a
+          vSphere GOSC customization spec. Clones with no customization (so the NIC
+          never async-disconnects) and injects hostname + static network (all NICs)
+          as base64 guestinfo.metadata. Requires a GuestInfo-ready template. Reads
+          the same per-guest fields as the GOSC path; each NIC may set `interface`
+          (default ens192/ens224/ens256… in vmware slot order).
