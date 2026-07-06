@@ -1,0 +1,5 @@
+---
+# roles/freeipa_server_docker/handlers/main.yml
+# No handlers: the container's lifecycle is reconciled directly by the docker_container module in
+# deploy.yml (restart_policy owns crash-restarts), and a config change recreates the container
+# there — so a notify-based restart handler would be dead code. Intentionally empty.

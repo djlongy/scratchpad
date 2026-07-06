@@ -1,0 +1,26 @@
+---
+# A Docker-capable VM host that will run FreeIPA as a container.
+# The SAME freeipa_server_* group_vars drive package and container mode —
+# the substrate is picked by ONE toggle (freeipa_server_deployment).
+all:
+  children:
+    freeipa:
+      hosts:
+        idm01:
+          ansible_host: 10.0.0.11
+      vars:
+        ansible_user: ansible
+        freeipa_server_deployment: container   # ← the toggle (default: package)
+        freeipa_server_domain: example.com     # realm derives as EXAMPLE.COM
+        freeipa_server_forwarders: [10.0.0.53]
+        # First boot of an empty /data needs an install mode; later runs keep the
+        # safe default ("existing" just boots the populated volume):
+        # freeipa_server_docker_install_mode: fresh      # new realm
+        # freeipa_server_docker_install_mode: replica    # join an existing realm:
+        # freeipa_server_docker_replica_server: idm02.example.com
+        #
+        # ONE admin credential source (declared var wins; HashiCorp Vault is the fallback):
+        # freeipa_server_admin_password: "{{ vaulted_ipa_admin_password }}"  # Ansible-Vault group_var
+        # freeipa_server_vault_secret: "kv/data/platform/freeipa/runtime"   # HashiCorp Vault KV path
+        # A fresh install also needs the Directory Manager password:
+        # freeipa_server_dm_password: "{{ vaulted_ipa_dm_password }}"

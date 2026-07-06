@@ -1,0 +1,54 @@
+---
+# roles/freeipa_server_docker/tasks/prereqs.yml
+# Container runtime + host-side prerequisites (data dir, firewall). Docker install is
+# delegated to the repo `docker` role so this role stays thin and single-purpose.
+
+- name: Install the Docker runtime (reuse the docker role)
+  ansible.builtin.include_role:
+    name: docker
+  when: freeipa_server_docker_runtime == "docker"
+  tags: [prereqs]
+
+- name: Install the Podman runtime (reuse the podman role)
+  ansible.builtin.include_role:
+    name: podman
+  when: freeipa_server_docker_runtime == "podman"
+  tags: [prereqs]
+
+- name: Ensure the persistent /data directory exists
+  ansible.builtin.file:
+    path: "{{ freeipa_server_docker_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# Replica enrolment needs the host to resolve the master. Point /etc/resolv.conf at the master's
+# DNS (self-contained — no manual pre-step). Only on a first-time replica install (empty /data).
+- name: Check whether the container /data is already IPA-configured
+  ansible.builtin.stat:
+    path: "{{ freeipa_server_docker_data_dir }}/etc/ipa/default.conf"
+  register: _freeipa_docker_configured
+  when: freeipa_server_docker_install_mode == "replica"
+
+- name: Point resolv.conf at the master for replica enrolment
+  ansible.builtin.copy:
+    content: "search {{ freeipa_server_docker_domain }}\nnameserver {{ freeipa_server_docker_replica_resolver }}\n"
+    dest: /etc/resolv.conf
+    mode: "0644"
+  when:
+    - freeipa_server_docker_install_mode == "replica"
+    - freeipa_server_docker_replica_resolver | length > 0
+    - not (_freeipa_docker_configured.stat.exists | default(false))
+
+- name: Open the FreeIPA port set on the host firewall (firewalld)
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ freeipa_server_docker_firewall_services }}"
+  loop_control:
+    label: "{{ item }}"
+  when: freeipa_server_docker_manage_firewall | bool
+  failed_when: false   # host firewall may be disabled/absent on a lab host — never block on it

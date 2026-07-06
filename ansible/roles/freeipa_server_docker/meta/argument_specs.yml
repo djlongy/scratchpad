@@ -1,0 +1,83 @@
+---
+argument_specs:
+  main:
+    short_description: Run a FreeIPA server as a container with a persistent /data volume.
+    options:
+      freeipa_server_docker_image:
+        type: str
+        required: false
+        description: FreeIPA server container image (pin the OS tag to keep upgrades in-major).
+      freeipa_server_docker_data_dir:
+        type: str
+        required: false
+        description: Host path bind-mounted at /data — the entire persistent IPA dataset.
+      freeipa_server_docker_runtime:
+        type: str
+        required: false
+        choices: [docker, podman]
+        description: Container runtime.
+      freeipa_server_docker_install_mode:
+        type: str
+        required: false
+        choices: [existing, fresh, replica]
+        description: >-
+          existing = boot populated /data; fresh = ipa-server-install a new realm;
+          replica = ipa-replica-install against a live master (lift-and-shift).
+      freeipa_server_docker_domain:
+        type: str
+        required: true
+        description: FreeIPA primary DNS domain (lowercase).
+      freeipa_server_docker_replica_server:
+        type: str
+        required: false
+        description: FQDN of the live master to enrol against (install_mode = replica).
+      freeipa_server_docker_forwarders:
+        type: list
+        elements: str
+        required: false
+        description: Upstream DNS forwarders for the IPA-managed zone.
+      freeipa_server_docker_vault_secret:
+        type: str
+        required: false
+        description: HashiCorp Vault KV path holding admin_password (and dm_password for fresh).
+      freeipa_server_docker_setup_ca:
+        type: bool
+        required: false
+        description: Install/enrol the CA (fresh/replica).
+      freeipa_server_docker_setup_dns:
+        type: bool
+        required: false
+        description: Install/enrol integrated DNS (fresh/replica).
+      freeipa_server_docker_skip_mem_check:
+        type: bool
+        required: false
+        description: Pass --skip-mem-check (the cgroup-v2 RAM probe is unreliable in containers).
+      freeipa_server_docker_state:
+        type: str
+        required: false
+        choices: [present, absent]
+        description: Membership state; absent decommissions (server-del from a surviving master + remove the container). Inherits freeipa_server_state.
+      freeipa_server_docker_container_name:
+        type: str
+        required: false
+        description: Name of the running container (docker exec / connection target).
+      freeipa_server_docker_network_mode:
+        type: str
+        required: false
+        description: Container network mode ("host" recommended so it binds the host IP + advertises its FQDN).
+      freeipa_server_docker_replica_resolver:
+        type: str
+        required: false
+        description: DNS server IP written to /etc/resolv.conf for replica enrolment (first-time install only). Defaults to the master's inventory IP.
+      freeipa_server_docker_register_container:
+        type: bool
+        required: false
+        description: add_host the running container so a following play can run freeipa_server inside it.
+      freeipa_server_docker_decommission_transfer_renewal:
+        type: bool
+        required: false
+        description: On decommission, move the CA renewal master (+ CRL) to the survivor instead of refusing.
+      freeipa_server_docker_decommission_wipe_data:
+        type: bool
+        required: false
+        description: Also remove the /data volume dir on decommission (default keeps it).

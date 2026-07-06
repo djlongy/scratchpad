@@ -1,0 +1,25 @@
+---
+galaxy_info:
+  role_name: freeipa_server_docker
+  author: longy
+  description: >-
+    Run a FreeIPA server as a container (official quay.io/freeipa/freeipa-server image)
+    on a Docker/Podman host, with a persistent /data volume. Thin lifecycle sibling of
+    the freeipa_server role: install runtime, run the container (fresh / replica /
+    existing-data), register it as an Ansible host, and delegate all declarative config
+    (IDAM/DNS/hardening/backup) to freeipa_server run INSIDE the container.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+  galaxy_tags:
+    - freeipa
+    - identity
+    - idam
+    - docker
+    - container
+
+# Depends on the docker role (installs the container runtime). freeipa_server is invoked
+# at the playbook level (a second play, inside the container) — not a role dependency.
+dependencies: []

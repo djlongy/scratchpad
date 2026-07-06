@@ -1,0 +1,20 @@
+---
+# roles/freeipa_server_docker/vars/main.yml
+# Non-overridable derived constants (high precedence — do not put env values here).
+
+# dirsrv instance name derived from the realm (dots → dashes), e.g. EXAMPLE-COM.
+freeipa_server_docker_ds_instance: "{{ freeipa_server_docker_realm | replace('.', '-') }}"
+
+# Options common to fresh + replica install, appended to the mode-specific argv in deploy.yml.
+# (The mode-specific head and the admin/DM passwords are assembled there under no_log.)
+freeipa_server_docker_common_install_opts: >-
+  {{
+    (['--skip-mem-check'] if freeipa_server_docker_skip_mem_check else [])
+    + (['--setup-ca'] if freeipa_server_docker_setup_ca else [])
+    + (['--setup-dns'] if freeipa_server_docker_setup_dns else [])
+    + (['--no-dnssec-validation']
+       if (freeipa_server_docker_setup_dns and freeipa_server_docker_no_dnssec_validation) else [])
+    + (freeipa_server_docker_forwarders | map('regex_replace', '^', '--forwarder=') | list
+       if (freeipa_server_docker_setup_dns and freeipa_server_docker_forwarders | length > 0) else [])
+    + ['--no-ntp']
+  }}

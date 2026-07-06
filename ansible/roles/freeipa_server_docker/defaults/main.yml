@@ -1,0 +1,122 @@
+---
+# roles/freeipa_server_docker/defaults/main.yml
+#
+# Containerized FreeIPA server (the <noun>_<purpose> sibling of freeipa_server, mirroring
+# hashicorp_vault + hashicorp_vault_docker). This role owns only the CONTAINER LIFECYCLE on
+# the VM host — install Docker, run the official FreeIPA server image with a /data volume,
+# and register the running container as an Ansible host. All DECLARATIVE config (IDAM, DNS,
+# hardening, backup) is delegated to the existing `freeipa_server` role, run INSIDE the
+# container via the community.docker.docker connection plugin — the container is a full IPA
+# server, so every native freeipa.ansible_freeipa module works there in server context.
+#
+# Behavioural defaults live here; env-specific values (forwarders, master FQDN, vault path)
+# are commented out for discoverability and set in inventory group_vars.
+
+# ── Container runtime ────────────────────────────────────────────────────────
+# quay is the project's canonical index. Tag = OS base; PIN almalinux-9 so tag-swap
+# upgrades stay in-major (cross-major = new-OS replica, not an in-place upgrade).
+freeipa_server_docker_image: "quay.io/freeipa/freeipa-server:almalinux-9"
+freeipa_server_docker_container_name: "freeipa"
+# Persistent /data volume on the host — the WHOLE IPA dataset (dirsrv, CA, DNS, keytabs)
+# lives here (the image relocates every IPA path under /data and symlinks it back).
+freeipa_server_docker_data_dir: "/var/lib/ipa-data"
+# docker | podman — docker is the validated default; podman is also supported.
+freeipa_server_docker_runtime: "docker"
+
+# ── systemd-in-container runtime facts (validated on AlmaLinux 9 / cgroups v2 / Docker) ──
+# --privileged is NOT supported by the image and breaks it. systemd needs the host cgroup
+# namespace + a writable cgroup2 mount; the image supplies its own /run,/tmp tmpfs.
+freeipa_server_docker_cgroupns: "host"
+freeipa_server_docker_cgroup_mount: true          # -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+freeipa_server_docker_network_mode: "host"        # host net → container binds the host IP + advertises its FQDN
+# Optional hard memory cap (e.g. "3g"). Empty = no cap. NB the installer's cgroup-v2 RAM
+# probe is broken under --cgroupns=host (root cgroup has no memory.max) — we pass
+# --skip-mem-check instead of relying on a cap. Set a cap only to bound runtime memory.
+freeipa_server_docker_memory: ""
+
+# Published ports — ONLY used when network_mode is not "host" (bridged). Host net needs none.
+freeipa_server_docker_published_ports:
+  - "53:53/udp"
+  - "53:53/tcp"
+  - "80:80"
+  - "443:443"
+  - "88:88/tcp"
+  - "88:88/udp"
+  - "389:389"
+  - "464:464/tcp"
+  - "464:464/udp"
+  - "636:636"
+  - "749:749"
+
+# ── FQDN / identity (derived; repo hostname convention — never ansible_fqdn) ─────────────
+# Inherit the package role's inventory vars where present, so ONE set of freeipa_server_*
+# group_vars drives BOTH deployment modes (the toggle is seamless): falls back to the
+# bare `domain` convention, then empty.
+freeipa_server_docker_domain: "{{ freeipa_server_domain | default(domain | default('')) }}"
+freeipa_server_docker_realm: "{{ freeipa_server_docker_domain | upper }}"
+# The container hostname (mandatory -h; must differ from the domain). For a same-host
+# swap this equals the host's own FQDN; for a replica it is this host's new FQDN.
+freeipa_server_docker_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_docker_domain }}"
+
+# ── Install mode ─────────────────────────────────────────────────────────────
+# existing → /data already populated: just boot services (safe default — never (re)installs).
+# fresh    → ipa-server-install a NEW realm in the container.
+# replica  → ipa-replica-install against a live master (the lift-and-shift path: exact
+#            dataset synced by replication — the project's blessed way to move a realm).
+freeipa_server_docker_install_mode: "existing"
+
+# Declarative membership state — inherits freeipa_server_state so ONE per-host flag drives both
+# modes. "present" (default) deploys; "absent" DECOMMISSIONS: server-del from a surviving master
+# (mode-aware) + stop/remove the container. Same safety guards as the package path (not the last
+# server, not the CA renewal master). See tasks/decommission.yml.
+freeipa_server_docker_state: "{{ freeipa_server_state | default('present') }}"
+# Also remove the /data volume dir on decommission (default: keep it for rollback/forensics).
+freeipa_server_docker_decommission_wipe_data: "{{ freeipa_server_decommission_wipe_data | default(false) }}"
+# On decommission, auto-move the CA renewal master (+ CRL) to the survivor instead of refusing.
+freeipa_server_docker_decommission_transfer_renewal: "{{ freeipa_server_decommission_transfer_renewal | default(false) }}"
+
+# The installer's cgroup-v2 RAM probe fails under --cgroupns=host; skip it (host RAM is real).
+freeipa_server_docker_skip_mem_check: true
+# Host owns time (chrony on the VM host); the container is always installed --no-ntp.
+freeipa_server_docker_setup_ca: true
+freeipa_server_docker_setup_dns: true
+freeipa_server_docker_no_dnssec_validation: true
+# Upstream DNS forwarders — inherit the package role's inventory value where set.
+freeipa_server_docker_forwarders: "{{ freeipa_server_forwarders | default([]) }}"
+
+# replica mode — the live master to enrol against (ENV-SPECIFIC, set in inventory):
+# freeipa_server_docker_replica_server: "idm01.example.com"
+freeipa_server_docker_replica_server: ""
+# DNS server the host must use to resolve the master during replica enrolment. Self-contained
+# default: the replica master's inventory IP (short-name lookup). Empty → leave host DNS as-is.
+# In replica mode the role writes /etc/resolv.conf ONCE (first-time install only) pointing here so
+# the container (host net) can find the master. NOTE: it is NOT restored to self afterwards and is
+# a raw file write (not NetworkManager-managed) — on a NM host, point the master's IP via NM, or
+# add a post-install resolv.conf step, if you need it persistent/self-resolving. See prereqs.yml.
+freeipa_server_docker_replica_resolver: >-
+  {{ hostvars[freeipa_server_docker_replica_server.split('.')[0]].ansible_host
+     | default('') if (freeipa_server_docker_replica_server | length > 0) else '' }}
+
+# ── Credentials: declared var FIRST, HashiCorp Vault fallback (mirrors freeipa_server) ──
+freeipa_server_docker_admin_principal: "admin"
+freeipa_server_docker_admin_password: "{{ freeipa_server_admin_password | default('') }}"
+# Vault fallback — inherit the package role's inventory path where set.
+freeipa_server_docker_vault_secret: "{{ freeipa_server_vault_secret | default('') }}"
+freeipa_server_docker_admin_password_field: "admin_password"
+freeipa_server_docker_dm_password_field: "dm_password"
+
+# ── Firewall (host) ──────────────────────────────────────────────────────────
+# Open the IPA port set on the host firewall (firewalld). false → leave the host firewall
+# untouched (e.g. host firewall disabled, or managed elsewhere).
+freeipa_server_docker_manage_firewall: true
+freeipa_server_docker_firewall_services: [freeipa-ldap, freeipa-ldaps, dns, kerberos, kpasswd, http, https, ntp]
+
+# ── Post-setup (reuse freeipa_server INSIDE the container) ───────────────────
+# When true, tasks/register.yml add_host's the container so a following play can run the
+# freeipa_server role against it (see playbooks/freeipa_container.yml).
+freeipa_server_docker_register_container: true
+freeipa_server_docker_inventory_group: "freeipa_containers"
+
+# Readiness poll after (re)start — how long to wait for `ipactl status` to report healthy.
+freeipa_server_docker_ready_retries: 60
+freeipa_server_docker_ready_delay: 10

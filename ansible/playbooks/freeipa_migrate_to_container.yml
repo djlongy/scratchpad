@@ -1,0 +1,82 @@
+---
+# playbooks/freeipa_migrate_to_container.yml
+#
+# Rolling PACKAGE → CONTAINER migration of ONE node, in place, keeping its original FQDN.
+# Thin orchestrator (a PLAYBOOK, not a migration role) that COMPOSES the two self-contained roles:
+#   Stage 1  freeipa_server (freeipa_server_state: absent)   → decommission the package install
+#            (auto-transfers the CA renewal master to a surviving master first, if needed)
+#   Stage 2  freeipa_server_docker (install_mode: replica)   → re-add as a container replica,
+#            reusing the node's ORIGINAL FQDN, synced from a surviving master.
+#
+# Run once per node (operator-supervised — verify the realm is healthy between nodes). Keep ≥1
+# master up at all times; migrate the CA renewal master node LAST or rely on the auto-transfer.
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_migrate_to_container.yml \
+#     -e freeipa_container_migrate_node=idm01 \
+#     -e freeipa_container_migrate_source=idm02.example.com
+#
+# NB the vars are freeipa_container_migrate_* (NOT freeipa_migrate_*, which group_vars already
+# uses for the unrelated realm-to-realm ipa-migrate). Neither role reaches a shared 'common'.
+
+- name: Migrate to container — validate inputs
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Assert node + source are provided
+      ansible.builtin.assert:
+        that:
+          - freeipa_container_migrate_node | default('') | length > 0
+          - freeipa_container_migrate_source | default('') | length > 0
+        fail_msg: >-
+          Set -e freeipa_container_migrate_node=<inventory host to migrate> and
+          -e freeipa_container_migrate_source=<surviving master FQDN to replicate from>.
+
+- name: "Stage 1 — decommission the package install on {{ freeipa_container_migrate_node }}"
+  hosts: "{{ freeipa_container_migrate_node | default('none') }}"
+  become: true
+  gather_facts: true
+  vars:
+    freeipa_server_deployment: package
+    freeipa_server_state: absent
+    # Move the CA renewal master off this node automatically if it holds it (self-contained).
+    freeipa_server_decommission_transfer_renewal: true
+  pre_tasks:
+    # Refuse to "migrate" a node that is NOT actually a package install (e.g. already a container).
+    # Stage 1 force-sets deployment=package + state=absent; without this guard a re-run against an
+    # already-migrated node would server-del the live CONTAINER node from topology. Package IPA keeps
+    # /etc/ipa/default.conf on the HOST; a container keeps it inside /data, not here.
+    - name: Assert a genuine package FreeIPA install is present on the host
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: _freeipa_migrate_hostcfg
+    - name: Fail if the host is not package-deployed
+      ansible.builtin.assert:
+        that:
+          - _freeipa_migrate_hostcfg.stat.exists
+        fail_msg: >-
+          {{ inventory_hostname }} has no /etc/ipa/default.conf on the host — it is not a package
+          FreeIPA install (already a container?). Refusing to decommission: a re-run would server-del
+          a live container node. Nothing to migrate.
+  roles:
+    - role: freeipa_server
+
+- name: "Stage 2 — re-add {{ freeipa_container_migrate_node }} as a container replica (original FQDN)"
+  hosts: "{{ freeipa_container_migrate_node | default('none') }}"
+  become: true
+  gather_facts: true
+  vars:
+    freeipa_server_deployment: container
+    freeipa_server_docker_install_mode: replica
+    freeipa_server_docker_replica_server: "{{ freeipa_container_migrate_source }}"
+  pre_tasks:
+    # Realm safety: the replication source must be in THIS host's realm (guards against the source
+    # resolving from a foreign-realm group_var).
+    - name: Assert the replica source is in this host's realm
+      ansible.builtin.assert:
+        that:
+          - freeipa_container_migrate_source.split('.')[1:] | join('.') == freeipa_server_docker_domain
+        fail_msg: >-
+          Replica source {{ freeipa_container_migrate_source }} is not in realm
+          {{ freeipa_server_docker_domain }}. Refusing to replica-install across realms.
+  roles:
+    - role: freeipa_server_docker

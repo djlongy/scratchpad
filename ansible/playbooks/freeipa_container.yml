@@ -1,0 +1,61 @@
+---
+# playbooks/freeipa_container.yml
+#
+# Deployment-mode-aware FreeIPA entrypoint. ONE inventory variable toggles the substrate:
+#
+#   freeipa_server_deployment: package    # (default) FreeIPA as host RPMs — the freeipa_server role
+#   freeipa_server_deployment: container  # FreeIPA as a Docker/Podman container — freeipa_server_docker,
+#                                         #   then freeipa_server run INSIDE the container for config
+#
+# Package mode is identical to playbooks/freeipa.yml (use that for fine-grained --tags).
+# Container mode: play 1 stands up the container on the VM host and registers it; play 2 runs
+# the SAME freeipa_server declarative engine inside the container (native modules, server context).
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_container.yml \
+#       -e freeipa_deploy_target=idm02 -e freeipa_server_deployment=container
+
+# Thin orchestrator (ansible-design): each play is a `roles:` list on a host pattern. The only
+# tasks live in `pre_tasks:` (orchestration around the role) — no `tasks:` block, no roles+tasks mix.
+# The package/container fork uses per-entry `when:` on the roles list (roles keyword propagates tags
+# to the role's tasks; a bare tasks-include would not).
+- name: FreeIPA server — deployment-mode dispatch (VM host side)
+  hosts: "{{ freeipa_deploy_target | default('freeipa') }}"
+  become: true
+  gather_facts: true
+  roles:
+    - role: freeipa_server_docker
+      when: freeipa_server_deployment | default('package') == 'container'
+    - role: freeipa_server
+      when: freeipa_server_deployment | default('package') == 'package'
+
+- name: FreeIPA declarative config INSIDE the container (reuse freeipa_server)
+  # Empty group in package mode → this play is a no-op. In container mode play 1 populated it.
+  hosts: freeipa_containers
+  gather_facts: false
+  # pre_tasks = orchestration around the role (fail fast if the controller can't reach the
+  # container's docker daemon — otherwise the docker connection dies with a cryptic tmp-dir error).
+  pre_tasks:
+    # One DOCKER_HOST selects ONE daemon per run, so the in-container config play handles ONE VM's
+    # container per run. Assert DOCKER_HOST is set AND matches THIS registered container's VM — so a
+    # multi-host container run fails LOUDLY on the non-matching node instead of silently configuring
+    # the wrong/one container. Run one container host per invocation (freeipa_deploy_target=<host>).
+    - name: Assert DOCKER_HOST matches this container's VM daemon
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.env', 'DOCKER_HOST') | length > 0
+          - lookup('ansible.builtin.env', 'DOCKER_HOST') == freeipa_container_vm_docker_host
+        fail_msg: >-
+          The in-container config play needs THIS container's docker daemon. Expected
+          DOCKER_HOST={{ freeipa_container_vm_docker_host | default('ssh://ansible@<vm-host>') }}
+          but found '{{ lookup('ansible.builtin.env', 'DOCKER_HOST') }}'. Export the matching
+          DOCKER_HOST (+ ssh-agent) and run ONE container host per invocation
+          (freeipa_deploy_target=<host>).
+      delegate_to: localhost
+      connection: local
+  roles:
+    # Skip the host-package install + host-time preflight (IPA already runs in the container);
+    # Docker's restart_policy owns restarts, so the ephemeral systemd recovery timers are disabled.
+    - role: freeipa_server
+      vars:
+        freeipa_server_deployment: container
+        freeipa_server_resilience_enabled: false

@@ -1,0 +1,41 @@
+---
+# Containerized FreeIPA, end to end: play 1 stands the container up on the VM host and
+# registers it as an in-memory Ansible host; play 2 runs the SAME freeipa_server
+# declarative engine INSIDE it (native freeipa.ansible_freeipa modules, server context).
+# This is a self-contained copy of playbooks/freeipa_container.yml scoped to this example.
+#
+#   eval "$(ssh-agent -s)"; ssh-add ~/.ssh/<automation-key>.pem
+#   export DOCKER_HOST=ssh://ansible@10.0.0.11      # the VM host's docker daemon
+#   ansible-playbook site.yml -e freeipa_server_docker_install_mode=fresh
+#
+# Re-runs are safe: the default install mode ("existing") just boots the populated /data.
+
+- name: FreeIPA container — stand up + register (VM host side)
+  hosts: freeipa
+  become: true
+  gather_facts: true
+  roles:
+    - role: freeipa_server_docker
+
+- name: FreeIPA declarative config INSIDE the container (reuse freeipa_server)
+  hosts: freeipa_containers
+  gather_facts: false
+  pre_tasks:
+    # The docker connection reaches the daemon selected by DOCKER_HOST on the CONTROLLER;
+    # fail fast (and loudly) if it is unset or points at a different VM's daemon.
+    - name: Assert DOCKER_HOST matches this container's VM daemon
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.env', 'DOCKER_HOST') | length > 0
+          - lookup('ansible.builtin.env', 'DOCKER_HOST') == freeipa_container_vm_docker_host
+        fail_msg: >-
+          Export DOCKER_HOST={{ freeipa_container_vm_docker_host | default('ssh://ansible@<vm-host>') }}
+          (+ ssh-agent with the VM key) and run ONE container host per invocation.
+      delegate_to: localhost
+      connection: local
+  roles:
+    # IPA already runs in the container; Docker's restart_policy owns restarts.
+    - role: freeipa_server
+      vars:
+        freeipa_server_deployment: container
+        freeipa_server_resilience_enabled: false

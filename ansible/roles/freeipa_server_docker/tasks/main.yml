@@ -1,0 +1,49 @@
+---
+# roles/freeipa_server_docker/tasks/main.yml
+#
+# Phase order (a no-tag run executes everything):
+#   prereqs  → container runtime (docker role), data dir, host firewall
+#   deploy   → run the FreeIPA container (fresh / replica / existing-data) + wait healthy
+#   register → add_host the running container as an Ansible host (community.docker.docker)
+#              so a following play can run freeipa_server INSIDE it for declarative config.
+
+- name: Gather minimal facts when the play skipped them (cold cache safety)
+  ansible.builtin.setup:
+    gather_subset: ["min"]
+  when: ansible_os_family is not defined
+  tags: [always]
+
+- name: Assert required identity + mode inputs are present
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_docker_domain | length > 0
+      - freeipa_server_docker_install_mode in ['existing', 'fresh', 'replica']
+      - (freeipa_server_docker_install_mode != 'replica') or (freeipa_server_docker_replica_server | length > 0)
+    fail_msg: >-
+      freeipa_server_docker needs freeipa_server_docker_domain, a valid install_mode
+      (existing|fresh|replica), and — for replica mode — freeipa_server_docker_replica_server.
+  tags: [always]
+
+# Declarative removal — when freeipa_server_docker_state == absent this host is decommissioned
+# (server-del from a surviving master + container removed) and the play ends for it.
+- name: Decommission the containerized server from the realm (state = absent)
+  ansible.builtin.import_tasks: decommission.yml
+  when: freeipa_server_docker_state == "absent"
+  tags: [decommission]
+
+- name: Prepare container runtime + host prerequisites
+  ansible.builtin.import_tasks: prereqs.yml
+  when: freeipa_server_docker_state != "absent"
+  tags: [prereqs]
+
+- name: Deploy the FreeIPA container
+  ansible.builtin.import_tasks: deploy.yml
+  when: freeipa_server_docker_state != "absent"
+  tags: [deploy]
+
+- name: Register the running container as an Ansible host
+  ansible.builtin.import_tasks: register.yml
+  when:
+    - freeipa_server_docker_state != "absent"
+    - freeipa_server_docker_register_container | bool
+  tags: [register, deploy]

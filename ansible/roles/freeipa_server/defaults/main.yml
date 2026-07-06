@@ -16,6 +16,25 @@ freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
 # This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
 freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
 
+# Deployment substrate. "package" (default) = FreeIPA as host RPMs (this role installs it via
+# upstream ipaserver/ipareplica). "container" = FreeIPA already runs in a container (stood up by
+# the freeipa_server_docker role); this role then runs INSIDE that container for declarative
+# config only — the host-package install phase is skipped (the container image owns install).
+freeipa_server_deployment: "package"
+
+# Declarative membership state (like freeipa_server_is_primary, but for removal). "present"
+# (default) = this server is part of the realm. "absent" = DECOMMISSION it: set on the host
+# (host_vars) and run the play across the group — the server is removed from topology and its
+# FreeIPA install torn down. Works for package AND container deployments (the container path
+# lives in freeipa_server_docker). SAFETY: refuses to remove the last server or the CA renewal
+# master (transfer that first: `ipa config-mod --ca-renewal-master-server=<other>`).
+freeipa_server_state: "present"
+# Also wipe the data dir / preserved backups on decommission (default: leave them for forensics).
+freeipa_server_decommission_wipe_data: false
+# On decommission, if this host is the CA renewal master, MOVE that role (+ CRL generation) to the
+# surviving master automatically instead of refusing. Default off = deliberate, guarded removal.
+freeipa_server_decommission_transfer_renewal: false
+
 # Topology derived from inventory groups: first host of freeipa_server_primary_group,
 # else of `freeipa`, else this host (single-server needs NO group setup at all).
 # Add hosts (optionally to freeipa_primary) to cluster; non-primaries become replicas.
@@ -110,7 +129,7 @@ freeipa_server_no_pkinit: false
 # ── Active Directory trust (cross-forest identity; opt-in, default off) ──────
 # Trust an AD forest so AD users authenticate against IPA resources. Needs setup_adtrust
 # (passes --setup-adtrust), reachable AD DCs, and two-way DNS. Each trust → upstream ipatrust;
-# IPA admin + each AD admin password from Vault. Not exercised by default (no AD).
+# IPA admin + each AD admin password from Vault. Not exercised in this reference environment (no AD).
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
 #  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }
@@ -457,7 +476,7 @@ freeipa_server_export_stock_hbacsvcs:
   - systemd-user
   - vsftpd
 
-# ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
+# ── IPA-to-IPA realm migration (opt-in; via playbooks/freeipa_migrate.yml) ──
 # Runs ipa-migrate on this (new-realm) primary, pulling identities from a source (old) realm.
 # Passwords are NOT migrated (Kerberos keys are realm-salted).
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write

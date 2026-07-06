@@ -1,0 +1,153 @@
+---
+# roles/freeipa_server_docker/tasks/deploy.yml
+# Resolve credentials, assemble the first-boot install argv, run the container, wait healthy.
+# The image no-ops install options once /data is populated, so `command` stays set across
+# runs (idempotent: existing-data boots straight to services).
+
+# Credential contract: Ansible Vault var FIRST, HashiCorp Vault as an optional fallback.
+# The declared var wins (Jinja `A if C else B` is lazy → hashi_vault never loads when it is
+# set), so an Ansible-Vault-only host works by just setting the password var. Fail clearly if
+# neither source is configured, rather than emitting a cryptic HashiCorp Vault connection error.
+- name: Assert an IPA admin password source is configured (Ansible Vault var or HashiCorp Vault path)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (freeipa_server_docker_admin_password | length > 0)
+        or (freeipa_server_docker_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      No IPA admin password source configured. Set freeipa_server_docker_admin_password
+      (or the inherited freeipa_server_admin_password, recommended: from an Ansible-Vault-encrypted
+      group_var) or, to use HashiCorp Vault, set freeipa_server_docker_vault_secret.
+
+- name: Resolve the IPA admin password (Ansible Vault var first, HashiCorp Vault fallback)
+  ansible.builtin.set_fact:
+    _freeipa_docker_admin_password: >-
+      {{ freeipa_server_docker_admin_password
+         if (freeipa_server_docker_admin_password | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+              'secret=' + freeipa_server_docker_vault_secret
+              + ':' + freeipa_server_docker_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Assert a Directory Manager password source is configured (fresh install only)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (freeipa_server_docker_dm_password | default('') | length > 0)
+        or (freeipa_server_docker_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      No Directory Manager password source configured for a fresh install. Set
+      freeipa_server_docker_dm_password (recommended: from an Ansible-Vault-encrypted group_var)
+      or, to use HashiCorp Vault, set freeipa_server_docker_vault_secret.
+  when: freeipa_server_docker_install_mode == "fresh"
+
+- name: Resolve the Directory Manager password (Ansible Vault var first, HashiCorp Vault fallback)
+  ansible.builtin.set_fact:
+    _freeipa_docker_dm_password: >-
+      {{ freeipa_server_docker_dm_password | default('')
+         if (freeipa_server_docker_dm_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+              'secret=' + freeipa_server_docker_vault_secret
+              + ':' + (freeipa_server_docker_dm_password_field | default('dm_password'))) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+  when: freeipa_server_docker_install_mode == "fresh"
+
+# Assemble the mode-specific install argv. `existing` → no install command (image just boots
+# the populated /data). Passwords are injected here (no_log) rather than in vars/.
+- name: Build the container install command
+  ansible.builtin.set_fact:
+    _freeipa_docker_command: >-
+      {{
+        ([] if freeipa_server_docker_install_mode == 'existing'
+         else (['ipa-server-install', '-U',
+                '--realm', freeipa_server_docker_realm,
+                '--domain', freeipa_server_docker_domain,
+                '--ds-password', _freeipa_docker_dm_password,
+                '--admin-password', _freeipa_docker_admin_password]
+               if freeipa_server_docker_install_mode == 'fresh'
+               else ['ipa-replica-install', '-U',
+                     '--principal', freeipa_server_docker_admin_principal,
+                     '--admin-password', _freeipa_docker_admin_password,
+                     '--server', freeipa_server_docker_replica_server,
+                     '--domain', freeipa_server_docker_domain])
+             + freeipa_server_docker_common_install_opts)
+      }}
+  no_log: true
+
+- name: Build the container volume + tmpfs lists
+  ansible.builtin.set_fact:
+    _freeipa_docker_volumes: >-
+      {{ [freeipa_server_docker_data_dir + ':/data']
+         + (['/sys/fs/cgroup:/sys/fs/cgroup:rw'] if freeipa_server_docker_cgroup_mount else []) }}
+    _freeipa_docker_tmpfs: ["/run", "/run/lock", "/tmp"]
+
+- name: Run the FreeIPA container (Docker)
+  community.docker.docker_container:
+    name: "{{ freeipa_server_docker_container_name }}"
+    image: "{{ freeipa_server_docker_image }}"
+    state: started
+    hostname: "{{ freeipa_server_docker_fqdn }}"
+    network_mode: "{{ freeipa_server_docker_network_mode }}"
+    cgroupns_mode: "{{ freeipa_server_docker_cgroupns }}"
+    memory: "{{ freeipa_server_docker_memory | default(omit, true) }}"
+    volumes: "{{ _freeipa_docker_volumes }}"
+    tmpfs: "{{ _freeipa_docker_tmpfs }}"
+    published_ports: "{{ freeipa_server_docker_published_ports if freeipa_server_docker_network_mode != 'host' else omit }}"
+    env:
+      PASSWORD: "{{ _freeipa_docker_admin_password }}"
+    command: "{{ _freeipa_docker_command if (_freeipa_docker_command | length > 0) else omit }}"
+    restart_policy: "unless-stopped"
+    comparisons:
+      # Don't churn the container over cosmetic env/command diffs on re-run once it's up.
+      "*": ignore
+      image: strict
+  no_log: true
+  when: freeipa_server_docker_runtime == "docker"
+
+- name: Run the FreeIPA container (Podman)
+  containers.podman.podman_container:
+    name: "{{ freeipa_server_docker_container_name }}"
+    image: "{{ freeipa_server_docker_image }}"
+    state: started
+    hostname: "{{ freeipa_server_docker_fqdn }}"
+    network: "{{ freeipa_server_docker_network_mode }}"
+    cgroupns: "{{ freeipa_server_docker_cgroupns }}"
+    memory: "{{ freeipa_server_docker_memory | default(omit, true) }}"
+    volume: "{{ _freeipa_docker_volumes }}"
+    tmpfs:
+      /run: ""
+      /run/lock: ""
+      /tmp: ""
+    env:
+      PASSWORD: "{{ _freeipa_docker_admin_password }}"
+    command: "{{ _freeipa_docker_command if (_freeipa_docker_command | length > 0) else omit }}"
+    restart_policy: "unless-stopped"
+  no_log: true
+  when: freeipa_server_docker_runtime == "podman"
+
+- name: Wait for FreeIPA services to report healthy inside the container
+  ansible.builtin.command:
+    cmd: "{{ freeipa_server_docker_runtime }} exec {{ freeipa_server_docker_container_name }} ipactl status"
+  register: _freeipa_docker_health
+  changed_when: false
+  failed_when: false
+  retries: "{{ freeipa_server_docker_ready_retries }}"
+  delay: "{{ freeipa_server_docker_ready_delay }}"
+  until:
+    - _freeipa_docker_health.rc == 0
+    - "'Directory Service: RUNNING' in _freeipa_docker_health.stdout"
+
+- name: Assert the container came up healthy
+  ansible.builtin.assert:
+    that:
+      - _freeipa_docker_health.rc == 0
+      - "'Directory Service: RUNNING' in _freeipa_docker_health.stdout"
+    fail_msg: >-
+      FreeIPA container did not report healthy within
+      {{ freeipa_server_docker_ready_retries | int * freeipa_server_docker_ready_delay | int }}s.
+      Check `{{ freeipa_server_docker_runtime }} logs {{ freeipa_server_docker_container_name }}`
+      and {{ freeipa_server_docker_data_dir }}/var/log/ipa*-install.log.

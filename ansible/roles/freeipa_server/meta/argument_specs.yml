@@ -19,6 +19,20 @@ argument_specs:
       freeipa_server_fqdn:
         type: str
         description: This host's FQDN. Defaults to inventory_hostname + domain (never ansible_fqdn).
+      freeipa_server_deployment:
+        type: str
+        choices: [package, container]
+        description: Substrate. package (default) = host RPMs; container = IPA runs in a container (config phases must run INSIDE it via the docker connection).
+      freeipa_server_state:
+        type: str
+        choices: [present, absent]
+        description: Membership state. absent = decommission this server (server-del from a surviving master + tear down); guarded against last-server / CA-renewal-master removal.
+      freeipa_server_decommission_transfer_renewal:
+        type: bool
+        description: On decommission, if this host is the CA renewal master, move that role (+ CRL) to the survivor instead of refusing.
+      freeipa_server_decommission_wipe_data:
+        type: bool
+        description: Also delete residual backup data on decommission (default keeps it).
       freeipa_server_primary_group:
         type: str
         description: Inventory group whose first host is the primary. Falls back to `freeipa`, then to the current host (single-server needs no groups).
@@ -273,7 +287,7 @@ argument_specs:
       # ── Declarative IDAM data (the core contract; shapes in defaults/main.yml) ─
       freeipa_idam_tenants_dir:
         type: str
-        description: Directory of per-tenant vars files loaded + flattened in one run (typically "{{ inventory_dir }}/tenants"). Empty = lists come straight from group_vars.
+        description: Directory of per-tenant vars files loaded + flattened in one run (typically the inventory's tenants/ directory). Empty = lists come straight from group_vars.
       freeipa_idam_users:
         type: list
         description: Declarative users. Each needs name + first/givenname + last/sn + groups/roles.

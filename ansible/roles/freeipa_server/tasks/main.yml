@@ -23,12 +23,45 @@
   when: ansible_os_family is not defined
   tags: [always]
 
+# Guard: container-deployment config MUST run inside the container (docker/podman connection), not
+# on the VM host. Stops a host-targeted entrypoint (e.g. playbooks/freeipa_idam.yml) from running
+# the config phases against a host whose IPA lives in a container. The canonical entrypoint for
+# container hosts is playbooks/freeipa_container.yml (runs this role via the connection).
+- name: Assert container-deployment config runs INSIDE the container, not on the host
+  ansible.builtin.assert:
+    that:
+      - ansible_connection | default('ssh') in ['community.docker.docker', 'docker', 'containers.podman.podman', 'podman']
+    fail_msg: >-
+      freeipa_server_deployment=container but this play is on the HOST connection
+      ({{ ansible_connection | default('ssh') }}), not inside the container. Configure container
+      hosts via playbooks/freeipa_container.yml — do not target them with a host-based
+      entrypoint like playbooks/freeipa_idam.yml.
+  when:
+    - freeipa_server_deployment == "container"
+    - freeipa_server_state | default('present') != "absent"
+  tags: [always]
+
+# Declarative removal. When freeipa_server_state == absent this host is decommissioned from
+# the realm and the play ends for it (no install/config runs). Package path here; the
+# container path is freeipa_server_docker/tasks/decommission.yml. Tagged so you can target
+# just removals (--tags decommission) or let a full no-tag run honour the per-host flag.
+- name: Decommission this server from the realm (freeipa_server_state = absent)
+  ansible.builtin.import_tasks: decommission.yml
+  when:
+    - freeipa_server_state == "absent"
+    - freeipa_server_deployment != "container"
+  tags: [decommission]
+
 - name: Run FreeIPA dependency-ordering preflight guards
   ansible.builtin.import_tasks: preflight.yml
   tags: [preflight]
 
+# Host-package install. Skipped for deployment: container — the FreeIPA container image
+# owns install/replica-join (done by the freeipa_server_docker role); this role then runs
+# inside the already-configured container for the declarative phases only.
 - name: Install FreeIPA (upstream primary or replica)
   ansible.builtin.import_tasks: install.yml
+  when: freeipa_server_deployment != "container"
   tags: [install]
 
 - name: Apply FreeIPA cold-start resilience fixes

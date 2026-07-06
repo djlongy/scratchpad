@@ -1,0 +1,175 @@
+---
+# roles/freeipa_server_docker/tasks/decommission.yml
+# Declaratively remove THIS containerized server from the realm — runs when
+# freeipa_server_docker_state == absent. server-del from a surviving master (mode-aware) + stop
+# and remove the container, then end the play for this host.
+#
+# SAFETY (hard-fail, never bypassed silently): refuses to remove the LAST server or the CA renewal
+# master (unless *_transfer_renewal). Every ipa call on the survivor is `&&`-chained (rc reflects
+# the REAL command, not the trailing kdestroy), the admin password is fed on STDIN (never argv),
+# and survivors are filtered to the SAME realm (never a foreign realm).
+
+# Credential contract: Ansible Vault var FIRST, HashiCorp Vault as an optional fallback
+# (see deploy.yml). Fail clearly if neither source is configured.
+- name: Decommission | Assert an IPA admin password source is configured (Ansible Vault var or HashiCorp Vault path)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (freeipa_server_docker_admin_password | length > 0)
+        or (freeipa_server_docker_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      No IPA admin password source configured. Set freeipa_server_docker_admin_password
+      (or the inherited freeipa_server_admin_password, recommended: from an Ansible-Vault-encrypted
+      group_var) or, to use HashiCorp Vault, set freeipa_server_docker_vault_secret.
+
+- name: Decommission | Resolve the IPA admin password (Ansible Vault var first, HashiCorp Vault fallback)
+  ansible.builtin.set_fact:
+    _freeipa_docker_admin_password: >-
+      {{ freeipa_server_docker_admin_password
+         if (freeipa_server_docker_admin_password | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+              'secret=' + freeipa_server_docker_vault_secret
+              + ':' + freeipa_server_docker_admin_password_field) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+# Peers derived the SAME way as the package role (honour freeipa_server_primary_group; do NOT
+# hardcode freeipa_primary — that group may hold a stale foreign-realm host).
+- name: Decommission | Compute realm peers
+  ansible.builtin.set_fact:
+    _freeipa_decom_peers: >-
+      {{ ((groups[freeipa_server_primary_group | default('freeipa_primary')] | default([]))
+          | union(groups['freeipa'] | default([]))
+          | union(groups['idm'] | default([])) | unique)
+         | difference([inventory_hostname]) }}
+
+- name: Decommission | Reduce to surviving, SAME-realm masters
+  ansible.builtin.set_fact:
+    _freeipa_decom_survivors: "{{ _freeipa_decom_survivors | default([]) + [item] }}"
+  loop: "{{ _freeipa_decom_peers }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - hostvars[item].freeipa_server_docker_state | default(hostvars[item].freeipa_server_state | default('present')) != 'absent'
+    # Realm safety: only a same-domain peer is a valid survivor (guards mixed-realm groups).
+    - (hostvars[item].freeipa_server_domain | default('')) == freeipa_server_docker_domain
+
+- name: Decommission | Refuse to remove the last remaining same-realm server
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_decom_survivors | default([])) | length > 0
+    fail_msg: >-
+      Refusing to decommission {{ inventory_hostname }}: no surviving master in realm
+      '{{ freeipa_server_docker_domain }}' found in inventory. Removing the last server destroys the realm.
+
+# exec prefix honours the SURVIVOR's runtime (docker vs podman) — not hardcoded docker.
+- name: Decommission | Set the surviving master + its mode-aware ipa exec prefix
+  ansible.builtin.set_fact:
+    _freeipa_decom_target: "{{ _freeipa_decom_survivors | first }}"
+    _freeipa_decom_exec: >-
+      {{ ((hostvars[(_freeipa_decom_survivors | first)].freeipa_server_docker_runtime | default('docker'))
+          + ' exec -i ' + (hostvars[(_freeipa_decom_survivors | first)].freeipa_server_docker_container_name | default('freeipa')) + ' ')
+         if (hostvars[(_freeipa_decom_survivors | first)].freeipa_server_deployment | default('package') == 'container')
+         else '' }}
+
+- name: Decommission | Read the CA renewal master (from the surviving master)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail; IFS= read -r _pw;
+      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_docker_admin_principal }} >/dev/null 2>&1
+      && {{ _freeipa_decom_exec }}ipa config-show 2>/dev/null | awk -F': ' '/IPA CA renewal master:/{print $2}'
+    executable: /bin/bash
+  args:
+    stdin: "{{ _freeipa_docker_admin_password }}"
+  delegate_to: "{{ _freeipa_decom_target }}"
+  register: _freeipa_decom_renewal
+  changed_when: false
+  no_log: true
+
+- name: Decommission | Assert the renewal-master read succeeded (a realm always has one)
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_decom_renewal.stdout | trim) | length > 0
+    fail_msg: >-
+      Could not read the CA renewal master from {{ _freeipa_decom_target }} — aborting before any
+      removal. The query likely failed to authenticate/connect; do NOT proceed blind.
+
+- name: Decommission | Am I the CA renewal master?
+  ansible.builtin.set_fact:
+    _freeipa_decom_is_renewal: "{{ (_freeipa_decom_renewal.stdout | trim) == freeipa_server_docker_fqdn }}"
+
+# Opt-in: move the CA renewal master (+ CRL) to the surviving master BEFORE removal. `&&`-chained
+# so a failed move aborts the decommission before anything is removed. Password on stdin.
+- name: Decommission | Transfer CA renewal master + CRL to {{ _freeipa_decom_target }} (opt-in)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail; IFS= read -r _pw;
+      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_docker_admin_principal }} >/dev/null 2>&1
+      && {{ _freeipa_decom_exec }}ipa config-mod --ca-renewal-master-server={{ _freeipa_decom_target }}.{{ freeipa_server_docker_domain }}
+      && {{ _freeipa_decom_exec }}ipa-crlgen-manage enable
+      && {{ _freeipa_decom_exec }}kdestroy >/dev/null 2>&1
+    executable: /bin/bash
+  args:
+    stdin: "{{ _freeipa_docker_admin_password }}"
+  delegate_to: "{{ _freeipa_decom_target }}"
+  register: _freeipa_decom_xfer
+  changed_when: "'CA renewal master' in (_freeipa_decom_xfer.stdout | default(''))"
+  no_log: true
+  when:
+    - _freeipa_decom_is_renewal | bool
+    - freeipa_server_docker_decommission_transfer_renewal | bool
+
+- name: Decommission | Refuse to remove the CA renewal master (unless transfer was requested)
+  ansible.builtin.assert:
+    that:
+      - not (_freeipa_decom_is_renewal | bool)
+    fail_msg: >-
+      Refusing to decommission {{ inventory_hostname }}: it is the CA renewal master. Either set
+      freeipa_server_decommission_transfer_renewal: true to move it to {{ _freeipa_decom_target }}
+      automatically, or transfer it yourself first.
+  when: not (freeipa_server_docker_decommission_transfer_renewal | bool)
+
+# `&&`-chained so a genuine server-del failure FAILS the task (not masked by the trailing kdestroy).
+# `--force` is idempotent (reports "Deleted" even when already absent), so a re-run is safe.
+- name: Decommission | Remove {{ freeipa_server_docker_fqdn }} from topology (via the surviving master)
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail; IFS= read -r _pw;
+      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_docker_admin_principal }} >/dev/null 2>&1
+      && {{ _freeipa_decom_exec }}ipa server-del {{ freeipa_server_docker_fqdn }} --ignore-topology-disconnect --force
+      && {{ _freeipa_decom_exec }}kdestroy >/dev/null 2>&1
+    executable: /bin/bash
+  args:
+    stdin: "{{ _freeipa_docker_admin_password }}"
+  delegate_to: "{{ _freeipa_decom_target }}"
+  register: _freeipa_decom_del
+  changed_when: "'Deleted IPA server' in (_freeipa_decom_del.stdout | default(''))"
+  no_log: true
+
+- name: Decommission | Stop and remove the FreeIPA container
+  community.docker.docker_container:
+    name: "{{ freeipa_server_docker_container_name }}"
+    state: absent
+  when: freeipa_server_docker_runtime == "docker"
+
+- name: Decommission | Stop and remove the FreeIPA container (Podman)
+  containers.podman.podman_container:
+    name: "{{ freeipa_server_docker_container_name }}"
+    state: absent
+  when: freeipa_server_docker_runtime == "podman"
+
+- name: Decommission | Wipe the /data volume dir (opt-in)
+  ansible.builtin.file:
+    path: "{{ freeipa_server_docker_data_dir }}"
+    state: absent
+  when: freeipa_server_docker_decommission_wipe_data | bool
+
+- name: Decommission | Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} decommissioned (topology entry deleted via {{ _freeipa_decom_target }};
+      container removed{{ ' + /data wiped' if (freeipa_server_docker_decommission_wipe_data | bool) else '' }}).
+
+- name: Decommission | End the play for this decommissioned host
+  ansible.builtin.meta: end_host

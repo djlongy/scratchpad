@@ -1,0 +1,49 @@
+---
+# roles/freeipa_server_docker/tasks/register.yml
+# Register the running container as an in-memory Ansible host reachable via the
+# community.docker.docker connection plugin, so a FOLLOWING play can run the existing
+# freeipa_server role INSIDE it (server context — every native freeipa.ansible_freeipa
+# module works). Validated connection settings (field-verified against a live container):
+#   * ansible_host      = the CONTAINER NAME (what `docker exec` targets)
+#   * ansible_user      = root  (the image has no `ansible` user; exec must be root)
+#   * ansible_remote_tmp= /tmp/... (~ does not expand under docker exec; /tmp is tmpfs)
+#   * the DOCKER DAEMON is selected by the DOCKER_HOST env on the CONTROLLER
+#     (ssh://<user>@<vm> for a remote container). The plugin var ansible_docker_host does
+#     NOT set it reliably — export DOCKER_HOST before the run (like ANSIBLE_VAULT_PASSWORD).
+
+- name: Add the FreeIPA container to inventory (docker connection)
+  ansible.builtin.add_host:
+    # Name is UNIQUE per VM (container name is the same "freeipa" on every host, so a bare name
+    # would overwrite in a multi-host run and silently configure only one). ansible_host stays the
+    # container name (what `docker exec` targets on the daemon selected by DOCKER_HOST).
+    name: "{{ freeipa_server_docker_container_name }}@{{ inventory_hostname }}"
+    groups: "{{ freeipa_server_docker_inventory_group }}"
+    ansible_connection: community.docker.docker
+    ansible_host: "{{ freeipa_server_docker_container_name }}"
+    ansible_user: root
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_remote_tmp: /tmp/.ansible-tmp
+    ansible_become: false
+    # Carry the identity + host context through to the config play.
+    freeipa_container_vm_host: "{{ inventory_hostname }}"
+    freeipa_container_vm_docker_host: "ssh://{{ ansible_user | default('ansible') }}@{{ ansible_host | default(inventory_hostname) }}"
+    freeipa_server_domain: "{{ freeipa_server_docker_domain }}"
+    freeipa_server_realm: "{{ freeipa_server_docker_realm }}"
+    freeipa_server_fqdn: "{{ freeipa_server_docker_fqdn }}"
+    # Carry env-specific freeipa_server_* config inputs so the in-container config play's
+    # preflight/DNS phases have them (the container host isn't in the estate group_vars).
+    freeipa_server_forwarders: "{{ freeipa_server_docker_forwarders }}"
+    freeipa_server_setup_dns: "{{ freeipa_server_docker_setup_dns }}"
+    # Credential source for the config play's freeipa_server resolver (declared var first,
+    # this Vault path as fallback) — same path the container was stood up with.
+    freeipa_server_vault_secret: "{{ freeipa_server_docker_vault_secret | default('') }}"
+  changed_when: false
+
+- name: Report the registered container host + how to reach it
+  ansible.builtin.debug:
+    msg: >-
+      Registered container '{{ freeipa_server_docker_container_name }}' (on
+      {{ inventory_hostname }}) in group '{{ freeipa_server_docker_inventory_group }}'.
+      A following play targeting that group runs freeipa_server INSIDE the container.
+      NOTE: export DOCKER_HOST=ssh://{{ ansible_user | default('ansible') }}@{{ ansible_host | default(inventory_hostname) }}
+      on the controller so the docker connection reaches this VM's daemon.
