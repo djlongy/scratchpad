@@ -1,0 +1,18 @@
+---
+# EXAMPLE ONLY — copy to `vault.yml` (drop the .example suffix), paste your real
+# ansible PRIVATE key, then encrypt so it is never committed in clear:
+#
+#   cp vault.yml.example vault.yml
+#   # ...paste your key into vault.yml...
+#   ansible-vault encrypt vault.yml
+#
+# This holds only the SSH key that play 1 loads into ssh-agent. The vCenter password
+# is fetched separately from HashiCorp Vault at run time via vsphere_vm_vault_secret
+# (see inventory.yml) — it does NOT live here.
+#
+# The value is the full private key text as a literal block scalar — the `|` and the
+# two-space indent preserve the exact newlines ssh-add needs:
+vault_ssh_private_key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  ...your ansible private key here...
+  -----END OPENSSH PRIVATE KEY-----

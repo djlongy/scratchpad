@@ -1,0 +1,54 @@
+---
+# examples/full-deployment/site.yml
+# Full end-to-end deployment from ONE inventory, ONE `ansible-playbook` run:
+#
+#   play 1 (controller): unlock the ansible SSH key into ssh-agent (disk-free)
+#   play 2 (the VM):     build it → wait for SSH → provision storage → baseline
+#                        → firewall → docker
+#
+#   export ANSIBLE_VAULT_PASSWORD=...            # vault holds the SSH key + vCenter creds
+#   ansible-playbook site.yml
+#
+#   # recreate the VM from scratch (delete + rebuild), then re-run everything:
+#   ansible-playbook site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true
+#   # grow disks after bumping vsphere_vm_disk sizes:
+#   ansible-playbook site.yml --tags create,grow
+#   # tear the VM down:
+#   ansible-playbook site.yml -e vsphere_vm_state=absent --tags destroy -e vsphere_vm_allow_destroy=true
+
+# ── Play 1 — unlock the ansible SSH key into the controller's ssh-agent ─────────
+# Loads the vaulted private key straight into ssh-agent (never on disk), so play 2
+# can SSH the freshly-built VM key-only. REQUIRES an inherited ssh-agent (macOS
+# launchd, or `eval $(ssh-agent)` first) — a spawned agent can't export its socket
+# up to the parent shell. The template must carry the matching PUBLIC key in the
+# ansible user's authorized_keys.
+- name: Unlock the ansible SSH key into ssh-agent
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_pipelining: true
+  roles:
+    - role: ssh_agent_key
+      vars:
+        ssh_agent_key_content: "{{ vault_ssh_private_key }}"
+
+# ── Play 2 — provision the VM and configure it end to end ───────────────────────
+# gather_facts: false because the VM may not exist at play start; vsphere_vm_wait_for_ssh
+# blocks until it answers SSH (via the key unlocked above) and then gathers its facts.
+# become: true for every on-guest role — vsphere_vm forces become:false on its own
+# localhost-delegated tasks, so this is safe.
+- name: Provision and configure the VM end to end
+  hosts: vmware_vms
+  gather_facts: false
+  become: true
+  roles:
+    - role: vsphere_vm            # clone from template, wait for SSH, gather facts
+      vars:
+        vsphere_vm_wait_for_ssh: true
+    - role: storage              # turn the 2 data disks into /opt + /var/lib/docker
+      vars:
+        storage_provision: true
+    - role: baseline             # OS baseline (users, packages, sysctl, hardening…)
+    - role: firewalld            # host firewall (default zone + services)
+    - role: docker               # container runtime on the /var/lib/docker data disk

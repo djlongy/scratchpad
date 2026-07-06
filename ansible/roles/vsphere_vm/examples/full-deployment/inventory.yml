@@ -1,0 +1,47 @@
+---
+# examples/full-deployment/inventory.yml
+# One host taken from bare template to fully-configured: vCenter placement,
+# hardware, a static NIC, two data disks + a storage profile. The playbook (site.yml)
+# unlocks the ansible SSH key, builds the VM, then runs the on-guest roles over it.
+# All values are placeholders — swap in your environment.
+all:
+  children:
+    vmware_vms:
+      hosts:
+        app01:
+          ansible_host: 192.0.2.60            # static IP (becomes the derived NIC's IP)
+          # ansible_user authenticates via the ssh-agent key unlocked in play 1 (no key file)
+          ansible_user: ansible
+          vsphere_vm_name: "app01"
+          vsphere_vm_hostname: "app01"
+
+          vsphere_vm_hardware: {num_cpus: 2, memory_mb: 4096}
+          vsphere_vm_disk:
+            - {size_gb: 40, type: thin}       # OS / root
+            - {size_gb: 50, type: thin}       # data disk → /opt   (storage profile)
+            - {size_gb: 20, type: thin}       # data disk → /var/lib/docker (storage profile)
+
+          vsphere_vm_tags: {Environment: lab, Role: app}
+
+          # Two data disks turned into mounted LVM volumes by a storage profile.
+          storage_profile: app01
+          storage_profiles:
+            app01:
+              - {name: opt, disk: "by-size:50G", lvm: true, vg: vg_opt, lv: lv_opt, size: "100%FREE", fstype: xfs, mount: /opt, provision: true, grow: true}
+              - {name: docker, disk: "by-size:20G", lvm: true, vg: vg_docker, lv: lv_docker, size: "100%FREE", fstype: xfs, mount: /var/lib/docker, provision: true, grow: true}
+
+      vars:
+        # ── vCenter connection + placement (shared) ──────────────────────────────
+        vsphere_vm_server: "vcenter.example.com"
+        vsphere_vm_datacenter: "Datacenter"
+        vsphere_vm_vault_secret: "secret/data/vsphere/vcenter/runtime"
+        vsphere_vm_validate_certs: false
+        vsphere_vm_esxi_host: "192.0.2.11"          # OR vsphere_vm_cluster
+        vsphere_vm_resource_pool: "Resources"
+        vsphere_vm_datastore: "datastore1"
+        vsphere_vm_folder: "/Datacenter/vm"
+        vsphere_vm_template: "linux-almalinux-9-main"
+        vsphere_vm_network: "VLAN10-SVC"
+        vsphere_vm_netmask: "255.255.255.0"
+        vsphere_vm_gateway: "192.0.2.1"
+        vsphere_vm_dns: ["192.0.2.53"]

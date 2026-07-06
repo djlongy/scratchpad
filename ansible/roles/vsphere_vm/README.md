@@ -337,10 +337,14 @@ template, placement, hardware, disks and provisioning mode. Hosts build concurre
 
 ## Examples
 
-See [`examples/provision-and-storage/`](examples/provision-and-storage/) for a complete,
-self-contained inventory + playbook: one host with two data disks provisioned by a
-`storage` profile, a commented 3-NIC alternative, and the build / grow / redeploy / destroy
-commands.
+Two complete, self-contained examples under [`examples/`](examples/):
+
+- [`provision-and-storage/`](examples/provision-and-storage/) — the minimal composition:
+  one host, two data disks provisioned by a `storage` profile, a commented 3-NIC
+  alternative, and the build / grow / redeploy / destroy commands.
+- [`full-deployment/`](examples/full-deployment/) — a bare template taken **end to end**:
+  unlock the ansible SSH key into ssh-agent → build the VM → `storage` → `baseline` →
+  `firewalld` → `docker`, from one inventory in one run.
 
 ## Known vSphere quirk (handled — but see the permanent fix)
 
