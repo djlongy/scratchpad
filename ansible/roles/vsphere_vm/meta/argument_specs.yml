@@ -93,6 +93,13 @@ argument_specs:
         type: bool
         required: false
         description: Safety guard — destroy (state absent) is refused unless true.
+      vsphere_vm_allow_redeploy:
+        type: bool
+        required: false
+        description: >-
+          Safety guard for `--tags redeploy` (delete the VM + disks, then rebuild
+          from the template in one pass). Refused unless true; combine with the
+          never-tagged `redeploy` tag.
       vsphere_vm_hostname:
         type: str
         required: false

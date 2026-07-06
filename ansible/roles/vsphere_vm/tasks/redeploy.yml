@@ -1,0 +1,32 @@
+---
+# roles/vsphere_vm/tasks/redeploy.yml
+# DESTRUCTIVE from-scratch rebuild. Deletes THIS host's VM so the create phase
+# (which follows in main.yml) rebuilds it fresh from the template — delete → create
+# in one pass. Runs ONLY under `--tags redeploy` (never-tagged) AND
+# vsphere_vm_allow_redeploy, and only for desired-present hosts (you don't redeploy
+# a state:absent host — that's the destroy phase).
+#
+# Idempotent delete: state:absent by NAME (folder-drift-proof, matches destroy.yml),
+# force:true; a no-op if the VM is already gone (so redeploy also works as a plain
+# create on a host that doesn't exist yet).
+
+- name: Redeploy | Refuse unless vsphere_vm_allow_redeploy is true
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_allow_redeploy | bool
+    fail_msg: >-
+      Refusing to redeploy {{ _vsphere_guest.name }}. Run with --tags redeploy AND
+      set vsphere_vm_allow_redeploy=true to DELETE the VM and rebuild it from the
+      template (this destroys the guest and its disks).
+    quiet: true
+  delegate_to: localhost
+  become: false
+
+- name: Redeploy | Delete the VM so create rebuilds it from scratch — {{ _vsphere_guest.name }}
+  community.vmware.vmware_guest:
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ _vsphere_guest.name }}"
+    state: absent
+    force: true
+  delegate_to: localhost
+  become: false

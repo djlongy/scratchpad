@@ -22,9 +22,24 @@ Hosts build in parallel for free.
 |---|---|
 | `preflight` | assert inputs + resolve the vCenter password |
 | `create` | clone/ensure guests whose `state` ≠ `absent` |
+| `redeploy` | **delete then rebuild** from scratch — **`never` tag**, needs `vsphere_vm_allow_redeploy=true` |
 | `destroy` | remove guests whose `state` = `absent` — **`never` tag**, needs `vsphere_vm_allow_destroy=true` |
 
-A no-tag run creates/ensures; destroy is opt-in only.
+A no-tag run creates/ensures; redeploy and destroy are opt-in only.
+
+**Redeploy (recreate from scratch):** `--tags redeploy` runs `delete → create →
+connect` for the targeted hosts in one pass — the VM and its disks are removed,
+then rebuilt fresh from the template. Doubly guarded (never-tag + flag):
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
+  --tags redeploy -e vsphere_vm_allow_redeploy=true
+# scope to specific hosts with --limit
+ansible-playbook ... --tags redeploy -e vsphere_vm_allow_redeploy=true --limit web01
+```
+
+The delete is by name and idempotent, so redeploy also works on a host whose VM
+doesn't exist yet (it just builds it). Pair with `--limit` to recreate a subset.
 
 ## Robust spin-up (NIC reconnect + bounded waits)
 

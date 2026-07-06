@@ -10,6 +10,8 @@
 #   preflight → assert connection inputs + resolve the vCenter password
 #   spec      → build THIS host's guest spec from its own vars
 #   plan      → derive create/destroy purely from the declared state (no vCenter read)
+#   redeploy  → (never tag + allow_redeploy) DELETE this host's VM BEFORE create,
+#               so `--tags redeploy` rebuilds it from scratch (delete → create)
 #   create    → ensure this host's VM (idempotent — reconciles an existing VM)
 #   connect   → NIC reconnect + bounded IP wait for this host's VM
 #   destroy   → remove this host's VM when state=absent (never tag + allow_destroy)
@@ -37,17 +39,27 @@
 
 # vCenter connection for every community.vmware module task, injected per phase
 # via module_defaults (password is resolved by preflight, which is `always`-tagged,
-# before any module task runs).
-- name: Ensure this host's VM (idempotent — reconciles if it already exists)
-  ansible.builtin.import_tasks: create.yml
-  when: _vsphere_to_create | bool
-  tags: [vsphere_vm, create]
+# before any module task runs). The anchor is defined here on the redeploy import —
+# the first vCenter phase in file order — and aliased by create/connect/destroy.
+# (Anchors resolve at parse time, so create still gets it even when this never-
+# tagged import is skipped on a normal run.)
+- name: Redeploy | Delete this host's VM first so create rebuilds it (opt-in)
+  ansible.builtin.import_tasks: redeploy.yml
+  when: _vsphere_desired_present | bool
+  tags: [never, redeploy]
   module_defaults: &vcenter_connection
     group/community.vmware.vmware:
       hostname: "{{ vsphere_vm_server }}"
       username: "{{ vsphere_vm_username }}"
       password: "{{ vsphere_vm_password }}"
       validate_certs: "{{ vsphere_vm_validate_certs }}"
+
+- name: Ensure this host's VM (idempotent — reconciles if it already exists)
+  ansible.builtin.import_tasks: create.yml
+  when: _vsphere_to_create | bool
+  # `redeploy` so `--tags redeploy` rebuilds after the delete above.
+  tags: [vsphere_vm, create, redeploy]
+  module_defaults: *vcenter_connection
 
 # Reconnect + verify the NIC for this host's VM (created this run AND already
 # present). Its own phase — not buried in create — so `--tags connect` can heal
@@ -56,7 +68,7 @@
 - name: Reconnect and verify this host's VM NICs
   ansible.builtin.import_tasks: connect.yml
   when: _vsphere_desired_present | bool
-  tags: [vsphere_vm, create, connect]
+  tags: [vsphere_vm, create, connect, redeploy]
   module_defaults: *vcenter_connection
 
 # OPT-IN handoff to on-guest roles in the SAME play (vsphere_vm_wait_for_ssh):
@@ -68,7 +80,7 @@
   when:
     - _vsphere_desired_present | bool
     - vsphere_vm_wait_for_ssh | bool
-  tags: [vsphere_vm, create, handoff]
+  tags: [vsphere_vm, create, handoff, redeploy]
 
 - name: Destroy this host's VM when marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml

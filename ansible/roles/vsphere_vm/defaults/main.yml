@@ -172,3 +172,10 @@ vsphere_vm_tags: {}
 # Destroying (state: absent) is refused unless this is true — a guard against
 # accidental mass-deletion. Combine with the `destroy` tag (see tasks/main.yml).
 vsphere_vm_allow_destroy: false
+
+# ── Redeploy (delete → rebuild from scratch) ─────────────────────────────────
+# `--tags redeploy` DELETES this host's VM (and its disks) then rebuilds it fresh
+# from the template in the same pass. Doubly guarded like destroy: the `never`-
+# tagged redeploy phase runs ONLY with `--tags redeploy` AND this flag true.
+#   ansible-playbook ... --tags redeploy -e vsphere_vm_allow_redeploy=true
+vsphere_vm_allow_redeploy: false
