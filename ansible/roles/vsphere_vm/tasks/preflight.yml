@@ -15,26 +15,15 @@
         (vsphere_vm_vault_secret | default('') | length > 0)
     fail_msg: >-
       Set vsphere_vm_server, vsphere_vm_datacenter, and either vsphere_vm_password
-      or vsphere_vm_vault_secret in inventory.
+      (recommended: from an Ansible-Vault-encrypted var) or vsphere_vm_vault_secret
+      (HashiCorp Vault KV path) in inventory.
     quiet: true
   delegate_to: localhost
   become: false
 
 # Credential contract: Ansible Vault var FIRST (vsphere_vm_password, e.g. from an encrypted
-# group_var), HashiCorp Vault only as a fallback. Fail clearly when neither is configured
-# instead of proceeding with an empty password (cryptic vCenter auth error downstream).
-- name: Preflight | Assert a vCenter password source is configured (declared var or Vault path)
-  ansible.builtin.assert:
-    that:
-      - >-
-        (vsphere_vm_password | default('') | length > 0)
-        or (vsphere_vm_vault_secret | default('') | length > 0)
-    fail_msg: >-
-      No vCenter password source configured. Set vsphere_vm_password (recommended: from an
-      Ansible-Vault-encrypted var) or vsphere_vm_vault_secret (HashiCorp Vault KV path).
-  delegate_to: localhost
-  become: false
-
+# group_var), HashiCorp Vault only as a fallback. The assert above already guarantees one
+# source is set, so proceed straight to the lookup.
 - name: Preflight | Resolve vCenter password from Vault (fallback when no declared var)
   ansible.builtin.set_fact:
     vsphere_vm_password: >-
