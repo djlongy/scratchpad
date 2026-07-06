@@ -313,6 +313,35 @@ The role never silently guesses a gateway: an unset gateway means "unrouted" unl
 opt into `vsphere_vm_gateway_auto`. Set the flag per host/group for routable fleets that
 don't want to spell out every gateway.
 
+## Growing disks
+
+`community.vmware.vmware_guest` creates disks on clone but does **not** resize them on a
+reconfigure — so the role ensures each disk's size with a dedicated
+`community.vmware.vmware_guest_disk` step (maps `vsphere_vm_disk` 1:1 onto SCSI controller
+0, units 0,1,2,…). It **grows** a disk whose `size_gb` you bumped, is a no-op when sizes
+match, and never shrinks (vSphere forbids it). Set `vsphere_vm_scsi_type` (default
+`paravirtual`) to match your template's controller.
+
+To grow a data disk end-to-end: bump its `vsphere_vm_disk` size (and its `by-size:` storage
+selector), then re-run — `--tags create,grow` reconfigures the vmdk (online) and the
+`storage` role's grow phase extends the partition → PV → LV → filesystem. Non-destructive;
+existing data is preserved.
+
+## Pre-build report
+
+Before any VM is created, the role prints a **consolidated plan** (once per run) of
+everything about to be built across the play: per host the vCenter VM name, guest OS
+hostname, each NIC (interface · portgroup · ip/mask · routed gateway vs unrouted), the
+template, placement, hardware, disks and provisioning mode. Hosts build concurrently
+(bounded by `forks`), so it is the one chance to eyeball the plan before it fans out.
+
+## Examples
+
+See [`examples/provision-and-storage/`](examples/provision-and-storage/) for a complete,
+self-contained inventory + playbook: one host with two data disks provisioned by a
+`storage` profile, a commented 3-NIC alternative, and the build / grow / redeploy / destroy
+commands.
+
 ## Known vSphere quirk (handled — but see the permanent fix)
 
 Clone **with a vSphere Guest OS Customization (GOSC) spec** (`customization:`) toggles the new

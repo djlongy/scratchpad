@@ -1,0 +1,30 @@
+---
+# examples/provision-and-storage/site.yml
+# Build the VM and provision its data disks in ONE play. vsphere_vm builds on the
+# control node (delegate_to: localhost) then — because vsphere_vm_wait_for_ssh is
+# true — blocks until the guest answers SSH and gathers its facts, so the on-guest
+# `storage` role can run next in the same play.
+#
+#   export ANSIBLE_VAULT_PASSWORD=...            # if any vaulted vars are used
+#   ANSIBLE_HOST_KEY_CHECKING=False \
+#   ansible-playbook -i inventory.yml site.yml
+#
+#   # recreate from scratch (delete VM + disks, rebuild):
+#   ansible-playbook -i inventory.yml site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true
+#   # grow after bumping vsphere_vm_disk sizes (create grows the vmdk, grow grows the fs):
+#   ansible-playbook -i inventory.yml site.yml --tags create,grow
+#   # destroy:
+#   ansible-playbook -i inventory.yml site.yml -e vsphere_vm_state=absent \
+#       --tags destroy -e vsphere_vm_allow_destroy=true
+
+- name: Provision the VM and its storage
+  hosts: vmware_vms
+  gather_facts: false            # the VM may not exist at play start
+  become: true                   # for storage; vsphere_vm forces become:false on its own tasks
+  roles:
+    - role: vsphere_vm
+      vars:
+        vsphere_vm_wait_for_ssh: true   # build VM → wait for SSH → gather facts
+    - role: storage                     # provisions /opt + /data from the storage profile
+      vars:
+        storage_provision: true

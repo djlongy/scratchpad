@@ -1,0 +1,61 @@
+---
+# examples/provision-and-storage/inventory.yml
+# A complete, self-contained example host for the vsphere_vm + storage contract:
+# vCenter placement, hardware, a static NIC, TWO data disks, and a storage PROFILE
+# that turns those disks into mounted LVM volumes. All values are placeholders —
+# swap in your vCenter, datastore, template, portgroups, IPs and Vault path.
+all:
+  children:
+    vmware_vms:
+      hosts:
+        vm01:
+          # ── Identity + network (per-host uniques) ────────────────────────────
+          ansible_host: 192.0.2.50            # static IP (becomes the derived NIC's IP)
+          vsphere_vm_name: "vm01"             # vCenter object name
+          vsphere_vm_hostname: "vm01"         # guest OS hostname (decoupled from the VM name)
+
+          # A single derived NIC is built from ansible_host + the vcenter block below.
+          # To use THREE static NICs instead, uncomment this (it replaces the derived NIC).
+          # A NIC WITH a gateway is routed and carries DNS; one WITHOUT is unrouted
+          # (data/storage plane). `type` defaults to static, so an `ip` implies static;
+          # omit `ip` and that NIC does DHCP. `interface` defaults to VMXNET3 slot order
+          # (ens192 / ens224 / ens256).
+          # vsphere_vm_networks:
+          #   - {name: "VLAN10-SVC",     interface: ens192, ip: 192.0.2.50, netmask: 255.255.255.0, gateway: 192.0.2.1}
+          #   - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.50, netmask: 255.255.255.0}   # unrouted
+          #   - {name: "VLAN40-BACKUP",  interface: ens256, ip: 10.0.40.50, netmask: 255.255.255.0}   # unrouted
+
+          # ── Hardware + disks (native community.vmware.vmware_guest dicts) ─────
+          # disk[0] is the OS disk (>= the template's disk). disk[1]/disk[2] are the
+          # TWO data disks the storage profile provisions, pinned by exact size. Bump
+          # a size and re-run `--tags create,grow` to grow the vmdk + filesystem.
+          vsphere_vm_hardware: {num_cpus: 2, memory_mb: 4096}
+          vsphere_vm_disk:
+            - {size_gb: 40, type: thin}       # OS / root
+            - {size_gb: 50, type: thin}       # data disk → /opt
+            - {size_gb: 20, type: thin}       # data disk → /data
+
+          vsphere_vm_tags: {Environment: lab, Owner: example}
+
+          # ── Storage PROFILE — 2 volumes, one per data disk ───────────────────
+          storage_profile: vm01
+          storage_profiles:
+            vm01:
+              - {name: opt, disk: "by-size:50G", lvm: true, vg: vg_opt, lv: lv_opt, size: "100%FREE", fstype: xfs, mount: /opt, provision: true, grow: true}
+              - {name: data, disk: "by-size:20G", lvm: true, vg: vg_data, lv: lv_data, size: "100%FREE", fstype: xfs, mount: /data, provision: true, grow: true}
+
+      vars:
+        # ── vCenter connection + placement (shared — set once per group) ─────────
+        vsphere_vm_server: "vcenter.example.com"
+        vsphere_vm_datacenter: "Datacenter"
+        vsphere_vm_vault_secret: "secret/data/vsphere/vcenter/runtime"   # HashiCorp Vault KV path
+        vsphere_vm_validate_certs: false
+        vsphere_vm_esxi_host: "192.0.2.11"          # OR vsphere_vm_cluster for a DRS cluster
+        vsphere_vm_resource_pool: "Resources"
+        vsphere_vm_datastore: "datastore1"
+        vsphere_vm_folder: "/Datacenter/vm"
+        vsphere_vm_template: "linux-almalinux-9-main"
+        vsphere_vm_network: "VLAN10-SVC"            # dvPortGroup for the derived NIC
+        vsphere_vm_netmask: "255.255.255.0"
+        vsphere_vm_gateway: "192.0.2.1"             # unset = no gateway; vsphere_vm_gateway_auto: true derives it
+        vsphere_vm_dns: ["192.0.2.53"]
