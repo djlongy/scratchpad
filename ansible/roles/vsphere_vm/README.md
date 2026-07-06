@@ -2,9 +2,10 @@
 
 Portable vCenter **VM lifecycle** role — clone VMs from a template (create) and
 remove them (destroy) via `community.vmware.vmware_guest`. Idempotent; all
-modules run on the control node against vCenter. Guests are **always derived
-from inventory**: one VM per host in `vsphere_vm_inventory_group`, its spec in
-host_vars/group_vars (a hand-authored guests list is not an input).
+modules run on the control node against vCenter. **Host-centric**: the play
+targets the VM hosts themselves and every host provisions ITS OWN VM from its
+own vars in single task calls (a hand-authored guests list is not an input).
+Hosts build in parallel for free.
 
 > For declarative, state-file-managed fleets prefer Terraform. This role is for
 > Ansible-native, inventory-driven create/destroy (e.g. spinning up SOE desktops
@@ -58,9 +59,11 @@ phase handles this automatically:
 ## Usage
 
 ```yaml
-# playbook.yml — runs on the controller (localhost)
-- hosts: localhost
+# playbook.yml — target the VM hosts; every vCenter call delegates to localhost,
+# so the (possibly not-yet-existing) hosts are never SSHed.
+- hosts: vmware_vms
   gather_facts: false
+  become: false
   roles:
     - vsphere_vm
 ```
@@ -73,7 +76,6 @@ vsphere_vm_datacenter: "Datacenter"
 vsphere_vm_esxi_host: "192.0.2.11"
 vsphere_vm_resource_pool: "/Datacenter/host/192.0.2.11/Resources"
 vsphere_vm_datastore: "datastore1"
-vsphere_vm_inventory_group: vmware_vms   # <- the VMs = the hosts in this group
 ```
 
 Create / ensure:
@@ -89,13 +91,14 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags destroy -e vsphere_vm_allow_destroy=true
 ```
 
-## Inventory-derived guests (the only model)
+## Host-centric (the only model)
 
-The role derives **one VM per inventory host** — each host *is* a VM, its spec
-in its vars. The role reads `hostvars[host]`, which is the **merged** view of
-inline + host_vars + group_vars, so placement is your choice. A missing or empty
-`vsphere_vm_inventory_group` fails fast (listing the known groups), so the plan
-can never silently compute "nothing to create".
+Each play host **is** its VM: the host builds its own VM from its own vars in
+single task calls — no group loop, no `hostvars[]` indirection. Vars resolve in
+the host's own context (inline inventory + host_vars + group_vars merged), so
+placement is your choice. One shared `vmware_vm_info` read serves the whole
+play; each host prints its own plan line (CREATE / present / DESTROY), so the
+run can never silently compute "nothing to create".
 
 **Where to put the vars:**
 
@@ -111,7 +114,7 @@ the common spec + minimal host_vars for the uniques** (usually just the IP).
 ```yaml
 # group_vars/vmware_vms.yml — the common spec
 vsphere_vm_template: linux-almalinux-9-main
-vsphere_vm_hardware:            # native vmware_guest dict (merged over the role default)
+vsphere_vm_hardware:            # native vmware_guest dict (replaces the role default)
   num_cpus: 2
   memory_mb: 4096
 vsphere_vm_network: "VLAN10-SVC"
@@ -268,9 +271,8 @@ the static hostname + network. Verified end-to-end (NIC `Connected: true` throug
 
 ### Dual-mode specifics (post-synthesis)
 
-- **Per-guest mode choice** — the flag also works per guest: set `vsphere_vm_provision_via_guestinfo`
-  in a host's vars (inventory-derived model) or `provision_via_guestinfo:` on a hand-curated guest.
-  One inventory can mix GOSC and GuestInfo guests; unset falls back to the role-wide flag.
+- **Per-host mode choice** — set `vsphere_vm_provision_via_guestinfo` in a host's vars. One
+  inventory can mix GOSC and GuestInfo hosts; unset falls back to the role-wide (group) flag.
 - **Clone engine** — GuestInfo mode clones with `vmware.vmware.deploy_folder_template`, which has NO
   customization surface (GOSC-proof by construction; `vmware_guest` attaches a GOSC spec to template
   clones even without `customization:`). Hardware/disk/guestinfo are applied by a follow-up plain
@@ -362,7 +364,7 @@ Host_vars shown; every key is also settable group-wide in group_vars:
 vsphere_vm_name: web-01                        # vCenter VM name  (default: inventory_hostname)
 vsphere_vm_template: linux-almalinux-9-main    # source template  (required)
 vsphere_vm_provision_via_guestinfo: true       # engine override  (optional)
-vsphere_vm_hardware:                # native vmware_guest dict   (optional; merged over role default)
+vsphere_vm_hardware:                # native vmware_guest dict   (optional; replaces role default)
   num_cpus: 2
   memory_mb: 4096
 vsphere_vm_disk:                    # native vmware_guest list   (optional; replaces role default)

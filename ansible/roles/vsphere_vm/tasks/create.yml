@@ -1,12 +1,12 @@
 ---
 # roles/vsphere_vm/tasks/create.yml
-# Build only the guests the plan (state.yml) found MISSING — Terraform-style
-# "create if it doesn't exist". Existing VMs are left untouched. Runs on the
-# controller against vCenter.
+# Build THIS host's VM (main.yml imports this only when the plan said CREATE) —
+# Terraform-style "create if it doesn't exist"; an existing VM is left untouched.
+# Runs on the controller against vCenter; hosts create their VMs in parallel.
 #
-# Two provisioning modes (vsphere_vm_provision_via_guestinfo), both reading the
-# same per-guest fields (item.networks[*].{name,ip,netmask,gateway,interface},
-# item.customization):
+# Two provisioning modes (_vsphere_guest.provision_via_guestinfo), both reading
+# the same spec fields (networks[*].{name,ip,netmask,gateway,interface},
+# customization):
 #
 #   GOSC (default) → ONE vmware_guest call clones + customizes + powers on. The
 #     customization spec makes vSphere fire an async first-boot event that
@@ -20,23 +20,14 @@
 #     govc, no GOSC, and connect.yml converges on its first pass. See the role README
 #     "Known vSphere quirk" + "cloud-init GuestInfo" sections.
 
-# ─── Per-guest mode split ─────────────────────────────────────────────────────
-# derive.yml resolves provision_via_guestinfo per host (host var, else the
-# role-wide flag), so every guest carries a definitive boolean.
-- name: Create | Split guests by provisioning mode
-  ansible.builtin.set_fact:
-    _vsphere_create_gi: "{{ _vsphere_to_create | selectattr('provision_via_guestinfo') | list }}"
-    _vsphere_create_gosc: "{{ _vsphere_to_create | rejectattr('provision_via_guestinfo') | list }}"
-  run_once: true
-  delegate_to: localhost
-  become: false
-
 # ─── Folder tree ──────────────────────────────────────────────────────────────
-# Ensure each guest's (possibly NESTED) VM folder path exists before placing VMs.
+# Ensure this VM's (possibly NESTED) folder path exists before placing it.
 # community.vmware.vcenter_folder is single-level, so vmware.vmware.folder is used —
 # it creates the WHOLE path in one call (e.g. tenancy/environment → /<DC>/vm/prod/alma).
 # relative_path is the path under the DC's vm root; a bare base folder (empty) is skipped.
-- name: Create | Ensure each VM's (nested) folder path exists
+# throttle: 1 — parallel hosts often share a folder path; serialize the (idempotent)
+# create so concurrent same-path calls can't race.
+- name: Create | Ensure this VM's (nested) folder path exists
   vmware.vmware.folder:
     hostname: "{{ vsphere_vm_server }}"
     username: "{{ vsphere_vm_username }}"
@@ -48,40 +39,35 @@
     state: present
   vars:
     _rel: >-
-      {{ _folder | regex_replace('^/?' ~ vsphere_vm_datacenter ~ '/vm/?', '')
-                 | regex_replace('^/?vm/?', '') | regex_replace('^/', '') }}
-  loop: "{{ _vsphere_to_create | map(attribute='folder', default=vsphere_vm_folder) | unique | list }}"
-  loop_control:
-    loop_var: _folder
-    label: "{{ _folder }}"
+      {{ _vsphere_guest.folder | regex_replace('^/?' ~ vsphere_vm_datacenter ~ '/vm/?', '')
+                               | regex_replace('^/?vm/?', '') | regex_replace('^/', '') }}
   when: _rel | length > 0
+  throttle: 1
   delegate_to: localhost
   become: false
-  run_once: true
 
 # ─── GOSC mode (default) ──────────────────────────────────────────────────────
-- name: Create | Build missing VMs — GOSC ({{ _vsphere_create_gosc | map(attribute='name') | list }})
+- name: Create | Build the VM — GOSC ({{ _vsphere_guest.name }})
   vars:
     # Force NICs connected + start-connected. Necessary-but-not-sufficient under
     # GOSC (the async customize re-disconnects — connect.yml heals it).
     _gosc_networks: >-
-      {{ item.networks | default([]) | map('combine', {'connected': true, 'start_connected': true}) | list }}
+      {{ _vsphere_guest.networks | map('combine', {'connected': true, 'start_connected': true}) | list }}
   community.vmware.vmware_guest:
     datacenter: "{{ vsphere_vm_datacenter }}"
     cluster: "{{ vsphere_vm_cluster | default(omit) }}"
     esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
     resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
-    folder: "{{ item.folder | default(vsphere_vm_folder) }}"
-    name: "{{ item.name }}"
-    template: "{{ item.template }}"
-    datastore: "{{ item.datastore | default(vsphere_vm_datastore) | default(omit, true) }}"
-    state: "{{ item.state | default(vsphere_vm_state) }}"
-    # Native vmware_guest dicts, passed through 1:1 (per-guest hardware merges
-    # over the role default; a per-guest disk list replaces it).
-    hardware: "{{ vsphere_vm_hardware | combine(item.hardware | default({})) }}"
-    disk: "{{ item.disk | default(vsphere_vm_disk) }}"
-    networks: "{{ _gosc_networks if (item.networks is defined) else omit }}"
-    customization: "{{ item.customization | default(omit) }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+    template: "{{ _vsphere_guest.template }}"
+    datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
+    state: "{{ _vsphere_guest.state }}"
+    # Native vmware_guest dicts, passed through 1:1.
+    hardware: "{{ _vsphere_guest.hardware }}"
+    disk: "{{ _vsphere_guest.disk }}"
+    networks: "{{ _gosc_networks }}"
+    customization: "{{ _vsphere_guest.customization }}"
     # IP waiting is deferred to connect.yml (after the NIC reconnect); waiting here
     # would block for 20+ minutes while the NIC is GOSC-disconnected.
     wait_for_ip_address: false
@@ -89,179 +75,140 @@
   retries: "{{ vsphere_vm_create_retries }}"
   delay: "{{ vsphere_vm_create_delay }}"
   until: _vsphere_created is succeeded
-  loop: "{{ _vsphere_create_gosc }}"
-  loop_control:
-    label: "{{ item.name }}"
+  when: not _vsphere_guest.provision_via_guestinfo
   delegate_to: localhost
   become: false
-  run_once: true
 
 # ─── GuestInfo mode ───────────────────────────────────────────────────────────
-# Step 1: clone powered-OFF with NO networks + NO customization (→ no GOSC spec),
-# injecting the cloud-init metadata as guestinfo advanced settings.
-- name: Create | Clone missing VMs powered-off — GuestInfo, no GOSC ({{ _vsphere_create_gi | map(attribute='name') | list }})
-  # deploy_folder_template has NO customization surface — GOSC-proof by
-  # construction (vmware_guest attaches a GOSC spec to template clones even
-  # without customization:, which re-disconnects the NIC). Field-verified.
-  # NOTE: vmware.vmware modules are outside the community.vmware module_defaults
-  # group → explicit connection args. On a standalone host, resource_pool must be
-  # the host's ROOT pool MOID (e.g. resgroup-123) if the name is ambiguous.
-  vmware.vmware.deploy_folder_template:
-    hostname: "{{ vsphere_vm_server }}"
-    username: "{{ vsphere_vm_username }}"
-    password: "{{ vsphere_vm_password }}"
-    validate_certs: "{{ vsphere_vm_validate_certs }}"
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    cluster: "{{ vsphere_vm_cluster | default(omit) }}"
-    esxi_host: "{{ vsphere_vm_esxi_host | default(omit) }}"
-    resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
-    datastore: "{{ item.datastore | default(vsphere_vm_datastore) | default(omit, true) }}"
-    vm_folder: "{{ item.folder | default(vsphere_vm_folder) }}"
-    template_name: "{{ item.template }}"
-    vm_name: "{{ item.name }}"
-    power_on_after_deploy: false
-  register: _vsphere_gi_cloned
-  retries: "{{ vsphere_vm_create_retries }}"
-  delay: "{{ vsphere_vm_create_delay }}"
-  until: _vsphere_gi_cloned is succeeded
-  loop: "{{ _vsphere_create_gi }}"
-  loop_control:
-    label: "{{ item.name }}"
+- name: Create | Build the VM — GuestInfo, no GOSC ({{ _vsphere_guest.name }})
+  when: _vsphere_guest.provision_via_guestinfo
   delegate_to: localhost
   become: false
-  run_once: true
+  block:
+    # Step 1: clone powered-OFF with NO networks + NO customization (→ no GOSC spec).
+    # deploy_folder_template has NO customization surface — GOSC-proof by
+    # construction (vmware_guest attaches a GOSC spec to template clones even
+    # without customization:, which re-disconnects the NIC). Field-verified.
+    # NOTE: vmware.vmware modules are outside the community.vmware module_defaults
+    # group → explicit connection args. On a standalone host, resource_pool must be
+    # the host's ROOT pool MOID (e.g. resgroup-123) if the name is ambiguous.
+    - name: Create | Clone powered-off — GuestInfo
+      vmware.vmware.deploy_folder_template:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        cluster: "{{ vsphere_vm_cluster | default(omit) }}"
+        esxi_host: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
+        datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
+        vm_folder: "{{ _vsphere_guest.folder }}"
+        template_name: "{{ _vsphere_guest.template }}"
+        vm_name: "{{ _vsphere_guest.name }}"
+        power_on_after_deploy: false
+      register: _vsphere_gi_cloned
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_gi_cloned is succeeded
 
-# Step 1b: hardware/disk as a plain RECONFIGURE of the existing powered-off VM
-# (no clone → vmware_guest attaches no GOSC spec here).
-- name: Create | Reconfigure hardware/disk — GuestInfo
-  community.vmware.vmware_guest:
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    folder: "{{ item.folder | default(vsphere_vm_folder) }}"
-    name: "{{ item.name }}"
-    state: poweredoff
-    hardware: "{{ vsphere_vm_hardware | combine(item.hardware | default({})) }}"
-    disk: "{{ item.disk | default(vsphere_vm_disk) }}"
-  loop: "{{ _vsphere_create_gi }}"
-  loop_control:
-    label: "{{ item.name }}"
-  delegate_to: localhost
-  become: false
-  run_once: true
+    # Step 1b: hardware/disk as a plain RECONFIGURE of the existing powered-off VM
+    # (no clone → vmware_guest attaches no GOSC spec here).
+    - name: Create | Reconfigure hardware/disk — GuestInfo
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: poweredoff
+        hardware: "{{ _vsphere_guest.hardware }}"
+        disk: "{{ _vsphere_guest.disk }}"
 
-# Step 1c: inject the cloud-init GuestInfo extraConfig. MUST use
-# vmware.vmware.vm_advanced_settings — community.vmware.vmware_guest's
-# advanced_settings is a SILENT NO-OP on a reconfigure of an existing VM (it only
-# applies during clone/create), so the guestinfo keys never persist and the guest
-# DHCPs. vm_advanced_settings takes a settings DICT and reliably sets extraConfig.
-- name: Create | Inject cloud-init GuestInfo extraConfig — GuestInfo
-  vmware.vmware.vm_advanced_settings:
-    hostname: "{{ vsphere_vm_server }}"
-    username: "{{ vsphere_vm_username }}"
-    password: "{{ vsphere_vm_password }}"
-    validate_certs: "{{ vsphere_vm_validate_certs }}"
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ item.name }}"
-    state: present
-    settings: >-
-      {{ {'guestinfo.metadata': (lookup('template', 'guestinfo_metadata.yaml.j2') | b64encode),
-          'guestinfo.metadata.encoding': 'base64'}
-         | combine({'guestinfo.userdata': (item.guestinfo_userdata | b64encode),
-                    'guestinfo.userdata.encoding': 'base64'}
-                   if (item.guestinfo_userdata | default('') | length > 0) else {}) }}
-  loop: "{{ _vsphere_create_gi }}"
-  loop_control:
-    label: "{{ item.name }}"
-  delegate_to: localhost
-  become: false
-  run_once: true
+    # Step 1c: inject the cloud-init GuestInfo extraConfig. MUST use
+    # vmware.vmware.vm_advanced_settings — community.vmware.vmware_guest's
+    # advanced_settings is a SILENT NO-OP on a reconfigure of an existing VM (it only
+    # applies during clone/create), so the guestinfo keys never persist and the guest
+    # DHCPs. vm_advanced_settings takes a settings DICT and reliably sets extraConfig.
+    - name: Create | Inject cloud-init GuestInfo extraConfig
+      vmware.vmware.vm_advanced_settings:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: present
+        settings: >-
+          {{ {'guestinfo.metadata': (lookup('template', 'guestinfo_metadata.yaml.j2') | b64encode),
+              'guestinfo.metadata.encoding': 'base64'}
+             | combine({'guestinfo.userdata': (_vsphere_guest.guestinfo_userdata | b64encode),
+                        'guestinfo.userdata.encoding': 'base64'}
+                       if (_vsphere_guest.guestinfo_userdata | length > 0) else {}) }}
 
-# Step 2: set each vNIC's portgroup + start-connected natively (no GOSC). One call
-# per (guest, NIC); NIC 0 modifies the template's adapter, 1+ add new adapters, in
-# list order — the same order the guest names ens192/ens224/ens256 in the metadata.
-- name: Create | Set each vNIC portgroup + start-connected — GuestInfo (native)
-  community.vmware.vmware_guest_network:
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ item.0.name }}"
-    label: "Network adapter {{ item.0.networks.index(item.1) + 1 }}"
-    network_name: "{{ item.1.name }}"
-    connected: true
-    start_connected: true
-    state: present
-  loop: "{{ _vsphere_create_gi | subelements('networks', skip_missing=True) }}"
-  loop_control:
-    label: "{{ item.0.name }} nic{{ item.0.networks.index(item.1) + 1 }} → {{ item.1.name }}"
-  delegate_to: localhost
-  become: false
-  run_once: true
+    # Step 2: set each vNIC's portgroup + start-connected natively (no GOSC). One call
+    # per NIC; NIC 0 modifies the template's adapter, 1+ add new adapters, in list
+    # order — the same order the guest names ens192/ens224/ens256 in the metadata.
+    - name: Create | Set each vNIC portgroup + start-connected (native)
+      community.vmware.vmware_guest_network:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        label: "Network adapter {{ _vsphere_guest.networks.index(item) + 1 }}"
+        network_name: "{{ item.name }}"
+        connected: true
+        start_connected: true
+        state: present
+      loop: "{{ _vsphere_guest.networks }}"
+      loop_control:
+        label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
 
-# Step 3: power on. The NIC is start-connected, so it is live at first boot and
-# cloud-init applies the static network from guestinfo.metadata (no reconnect race).
-- name: Create | Power on — GuestInfo ({{ _vsphere_create_gi | map(attribute='name') | list }})
-  community.vmware.vmware_guest_powerstate:
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ item.name }}"
-    state: powered-on
-  loop: "{{ _vsphere_create_gi }}"
-  loop_control:
-    label: "{{ item.name }}"
-  delegate_to: localhost
-  become: false
-  run_once: true
+    # Step 3: power on. The NIC is start-connected, so it is live at first boot and
+    # cloud-init applies the static network from guestinfo.metadata (no reconnect race).
+    - name: Create | Power on
+      community.vmware.vmware_guest_powerstate:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: powered-on
 
 # ─── Tags ─────────────────────────────────────────────────────────────────────
-# Apply per-guest vSphere tags (guest `tags: {Category: tag}`) — e.g. tenant/env —
-# to the created VMs (both modes). Ensure the category and tag exist, then associate.
+# Apply this host's vSphere tags (vsphere_vm_tags {Category: tag}) — e.g. tenant/env.
+# Ensure the category and tag exist, then associate. throttle: 1 on the ensure
+# steps — parallel hosts usually share categories/tags; serialize the idempotent
+# creates so concurrent same-name calls can't race.
 # community.vmware.* inherit the vCenter connection from main.yml's module_defaults.
-- name: Create | Ensure tag categories exist
-  community.vmware.vmware_category:
-    category_name: "{{ _cat }}"
-    category_cardinality: single
-    state: present
-  loop: >-
-    {{ _vsphere_to_create | selectattr('tags', 'defined') | map(attribute='tags')
-       | map('dict2items') | flatten | map(attribute='key') | unique | list }}
-  loop_control:
-    loop_var: _cat
+- name: Create | Apply vSphere tags ({{ _vsphere_guest.name }})
+  when: _vsphere_guest.tags | length > 0
   delegate_to: localhost
   become: false
-  run_once: true
+  block:
+    - name: Create | Ensure tag categories exist
+      community.vmware.vmware_category:
+        category_name: "{{ item.key }}"
+        category_cardinality: single
+        state: present
+      loop: "{{ _vsphere_guest.tags | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      throttle: 1
 
-- name: Create | Look up tag category IDs
-  community.vmware.vmware_category_info:
-  register: _vsphere_catinfo
-  when: (_vsphere_to_create | selectattr('tags', 'defined') | list | length) > 0
-  delegate_to: localhost
-  become: false
-  run_once: true
+    - name: Create | Look up tag category IDs
+      community.vmware.vmware_category_info:
+      register: _vsphere_catinfo
 
-- name: Create | Ensure each tag exists in its category
-  community.vmware.vmware_tag:
-    tag_name: "{{ _pair.value }}"
-    category_id: "{{ (_vsphere_catinfo.tag_category_info | selectattr('category_name', 'eq', _pair.key) | first).category_id }}"
-    state: present
-  loop: >-
-    {{ _vsphere_to_create | selectattr('tags', 'defined') | map(attribute='tags')
-       | map('dict2items') | flatten | unique | list }}
-  loop_control:
-    loop_var: _pair
-    label: "{{ _pair.key }}:{{ _pair.value }}"
-  delegate_to: localhost
-  become: false
-  run_once: true
+    - name: Create | Ensure each tag exists in its category
+      community.vmware.vmware_tag:
+        tag_name: "{{ item.value }}"
+        category_id: "{{ (_vsphere_catinfo.tag_category_info | selectattr('category_name', 'eq', item.key) | first).category_id }}"
+        state: present
+      loop: "{{ _vsphere_guest.tags | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}:{{ item.value }}"
+      throttle: 1
 
-- name: Create | Associate tags with each VM
-  community.vmware.vmware_tag_manager:
-    object_name: "{{ item.name }}"
-    object_type: VirtualMachine
-    tag_names: "{{ (item.tags.keys() | list) | zip(item.tags.values() | list) | map('join', ':') | list }}"
-    state: present
-  loop: "{{ _vsphere_to_create | selectattr('tags', 'defined') | list }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: item.tags | length > 0
-  delegate_to: localhost
-  become: false
-  run_once: true
+    - name: Create | Associate tags with the VM
+      community.vmware.vmware_tag_manager:
+        object_name: "{{ _vsphere_guest.name }}"
+        object_type: VirtualMachine
+        tag_names: "{{ (_vsphere_guest.tags.keys() | list) | zip(_vsphere_guest.tags.values() | list) | map('join', ':') | list }}"
+        state: present
 
 # NOTE: NIC reconnect + bounded IP wait is its own phase (connect.yml, imported
 # from main.yml). It uses vmware_guest_network (never a GOSC-triggering path), so it

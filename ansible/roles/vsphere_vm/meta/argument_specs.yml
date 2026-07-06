@@ -55,17 +55,18 @@ argument_specs:
         type: dict
         required: false
         description: >-
-          Default hardware spec — a NATIVE community.vmware.vmware_guest `hardware`
-          dict (num_cpus, memory_mb, boot_firmware, scsi, and any other key the
-          module accepts). A per-guest/per-host `hardware` is merged over it.
+          Hardware spec — a NATIVE community.vmware.vmware_guest `hardware` dict
+          (num_cpus, memory_mb, boot_firmware, scsi, and any other key the module
+          accepts). Host/group values replace the role default wholesale; omitted
+          keys inherit from the source template.
       vsphere_vm_disk:
         type: list
         elements: dict
         required: false
         description: >-
-          Default disk list — NATIVE vmware_guest `disk` dicts (size_gb, type,
-          datastore, ...), primary disk first. A per-guest/per-host `disk`
-          replaces the whole list.
+          Disk list — NATIVE vmware_guest `disk` dicts (size_gb, type,
+          datastore, ...), primary disk first (>= the template's size). Host/group
+          values replace the role default wholesale.
       vsphere_vm_state:
         type: str
         required: false
@@ -83,10 +84,6 @@ argument_specs:
         type: str
         required: false
         description: Guest OS hostname (decoupled from the vCenter VM name; default canonical/inventory hostname).
-      vsphere_vm_inventory_group:
-        type: str
-        required: false
-        description: Inventory group whose hosts are the VMs to manage (required — one VM per host).
       vsphere_vm_network:
         type: str
         required: false
@@ -114,6 +111,6 @@ argument_specs:
         type: dict
         required: false
         description: >-
-          vCenter tags applied to created VMs as a {Category: tag} map (e.g. tenant/
-          environment). The role ensures each category + tag exists then associates
-          them. Per-guest via item.tags; inventory-derived via vsphere_vm_tags.
+          vCenter tags applied to the created VM as a {Category: tag} map (e.g.
+          tenant/environment). The role ensures each category + tag exists then
+          associates them. Set per host or group.

@@ -1,73 +1,51 @@
 ---
 # roles/vsphere_vm/tasks/state.yml
-# Terraform-style reconcile: read current vCenter state, diff against the desired
-# inventory-derived _vsphere_guests, and compute the plan (to-create / present /
-# to-destroy). Read-only — runs for both create and destroy so the plan is always
-# available.
+# Terraform-style reconcile, per host: ONE shared vCenter inventory read for the
+# whole play (run_once — registered results propagate to every host), then each
+# host computes ITS OWN plan booleans against its _vsphere_guest spec.
+# Read-only — runs for both create and destroy so the plan is always available.
 
-- name: State | Gather current VM inventory from vCenter
+- name: State | Gather current VM inventory from vCenter (once for the play)
   community.vmware.vmware_vm_info:
   register: _vsphere_vm_info
   run_once: true
   delegate_to: localhost
   become: false
 
-- name: State | Index existing VM names
+- name: State | Compute this host's plan
   ansible.builtin.set_fact:
-    _vsphere_existing: "{{ _vsphere_vm_info.virtual_machines | map(attribute='guest_name') | list }}"
-  run_once: true
+    _vsphere_exists: "{{ _vsphere_guest.name in (_vsphere_vm_info.virtual_machines | map(attribute='guest_name') | list) }}"
+    _vsphere_desired_absent: "{{ _vsphere_guest.state == 'absent' }}"
   delegate_to: localhost
   become: false
 
-- name: State | Compute the plan (desired vs current)
+- name: State | Derive this host's plan actions
   ansible.builtin.set_fact:
-    _vsphere_desired_present: >-
-      {{ (_vsphere_guests | rejectattr('state', 'defined') | list)
-         + (_vsphere_guests | selectattr('state', 'defined')
-            | rejectattr('state', 'equalto', 'absent') | list) }}
-    _vsphere_desired_absent: >-
-      {{ _vsphere_guests | selectattr('state', 'defined')
-         | selectattr('state', 'equalto', 'absent') | list }}
-  run_once: true
-  delegate_to: localhost
-  become: false
-
-- name: State | Classify into create / present / destroy
-  ansible.builtin.set_fact:
-    _vsphere_to_create: "{{ _vsphere_desired_present | rejectattr('name', 'in', _vsphere_existing) | list }}"
-    _vsphere_present: "{{ _vsphere_desired_present | selectattr('name', 'in', _vsphere_existing) | list }}"
-    _vsphere_to_destroy: "{{ _vsphere_desired_absent | selectattr('name', 'in', _vsphere_existing) | list }}"
-    # Every desired-present VM (freshly created AND already present) is a NIC
-    # reconnect target — so a plain re-run heals a NIC that an earlier run (or
-    # vSphere's async guest customization) left disconnected, not just fresh
-    # clones. This is what makes the reconnect self-healing.
-    _vsphere_to_connect: "{{ _vsphere_desired_present }}"
-  run_once: true
+    _vsphere_to_create: "{{ not _vsphere_exists and not _vsphere_desired_absent }}"
+    _vsphere_desired_present: "{{ not _vsphere_desired_absent }}"
+    _vsphere_to_destroy: "{{ _vsphere_exists and _vsphere_desired_absent }}"
   delegate_to: localhost
   become: false
 
 - name: State | Plan
   ansible.builtin.debug:
-    msg:
-      - "desired   : {{ _vsphere_guests | map(attribute='name') | list }} (from group '{{ vsphere_vm_inventory_group }}')"
-      - "to create : {{ _vsphere_to_create | map(attribute='name') | list }}"
-      - "present   : {{ _vsphere_present | map(attribute='name') | list }}"
-      - "to destroy: {{ _vsphere_to_destroy | map(attribute='name') | list }}"
-  run_once: true
+    msg: >-
+      {{ _vsphere_guest.name }}:
+      {{ 'CREATE' if _vsphere_to_create
+         else ('DESTROY (with --tags destroy + allow_destroy)' if _vsphere_to_destroy
+         else ('absent as desired' if _vsphere_desired_absent else 'present')) }}
   delegate_to: localhost
   become: false
 
 # Make the destroy CONTRACT explicit when something is marked absent — otherwise
 # a plain run silently no-ops (the destroy phase is `never`-tagged) and the
 # operator just sees changed=0 with no clue why.
-- name: State | Advise how to remove VMs marked absent
+- name: State | Advise how to remove a VM marked absent
   ansible.builtin.debug:
     msg: >-
-      {{ _vsphere_to_destroy | length }} VM(s) marked state:absent still exist
-      ({{ _vsphere_to_destroy | map(attribute='name') | list }}). They are removed
+      {{ _vsphere_guest.name }} is marked state:absent but still exists. It is removed
       ONLY when you run with --tags destroy AND set vsphere_vm_allow_destroy=true.
-      A normal run leaves them untouched (changed=0) by design.
-  when: _vsphere_to_destroy | length > 0
-  run_once: true
+      A normal run leaves it untouched (changed=0) by design.
+  when: _vsphere_to_destroy | bool
   delegate_to: localhost
   become: false

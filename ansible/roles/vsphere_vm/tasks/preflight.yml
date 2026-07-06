@@ -1,31 +1,10 @@
 ---
 # roles/vsphere_vm/tasks/preflight.yml
 # Validate the connection inputs and resolve the vCenter password (Vault unless
-# vsphere_vm_password was supplied directly). Runs once on the controller.
-
-# The hardware contract is NATIVE vmware_guest (hardware:/disk: dicts). Fail fast
-# — with the migration mapping — if the retired flat role-level keys are still set
-# (the per-host equivalents are checked in derive.yml; the retired guests-list
-# input is refused there too).
-- name: Preflight | Refuse retired flat hardware keys (migrated to native vmware_guest dicts)
-  ansible.builtin.assert:
-    that:
-      - vsphere_vm_cpus is not defined
-      - vsphere_vm_memory_mb is not defined
-      - vsphere_vm_disk_gb is not defined
-      - vsphere_vm_disk_type is not defined
-      - vsphere_vm_extra_disks is not defined
-      - vsphere_vm_firmware is not defined
-      - vsphere_vm_scsi is not defined
-    fail_msg: >-
-      vsphere_vm now takes NATIVE community.vmware.vmware_guest dicts. Migrate:
-      cpus/memory_mb/firmware/scsi → vsphere_vm_hardware: {num_cpus, memory_mb, boot_firmware,
-      scsi}; disk_gb/disk_type/extra_disks → vsphere_vm_disk: [{size_gb, type}, ...]
-      (primary first).
-    quiet: true
-  run_once: true
-  delegate_to: localhost
-  become: false
+# vsphere_vm_password was supplied directly). Runs per host on the controller —
+# facts (incl. the resolved password consumed by main.yml's module_defaults) must
+# exist on EVERY play host, and a run_once set_fact would land on the first host
+# only. The hashi_vault lookup executes on the controller either way.
 
 - name: Preflight | Assert required connection + placement inputs are set
   ansible.builtin.assert:
@@ -38,7 +17,6 @@
       Set vsphere_vm_server, vsphere_vm_datacenter, and either vsphere_vm_password
       or vsphere_vm_vault_secret in inventory.
     quiet: true
-  run_once: true
   delegate_to: localhost
   become: false
 
@@ -54,7 +32,6 @@
     fail_msg: >-
       No vCenter password source configured. Set vsphere_vm_password (recommended: from an
       Ansible-Vault-encrypted var) or vsphere_vm_vault_secret (HashiCorp Vault KV path).
-  run_once: true
   delegate_to: localhost
   become: false
 
@@ -64,7 +41,6 @@
       {{ lookup('community.hashi_vault.hashi_vault',
          'secret=' + vsphere_vm_vault_secret + ':' + vsphere_vm_password_field) }}
   no_log: true
-  run_once: true
   delegate_to: localhost
   become: false
   when:

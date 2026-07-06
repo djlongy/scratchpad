@@ -3,8 +3,8 @@
 #
 # Portable vCenter VM lifecycle role: create (clone from template) and destroy
 # VMs via community.vmware.vmware_guest. All modules run on the control node
-# (delegate_to: localhost). Guests are ALWAYS derived from the inventory hosts in
-# vsphere_vm_inventory_group — each host IS a VM. Idempotent — vmware_guest
+# (delegate_to: localhost). HOST-CENTRIC: the play targets the VM hosts and each
+# host provisions its own VM from its own vars. Idempotent — vmware_guest
 # reconciles to the declared state.
 #
 # Behavioural defaults live here; env-specific values (vCenter address, Vault
@@ -28,17 +28,16 @@ vsphere_vm_validate_certs: false               # labs use self-signed vCenter ce
 vsphere_vm_folder: "/vm"                       # inventory folder for new VMs
 vsphere_vm_datastore: ""                       # default datastore for clones
 
-# ── Per-VM hardware defaults (overridable per guest) ─────────────────────────
+# ── Per-VM hardware defaults (override per host/group) ───────────────────────
 # NATIVE community.vmware.vmware_guest dicts, passed through 1:1 — the accepted
 # keys are exactly the module's own (hardware.num_cpus/memory_mb/boot_firmware/
-# scsi/…, disk[].size_gb/type/datastore/…). A per-guest `hardware:` is MERGED
-# over this default (set just memory_mb and keep the rest); a per-guest `disk:`
-# REPLACES the whole list (disk order = controller unit order).
+# scsi/…, disk[].size_gb/type/datastore/…). Normal Ansible precedence: a
+# host/group-level value replaces this default wholesale. Keys omitted from
+# hardware (e.g. boot_firmware, scsi) inherit from the source template — the
+# right behaviour for clones.
 vsphere_vm_hardware:
   num_cpus: 2
   memory_mb: 4096
-  boot_firmware: efi                             # efi | bios
-  scsi: paravirtual
 vsphere_vm_disk:
   - size_gb: 40                                  # primary disk — must be >= the template's
     type: thin                                   # thin | thick | eagerzeroedthick
@@ -103,13 +102,15 @@ vsphere_vm_provision_via_guestinfo: false
 # Optional per-guest raw #cloud-config user-data: set item.guestinfo_userdata on a
 # guest to inject guestinfo.userdata alongside the metadata (packages, users, an
 # authoritative resolv.conf, …). Left unset → only metadata (network + hostname).
-# ── Guests: ALWAYS derived from inventory ─────────────────────────────────────
-# One VM per host in vsphere_vm_inventory_group — each host IS a VM, its spec in
-# host_vars/group_vars (the hand-authored vsphere_vm_guests list is RETIRED; the
-# role refuses it with a migration message). Per-host vars (all optional except
-# the template; they fall back to the role defaults above):
+# ── HOST-CENTRIC model: each play host provisions ITS OWN VM ──────────────────
+# Target the VM hosts in the play (hosts: <vm_group>, gather_facts: false) —
+# every host builds its VM from its OWN vars in single task calls (all vCenter
+# API calls delegate to localhost; the not-yet-existing host is never contacted).
+# The vsphere_vm_guests list / from_inventory / inventory_group inputs are
+# RETIRED; the role refuses them with a migration message. Per-host vars (all
+# optional except the template; they fall back to the role defaults above):
 #   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
-#   vsphere_vm_hardware (merged over the role default) / _disk / _state / _folder / _datastore,
+#   vsphere_vm_hardware / _disk / _state / _folder / _datastore,
 #   vsphere_vm_networks (else derived from ansible_host + the vars below),
 #   vsphere_vm_customization (else derived from hostname/domain/dns),
 #   vsphere_vm_provision_via_guestinfo, vsphere_vm_tags, vsphere_vm_guestinfo_userdata.
@@ -140,8 +141,6 @@ vsphere_vm_provision_via_guestinfo: false
 #                         inventory_hostname. Stays clean/canonical regardless of
 #                         the vCenter name.
 # Both are intentionally NOT defaulted here (their default is computed per host).
-# The inventory group whose hosts are the VMs to manage (REQUIRED — asserted).
-vsphere_vm_inventory_group: ""               # e.g. "vmware_vms"
 # Defaults for the auto-derived static NIC (override per host/group as needed):
 vsphere_vm_network: ""                        # dvPortGroup / network name
 vsphere_vm_netmask: "255.255.255.0"

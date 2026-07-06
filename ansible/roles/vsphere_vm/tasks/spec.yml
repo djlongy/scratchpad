@@ -1,0 +1,94 @@
+---
+# roles/vsphere_vm/tasks/spec.yml
+# Build THIS host's guest spec from its own vars — the host IS the inventory item,
+# so no group loop and no hostvars[] indirection: plain var references resolve in
+# this host's own context (inline inventory + host_vars + group_vars merged).
+# Role defaults fill any gaps; ansible_host becomes the static IP unless the host
+# defines vsphere_vm_networks. The result is the single dict _vsphere_guest.
+
+# Retired inputs fail fast — a defined-but-ignored guests list is exactly the
+# "plan finds nothing to create" trap: the operator declares guests, the role
+# ignores them, and the run ends changed=0 with no clue why.
+- name: Spec | Refuse the retired vsphere_vm_guests / from_inventory / inventory_group inputs
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_guests is not defined
+      - vsphere_vm_from_inventory is not defined
+      - vsphere_vm_inventory_group is not defined
+    fail_msg: >-
+      vsphere_vm is HOST-CENTRIC: target the VM hosts in the play
+      (hosts: <vm_group>, gather_facts: false) — each host provisions its own VM
+      from its own vars. vsphere_vm_guests, vsphere_vm_from_inventory and
+      vsphere_vm_inventory_group are retired.
+    quiet: true
+  delegate_to: localhost
+  become: false
+
+# The per-host contract is native vmware_guest — refuse the retired flat vars
+# loudly instead of silently ignoring them (they'd otherwise fall back to role
+# defaults and shrink a VM on the next reconcile).
+- name: Spec | Refuse retired flat hardware vars (migrated to native vmware_guest dicts)
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_cpus is not defined
+      - vsphere_vm_memory_mb is not defined
+      - vsphere_vm_disk_gb is not defined
+      - vsphere_vm_disk_type is not defined
+      - vsphere_vm_extra_disks is not defined
+      - vsphere_vm_firmware is not defined
+      - vsphere_vm_scsi is not defined
+    fail_msg: >-
+      {{ inventory_hostname }} sets retired vsphere_vm_* flat hardware vars. Migrate:
+      vsphere_vm_cpus/_memory_mb/_firmware/_scsi → vsphere_vm_hardware: {num_cpus, memory_mb,
+      boot_firmware, scsi}; vsphere_vm_disk_gb/_disk_type/_extra_disks →
+      vsphere_vm_disk: [{size_gb, type}, ...] (primary first).
+    quiet: true
+  delegate_to: localhost
+  become: false
+
+- name: Spec | Assert the template is set
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_template | default('') | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} has no vsphere_vm_template — set it in host_vars or the
+      group's group_vars (it is the source template to clone).
+    quiet: true
+  delegate_to: localhost
+  become: false
+
+- name: Spec | Build this host's guest spec
+  ansible.builtin.set_fact:
+    _vsphere_guest:
+      name: "{{ vsphere_vm_name | default(canonical_hostname | default(inventory_hostname)) }}"
+      template: "{{ vsphere_vm_template }}"
+      # Native vmware_guest dicts — normal Ansible precedence: a host/group-level
+      # vsphere_vm_hardware / vsphere_vm_disk replaces the role default wholesale.
+      # Keys omitted from hardware (e.g. boot_firmware, scsi) inherit from the
+      # source template, which is what you want for clones.
+      hardware: "{{ vsphere_vm_hardware }}"
+      disk: "{{ vsphere_vm_disk }}"
+      folder: "{{ vsphere_vm_folder }}"
+      datastore: "{{ vsphere_vm_datastore }}"
+      state: "{{ vsphere_vm_state }}"
+      networks: "{{ vsphere_vm_networks | default([_derived_nic]) }}"
+      customization: "{{ vsphere_vm_customization | default(_derived_cust) }}"
+      provision_via_guestinfo: "{{ vsphere_vm_provision_via_guestinfo | bool }}"
+      guestinfo_userdata: "{{ vsphere_vm_guestinfo_userdata | default('') }}"
+      tags: "{{ vsphere_vm_tags }}"
+  vars:
+    _derived_nic:
+      name: "{{ vsphere_vm_network }}"
+      type: static
+      ip: "{{ ansible_host }}"
+      netmask: "{{ vsphere_vm_netmask }}"
+      gateway: "{{ vsphere_vm_gateway | default((ansible_host.split('.')[:3] | join('.')) ~ '.1') }}"
+    _derived_cust:
+      # Guest OS hostname is INDEPENDENT of the vCenter VM name (_vsphere_guest.name):
+      # the VM name may be tenant-scoped/globally-unique while the OS hostname
+      # stays clean/canonical.
+      hostname: "{{ vsphere_vm_hostname | default(canonical_hostname | default(inventory_hostname)) }}"
+      domain: "{{ domain | default('') }}"
+      dns_servers: "{{ vsphere_vm_dns }}"
+  delegate_to: localhost
+  become: false

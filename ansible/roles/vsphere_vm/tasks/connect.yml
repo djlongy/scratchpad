@@ -7,52 +7,46 @@
 # can re-disconnect the vNIC AFTER a single up-front reconnect — so one reconnect
 # loses the race and a single long IP wait just times out.
 #
-# This runs over EVERY desired-present VM (freshly created AND already present,
-# via _vsphere_to_connect), so a plain re-run heals a NIC an earlier run left
-# disconnected — not just fresh clones. It is a bounded MULTI-PASS
+# Runs per host over ITS OWN VM (freshly created AND already present — main.yml
+# gates on _vsphere_desired_present), so a plain re-run heals a NIC an earlier
+# run left disconnected, not just fresh clones. It is a bounded MULTI-PASS
 # poll-and-reconnect (connect_pass.yml): each pass re-asserts every
-# still-disconnected NIC then briefly polls for an IP, repeating until all VMs
-# have an IP or vsphere_vm_connect_passes is exhausted. Whichever pass lands just
+# still-disconnected NIC then briefly polls for an IP, repeating until the VM
+# has an IP or vsphere_vm_connect_passes is exhausted. Whichever pass lands just
 # after customization finishes makes the reconnect stick, so recovery is ~one
 # pass-interval rather than a single long timeout. Every pass is idempotent and
 # bounded; gated by vsphere_vm_connect_nics.
 
-- name: Connect | Reconnect NICs for all managed VMs (bounded multi-pass)
-  when:
-    - vsphere_vm_connect_nics | bool
-    - (_vsphere_to_connect | default([]) | length) > 0
+- name: Connect | Reconnect this VM's NICs (bounded multi-pass)
+  when: vsphere_vm_connect_nics | bool
   block:
-    - name: Connect | Seed the straggler set with every managed VM
+    - name: Connect | Mark this VM as needing an IP
       ansible.builtin.set_fact:
-        _vsphere_connect_remaining: "{{ _vsphere_to_connect }}"
-      run_once: true
+        _vsphere_connect_pending: true
       delegate_to: localhost
       become: false
 
-    # Each include is one reconnect+poll pass; connect_pass.yml shrinks
-    # _vsphere_connect_remaining to the VMs still without an IP, so later passes
-    # only touch stragglers and no-op once the set is empty.
-    - name: Connect | Multi-pass reconnect until every VM has an IP
+    # Each include is one reconnect+poll pass; connect_pass.yml clears
+    # _vsphere_connect_pending once the VM has an IP, so later passes no-op.
+    - name: Connect | Multi-pass reconnect until the VM has an IP
       ansible.builtin.include_tasks: connect_pass.yml
       loop: "{{ range(0, vsphere_vm_connect_passes | int) | list }}"
       # loop_var: _pass so the outer pass counter never collides with the `item`
       # the looped tasks inside connect_pass.yml use.
       loop_control:
         loop_var: _pass
-        label: "pass {{ _pass + 1 }}/{{ vsphere_vm_connect_passes }} ({{ _vsphere_connect_remaining | default([]) | map(attribute='name') | list }})"
+        label: "pass {{ _pass + 1 }}/{{ vsphere_vm_connect_passes }} ({{ _vsphere_guest.name if _vsphere_connect_pending else 'done' }})"
 
-    - name: Connect | Report any VM that never reported an IP (after all passes)
+    - name: Connect | Report if the VM never reported an IP (after all passes)
       ansible.builtin.debug:
         msg: >-
-          {{ item.name }} did not report an IPv4 after
+          {{ _vsphere_guest.name }} did not report an IPv4 after
           {{ vsphere_vm_connect_passes }} reconnect passes
           (~{{ vsphere_vm_connect_passes * vsphere_vm_connect_pass_retries * vsphere_vm_connect_pass_delay }}s).
           The VM is built; check the NIC portgroup + guest customization (wrong
           network, or the guest never DHCP/static-bound).
-      loop: "{{ _vsphere_connect_remaining | default([]) }}"
-      loop_control:
-        label: "{{ item.name }}"
-      when: vsphere_vm_wait_for_ip | bool
-      run_once: true
+      when:
+        - vsphere_vm_wait_for_ip | bool
+        - _vsphere_connect_pending | bool
       delegate_to: localhost
       become: false

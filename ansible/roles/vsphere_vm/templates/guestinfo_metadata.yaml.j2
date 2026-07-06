@@ -6,20 +6,20 @@
   networking WITHOUT a vSphere GOSC customization spec, so the NIC never
   async-disconnects (see the role README "Known vSphere quirk" section).
 
-  Multi-NIC: every entry in item.networks becomes its own cloud-init ethernet,
+  Multi-NIC: every entry in _vsphere_guest.networks becomes its own cloud-init ethernet,
   keyed by an EXPLICIT interface name. cloud-init's RHEL/NetworkManager renderer
   does NOT honour netplan `match:` globs — an unmatched block is silently dropped
   and the guest falls back to DHCP — so each NIC must name its guest device.
   Default device names follow the VMware VMXNET3 slot order (ens192, ens224,
   ens256, …); override per NIC with `interface:` when the template differs.
 
-  Reads the same per-guest fields the GOSC path uses (no new inventory needed):
-    item.customization.hostname, item.customization.dns_servers,
-    item.networks[*].{ip, netmask, gateway, interface}.
+  Reads the same per-host fields the GOSC path uses (no new inventory needed):
+    _vsphere_guest.customization.hostname, _vsphere_guest.customization.dns_servers,
+    _vsphere_guest.networks[*].{ip, netmask, gateway, interface}.
 #}
-{%- set _host = item.customization.hostname | default(item.name) -%}
-{%- set _dns = item.customization.dns_servers | default([]) -%}
-{%- set _nics = item.networks | default([]) -%}
+{%- set _host = _vsphere_guest.customization.hostname | default(_vsphere_guest.name) -%}
+{%- set _dns = _vsphere_guest.customization.dns_servers | default([]) -%}
+{%- set _nics = _vsphere_guest.networks | default([]) -%}
 {#- Primary NIC = first with a gateway (its resolvers become the system's); else NIC 0. -#}
 {%- set _ns = namespace(primary=-1) -%}
 {%- for n in _nics %}

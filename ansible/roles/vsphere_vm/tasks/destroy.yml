@@ -1,43 +1,35 @@
 ---
 # roles/vsphere_vm/tasks/destroy.yml
-# DESTRUCTIVE: remove only the guests the plan (state.yml) found that are marked
-# state: absent AND currently exist. Gated behind the `never` tag (runs only with
-# `--tags destroy`) AND vsphere_vm_allow_destroy=true.
+# DESTRUCTIVE: remove THIS host's VM when the plan marked it to-destroy
+# (state: absent AND currently exists). Gated behind the `never` tag (runs only
+# with `--tags destroy`) AND vsphere_vm_allow_destroy=true.
 
 - name: Destroy | Refuse unless vsphere_vm_allow_destroy is true
   ansible.builtin.assert:
     that:
       - vsphere_vm_allow_destroy | bool
     fail_msg: >-
-      Refusing to destroy VMs. Set vsphere_vm_allow_destroy=true (and run with
-      --tags destroy) to remove guests marked state: absent.
+      Refusing to destroy {{ _vsphere_guest.name }}. Set vsphere_vm_allow_destroy=true
+      (and run with --tags destroy) to remove guests marked state: absent.
     quiet: true
-  run_once: true
+  when: _vsphere_to_destroy | bool
   delegate_to: localhost
   become: false
-  when: _vsphere_to_destroy | length > 0
 
-- name: Destroy | Remove planned VMs ({{ _vsphere_to_destroy | map(attribute='name') | list }})
+- name: Destroy | Remove {{ _vsphere_guest.name }}
   community.vmware.vmware_guest:
     datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ item.name }}"
-    # Match by NAME across the datacenter (folder omitted unless the guest pins
-    # one). Defaulting to vsphere_vm_folder — the CREATE placement folder — meant
-    # a VM living anywhere else (e.g. the datacenter root, or moved after build)
-    # silently failed to match: vmware_guest treats it as already-absent and
-    # returns changed=0 instead of deleting it. Names are unique in this role's
-    # model (create refuses "already exists"), so name alone is a safe,
-    # folder-drift-proof match.
-    folder: "{{ item.folder | default(omit) }}"
+    name: "{{ _vsphere_guest.name }}"
+    # Match by NAME across the datacenter — folder omitted. Pinning the CREATE
+    # placement folder meant a VM living anywhere else (moved after build, or at
+    # the datacenter root) silently failed to match: vmware_guest treats it as
+    # already-absent and returns changed=0 instead of deleting it. Names are
+    # unique in this role's model, so name alone is a safe, folder-drift-proof
+    # match.
     state: absent
     force: true
-  loop: "{{ _vsphere_to_destroy }}"
-  loop_control:
-    label: "{{ item.name }}"
-  when: vsphere_vm_allow_destroy | bool
+  when:
+    - _vsphere_to_destroy | bool
+    - vsphere_vm_allow_destroy | bool
   delegate_to: localhost
   become: false
-  # run_once: the destroy list is global — same per-host race as create.yml
-  # (a host-group play would otherwise delete each VM once PER HOST; the first
-  # host wins and the rest fail mid-delete on the vanished VM).
-  run_once: true
