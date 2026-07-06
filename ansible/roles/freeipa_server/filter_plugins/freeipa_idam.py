@@ -311,6 +311,28 @@ def freeipa_idam_sudorules_payload(rules: list[dict]) -> dict:
     return payload
 
 
+# Bulk `records:` sub-entry keys that identify an address record a PTR can be
+# generated for (ipadnsrecord only honours create_reverse on A/AAAA).
+_DNS_PTR_CAPABLE_KEYS = ("a_record", "aaaa_record", "a_ip_address", "aaaa_ip_address")
+
+
+def freeipa_dns_reverse_defaulted(records: list[dict], default_flag) -> list[dict]:
+    """Apply the GLOBAL create_reverse default to a bulk ``records:`` list —
+    every A/AAAA-bearing entry that does not set its own ``create_reverse``
+    gets ``create_reverse: <flag>``. Entries with an explicit value, and
+    non-address records (create_reverse is A/AAAA-only upstream), pass through
+    untouched. Falsy flag or empty list → verbatim input."""
+    if not default_flag or not records:
+        return records
+    out = []
+    for rec in records:
+        if (isinstance(rec, dict) and "create_reverse" not in rec
+                and any(k in rec for k in _DNS_PTR_CAPABLE_KEYS)):
+            rec = dict(rec) | {"create_reverse": True}
+        out.append(rec)
+    return out
+
+
 def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
                                managed: list[str]) -> list[dict]:
     """Compile the managed-subset eviction payload from ONE ``ipa group-find
@@ -892,6 +914,7 @@ class FilterModule:
             "freeipa_idam_identity_merge": freeipa_idam_identity_merge,
             "freeipa_idam_evictions": freeipa_idam_evictions,
             "freeipa_idam_sudorules_payload": freeipa_idam_sudorules_payload,
+            "freeipa_dns_reverse_defaulted": freeipa_dns_reverse_defaulted,
             "freeipa_idam_evict_payload": freeipa_idam_evict_payload,
             "freeipa_idam_changed_subset": freeipa_idam_changed_subset,
             "freeipa_idam_hbac_state_mismatch": freeipa_idam_hbac_state_mismatch,

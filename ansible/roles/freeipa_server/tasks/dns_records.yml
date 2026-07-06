@@ -48,6 +48,10 @@
 #              (one call per zone; record fields are list-typed too)
 # create_reverse auto-builds the PTR — needs the matching reverse zone above +
 # allow_sync_ptr. Great for vCenter/ESXi hosts sourced from inventory hostvars.
+# GLOBAL default: freeipa_server_dns_create_reverse: true PTRs every A/AAAA
+# record (flat items via _dns_flat_reverse; bulk `records:` entries via the
+# freeipa_dns_reverse_defaulted filter). A per-record create_reverse always wins,
+# and non-address records are never touched (create_reverse is A/AAAA-only).
 - name: DNS | Manage records (single, multi, or bulk — one task)
   freeipa.ansible_freeipa.ipadnsrecord:
     zone_name: "{{ item.zone_name }}"
@@ -55,9 +59,14 @@
     record_type: "{{ item.record_type | default(omit) }}"
     record_value: "{{ item.record_value | default(omit) }}"
     record_ttl: "{{ item.record_ttl | default(omit) }}"
-    create_reverse: "{{ item.create_reverse | default(omit) }}"
-    records: "{{ item.records | default(omit) }}"
+    create_reverse: "{{ item.create_reverse | default(_dns_flat_reverse) }}"
+    records: "{{ item.records | default([]) | freeipa_dns_reverse_defaulted(freeipa_server_dns_create_reverse) | default(omit, true) }}"
     state: "{{ item.state | default('present') }}"
+  vars:
+    _dns_flat_reverse: >-
+      {{ true if (freeipa_server_dns_create_reverse | bool
+                  and (item.record_type | default('') | upper) in ['A', 'AAAA'])
+         else omit }}
   loop: "{{ freeipa_server_dns_records }}"
   loop_control:
     label: "{{ item.zone_name }}/{{ item.name | default('(bulk)') }} {{ item.record_type | default('') }}"

@@ -190,7 +190,10 @@ Three layers of PTR automation, so you never write PTR data:
 2. **`create_reverse: true`** on an A/AAAA record — IPA creates the PTR at add time (the
    reverse zone must exist — declared as above, or from install-time
    `freeipa_server_auto_reverse`). **Add-time only: it never retro-creates PTRs for
-   records that already exist.**
+   records that already exist.** Don't want it per record? Set the GLOBAL default
+   `freeipa_server_dns_create_reverse: true` — every A/AAAA record (flat items AND bulk
+   `records:` entries) gets `create_reverse` unless it sets its own value; non-address
+   records are never touched.
 3. **`dynamic_update` + `allow_sync_ptr`** on the zone — hosts that DDNS-register get their
    PTRs synced by BIND with nothing declared at all.
 
@@ -299,6 +302,10 @@ A user in `role-x` is an **indirect** member of `ug-x`, so every rule pointing a
 (The reverse nesting does not work.)
 
 ### The thin RBAC overlay (optional, built-in)
+
+> **Full parameter reference:** [`docs/rbac_roles.md`](docs/rbac_roles.md) — module-style
+> documentation of every `freeipa_server_rbac_roles` key (types, choices, defaults,
+> rejected keys) with worked examples.
 
 Instead of hand-adding a person to dozens of granular policy groups, assign them an abstract
 **role**. The overlay generates **only** the role group, its nesting into **existing**

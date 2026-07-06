@@ -129,7 +129,7 @@ freeipa_server_no_pkinit: false
 # ── Active Directory trust (cross-forest identity; opt-in, default off) ──────
 # Trust an AD forest so AD users authenticate against IPA resources. Needs setup_adtrust
 # (passes --setup-adtrust), reachable AD DCs, and two-way DNS. Each trust → upstream ipatrust;
-# IPA admin + each AD admin password from Vault. Not exercised in this reference environment (no AD).
+# IPA admin + each AD admin password from Vault. Not exercised in this homelab (no AD).
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
 #  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }
@@ -170,6 +170,10 @@ freeipa_server_dns_records: []
 #  - { zone_name: "internal.example.com", name: "vip",  record_type: "A", record_value: ["10.0.0.21", "10.0.0.22"] }
 #  - { zone_name: "internal.example.com", name: "vcenter", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR
 #  - { zone_name: "internal.example.com", records: [ { record_name: "esx01", a_record: ["10.0.0.31"], create_reverse: true } ] }  # bulk per zone
+# GLOBAL PTR default: true → every A/AAAA record (flat AND bulk `records:` entries)
+# gets create_reverse unless the record sets its own. Needs the matching reverse
+# zone (+ allow_sync_ptr) declared above. Per-record create_reverse always wins.
+freeipa_server_dns_create_reverse: false
 
 # ── Automember (auto group/hostgroup membership by attribute regex; primary only) ──
 # Each rule → upstream ipaautomember; idempotent. The target group/hostgroup must already exist.
@@ -476,7 +480,7 @@ freeipa_server_export_stock_hbacsvcs:
   - systemd-user
   - vsftpd
 
-# ── IPA-to-IPA realm migration (opt-in; via playbooks/freeipa_migrate.yml) ──
+# ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
 # Runs ipa-migrate on this (new-realm) primary, pulling identities from a source (old) realm.
 # Passwords are NOT migrated (Kerberos keys are realm-salted).
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write
