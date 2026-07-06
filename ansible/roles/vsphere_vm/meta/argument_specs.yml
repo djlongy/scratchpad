@@ -112,6 +112,19 @@ argument_specs:
         type: str
         required: false
         description: Default netmask for the auto-derived static NIC.
+      vsphere_vm_gateway:
+        type: str
+        required: false
+        description: >-
+          Gateway for the auto-derived static NIC. Unset = no gateway (an unrouted
+          data/storage NIC). An explicit value always wins over vsphere_vm_gateway_auto.
+      vsphere_vm_gateway_auto:
+        type: bool
+        required: false
+        description: >-
+          When true and vsphere_vm_gateway is unset, derive the gateway as the first
+          usable address of the host's subnet from ansible_host + netmask (respects
+          /25../27). Off by default (unset gateway stays unrouted).
       vsphere_vm_dns:
         type: list
         elements: str

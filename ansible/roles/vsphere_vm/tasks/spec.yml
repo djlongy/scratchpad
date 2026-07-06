@@ -37,12 +37,27 @@
       guestinfo_userdata: "{{ vsphere_vm_guestinfo_userdata | default('') }}"
       tags: "{{ vsphere_vm_tags }}"
   vars:
-    _derived_nic:
+    # Static NIC derived from ansible_host. Gateway precedence:
+    #   1. explicit vsphere_vm_gateway            → use it
+    #   2. else vsphere_vm_gateway_auto: true      → FIRST USABLE of this host's subnet,
+    #      computed from ansible_host + netmask (block = 256 - mask_last_octet; net = ip -
+    #      ip%block; gw = net + 1 — respects /25../27, e.g. .65 on a /26)
+    #   3. else                                    → NO gateway (unrouted data/storage NIC)
+    # The gateway key is omitted entirely in case 3, exactly like leaving `gateway` off a
+    # custom vsphere_vm_networks entry. Opt into the auto compute per host or group.
+    _base_nic:
       name: "{{ vsphere_vm_network }}"
       type: static
       ip: "{{ ansible_host }}"
       netmask: "{{ vsphere_vm_netmask }}"
-      gateway: "{{ vsphere_vm_gateway | default((ansible_host.split('.')[:3] | join('.')) ~ '.1') }}"
+    _auto_gw: >-
+      {{ ((ansible_host.split('.')[:3] | join('.')) ~ '.' ~
+          ((ansible_host.split('.')[3] | int)
+           - ((ansible_host.split('.')[3] | int) % (256 - (vsphere_vm_netmask.split('.')[3] | int)))
+           + 1)) if (vsphere_vm_gateway_auto | default(false) | bool) else '' }}
+    _eff_gw: "{{ (vsphere_vm_gateway | default('')) or _auto_gw }}"
+    _derived_nic: >-
+      {{ _base_nic | combine({'gateway': _eff_gw} if (_eff_gw | length > 0) else {}) }}
     _derived_cust:
       # Guest OS hostname is INDEPENDENT of the vCenter VM name (_vsphere_guest.name):
       # the VM name may be tenant-scoped/globally-unique while the OS hostname

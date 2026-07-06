@@ -156,7 +156,14 @@ vsphere_vm_provision_via_guestinfo: false
 # Defaults for the auto-derived static NIC (override per host/group as needed):
 vsphere_vm_network: ""                        # dvPortGroup / network name
 vsphere_vm_netmask: "255.255.255.0"
-# vsphere_vm_gateway: ""                       # default: .1 of the host's /24
+# vsphere_vm_gateway: ""       # UNSET = no gateway (an unrouted data/storage NIC). Set it to
+# make the derived NIC routable. Per-NIC gateways in a custom vsphere_vm_networks list work
+# the same way.
+# Opt-in convenience: when true AND vsphere_vm_gateway is unset, derive the gateway as the
+# FIRST USABLE of the host's subnet from ansible_host + the netmask (respects /25../27 —
+# e.g. .65 on a /26). Off by default so unset stays "no gateway"; an explicit gateway always
+# wins. Set per host/group for routable fleets that don't want to spell out each gateway.
+vsphere_vm_gateway_auto: false
 vsphere_vm_dns: []                            # DNS servers for guest customization
 
 # ── vSphere tags (tenant / environment / …) ──────────────────────────────────

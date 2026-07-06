@@ -20,14 +20,38 @@
   delegate_to: localhost
   become: false
 
-- name: Plan
-  ansible.builtin.debug:
-    msg: >-
-      {{ _vsphere_guest.name }}:
-      {{ 'DESTROY (with --tags destroy + allow_destroy)' if _vsphere_to_destroy
-         else 'ENSURE PRESENT (idempotent — create/reconcile)' }}
+# Consolidated pre-build report — printed ONCE (run_once) before any VM is touched,
+# so the operator can see EVERYTHING about to be built across the whole play: vCenter
+# object name, guest OS hostname, IP/mask/gateway, template, placement, hardware,
+# disks and provisioning mode, per host. Reads each host's already-built _vsphere_guest
+# from hostvars (spec.yml ran for every host first). Hosts build CONCURRENTLY (bounded
+# by `forks`), so this is your one chance to eyeball the plan before it fans out.
+- name: Plan | Report everything about to be built (all hosts)
+  run_once: true
   delegate_to: localhost
   become: false
+  ansible.builtin.debug:
+    msg: "{{ _plan_report.split('\n') }}"
+  vars:
+    _plan_report: |-
+      ===== vSphere build plan — {{ ansible_play_hosts | length }} host(s), built concurrently (forks) =====
+      {% for h in ansible_play_hosts %}
+      {%- set g = hostvars[h]._vsphere_guest %}
+      {%- set nic = g.networks[0] | default({}) %}
+      {%- set tgt = hostvars[h].vsphere_vm_cluster | default(hostvars[h].vsphere_vm_esxi_host | default('-')) %}
+      • {{ h }}  →  [{{ 'DESTROY' if g.state == 'absent' else 'BUILD / ENSURE' }}]
+          vCenter VM name : {{ g.name }}
+          guest hostname  : {{ g.customization.hostname | default('(none)') }}
+          ip / mask / gw  : {{ nic.ip | default('dhcp') }} / {{ nic.netmask | default('-') }} / {{ nic.gateway | default('-') }}
+          network         : {{ nic.name | default('-') }}
+          template        : {{ g.template }}
+          placement       : dc={{ hostvars[h].vsphere_vm_datacenter }} · host={{ tgt }} · ds={{ g.datastore | default('(template default)') }}
+          folder          : {{ g.folder }}
+          hardware        : {{ g.hardware.num_cpus | default('(template)') }} vCPU / {{ g.hardware.memory_mb | default('(template)') }} MB
+          disks           : {{ g.disk | map(attribute='size_gb') | join(' GB, ') }} GB
+          mode            : {{ 'GuestInfo (cloud-init)' if g.provision_via_guestinfo else 'GOSC' }}
+      {% endfor %}
+      ====================================================================================
 
 # Make the destroy CONTRACT explicit when something is marked absent — otherwise
 # a plain run silently no-ops (the destroy phase is `never`-tagged) and the

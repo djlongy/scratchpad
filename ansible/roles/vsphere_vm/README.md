@@ -298,6 +298,21 @@ Use **either** `vsphere_vm_cluster` (DRS cluster) **or** `vsphere_vm_esxi_host`
 (standalone host). For standalone hosts also set `vsphere_vm_resource_pool` to
 that host's default pool ("Resources").
 
+## Gateway (derived NIC)
+
+For the auto-derived single NIC, the gateway follows this precedence:
+
+1. **`vsphere_vm_gateway` set** → use it (always wins).
+2. **`vsphere_vm_gateway_auto: true`** (and no explicit gateway) → the **first usable**
+   address of the host's subnet, computed from `ansible_host` + `vsphere_vm_netmask`
+   (respects `/25`–`/27` — e.g. `.65` on a `/26`, not a hardcoded `.1`).
+3. **neither** → **no gateway** — an unrouted data/storage NIC (same as omitting
+   `gateway` on an entry in a custom `vsphere_vm_networks` list).
+
+The role never silently guesses a gateway: an unset gateway means "unrouted" unless you
+opt into `vsphere_vm_gateway_auto`. Set the flag per host/group for routable fleets that
+don't want to spell out every gateway.
+
 ## Known vSphere quirk (handled — but see the permanent fix)
 
 Clone **with a vSphere Guest OS Customization (GOSC) spec** (`customization:`) toggles the new
