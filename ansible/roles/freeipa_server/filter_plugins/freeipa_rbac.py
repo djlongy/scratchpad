@@ -205,6 +205,49 @@ def freeipa_rbac_memberships(roles):
 
 
 # ── filter 3: role-scoped HBAC rules (usergroup: [<role>] injected) ───────────
+def _unknown_key_hint(unknown):
+    """Targeted guidance for the two known-dangerous hbac rule key mistakes."""
+    if unknown & {"usergroup", "group"}:
+        return " (the compiler injects usergroup: [<the role group>] itself)"
+    if "usercategory" in unknown:
+        return (" (usercategory is incompatible with a role-scoped rule: IPA "
+                "rejects member users/groups alongside usercategory=all, and "
+                "the compiler injects the role usergroup — declare an all-users "
+                "rule in baseline freeipa_idam_hbac_rules instead)")
+    return ""
+
+
+def _check_rule_keys(role, idx, rule):
+    """Reject a non-mapping rule or any key outside HBAC_RULE_KEYS."""
+    if not isinstance(rule, dict):
+        raise AnsibleFilterError(
+            f"role '{role}' hbac_rules #{idx + 1} must be a mapping, got {rule!r}")
+    unknown = set(rule) - HBAC_RULE_KEYS
+    if unknown:
+        raise AnsibleFilterError(
+            f"role '{role}' hbac_rules #{idx + 1} ({rule.get('name', '?')}): unknown "
+            f"key(s) {sorted(unknown)}; allowed: {sorted(HBAC_RULE_KEYS)}"
+            f"{_unknown_key_hint(unknown)}")
+
+
+def _check_rule_categories(role, name, rule):
+    """Enforce the ipahbacrule category contract: value all|"" and no explicit
+    members on an axis opened with =all (IPA rejects that server-side)."""
+    for cat, member_keys in _HBAC_CATEGORY_CONFLICTS.items():
+        if cat not in rule:
+            continue
+        if rule[cat] not in ("all", ""):
+            raise AnsibleFilterError(
+                f"role '{role}' hbac rule '{name}': {cat} must be 'all' (or '' to "
+                f"clear it), got {rule[cat]!r} — that is the ipahbacrule contract")
+        conflicts = [k for k in member_keys if rule.get(k)]
+        if rule[cat] == "all" and conflicts:
+            raise AnsibleFilterError(
+                f"role '{role}' hbac rule '{name}': {cat}=all cannot be combined "
+                f"with {conflicts} — IPA rejects explicit members on an "
+                f"all-category axis; drop the member key(s) or the category")
+
+
 def _iter_role_hbac_rules(role, entry):
     """Yield validated ``(rule_name, rule_dict)`` for one role's ``hbac_rules``."""
     rules = entry.get("hbac_rules") or []
@@ -212,41 +255,13 @@ def _iter_role_hbac_rules(role, entry):
         raise AnsibleFilterError(
             f"role '{role}' hbac_rules must be a LIST of rule mappings, got {rules!r}")
     for idx, rule in enumerate(rules):
-        if not isinstance(rule, dict):
-            raise AnsibleFilterError(
-                f"role '{role}' hbac_rules #{idx + 1} must be a mapping, got {rule!r}")
-        unknown = set(rule) - HBAC_RULE_KEYS
-        if unknown:
-            if unknown & {"usergroup", "group"}:
-                hint = " (the compiler injects usergroup: [<the role group>] itself)"
-            elif "usercategory" in unknown:
-                hint = (" (usercategory is incompatible with a role-scoped rule: IPA "
-                        "rejects member users/groups alongside usercategory=all, and "
-                        "the compiler injects the role usergroup — declare an all-users "
-                        "rule in baseline freeipa_idam_hbac_rules instead)")
-            else:
-                hint = ""
-            raise AnsibleFilterError(
-                f"role '{role}' hbac_rules #{idx + 1} ({rule.get('name', '?')}): unknown "
-                f"key(s) {sorted(unknown)}; allowed: {sorted(HBAC_RULE_KEYS)}{hint}")
+        _check_rule_keys(role, idx, rule)
         name = rule.get("name")
         if not isinstance(name, str) or not name.strip():
             raise AnsibleFilterError(
                 f"role '{role}' hbac_rules #{idx + 1} has no usable 'name' — the rule "
                 f"name is declared explicitly (WYSIWYG), got {name!r}")
-        for cat, member_keys in _HBAC_CATEGORY_CONFLICTS.items():
-            if cat not in rule:
-                continue
-            if rule[cat] not in ("all", ""):
-                raise AnsibleFilterError(
-                    f"role '{role}' hbac rule '{name}': {cat} must be 'all' (or '' to "
-                    f"clear it), got {rule[cat]!r} — that is the ipahbacrule contract")
-            conflicts = [k for k in member_keys if rule.get(k)]
-            if rule[cat] == "all" and conflicts:
-                raise AnsibleFilterError(
-                    f"role '{role}' hbac rule '{name}': {cat}=all cannot be combined "
-                    f"with {conflicts} — IPA rejects explicit members on an "
-                    f"all-category axis; drop the member key(s) or the category")
+        _check_rule_categories(role, name, rule)
         yield name, rule
 
 
