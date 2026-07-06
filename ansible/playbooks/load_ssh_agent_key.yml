@@ -1,0 +1,27 @@
+---
+# playbooks/load_ssh_agent_key.yml
+#
+# Decrypt a private SSH key from Ansible Vault and load it into the operator's
+# ssh-agent — the key stays off disk. On macOS the key lands in the persistent
+# launchd agent and is immediately usable from your terminal.
+#
+# Usage:
+#   ansible-playbook -i inventories/hosts.yml playbooks/load_ssh_agent_key.yml
+#   ssh-add -l   # verify
+#
+# `vault_ssh_private_key` is expected to be an Ansible-Vault-encrypted variable
+# holding the private key text (e.g. in group_vars/all/vault.yml).
+
+- name: Load an SSH key from Ansible Vault into the ssh-agent
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # The key reaches ssh-add over stdin, never a file. Pinning pipelining keeps
+  # Ansible's own module payload (which embeds task args) off disk too — it is
+  # piped to the interpreter instead of written to ~/.ansible/tmp.
+  vars:
+    ansible_pipelining: true
+  roles:
+    - role: ssh_agent_key
+      vars:
+        ssh_agent_key_content: "{{ vault_ssh_private_key }}"

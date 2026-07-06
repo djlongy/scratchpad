@@ -1,0 +1,27 @@
+---
+galaxy_info:
+  role_name: ssh_agent_key
+  author: djlongy
+  description: >-
+    Loads a private SSH key into a running ssh-agent straight from memory — the
+    key is fed to ssh-add over stdin and never touches disk. Uses the caller's
+    inherited agent when present (on macOS, the persistent launchd agent) and
+    spawns a throwaway agent as a fallback for headless / CI runs. Intended to be
+    run on the control node with the key supplied from an Ansible Vault variable.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: MacOSX
+      versions: [all]
+    - name: EL
+      versions: [all]
+    - name: Debian
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+  galaxy_tags:
+    - ssh
+    - sshagent
+    - secrets
+
+dependencies: []
