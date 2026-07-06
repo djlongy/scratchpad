@@ -2,8 +2,9 @@
 
 Portable vCenter **VM lifecycle** role — clone VMs from a template (create) and
 remove them (destroy) via `community.vmware.vmware_guest`. Idempotent; all
-modules run on the control node against vCenter, driven by the
-`vsphere_vm_guests` list.
+modules run on the control node against vCenter. Guests are **always derived
+from inventory**: one VM per host in `vsphere_vm_inventory_group`, its spec in
+host_vars/group_vars (a hand-authored guests list is not an input).
 
 > For declarative, state-file-managed fleets prefer Terraform. This role is for
 > Ansible-native, inventory-driven create/destroy (e.g. spinning up SOE desktops
@@ -72,26 +73,7 @@ vsphere_vm_datacenter: "Datacenter"
 vsphere_vm_esxi_host: "192.0.2.11"
 vsphere_vm_resource_pool: "/Datacenter/host/192.0.2.11/Resources"
 vsphere_vm_datastore: "datastore1"
-
-vsphere_vm_guests:
-  - name: soe-desktop-01
-    template: linux-almalinux-9-main
-    hardware:           # native vmware_guest dict — merged over vsphere_vm_hardware
-      num_cpus: 2
-      memory_mb: 4096
-    disk:               # native vmware_guest list — replaces vsphere_vm_disk
-      - size_gb: 60
-        type: thin
-    networks:
-      - name: "VLAN10-SVC"
-        type: static
-        ip: 192.0.2.50
-        netmask: 255.255.255.0
-        gateway: 192.0.2.1
-    customization:
-      hostname: soe-desktop-01
-      domain: example.com
-      dns_servers: [192.0.2.53]
+vsphere_vm_inventory_group: vmware_vms   # <- the VMs = the hosts in this group
 ```
 
 Create / ensure:
@@ -100,24 +82,20 @@ Create / ensure:
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml
 ```
 
-Destroy (mark the guest `state: absent`, then):
+Destroy (set `vsphere_vm_state: absent` on the host, then):
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags destroy -e vsphere_vm_allow_destroy=true
 ```
 
-## Inventory-derived guests (recommended)
+## Inventory-derived guests (the only model)
 
-Instead of hand-curating `vsphere_vm_guests`, derive **one VM per inventory
-host** — each host *is* a VM, its spec in its vars. The role reads
-`hostvars[host]`, which is the **merged** view of inline + host_vars +
-group_vars, so placement is your choice.
-
-```yaml
-vsphere_vm_from_inventory: true
-vsphere_vm_inventory_group: vmware_vms
-```
+The role derives **one VM per inventory host** — each host *is* a VM, its spec
+in its vars. The role reads `hostvars[host]`, which is the **merged** view of
+inline + host_vars + group_vars, so placement is your choice. A missing or empty
+`vsphere_vm_inventory_group` fails fast (listing the known groups), so the plan
+can never silently compute "nothing to create".
 
 **Where to put the vars:**
 
@@ -146,6 +124,33 @@ ansible_host: 192.0.2.50        # becomes the VM's static IP
 
 Per-host `vsphere_vm_networks` / `vsphere_vm_customization` override the
 auto-derived NIC/customization entirely when you need something custom.
+
+## Drop-in mapping for exported host_vars
+
+If your hosts already carry bare exported vars — `cpus`, `memory` (MB), `disks`,
+`networks`, `folder`, `template`, plus customisation `domain` / `hostname` /
+`dns_server_list` — bind them to the role **once** in the group's group_vars.
+Group_vars templates resolve per host, so each host's values flow through and
+the role is a drop-in replacement (no per-host edits):
+
+```yaml
+# group_vars/<vm_group>.yml — marry the exports to the role
+vsphere_vm_template: "{{ template }}"
+vsphere_vm_folder: "{{ folder }}"
+vsphere_vm_hardware:
+  num_cpus: "{{ cpus }}"
+  memory_mb: "{{ memory }}"
+vsphere_vm_disk: "{{ disks }}"
+vsphere_vm_networks: "{{ networks }}"
+vsphere_vm_customization:
+  hostname: "{{ hostname | default(inventory_hostname) }}"
+  domain: "{{ domain }}"
+  dns_servers: "{{ dns_server_list }}"
+```
+
+`disks` / `networks` must already be vmware_guest-shaped lists
+(`[{size_gb, type}, ...]` / `[{name, type, ip, netmask, gateway}, ...]`) — they
+pass through 1:1.
 
 ## Canonical hostnames (messy inventory keys → clean names)
 
@@ -336,7 +341,7 @@ a per-guest `disk` replaces `vsphere_vm_disk`.
 ## Dual-mode usage guide
 
 The role provisions each guest through ONE of two engines. Both consume the **same
-guest dict** — the flag picks the engine.
+per-host spec** — the flag picks the engine.
 
 | | Mode 1: GOSC (default) | Mode 2: cloud-init GuestInfo |
 |---|---|---|
@@ -349,33 +354,35 @@ guest dict** — the flag picks the engine.
 Resolution order: **per-guest / per-host flag → role-wide flag → `false` (GOSC)**.
 One run can mix both modes; the guest list is split internally.
 
-### The guest dict (identical for both modes)
+### The per-host spec (identical for both modes)
+
+Host_vars shown; every key is also settable group-wide in group_vars:
 
 ```yaml
-- name: web-01                      # vCenter VM name            (required)
-  template: linux-almalinux-9-main  # source template            (required)
-  provision_via_guestinfo: true     # engine override            (optional)
-  hardware:                         # native vmware_guest dict   (optional; merged over role default)
-    num_cpus: 2
-    memory_mb: 4096
-  disk:                             # native vmware_guest list   (optional; replaces role default)
-    - {size_gb: 60, type: thin}     #   primary disk first (>= template size)
-    - {size_gb: 50, type: thin}     #   extra data disks follow
-  networks:                         # one entry per vNIC, in slot order (ens192/ens224/ens256)
-    - name: "VLAN10-SVC"            #   portgroup                (required)
-      type: static                  #   static | dhcp            (dhcp / missing ip → dhcp4)
-      ip: 192.0.2.50                #   required for static
-      netmask: 255.255.255.0
-      gateway: 192.0.2.1            #   ONLY on the primary NIC (default route + DNS)
-      interface: ens192             #   override guest device name (optional)
-  customization:                    # consumed as GOSC spec (mode 1) OR cloud-init metadata (mode 2)
-    hostname: web-01
-    domain: example.com             #   mode 1 FQDN suffix; harmless in mode 2
-    dns_servers: [192.0.2.53]
-  guestinfo_userdata: |             # mode 2 only (optional raw #cloud-config)
-    #cloud-config
-    packages: [chrony]
-  state: poweredon
+vsphere_vm_name: web-01                        # vCenter VM name  (default: inventory_hostname)
+vsphere_vm_template: linux-almalinux-9-main    # source template  (required)
+vsphere_vm_provision_via_guestinfo: true       # engine override  (optional)
+vsphere_vm_hardware:                # native vmware_guest dict   (optional; merged over role default)
+  num_cpus: 2
+  memory_mb: 4096
+vsphere_vm_disk:                    # native vmware_guest list   (optional; replaces role default)
+  - {size_gb: 60, type: thin}       #   primary disk first (>= template size)
+  - {size_gb: 50, type: thin}       #   extra data disks follow
+vsphere_vm_networks:                # one entry per vNIC, in slot order (ens192/ens224/ens256)
+  - name: "VLAN10-SVC"              #   portgroup                (required)
+    type: static                    #   static | dhcp            (dhcp / missing ip → dhcp4)
+    ip: 192.0.2.50                  #   required for static
+    netmask: 255.255.255.0
+    gateway: 192.0.2.1              #   ONLY on the primary NIC (default route + DNS)
+    interface: ens192               #   override guest device name (optional)
+vsphere_vm_customization:           # consumed as GOSC spec (mode 1) OR cloud-init metadata (mode 2)
+  hostname: web-01
+  domain: example.com               #   mode 1 FQDN suffix; harmless in mode 2
+  dns_servers: [192.0.2.53]
+vsphere_vm_guestinfo_userdata: |    # mode 2 only (optional raw #cloud-config)
+  #cloud-config
+  packages: [chrony]
+vsphere_vm_state: poweredon
 ```
 
 **Mode-specific field notes**

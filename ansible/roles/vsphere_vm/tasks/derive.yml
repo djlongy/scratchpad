@@ -1,17 +1,41 @@
 ---
 # roles/vsphere_vm/tasks/derive.yml
-# Build vsphere_vm_guests from the inventory hosts in vsphere_vm_inventory_group
-# — each host IS a VM. Reads hostvars[host], which is the MERGED view of inline
+# Build the guest list from the inventory hosts in vsphere_vm_inventory_group —
+# each host IS a VM (the ONLY input model; the hand-authored vsphere_vm_guests
+# list is retired). Reads hostvars[host], which is the MERGED view of inline
 # inventory vars + host_vars + group_vars, so it doesn't matter where the per-VM
 # vars live. Role defaults fill any gaps; ansible_host becomes the static IP
-# unless the host defines vsphere_vm_networks. Runs once on the controller.
+# unless the host defines vsphere_vm_networks. Runs once on the controller and
+# adopts the result as the INTERNAL fact _vsphere_guests (state.yml plans off it).
+
+# Retired inputs fail fast — a defined-but-ignored vsphere_vm_guests is exactly
+# the "plan finds nothing to create" trap: the operator declares guests, derive
+# ignores them, and the run ends changed=0 with no clue why.
+- name: Derive | Refuse the retired vsphere_vm_guests / vsphere_vm_from_inventory inputs
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_guests is not defined
+      - vsphere_vm_from_inventory is not defined
+    fail_msg: >-
+      vsphere_vm is inventory-derived ONLY. The hand-authored vsphere_vm_guests list and the
+      vsphere_vm_from_inventory toggle are retired. Model each VM as an inventory host in
+      vsphere_vm_inventory_group and put its spec in host_vars/group_vars
+      (vsphere_vm_template/_hardware/_disk/_networks/_customization/...).
+    quiet: true
+  run_once: true
+  delegate_to: localhost
+  become: false
 
 - name: Derive | Assert the inventory group is set and non-empty
   ansible.builtin.assert:
     that:
       - vsphere_vm_inventory_group | length > 0
       - groups[vsphere_vm_inventory_group] | default([]) | length > 0
-    fail_msg: "vsphere_vm_from_inventory is true but vsphere_vm_inventory_group is unset or empty."
+    fail_msg: >-
+      vsphere_vm_inventory_group is unset or matches no inventory hosts
+      (got '{{ vsphere_vm_inventory_group }}'; known inventory groups:
+      {{ groups.keys() | reject('in', ['all', 'ungrouped']) | list }}).
+      The role derives one VM per host in that group — with no hosts there is nothing to plan.
     quiet: true
   run_once: true
   delegate_to: localhost
@@ -43,16 +67,9 @@
   delegate_to: localhost
   become: false
 
-- name: Derive | Seed from any explicitly-listed guests
+- name: Derive | Build one guest per inventory host
   ansible.builtin.set_fact:
-    _vsphere_inv_guests: "{{ vsphere_vm_guests | default([]) }}"
-  run_once: true
-  delegate_to: localhost
-  become: false
-
-- name: Derive | Append one guest per inventory host
-  ansible.builtin.set_fact:
-    _vsphere_inv_guests: "{{ _vsphere_inv_guests + [_guest] }}"
+    _vsphere_guests: "{{ _vsphere_guests | default([]) + [_guest] }}"
   vars:
     _hv: "{{ hostvars[item] }}"
     _guest:
@@ -68,6 +85,7 @@
       networks: "{{ _hv.vsphere_vm_networks | default([_derived_nic]) }}"
       customization: "{{ _hv.vsphere_vm_customization | default(_derived_cust) }}"
       provision_via_guestinfo: "{{ _hv.vsphere_vm_provision_via_guestinfo | default(vsphere_vm_provision_via_guestinfo) | bool }}"
+      guestinfo_userdata: "{{ _hv.vsphere_vm_guestinfo_userdata | default('') }}"
       tags: "{{ _hv.vsphere_vm_tags | default({}) }}"
     _derived_nic:
       name: "{{ _hv.vsphere_vm_network | default(vsphere_vm_network) }}"
@@ -89,9 +107,16 @@
   delegate_to: localhost
   become: false
 
-- name: Derive | Adopt the inventory-derived guest list
-  ansible.builtin.set_fact:
-    vsphere_vm_guests: "{{ _vsphere_inv_guests }}"
+# A silently-empty guest list can never reach the planner — the group assert above
+# guarantees >= 1 host, so an empty build here is an internal error worth failing on.
+- name: Derive | Assert the derived guest list is non-empty
+  ansible.builtin.assert:
+    that:
+      - _vsphere_guests | default([]) | length > 0
+    fail_msg: >-
+      Internal error: vsphere_vm derived no guests from group
+      '{{ vsphere_vm_inventory_group }}' ({{ groups[vsphere_vm_inventory_group] }}).
+    quiet: true
   run_once: true
   delegate_to: localhost
   become: false

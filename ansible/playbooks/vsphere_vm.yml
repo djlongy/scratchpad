@@ -1,9 +1,9 @@
 ---
 # Create / destroy vCenter VMs (clone from template) via community.vmware.
 #
-# Runs against vCenter from the control node (localhost). Describe the guests in
-# vsphere_vm_guests (or derive one VM per inventory host with
-# vsphere_vm_from_inventory: true). See the role README for the full variable
+# Runs against vCenter from the control node (localhost). Guests are derived
+# from inventory: one VM per host in vsphere_vm_inventory_group, spec in
+# host_vars/group_vars. See the role README for the full variable
 # reference, the two provisioning modes (GOSC vs cloud-init GuestInfo), and the
 # NIC-reconnect handling.
 #

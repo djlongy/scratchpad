@@ -75,19 +75,10 @@ argument_specs:
         type: bool
         required: false
         description: Wait for the guest to report an IP after power-on.
-      vsphere_vm_guests:
-        type: list
-        elements: dict
-        required: false
-        description: VMs to manage. Each item needs name + template (other fields fall back to defaults).
       vsphere_vm_allow_destroy:
         type: bool
         required: false
         description: Safety guard — destroy (state absent) is refused unless true.
-      vsphere_vm_from_inventory:
-        type: bool
-        required: false
-        description: Derive guests from inventory hosts instead of vsphere_vm_guests.
       vsphere_vm_hostname:
         type: str
         required: false
@@ -95,7 +86,7 @@ argument_specs:
       vsphere_vm_inventory_group:
         type: str
         required: false
-        description: Inventory group whose hosts are VMs to manage (when from_inventory).
+        description: Inventory group whose hosts are the VMs to manage (required — one VM per host).
       vsphere_vm_network:
         type: str
         required: false

@@ -1,8 +1,9 @@
 ---
 # roles/vsphere_vm/tasks/state.yml
 # Terraform-style reconcile: read current vCenter state, diff against the desired
-# vsphere_vm_guests, and compute the plan (to-create / present / to-destroy).
-# Read-only — runs for both create and destroy so the plan is always available.
+# inventory-derived _vsphere_guests, and compute the plan (to-create / present /
+# to-destroy). Read-only — runs for both create and destroy so the plan is always
+# available.
 
 - name: State | Gather current VM inventory from vCenter
   community.vmware.vmware_vm_info:
@@ -21,11 +22,11 @@
 - name: State | Compute the plan (desired vs current)
   ansible.builtin.set_fact:
     _vsphere_desired_present: >-
-      {{ (vsphere_vm_guests | rejectattr('state', 'defined') | list)
-         + (vsphere_vm_guests | selectattr('state', 'defined')
+      {{ (_vsphere_guests | rejectattr('state', 'defined') | list)
+         + (_vsphere_guests | selectattr('state', 'defined')
             | rejectattr('state', 'equalto', 'absent') | list) }}
     _vsphere_desired_absent: >-
-      {{ vsphere_vm_guests | selectattr('state', 'defined')
+      {{ _vsphere_guests | selectattr('state', 'defined')
          | selectattr('state', 'equalto', 'absent') | list }}
   run_once: true
   delegate_to: localhost
@@ -48,6 +49,7 @@
 - name: State | Plan
   ansible.builtin.debug:
     msg:
+      - "desired   : {{ _vsphere_guests | map(attribute='name') | list }} (from group '{{ vsphere_vm_inventory_group }}')"
       - "to create : {{ _vsphere_to_create | map(attribute='name') | list }}"
       - "present   : {{ _vsphere_present | map(attribute='name') | list }}"
       - "to destroy: {{ _vsphere_to_destroy | map(attribute='name') | list }}"

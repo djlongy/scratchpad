@@ -3,9 +3,10 @@
 # Validate the connection inputs and resolve the vCenter password (Vault unless
 # vsphere_vm_password was supplied directly). Runs once on the controller.
 
-# The per-guest hardware contract is NATIVE vmware_guest (hardware:/disk: dicts).
-# Fail fast — with the migration mapping — if the retired flat keys are still used
-# anywhere (role-level vars, hand-authored guests, or per-host inventory vars).
+# The hardware contract is NATIVE vmware_guest (hardware:/disk: dicts). Fail fast
+# — with the migration mapping — if the retired flat role-level keys are still set
+# (the per-host equivalents are checked in derive.yml; the retired guests-list
+# input is refused there too).
 - name: Preflight | Refuse retired flat hardware keys (migrated to native vmware_guest dicts)
   ansible.builtin.assert:
     that:
@@ -16,19 +17,12 @@
       - vsphere_vm_extra_disks is not defined
       - vsphere_vm_firmware is not defined
       - vsphere_vm_scsi is not defined
-      - _vsphere_retired_guest_keys | length == 0
     fail_msg: >-
-      vsphere_vm now takes NATIVE community.vmware.vmware_guest dicts
-      {{ (' (guest keys found: ' ~ (_vsphere_retired_guest_keys | unique | join(', ')) ~ ')')
-         if _vsphere_retired_guest_keys | default([]) | length > 0 else '' }}. Migrate:
-      cpus/memory_mb/firmware/scsi → hardware: {num_cpus, memory_mb, boot_firmware, scsi};
-      disk_gb/disk_type/extra_disks → disk: [{size_gb, type}, ...] (primary first).
+      vsphere_vm now takes NATIVE community.vmware.vmware_guest dicts. Migrate:
+      cpus/memory_mb/firmware/scsi → vsphere_vm_hardware: {num_cpus, memory_mb, boot_firmware,
+      scsi}; disk_gb/disk_type/extra_disks → vsphere_vm_disk: [{size_gb, type}, ...]
+      (primary first).
     quiet: true
-  vars:
-    _vsphere_retired_guest_keys: >-
-      {{ vsphere_vm_guests | default([]) | map('dict2items')
-         | map('map', attribute='key') | flatten
-         | intersect(['cpus', 'memory_mb', 'disk_gb', 'disk_type', 'extra_disks', 'firmware', 'scsi']) }}
   run_once: true
   delegate_to: localhost
   become: false

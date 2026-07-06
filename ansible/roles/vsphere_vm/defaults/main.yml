@@ -3,8 +3,9 @@
 #
 # Portable vCenter VM lifecycle role: create (clone from template) and destroy
 # VMs via community.vmware.vmware_guest. All modules run on the control node
-# (delegate_to: localhost). Driven by the vsphere_vm_guests list. Idempotent —
-# vmware_guest reconciles to the declared state.
+# (delegate_to: localhost). Guests are ALWAYS derived from the inventory hosts in
+# vsphere_vm_inventory_group — each host IS a VM. Idempotent — vmware_guest
+# reconciles to the declared state.
 #
 # Behavioural defaults live here; env-specific values (vCenter address, Vault
 # path, datacenter/cluster/datastore) are commented out for discoverability and
@@ -102,42 +103,32 @@ vsphere_vm_provision_via_guestinfo: false
 # Optional per-guest raw #cloud-config user-data: set item.guestinfo_userdata on a
 # guest to inject guestinfo.userdata alongside the metadata (packages, users, an
 # authoritative resolv.conf, …). Left unset → only metadata (network + hostname).
-# ── Guests to manage ─────────────────────────────────────────────────────────
-# Each item (only name + template are required; the rest fall back to the
-# hardware defaults above). hardware/disk/networks/customization are NATIVE
-# vmware_guest dicts — any key the module accepts is passed through:
-#   - name: web01
-#     template: linux-almalinux-9-main          # source template to clone
-#     hardware:                                 # merged over vsphere_vm_hardware
-#       num_cpus: 2
-#       memory_mb: 4096
-#     disk:                                     # replaces vsphere_vm_disk (primary first)
-#       - size_gb: 40
-#         type: thin
-#       - size_gb: 50                            # optional secondary disks (e.g. /opt)
-#         type: thin
-#     networks:                                 # vmware_guest-native network dicts
-#       - name: "VLAN10-SVC"                     # dvPortGroup / network name
-#         type: static
-#         ip: 192.0.2.50
-#         netmask: 255.255.255.0
-#         gateway: 192.0.2.1
-#     customization:                            # vmware_guest-native customization
-#       hostname: web01
-#       domain: example.com
-#       dns_servers: [192.0.2.53]
-#     state: poweredon                          # poweredon | present | poweredoff | absent
-vsphere_vm_guests: []
-
-# ── Inventory-derived guests (the preferred model) ───────────────────────────
-# Instead of curating vsphere_vm_guests by hand, derive one guest per host in an
-# inventory group — each host IS a VM, its spec lives in host_vars. Set
-# vsphere_vm_from_inventory: true and point at the group. Per-host vars (all
-# optional except the template; they fall back to the role defaults above):
+# ── Guests: ALWAYS derived from inventory ─────────────────────────────────────
+# One VM per host in vsphere_vm_inventory_group — each host IS a VM, its spec in
+# host_vars/group_vars (the hand-authored vsphere_vm_guests list is RETIRED; the
+# role refuses it with a migration message). Per-host vars (all optional except
+# the template; they fall back to the role defaults above):
 #   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
 #   vsphere_vm_hardware (merged over the role default) / _disk / _state / _folder / _datastore,
 #   vsphere_vm_networks (else derived from ansible_host + the vars below),
-#   vsphere_vm_customization (else derived from hostname/domain/dns).
+#   vsphere_vm_customization (else derived from hostname/domain/dns),
+#   vsphere_vm_provision_via_guestinfo, vsphere_vm_tags, vsphere_vm_guestinfo_userdata.
+#
+# DROP-IN MAPPING for inventories whose hosts already carry exported bare vars
+# (cpus, memory [MB], disks, networks, folder, template + customisation
+# domain/hostname/dns_server_list): bind them ONCE in the group's group_vars —
+# group_vars templates resolve per host, so each host's values flow through:
+#   vsphere_vm_template: "{{ template }}"
+#   vsphere_vm_folder: "{{ folder }}"
+#   vsphere_vm_hardware:
+#     num_cpus: "{{ cpus }}"
+#     memory_mb: "{{ memory }}"
+#   vsphere_vm_disk: "{{ disks }}"
+#   vsphere_vm_networks: "{{ networks }}"
+#   vsphere_vm_customization:
+#     hostname: "{{ hostname | default(inventory_hostname) }}"
+#     domain: "{{ domain }}"
+#     dns_servers: "{{ dns_server_list }}"
 #
 # The vCenter VM NAME and the guest OS HOSTNAME are decoupled (important for a
 # shared/multi-tenant vCenter — see README "Multi-tenant vCenter naming"):
@@ -149,7 +140,7 @@ vsphere_vm_guests: []
 #                         inventory_hostname. Stays clean/canonical regardless of
 #                         the vCenter name.
 # Both are intentionally NOT defaulted here (their default is computed per host).
-vsphere_vm_from_inventory: false
+# The inventory group whose hosts are the VMs to manage (REQUIRED — asserted).
 vsphere_vm_inventory_group: ""               # e.g. "vmware_vms"
 # Defaults for the auto-derived static NIC (override per host/group as needed):
 vsphere_vm_network: ""                        # dvPortGroup / network name
@@ -159,8 +150,8 @@ vsphere_vm_dns: []                            # DNS servers for guest customizat
 
 # ── vSphere tags (tenant / environment / …) ──────────────────────────────────
 # vCenter tags applied to created VMs, as a {Category: tag} map. The role ensures
-# each category + tag exists, then associates them. Hand-authored guests set
-# `tags:` per item; inventory-derived guests set vsphere_vm_tags per host/group.
+# each category + tag exists, then associates them. Set vsphere_vm_tags per
+# host/group.
 #   vsphere_vm_tags: {Tenant: prod, Environment: alma}
 # The VM folder (vsphere_vm_folder / item.folder) may be a NESTED path — e.g.
 # /Datacenter/vm/prod/alma — the role creates the whole tree first (one call).

@@ -21,20 +21,12 @@
 #     "Known vSphere quirk" + "cloud-init GuestInfo" sections.
 
 # ─── Per-guest mode split ─────────────────────────────────────────────────────
-# Each guest may set provision_via_guestinfo (derive.yml resolves it per host);
-# unset falls back to the role-wide vsphere_vm_provision_via_guestinfo flag.
+# derive.yml resolves provision_via_guestinfo per host (host var, else the
+# role-wide flag), so every guest carries a definitive boolean.
 - name: Create | Split guests by provisioning mode
   ansible.builtin.set_fact:
-    _vsphere_create_gi: >-
-      {{ (_vsphere_to_create | selectattr('provision_via_guestinfo', 'defined')
-          | selectattr('provision_via_guestinfo') | list)
-         + ((_vsphere_to_create | rejectattr('provision_via_guestinfo', 'defined') | list)
-            if (vsphere_vm_provision_via_guestinfo | bool) else []) }}
-    _vsphere_create_gosc: >-
-      {{ (_vsphere_to_create | selectattr('provision_via_guestinfo', 'defined')
-          | rejectattr('provision_via_guestinfo') | list)
-         + ((_vsphere_to_create | rejectattr('provision_via_guestinfo', 'defined') | list)
-            if not (vsphere_vm_provision_via_guestinfo | bool) else []) }}
+    _vsphere_create_gi: "{{ _vsphere_to_create | selectattr('provision_via_guestinfo') | list }}"
+    _vsphere_create_gosc: "{{ _vsphere_to_create | rejectattr('provision_via_guestinfo') | list }}"
   run_once: true
   delegate_to: localhost
   become: false
