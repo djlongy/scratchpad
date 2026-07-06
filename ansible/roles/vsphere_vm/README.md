@@ -96,9 +96,12 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
 Each play host **is** its VM: the host builds its own VM from its own vars in
 single task calls — no group loop, no `hostvars[]` indirection. Vars resolve in
 the host's own context (inline inventory + host_vars + group_vars merged), so
-placement is your choice. One shared `vmware_vm_info` read serves the whole
-play; each host prints its own plan line (CREATE / present / DESTROY), so the
-run can never silently compute "nothing to create".
+placement is your choice. The plan is **purely inventory-derived** — the role does
+**not** gather vCenter's inventory to test existence (that whole-inventory
+`vmware_vm_info` read was slow and told us nothing the idempotent modules can't
+resolve themselves, cheaper, by name). It goes straight to an idempotent create
+that reconciles an existing VM as a fast per-VM no-op; each host prints its own
+plan line (ENSURE PRESENT / DESTROY).
 
 **Where to put the vars:**
 

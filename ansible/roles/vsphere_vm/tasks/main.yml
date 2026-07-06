@@ -6,13 +6,17 @@
 # no group loop, no controller-side guest list. All vCenter calls delegate to
 # localhost, so the (possibly not-yet-existing) host is never contacted.
 #
-# Phase order (Terraform-style: read state → plan → apply, per host):
+# Phase order (inventory-derived plan → apply, per host — NO current-state read):
 #   preflight → assert connection inputs + resolve the vCenter password
 #   spec      → build THIS host's guest spec from its own vars
-#   state     → one shared vCenter inventory read + this host's plan (always)
-#   create    → build this host's VM if the plan found it missing
+#   plan      → derive create/destroy purely from the declared state (no vCenter read)
+#   create    → ensure this host's VM (idempotent — reconciles an existing VM)
 #   connect   → NIC reconnect + bounded IP wait for this host's VM
 #   destroy   → remove this host's VM when state=absent (never tag + allow_destroy)
+#
+# We deliberately do NOT gather vCenter's inventory to test existence first: the
+# vmware modules are idempotent, so going straight to create lets each module do a
+# cheap per-VM reconcile instead of a slow whole-inventory vmware_vm_info gather.
 
 - name: Run vSphere VM preflight (inputs + credentials)
   ansible.builtin.import_tasks: preflight.yml
@@ -25,25 +29,25 @@
   # `always` so the spec exists for both create and destroy.
   tags: [vsphere_vm, always]
 
-# vCenter connection for every community.vmware module task, injected once per
-# phase via module_defaults (password is resolved by preflight, which is
-# `always`-tagged, before any module task runs).
-- name: Read current state and compute this host's plan
-  ansible.builtin.import_tasks: state.yml
-  # `always` so the plan exists for both create and destroy phases.
-  tags: [vsphere_vm, state, always]
+# Inventory-only plan — no vCenter read, so no module_defaults needed here.
+# `always` so the plan exists for both create and destroy phases.
+- name: Compute this host's plan from its declared state
+  ansible.builtin.import_tasks: plan.yml
+  tags: [vsphere_vm, plan, always]
+
+# vCenter connection for every community.vmware module task, injected per phase
+# via module_defaults (password is resolved by preflight, which is `always`-tagged,
+# before any module task runs).
+- name: Ensure this host's VM (idempotent — reconciles if it already exists)
+  ansible.builtin.import_tasks: create.yml
+  when: _vsphere_to_create | bool
+  tags: [vsphere_vm, create]
   module_defaults: &vcenter_connection
     group/community.vmware.vmware:
       hostname: "{{ vsphere_vm_server }}"
       username: "{{ vsphere_vm_username }}"
       password: "{{ vsphere_vm_password }}"
       validate_certs: "{{ vsphere_vm_validate_certs }}"
-
-- name: Build this host's VM if missing
-  ansible.builtin.import_tasks: create.yml
-  when: _vsphere_to_create | bool
-  tags: [vsphere_vm, create]
-  module_defaults: *vcenter_connection
 
 # Reconnect + verify the NIC for this host's VM (created this run AND already
 # present). Its own phase — not buried in create — so `--tags connect` can heal

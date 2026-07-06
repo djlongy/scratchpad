@@ -1,7 +1,10 @@
 ---
 # roles/vsphere_vm/tasks/create.yml
-# Build THIS host's VM (main.yml imports this only when the plan said CREATE) —
-# Terraform-style "create if it doesn't exist"; an existing VM is left untouched.
+# Ensure THIS host's VM (main.yml imports this whenever the host's state ≠ absent).
+# We do NOT pre-check existence — the modules are idempotent, so this runs on every
+# desired-present host and reconciles: a missing VM is cloned, an existing one is a
+# fast per-VM no-op (or a reconfigure if its spec drifted). This replaces the old
+# up-front whole-inventory vmware_vm_info gather, which was the slow part.
 # Runs on the controller against vCenter; hosts create their VMs in parallel.
 #
 # Two provisioning modes (_vsphere_guest.provision_via_guestinfo), both reading
