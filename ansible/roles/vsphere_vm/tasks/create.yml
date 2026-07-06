@@ -171,6 +171,33 @@
         name: "{{ _vsphere_guest.name }}"
         state: powered-on
 
+# ─── Ensure disk sizes (grow) ───────────────────────────────────────────────────
+# community.vmware.vmware_guest does NOT resize existing disks on a reconfigure (it
+# returns ok/no-change), so the create paths above can create disks but never GROW
+# them. vmware_guest_disk is the dedicated module that reliably resizes a vmdk on an
+# existing VM by SCSI controller + unit. Idempotent: a no-op when every disk already
+# matches; grows (never shrinks — vSphere forbids it) when vsphere_vm_disk was bumped.
+# Maps vsphere_vm_disk 1:1 onto controller 0, units 0,1,2,… (unit 7 is the controller,
+# so it is skipped). Runs in BOTH modes; community.vmware.* inherit the vCenter
+# connection from main.yml's module_defaults.
+- name: Create | Ensure each disk is at its declared size (grow)
+  community.vmware.vmware_guest_disk:
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ _vsphere_guest.name }}"
+    disk: "{{ _vsphere_disk_spec }}"
+  vars:
+    _vsphere_disk_spec: >-
+      {%- set out = [] -%}
+      {%- for d in _vsphere_guest.disk -%}
+      {%-   set _u = loop.index0 if loop.index0 < 7 else loop.index0 + 1 -%}
+      {%-   set _ = out.append({'scsi_controller': 0, 'unit_number': _u,
+              'size_gb': d.size_gb, 'type': (d.type | default('thin')),
+              'scsi_type': vsphere_vm_scsi_type}) -%}
+      {%- endfor -%}
+      {{ out }}
+  delegate_to: localhost
+  become: false
+
 # ─── Tags ─────────────────────────────────────────────────────────────────────
 # Apply this host's vSphere tags (vsphere_vm_tags {Category: tag}) — e.g. tenant/env.
 # Ensure the category and tag exist, then associate. throttle: 1 on the ensure

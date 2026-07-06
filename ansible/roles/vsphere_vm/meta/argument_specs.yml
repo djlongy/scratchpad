@@ -76,6 +76,13 @@ argument_specs:
         type: bool
         required: false
         description: Wait for the guest to report an IP after power-on.
+      vsphere_vm_scsi_type:
+        type: str
+        required: false
+        choices: [paravirtual, lsilogic, lsilogicsas, buslogic]
+        description: >-
+          SCSI controller type the disks hang off, used by the disk-grow step
+          (vmware_guest_disk). Default paravirtual; match your template's controller.
       vsphere_vm_wait_for_ssh:
         type: bool
         required: false

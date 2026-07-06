@@ -43,6 +43,10 @@ vsphere_vm_disk:
     type: thin                                   # thin | thick | eagerzeroedthick
 vsphere_vm_wait_for_ip: true
 vsphere_vm_state: poweredon                      # default state for created guests
+# SCSI controller type the data disks hang off — used by the disk-grow step
+# (vmware_guest_disk needs it to address the controller). Modern templates use
+# paravirtual (VMware PVSCSI); set lsilogic / lsilogicsas / buslogic if yours differs.
+vsphere_vm_scsi_type: paravirtual
 
 # ── Handoff to on-guest roles in the SAME play ───────────────────────────────
 # Everything this role does runs on the control node (delegate_to: localhost) and
