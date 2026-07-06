@@ -406,21 +406,23 @@
 # ONE rich-dict call per rule: state:present creates AND declaratively reconciles
 # members (add+del lists). Category rules omit member lists; member principals were
 # created in earlier tasks. Enabled/disabled is a separate pass — the module forbids
-# member params alongside those states.
+# member params alongside those states. state: absent accepts ONLY the name —
+# ipahbacrule hard-fails if description/categories/members ride along ("... can not
+# be used with state absent") — so an absent rule is stripped to its name here.
 - name: Ensure declarative HBAC rules are present (rule + members in one pass)
   freeipa.ansible_freeipa.ipahbacrule:
     name: "{{ item.name }}"
-    description: "{{ item.description | default(omit) }}"
-    usercategory: "{{ item.usercategory | default(omit) }}"
-    hostcategory: "{{ item.hostcategory | default(omit) }}"
-    servicecategory: "{{ item.servicecategory | default(omit) }}"
-    user: "{{ item.user | default(omit) }}"
-    group: "{{ item.usergroup | default(omit) }}"
-    host: "{{ item.host | default(omit) }}"
-    hostgroup: "{{ item.hostgroup | default(omit) }}"
-    hbacsvc: "{{ item.service | default(omit) }}"
-    hbacsvcgroup: "{{ item.servicegroup | default(omit) }}"
-    state: "{{ 'absent' if (item.state | default('present')) == 'absent' else 'present' }}"
+    description: "{{ omit if _hbac_absent | bool else (item.description | default(omit)) }}"
+    usercategory: "{{ omit if _hbac_absent | bool else (item.usercategory | default(omit)) }}"
+    hostcategory: "{{ omit if _hbac_absent | bool else (item.hostcategory | default(omit)) }}"
+    servicecategory: "{{ omit if _hbac_absent | bool else (item.servicecategory | default(omit)) }}"
+    user: "{{ omit if _hbac_absent | bool else (item.user | default(omit)) }}"
+    group: "{{ omit if _hbac_absent | bool else (item.usergroup | default(omit)) }}"
+    host: "{{ omit if _hbac_absent | bool else (item.host | default(omit)) }}"
+    hostgroup: "{{ omit if _hbac_absent | bool else (item.hostgroup | default(omit)) }}"
+    hbacsvc: "{{ omit if _hbac_absent | bool else (item.service | default(omit)) }}"
+    hbacsvcgroup: "{{ omit if _hbac_absent | bool else (item.servicegroup | default(omit)) }}"
+    state: "{{ 'absent' if _hbac_absent | bool else 'present' }}"
   # precheck-gated: only rules that differ from the realm invoke the module.
   # NOTE: enabled/disabled entries compare on their OTHER keys here (state itself
   # is the op-state pass's job below, gated on the realm's ipaenabledflag).
@@ -428,6 +430,7 @@
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
+    _hbac_absent: "{{ (item.state | default('present')) == 'absent' }}"
     _freeipa_idam_hbac_changed: >-
       {{ freeipa_idam_hbac_rules
          | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacrule', ''), 'hbacrule') }}

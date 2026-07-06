@@ -54,7 +54,7 @@ DNS, automember and IPA delegation roles stay plain native entries.
 | `hostcategory` | str | no | `all` / `""` | `all` opens the rule to every host (`""` clears a previously set category). Mutually exclusive with `host`/`hostgroup` — IPA rejects explicit members on an all-category axis. |
 | `servicecategory` | str | no | `all` / `""` | `all` opens the rule to every service (`""` clears it). Mutually exclusive with `service`/`servicegroup`. |
 | `user` | list of str | no | — | EXTRA specific users on the rule beyond the role members (edge case). |
-| `state` | str | no | `present` / `enabled` / `disabled` / `absent` | Rule lifecycle. `enabled`/`disabled` is reconciled in a separate operational-state pass. |
+| `state` | str | no | `present` / `enabled` / `disabled` / `absent` | Rule lifecycle. `enabled`/`disabled` is reconciled in a separate operational-state pass (the module forbids members alongside those states). `absent` deletes the rule by name — the role strips every other declared field from the call (ipahbacrule rejects them with `state: absent`). With reconcile mode on you rarely need it: simply removing the rule from the list prunes it; `state: absent` is for targeted deletion in additive (non-reconcile) runs. |
 
 **Rejected keys (with targeted errors):**
 
