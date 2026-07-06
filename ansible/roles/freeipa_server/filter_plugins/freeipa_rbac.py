@@ -41,6 +41,9 @@ visual shape as ``freeipa_idam_usergroups``:
         - name: hbac-acme-prod-platform-ssh    # EXPLICIT rule name (WYSIWYG)
           hostgroup: [hg-acme-prod]            # usergroup: [<role>] is injected
           service: [sshd]
+        - name: hbac-acme-prod-platform-any    # hostcategory/servicecategory: "all"
+          hostcategory: all                    #   open that axis (usercategory is
+          servicecategory: all                 #   forbidden — the role IS the users)
 
 Filters:
   freeipa_rbac_role_groups(roles)
@@ -70,8 +73,19 @@ ALLOWED_KEYS = frozenset({"name", "description", "member_of", "members", "hbac_r
 # The shape of one role-scoped HBAC rule. usergroup/group are FORBIDDEN — the compiler
 # injects usergroup: [<the role group>]; binding the rule to the role is the point.
 # `user` IS allowed: extra specific users on the rule beyond the role (edge case).
+# hostcategory/servicecategory pass through to ipahbacrule (value "all" opens that
+# axis; "" clears it). usercategory is FORBIDDEN too: IPA rejects member users/groups
+# alongside usercategory=all, and every role-scoped rule carries the injected role
+# usergroup — an all-users rule belongs in baseline freeipa_idam_hbac_rules instead.
 HBAC_RULE_KEYS = frozenset({"name", "description", "hostgroup", "host", "user",
-                            "service", "servicegroup", "state"})
+                            "service", "servicegroup", "state",
+                            "hostcategory", "servicecategory"})
+
+# category key -> the member keys IPA rejects alongside <category>=all.
+_HBAC_CATEGORY_CONFLICTS = {
+    "hostcategory": ("host", "hostgroup"),
+    "servicecategory": ("service", "servicegroup"),
+}
 
 
 def _iter_roles(roles):
@@ -203,8 +217,15 @@ def _iter_role_hbac_rules(role, entry):
                 f"role '{role}' hbac_rules #{idx + 1} must be a mapping, got {rule!r}")
         unknown = set(rule) - HBAC_RULE_KEYS
         if unknown:
-            hint = (" (the compiler injects usergroup: [<the role group>] itself)"
-                    if unknown & {"usergroup", "group"} else "")
+            if unknown & {"usergroup", "group"}:
+                hint = " (the compiler injects usergroup: [<the role group>] itself)"
+            elif "usercategory" in unknown:
+                hint = (" (usercategory is incompatible with a role-scoped rule: IPA "
+                        "rejects member users/groups alongside usercategory=all, and "
+                        "the compiler injects the role usergroup — declare an all-users "
+                        "rule in baseline freeipa_idam_hbac_rules instead)")
+            else:
+                hint = ""
             raise AnsibleFilterError(
                 f"role '{role}' hbac_rules #{idx + 1} ({rule.get('name', '?')}): unknown "
                 f"key(s) {sorted(unknown)}; allowed: {sorted(HBAC_RULE_KEYS)}{hint}")
@@ -213,6 +234,19 @@ def _iter_role_hbac_rules(role, entry):
             raise AnsibleFilterError(
                 f"role '{role}' hbac_rules #{idx + 1} has no usable 'name' — the rule "
                 f"name is declared explicitly (WYSIWYG), got {name!r}")
+        for cat, member_keys in _HBAC_CATEGORY_CONFLICTS.items():
+            if cat not in rule:
+                continue
+            if rule[cat] not in ("all", ""):
+                raise AnsibleFilterError(
+                    f"role '{role}' hbac rule '{name}': {cat} must be 'all' (or '' to "
+                    f"clear it), got {rule[cat]!r} — that is the ipahbacrule contract")
+            conflicts = [k for k in member_keys if rule.get(k)]
+            if rule[cat] == "all" and conflicts:
+                raise AnsibleFilterError(
+                    f"role '{role}' hbac rule '{name}': {cat}=all cannot be combined "
+                    f"with {conflicts} — IPA rejects explicit members on an "
+                    f"all-category axis; drop the member key(s) or the category")
         yield name, rule
 
 

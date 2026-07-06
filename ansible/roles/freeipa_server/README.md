@@ -337,8 +337,14 @@ freeipa_server_rbac_roles:
 **Role-scoped HBAC rules** (`hbac_rules` on a role entry): each rule's `name` is declared
 explicitly — WYSIWYG, no generated names — and the compiler injects
 `usergroup: [<the role group>]` (binding the rule to the role is the point). You declare
-`hostgroup`/`host`/`user`/`service`/`servicegroup`/`description`/`state` verbatim (`user`
-covers the edge case of one extra specific user beyond the role); `usergroup` is rejected.
+`hostgroup`/`host`/`user`/`service`/`servicegroup`/`hostcategory`/`servicecategory`/
+`description`/`state` verbatim (`user` covers the edge case of one extra specific user
+beyond the role; a category takes `all` — or `""` to clear it — and cannot be combined
+with explicit members on the same axis, which IPA rejects). `usergroup` is rejected, and
+so is `usercategory`: IPA refuses member users/groups alongside `usercategory: all`, and
+every role-scoped rule carries the injected role usergroup — declare an all-users rule in
+baseline `freeipa_idam_hbac_rules` instead (the baseline dicts support all three
+categories natively).
 Rules merge onto `freeipa_idam_hbac_rules` and go through
 the same reference validation; a rule name may live under exactly ONE role, and a name
 that is also declared natively is rejected (one place only). `member_of` nesting remains
