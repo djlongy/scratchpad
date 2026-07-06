@@ -44,6 +44,18 @@ vsphere_vm_disk:
 vsphere_vm_wait_for_ip: true
 vsphere_vm_state: poweredon                      # default state for created guests
 
+# ── Handoff to on-guest roles in the SAME play ───────────────────────────────
+# Everything this role does runs on the control node (delegate_to: localhost) and
+# never touches the guest. Set this true to append a final step that waits until
+# the freshly-built guest answers SSH (returns immediately once it does — a poll,
+# not a fixed sleep) and then gathers its facts, so an on-guest role can follow in
+# the same play, e.g. `roles: [vsphere_vm, storage]`. REQUIRES: the play uses
+# gather_facts: false (the VM doesn't exist at play start), the template bakes in
+# the ansible SSH user + key, and host-key checking is off for the fresh host
+# (ANSIBLE_HOST_KEY_CHECKING=False). Left false → original localhost-only behaviour.
+vsphere_vm_wait_for_ssh: false
+vsphere_vm_ssh_timeout: 300                       # max seconds to wait for guest SSH
+
 # ── Robust spin-up (NIC reconnect + bounded waits) ───────────────────────────
 # After a clone+customize, vSphere leaves the NIC disconnected (a known bug), so
 # the guest never gets an IP. Critically, the disconnect is a ONE-TIME event

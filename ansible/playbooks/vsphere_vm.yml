@@ -1,11 +1,12 @@
 ---
 # Create / destroy vCenter VMs (clone from template) via community.vmware.
 #
-# Runs against vCenter from the control node (localhost). Guests are derived
-# from inventory: one VM per host in vsphere_vm_inventory_group, spec in
-# host_vars/group_vars. See the role README for the full variable
-# reference, the two provisioning modes (GOSC vs cloud-init GuestInfo), and the
-# NIC-reconnect handling.
+# HOST-CENTRIC: target the VM hosts themselves (hosts: <vm_group>,
+# gather_facts: false). Every host provisions ITS OWN VM from its own vars; all
+# vCenter calls delegate to localhost, so the not-yet-existing guest is never
+# SSHed. Spec comes from host_vars/group_vars. See the role README for the full
+# variable reference, the two provisioning modes (GOSC vs cloud-init GuestInfo),
+# and the NIC-reconnect handling.
 #
 #   # create / ensure guests
 #   ansible-playbook -i inventories/example/hosts.yml playbooks/vsphere_vm.yml
@@ -15,8 +16,29 @@
 #       --tags destroy -e vsphere_vm_allow_destroy=true
 
 - name: Create / destroy vCenter VMs
-  hosts: localhost
-  connection: local
+  hosts: vmware_vms
   gather_facts: false
+  become: false
   roles:
     - role: vsphere_vm
+
+# ── Chaining an on-guest role in the SAME play ────────────────────────────────
+# Set vsphere_vm_wait_for_ssh: true and vsphere_vm appends a handoff step (wait
+# until the fresh guest answers SSH, then gather its facts), so an on-guest role
+# such as `storage` can follow in the same play. Requires gather_facts: false,
+# an ansible SSH user/key baked into the template, and host-key checking off
+# (ANSIBLE_HOST_KEY_CHECKING=False). See the role README.
+#
+# - name: Provision the VM AND its data disk in one play
+#   hosts: vmware_vms
+#   gather_facts: false
+#   become: true
+#   roles:
+#     - role: vsphere_vm
+#       vars:
+#         vsphere_vm_wait_for_ssh: true
+#     - role: storage
+#       vars:
+#         storage_provision: true
+#         storage_volumes:
+#           - {name: opt, disk: auto, vg: vg_data, lv: lv_opt, size: "100%FREE", fstype: xfs, mount: /opt}

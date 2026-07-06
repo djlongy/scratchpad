@@ -76,6 +76,19 @@ argument_specs:
         type: bool
         required: false
         description: Wait for the guest to report an IP after power-on.
+      vsphere_vm_wait_for_ssh:
+        type: bool
+        required: false
+        description: >-
+          Opt-in handoff for chaining on-guest roles in the same play. After the
+          VM is built, wait until the guest answers SSH (poll, not a fixed sleep)
+          then gather its facts, so `roles: [vsphere_vm, storage]` works. Requires
+          gather_facts: false at the play, an ansible SSH user/key in the template,
+          and host-key checking off for the fresh host.
+      vsphere_vm_ssh_timeout:
+        type: int
+        required: false
+        description: Max seconds to wait for the fresh guest to answer SSH (vsphere_vm_wait_for_ssh).
       vsphere_vm_allow_destroy:
         type: bool
         required: false

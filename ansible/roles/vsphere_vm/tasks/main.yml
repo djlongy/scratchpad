@@ -59,6 +59,17 @@
   tags: [vsphere_vm, create, connect]
   module_defaults: *vcenter_connection
 
+# OPT-IN handoff to on-guest roles in the SAME play (vsphere_vm_wait_for_ssh):
+# wait until the freshly-built guest answers SSH, then gather its facts. No
+# module_defaults / delegation — unlike every phase above, these tasks use the
+# play's own connection to the guest. Lets `roles: [vsphere_vm, storage]` work.
+- name: Wait for the new guest over SSH (handoff to on-guest roles)
+  ansible.builtin.import_tasks: handoff.yml
+  when:
+    - _vsphere_desired_present | bool
+    - vsphere_vm_wait_for_ssh | bool
+  tags: [vsphere_vm, create, handoff]
+
 - name: Destroy this host's VM when marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml
   tags: [never, destroy]

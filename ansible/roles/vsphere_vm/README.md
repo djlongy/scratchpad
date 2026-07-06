@@ -91,6 +91,49 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags destroy -e vsphere_vm_allow_destroy=true
 ```
 
+## Chaining on-guest roles in the same play (`vsphere_vm_wait_for_ssh`)
+
+Every phase above runs on the control node (`delegate_to: localhost`) and never
+touches the guest — so a plain `roles: [vsphere_vm, storage]` would have the
+second role try to SSH a VM that is still booting. Set
+**`vsphere_vm_wait_for_ssh: true`** and the role appends a final handoff step: it
+waits until the fresh guest answers SSH (a poll — it returns the instant SSH is
+up, not a fixed sleep) and gathers the guest's facts. Now an on-guest role can
+follow in the **same play**:
+
+```yaml
+# provision + prepare in one play, one run
+- hosts: vmware_vms
+  gather_facts: false            # REQUIRED — the VM doesn't exist at play start
+  become: true                   # for the on-guest role; vsphere_vm forces become:false on its own tasks
+  roles:
+    - role: vsphere_vm
+      vars:
+        vsphere_vm_wait_for_ssh: true
+    - role: storage              # runs ON the guest, as root, once SSH is up
+      vars:
+        storage_provision: true
+        storage_volumes:
+          - {name: opt, disk: auto, vg: vg_data, lv: lv_opt, size: "100%FREE", fstype: xfs, mount: /opt}
+```
+
+```bash
+ANSIBLE_HOST_KEY_CHECKING=False \
+ansible-playbook -i inventories/<env>/hosts.yml playbook.yml
+```
+
+Requirements for the handoff to succeed (else `wait_for_connection` just times out):
+
+- the play sets **`gather_facts: false`** (the handoff gathers facts itself, after the guest is up);
+- the **template bakes in the ansible SSH user + authorized key** (this role does not inject one);
+- **host-key checking is off** for the brand-new host (`ANSIBLE_HOST_KEY_CHECKING=False`).
+
+Pair an extra `vsphere_vm_disk` entry with a `storage_volumes` entry pinned
+`by-size:<same-size>` + `size: 100%FREE` (or `disk: auto` for a single extra
+disk) and the data disk is provisioned and mounted in the same run. Tune the wait
+with `vsphere_vm_ssh_timeout` (default 300s). Left unset/false, the role stays
+localhost-only (original behaviour).
+
 ## Host-centric (the only model)
 
 Each play host **is** its VM: the host builds its own VM from its own vars in
