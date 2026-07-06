@@ -51,28 +51,21 @@ argument_specs:
         type: str
         required: false
         description: Default datastore for clones.
-      vsphere_vm_cpus:
-        type: int
+      vsphere_vm_hardware:
+        type: dict
         required: false
-        description: Default vCPU count.
-      vsphere_vm_memory_mb:
-        type: int
+        description: >-
+          Default hardware spec — a NATIVE community.vmware.vmware_guest `hardware`
+          dict (num_cpus, memory_mb, boot_firmware, scsi, and any other key the
+          module accepts). A per-guest/per-host `hardware` is merged over it.
+      vsphere_vm_disk:
+        type: list
+        elements: dict
         required: false
-        description: Default memory (MB).
-      vsphere_vm_disk_gb:
-        type: int
-        required: false
-        description: Default primary disk size (GB).
-      vsphere_vm_disk_type:
-        type: str
-        required: false
-        choices: [thin, thick, eagerzeroedthick]
-        description: Default disk provisioning type.
-      vsphere_vm_firmware:
-        type: str
-        required: false
-        choices: [efi, bios]
-        description: Default VM firmware.
+        description: >-
+          Default disk list — NATIVE vmware_guest `disk` dicts (size_gb, type,
+          datastore, ...), primary disk first. A per-guest/per-host `disk`
+          replaces the whole list.
       vsphere_vm_state:
         type: str
         required: false

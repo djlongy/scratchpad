@@ -84,15 +84,10 @@
     template: "{{ item.template }}"
     datastore: "{{ item.datastore | default(vsphere_vm_datastore) | default(omit, true) }}"
     state: "{{ item.state | default(vsphere_vm_state) }}"
-    hardware:
-      num_cpus: "{{ item.cpus | default(vsphere_vm_cpus) }}"
-      memory_mb: "{{ item.memory_mb | default(vsphere_vm_memory_mb) }}"
-      boot_firmware: "{{ item.firmware | default(vsphere_vm_firmware) }}"
-      scsi: "{{ item.scsi | default(vsphere_vm_scsi) }}"
-    disk: >-
-      {{ [{'size_gb': item.disk_gb | default(vsphere_vm_disk_gb),
-           'type': item.disk_type | default(vsphere_vm_disk_type)}]
-         + (item.extra_disks | default([])) }}
+    # Native vmware_guest dicts, passed through 1:1 (per-guest hardware merges
+    # over the role default; a per-guest disk list replaces it).
+    hardware: "{{ vsphere_vm_hardware | combine(item.hardware | default({})) }}"
+    disk: "{{ item.disk | default(vsphere_vm_disk) }}"
     networks: "{{ _gosc_networks if (item.networks is defined) else omit }}"
     customization: "{{ item.customization | default(omit) }}"
     # IP waiting is deferred to connect.yml (after the NIC reconnect); waiting here
@@ -152,15 +147,8 @@
     folder: "{{ item.folder | default(vsphere_vm_folder) }}"
     name: "{{ item.name }}"
     state: poweredoff
-    hardware:
-      num_cpus: "{{ item.cpus | default(vsphere_vm_cpus) }}"
-      memory_mb: "{{ item.memory_mb | default(vsphere_vm_memory_mb) }}"
-      boot_firmware: "{{ item.firmware | default(vsphere_vm_firmware) }}"
-      scsi: "{{ item.scsi | default(vsphere_vm_scsi) }}"
-    disk: >-
-      {{ [{'size_gb': item.disk_gb | default(vsphere_vm_disk_gb),
-           'type': item.disk_type | default(vsphere_vm_disk_type)}]
-         + (item.extra_disks | default([])) }}
+    hardware: "{{ vsphere_vm_hardware | combine(item.hardware | default({})) }}"
+    disk: "{{ item.disk | default(vsphere_vm_disk) }}"
   loop: "{{ _vsphere_create_gi }}"
   loop_control:
     label: "{{ item.name }}"

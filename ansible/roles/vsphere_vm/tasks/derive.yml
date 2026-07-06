@@ -17,6 +17,32 @@
   delegate_to: localhost
   become: false
 
+# The per-host contract is native vmware_guest too — refuse the retired flat
+# host_vars loudly instead of silently ignoring them (they'd otherwise fall back
+# to role defaults and shrink a VM on the next reconcile).
+- name: Derive | Refuse retired flat hardware host_vars (migrated to native vmware_guest dicts)
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].vsphere_vm_cpus is not defined
+      - hostvars[item].vsphere_vm_memory_mb is not defined
+      - hostvars[item].vsphere_vm_disk_gb is not defined
+      - hostvars[item].vsphere_vm_disk_type is not defined
+      - hostvars[item].vsphere_vm_extra_disks is not defined
+      - hostvars[item].vsphere_vm_firmware is not defined
+      - hostvars[item].vsphere_vm_scsi is not defined
+    fail_msg: >-
+      {{ item }} sets retired vsphere_vm_* flat hardware vars. Migrate:
+      vsphere_vm_cpus/_memory_mb/_firmware/_scsi → vsphere_vm_hardware: {num_cpus, memory_mb,
+      boot_firmware, scsi}; vsphere_vm_disk_gb/_disk_type/_extra_disks →
+      vsphere_vm_disk: [{size_gb, type}, ...] (primary first).
+    quiet: true
+  loop: "{{ groups[vsphere_vm_inventory_group] }}"
+  loop_control:
+    label: "{{ item }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+
 - name: Derive | Seed from any explicitly-listed guests
   ansible.builtin.set_fact:
     _vsphere_inv_guests: "{{ vsphere_vm_guests | default([]) }}"
@@ -32,10 +58,10 @@
     _guest:
       name: "{{ _hv.vsphere_vm_name | default(_hv.canonical_hostname | default(item)) }}"
       template: "{{ _hv.vsphere_vm_template }}"
-      cpus: "{{ _hv.vsphere_vm_cpus | default(vsphere_vm_cpus) }}"
-      memory_mb: "{{ _hv.vsphere_vm_memory_mb | default(vsphere_vm_memory_mb) }}"
-      disk_gb: "{{ _hv.vsphere_vm_disk_gb | default(vsphere_vm_disk_gb) }}"
-      extra_disks: "{{ _hv.vsphere_vm_extra_disks | default([]) }}"
+      # Native vmware_guest dicts: a host-level hardware merges over the role
+      # default; a host-level disk list replaces it.
+      hardware: "{{ vsphere_vm_hardware | combine(_hv.vsphere_vm_hardware | default({})) }}"
+      disk: "{{ _hv.vsphere_vm_disk | default(vsphere_vm_disk) }}"
       folder: "{{ _hv.vsphere_vm_folder | default(vsphere_vm_folder) }}"
       datastore: "{{ _hv.vsphere_vm_datastore | default(vsphere_vm_datastore) }}"
       state: "{{ _hv.vsphere_vm_state | default(vsphere_vm_state) }}"

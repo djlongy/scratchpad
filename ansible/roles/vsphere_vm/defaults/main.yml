@@ -28,12 +28,19 @@ vsphere_vm_folder: "/vm"                       # inventory folder for new VMs
 vsphere_vm_datastore: ""                       # default datastore for clones
 
 # ── Per-VM hardware defaults (overridable per guest) ─────────────────────────
-vsphere_vm_cpus: 2
-vsphere_vm_memory_mb: 4096
-vsphere_vm_disk_gb: 40
-vsphere_vm_disk_type: thin                      # thin | thick | eagerzeroedthick
-vsphere_vm_firmware: efi                         # efi | bios
-vsphere_vm_scsi: paravirtual
+# NATIVE community.vmware.vmware_guest dicts, passed through 1:1 — the accepted
+# keys are exactly the module's own (hardware.num_cpus/memory_mb/boot_firmware/
+# scsi/…, disk[].size_gb/type/datastore/…). A per-guest `hardware:` is MERGED
+# over this default (set just memory_mb and keep the rest); a per-guest `disk:`
+# REPLACES the whole list (disk order = controller unit order).
+vsphere_vm_hardware:
+  num_cpus: 2
+  memory_mb: 4096
+  boot_firmware: efi                             # efi | bios
+  scsi: paravirtual
+vsphere_vm_disk:
+  - size_gb: 40                                  # primary disk — must be >= the template's
+    type: thin                                   # thin | thick | eagerzeroedthick
 vsphere_vm_wait_for_ip: true
 vsphere_vm_state: poweredon                      # default state for created guests
 
@@ -97,14 +104,17 @@ vsphere_vm_provision_via_guestinfo: false
 # authoritative resolv.conf, …). Left unset → only metadata (network + hostname).
 # ── Guests to manage ─────────────────────────────────────────────────────────
 # Each item (only name + template are required; the rest fall back to the
-# hardware defaults above):
+# hardware defaults above). hardware/disk/networks/customization are NATIVE
+# vmware_guest dicts — any key the module accepts is passed through:
 #   - name: web01
 #     template: linux-almalinux-9-main          # source template to clone
-#     cpus: 2
-#     memory_mb: 4096
-#     disk_gb: 40
-#     extra_disks:                              # optional secondary disks (e.g. /opt)
-#       - size_gb: 50                            # native vmware_guest disk dicts
+#     hardware:                                 # merged over vsphere_vm_hardware
+#       num_cpus: 2
+#       memory_mb: 4096
+#     disk:                                     # replaces vsphere_vm_disk (primary first)
+#       - size_gb: 40
+#         type: thin
+#       - size_gb: 50                            # optional secondary disks (e.g. /opt)
 #         type: thin
 #     networks:                                 # vmware_guest-native network dicts
 #       - name: "VLAN10-SVC"                     # dvPortGroup / network name
@@ -125,7 +135,7 @@ vsphere_vm_guests: []
 # vsphere_vm_from_inventory: true and point at the group. Per-host vars (all
 # optional except the template; they fall back to the role defaults above):
 #   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
-#   vsphere_vm_cpus/_memory_mb/_disk_gb/_state/_folder/_datastore,
+#   vsphere_vm_hardware (merged over the role default) / _disk / _state / _folder / _datastore,
 #   vsphere_vm_networks (else derived from ansible_host + the vars below),
 #   vsphere_vm_customization (else derived from hostname/domain/dns).
 #

@@ -3,6 +3,36 @@
 # Validate the connection inputs and resolve the vCenter password (Vault unless
 # vsphere_vm_password was supplied directly). Runs once on the controller.
 
+# The per-guest hardware contract is NATIVE vmware_guest (hardware:/disk: dicts).
+# Fail fast — with the migration mapping — if the retired flat keys are still used
+# anywhere (role-level vars, hand-authored guests, or per-host inventory vars).
+- name: Preflight | Refuse retired flat hardware keys (migrated to native vmware_guest dicts)
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_cpus is not defined
+      - vsphere_vm_memory_mb is not defined
+      - vsphere_vm_disk_gb is not defined
+      - vsphere_vm_disk_type is not defined
+      - vsphere_vm_extra_disks is not defined
+      - vsphere_vm_firmware is not defined
+      - vsphere_vm_scsi is not defined
+      - _vsphere_retired_guest_keys | length == 0
+    fail_msg: >-
+      vsphere_vm now takes NATIVE community.vmware.vmware_guest dicts
+      {{ (' (guest keys found: ' ~ (_vsphere_retired_guest_keys | unique | join(', ')) ~ ')')
+         if _vsphere_retired_guest_keys | default([]) | length > 0 else '' }}. Migrate:
+      cpus/memory_mb/firmware/scsi → hardware: {num_cpus, memory_mb, boot_firmware, scsi};
+      disk_gb/disk_type/extra_disks → disk: [{size_gb, type}, ...] (primary first).
+    quiet: true
+  vars:
+    _vsphere_retired_guest_keys: >-
+      {{ vsphere_vm_guests | default([]) | map('dict2items')
+         | map('map', attribute='key') | flatten
+         | intersect(['cpus', 'memory_mb', 'disk_gb', 'disk_type', 'extra_disks', 'firmware', 'scsi']) }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+
 - name: Preflight | Assert required connection + placement inputs are set
   ansible.builtin.assert:
     that:
@@ -18,7 +48,23 @@
   delegate_to: localhost
   become: false
 
-- name: Preflight | Resolve vCenter password from Vault
+# Credential contract: Ansible Vault var FIRST (vsphere_vm_password, e.g. from an encrypted
+# group_var), HashiCorp Vault only as a fallback. Fail clearly when neither is configured
+# instead of proceeding with an empty password (cryptic vCenter auth error downstream).
+- name: Preflight | Assert a vCenter password source is configured (declared var or Vault path)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (vsphere_vm_password | default('') | length > 0)
+        or (vsphere_vm_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      No vCenter password source configured. Set vsphere_vm_password (recommended: from an
+      Ansible-Vault-encrypted var) or vsphere_vm_vault_secret (HashiCorp Vault KV path).
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Preflight | Resolve vCenter password from Vault (fallback when no declared var)
   ansible.builtin.set_fact:
     vsphere_vm_password: >-
       {{ lookup('community.hashi_vault.hashi_vault',

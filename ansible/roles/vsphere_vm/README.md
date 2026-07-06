@@ -76,9 +76,12 @@ vsphere_vm_datastore: "datastore1"
 vsphere_vm_guests:
   - name: soe-desktop-01
     template: linux-almalinux-9-main
-    cpus: 2
-    memory_mb: 4096
-    disk_gb: 60
+    hardware:           # native vmware_guest dict — merged over vsphere_vm_hardware
+      num_cpus: 2
+      memory_mb: 4096
+    disk:               # native vmware_guest list — replaces vsphere_vm_disk
+      - size_gb: 60
+        type: thin
     networks:
       - name: "VLAN10-SVC"
         type: static
@@ -130,8 +133,9 @@ the common spec + minimal host_vars for the uniques** (usually just the IP).
 ```yaml
 # group_vars/vmware_vms.yml — the common spec
 vsphere_vm_template: linux-almalinux-9-main
-vsphere_vm_cpus: 2
-vsphere_vm_memory_mb: 4096
+vsphere_vm_hardware:            # native vmware_guest dict (merged over the role default)
+  num_cpus: 2
+  memory_mb: 4096
 vsphere_vm_network: "VLAN10-SVC"
 vsphere_vm_dns: [192.0.2.53]
 domain: example.com
@@ -320,9 +324,12 @@ vsphere_vm_tags: {Tenant: prod, Environment: alma}
 
 ## Variables
 
-See `defaults/main.yml` for the full surface and per-guest overrides (cpus,
-memory_mb, disk_gb, disk_type, firmware, folder, datastore, networks, tags,
-customization, state, wait_for_ip).
+See `defaults/main.yml` for the full surface and per-guest overrides (hardware,
+disk, folder, datastore, networks, tags, customization, state, wait_for_ip).
+The hardware/disk/networks/customization values are **native
+`community.vmware.vmware_guest` dicts passed through 1:1** — anything the module
+accepts is valid; a per-guest `hardware` merges over `vsphere_vm_hardware`,
+a per-guest `disk` replaces `vsphere_vm_disk`.
 
 ---
 
@@ -348,10 +355,12 @@ One run can mix both modes; the guest list is split internally.
 - name: web-01                      # vCenter VM name            (required)
   template: linux-almalinux-9-main  # source template            (required)
   provision_via_guestinfo: true     # engine override            (optional)
-  cpus: 2                           # hardware                   (optional, role defaults)
-  memory_mb: 4096
-  disk_gb: 60
-  extra_disks: [{size_gb: 50, type: thin}]
+  hardware:                         # native vmware_guest dict   (optional; merged over role default)
+    num_cpus: 2
+    memory_mb: 4096
+  disk:                             # native vmware_guest list   (optional; replaces role default)
+    - {size_gb: 60, type: thin}     #   primary disk first (>= template size)
+    - {size_gb: 50, type: thin}     #   extra data disks follow
   networks:                         # one entry per vNIC, in slot order (ens192/ens224/ens256)
     - name: "VLAN10-SVC"            #   portgroup                (required)
       type: static                  #   static | dhcp            (dhcp / missing ip → dhcp4)
