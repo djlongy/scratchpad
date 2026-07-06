@@ -58,6 +58,12 @@ ansible-playbook -i inventories/hosts.yml playbooks/load_ssh_agent_key.yml
 ssh-add -l          # verify it's loaded
 ```
 
+## Runnable example
+
+A complete, self-contained walkthrough (its own `ansible.cfg`, `inventory.yml`, an
+encrypted-var stub, and `site.yml`) lives in [`examples/load-key/`](examples/load-key/) —
+`cd` in and follow its README to create the vaulted key and load it.
+
 ## Notes
 
 - **`IdentitiesOnly yes` defeats the agent.** If `~/.ssh/config` pins

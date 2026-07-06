@@ -1,0 +1,8 @@
+---
+# The role runs on the CONTROL NODE — it loads the key into the ssh-agent that
+# your own shell shares (on macOS, the persistent launchd agent). There is no
+# managed host to target; everything happens locally.
+all:
+  hosts:
+    localhost:
+      ansible_connection: local

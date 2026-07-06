@@ -1,0 +1,17 @@
+---
+# EXAMPLE ONLY — copy to `vault.yml` (drop the .example suffix), paste your real
+# PRIVATE key below, then encrypt the file so the key is never committed in clear:
+#
+#   cp vault.yml.example vault.yml
+#   # ...paste your key into vault.yml...
+#   ansible-vault encrypt vault.yml
+#
+# Or create it already-encrypted in one step:
+#   ansible-vault create vault.yml     # then define vault_ssh_private_key inside
+#
+# The value is the full private key text as a literal block scalar — the `|` and
+# the two-space indent preserve the exact newlines ssh-add needs:
+vault_ssh_private_key: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  REPLACE-THIS-WITH-YOUR-OWN-PRIVATE-KEY-BODY-DO-NOT-COMMIT-A-REAL-ONE-UNENCRYPTED
+  -----END OPENSSH PRIVATE KEY-----

@@ -1,0 +1,28 @@
+---
+# Load a private SSH key from Ansible Vault into your ssh-agent — disk-free.
+# Self-contained copy of playbooks/load_ssh_agent_key.yml scoped to this example.
+#
+#   1. Put your PRIVATE key into an encrypted var (see README + vault.yml.example):
+#        ansible-vault create group_vars/all/vault.yml   # define vault_ssh_private_key
+#   2. Load it into the agent:
+#        ansible-playbook site.yml --ask-vault-pass
+#        ssh-add -l                                        # verify it is loaded
+#
+# On macOS the key lands in the launchd agent and is usable from your terminal
+# straight after the play. Re-running is idempotent (no duplicate add).
+
+- name: Load an SSH key from Ansible Vault into the ssh-agent
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # Pin pipelining so the key stays off disk even if the global config default is
+  # off (see ansible.cfg for why). Redundant with this dir's ansible.cfg, kept here
+  # so the guarantee travels with the play if it is copied elsewhere.
+  vars:
+    ansible_pipelining: true
+  roles:
+    - role: ssh_agent_key
+      vars:
+        ssh_agent_key_content: "{{ vault_ssh_private_key }}"
+        # Optional: auto-expire the key from the agent after N seconds (0 = never).
+        # ssh_agent_key_lifetime: 28800   # e.g. 8h for a prod key
