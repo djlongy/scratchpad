@@ -31,27 +31,39 @@
   delegate_to: localhost
   become: false
   ansible.builtin.debug:
-    msg: "{{ _plan_report.split('\n') }}"
-  vars:
-    _plan_report: |-
-      ===== vSphere build plan — {{ ansible_play_hosts | length }} host(s), built concurrently (forks) =====
-      {% for h in ansible_play_hosts %}
-      {%- set g = hostvars[h]._vsphere_guest %}
-      {%- set nic = g.networks[0] | default({}) %}
-      {%- set tgt = hostvars[h].vsphere_vm_cluster | default(hostvars[h].vsphere_vm_esxi_host | default('-')) %}
-      • {{ h }}  →  [{{ 'DESTROY' if g.state == 'absent' else 'BUILD / ENSURE' }}]
-          vCenter VM name : {{ g.name }}
-          guest hostname  : {{ g.customization.hostname | default('(none)') }}
-          ip / mask / gw  : {{ nic.ip | default('dhcp') }} / {{ nic.netmask | default('-') }} / {{ nic.gateway | default('-') }}
-          network         : {{ nic.name | default('-') }}
-          template        : {{ g.template }}
-          placement       : dc={{ hostvars[h].vsphere_vm_datacenter }} · host={{ tgt }} · ds={{ g.datastore | default('(template default)') }}
-          folder          : {{ g.folder }}
-          hardware        : {{ g.hardware.num_cpus | default('(template)') }} vCPU / {{ g.hardware.memory_mb | default('(template)') }} MB
-          disks           : {{ g.disk | map(attribute='size_gb') | join(' GB, ') }} GB
-          mode            : {{ 'GuestInfo (cloud-init)' if g.provision_via_guestinfo else 'GOSC' }}
-      {% endfor %}
-      ====================================================================================
+    # Build the report as a LIST of lines (debug prints one per line). Deterministic —
+    # avoids block-scalar whitespace/newline pitfalls with the per-NIC inner loop.
+    msg: >-
+      {%- set L = ['===== vSphere build plan — ' ~ (ansible_play_hosts | length) ~
+                   ' host(s), built concurrently (forks) ====='] -%}
+      {%- for h in ansible_play_hosts -%}
+      {%-   set g = hostvars[h]._vsphere_guest -%}
+      {%-   set tgt = hostvars[h].vsphere_vm_cluster
+                      | default(hostvars[h].vsphere_vm_esxi_host | default('-')) -%}
+      {%-   set _ = L.append('• ' ~ h ~ '  →  [' ~
+              ('DESTROY' if g.state == 'absent' else 'BUILD / ENSURE') ~ ']') -%}
+      {%-   set _ = L.append('    vCenter VM name : ' ~ g.name) -%}
+      {%-   set _ = L.append('    guest hostname  : ' ~ (g.customization.hostname | default('(none)'))) -%}
+      {%-   set _ = L.append('    template        : ' ~ g.template) -%}
+      {%-   set _ = L.append('    nics (' ~ (g.networks | length) ~ '):') -%}
+      {%-   for n in g.networks -%}
+      {%-     set _if = n.interface | default('ens' ~ (192 + 32 * loop.index0)) -%}
+      {%-     set _gw = (n.gateway | default('')) or '(unrouted)' -%}
+      {%-     set _ = L.append('      - ' ~ _if ~ ' · ' ~ (n.name | default('-')) ~ ' · ' ~
+                (n.ip | default('dhcp')) ~ '/' ~ (n.netmask | default('-')) ~ ' · gw ' ~ _gw) -%}
+      {%-   endfor -%}
+      {%-   set _ = L.append('    placement       : dc=' ~ hostvars[h].vsphere_vm_datacenter ~
+              ' · host=' ~ tgt ~ ' · ds=' ~ (g.datastore | default('(template default)'))) -%}
+      {%-   set _ = L.append('    folder          : ' ~ g.folder) -%}
+      {%-   set _ = L.append('    hardware        : ' ~ (g.hardware.num_cpus | default('(template)')) ~
+              ' vCPU / ' ~ (g.hardware.memory_mb | default('(template)')) ~ ' MB') -%}
+      {%-   set _ = L.append('    disks           : ' ~
+              (g.disk | map(attribute='size_gb') | join(' GB, ')) ~ ' GB') -%}
+      {%-   set _ = L.append('    mode            : ' ~
+              ('GuestInfo (cloud-init)' if g.provision_via_guestinfo else 'GOSC')) -%}
+      {%- endfor -%}
+      {%- set _ = L.append('=' * 84) -%}
+      {{ L }}
 
 # Make the destroy CONTRACT explicit when something is marked absent — otherwise
 # a plain run silently no-ops (the destroy phase is `never`-tagged) and the
