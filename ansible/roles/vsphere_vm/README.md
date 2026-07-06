@@ -254,7 +254,7 @@ is to stop using GOSC and drive first-boot config via the cloud-init VMware Gues
 
 Set `vsphere_vm_provision_via_guestinfo: true` (e.g. in `group_vars/all.yml` for the inventory) and
 the role provisions with **zero GOSC**, so the NIC never disconnects — no reconnect race, `connect.yml`
-converges on its first pass. It reads the **same per-guest fields** as the default path (nothing new
+converges on its first pass. It reads the **same per-host fields** as the default path (nothing new
 to specify for the common case):
 
 ```yaml
@@ -316,11 +316,11 @@ Optional: set a guest's `guestinfo_userdata` to a raw `#cloud-config` string to 
 Created VMs can be **placed in a nested folder tree** and **tagged** in the same run
 (both provisioning modes):
 
-- **Folders** — `vsphere_vm_folder` (or per-guest `folder:`) may be a nested path, e.g.
+- **Folders** — `vsphere_vm_folder` (host/group scope) may be a nested path, e.g.
   `/Datacenter/vm/prod/app`. The role creates the whole tree in one call
   (`vmware.vmware.folder`) before placing the VM, so intermediate folders need not
   pre-exist.
-- **Tags** — set `vsphere_vm_tags` (host/group scope) or per-guest `tags:` as a
+- **Tags** — set `vsphere_vm_tags` (host/group scope) as a
   `{Category: Tag}` map, e.g. `{Tenant: prod, Environment: alma}`. The role ensures each
   category (single-cardinality) and tag exists, then associates them with the VM.
 
@@ -331,12 +331,13 @@ vsphere_vm_tags: {Tenant: prod, Environment: alma}
 
 ## Variables
 
-See `defaults/main.yml` for the full surface and per-guest overrides (hardware,
-disk, folder, datastore, networks, tags, customization, state, wait_for_ip).
-The hardware/disk/networks/customization values are **native
+See `defaults/main.yml` for the full surface. Everything is a per-host/group
+`vsphere_vm_*` var (hardware, disk, folder, datastore, networks, customization,
+state, tags, wait_for_ip) resolved in each host's own context — normal Ansible
+precedence, so a host/group value replaces the role default wholesale. The
+hardware/disk/networks/customization values are **native
 `community.vmware.vmware_guest` dicts passed through 1:1** — anything the module
-accepts is valid; a per-guest `hardware` merges over `vsphere_vm_hardware`,
-a per-guest `disk` replaces `vsphere_vm_disk`.
+accepts is valid; hardware keys you omit inherit from the source template.
 
 ---
 
@@ -353,7 +354,7 @@ per-host spec** — the flag picks the engine.
 | `resource_pool` | pool **name** | name or **MOID** (MOID required if ambiguous, e.g. nested "Resources") |
 | Flag | (unset / `false`) | `provision_via_guestinfo: true` per guest, or `vsphere_vm_provision_via_guestinfo: true` role-wide |
 
-Resolution order: **per-guest / per-host flag → role-wide flag → `false` (GOSC)**.
+Resolution order: **per-host flag → role-wide (group) flag → `false` (GOSC)**.
 One run can mix both modes; the guest list is split internally.
 
 ### The per-host spec (identical for both modes)
