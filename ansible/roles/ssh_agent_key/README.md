@@ -108,13 +108,37 @@ Load-only also works: `roles: [ssh_agent_key]` defaults to unlock.
 1. **Check the key was provided.** If `ssh_agent_key_content` is empty you get a clear
    "wire your vaulted variable" message, instead of a cryptic `ssh-add` error later.
 
-2. **List what's in the agent right now** (`ssh-add -L`). This is how the role reports
-   honestly: the key's public half is derived from your private key (in memory), and if
-   it's already in this list, the add is a no-op and the task shows `ok`, not `changed`.
+2. **List what's in the agent right now** (`ssh-add -L`). One task, two jobs: its
+   *return code* is the agent probe (`0`/`1` = agent reachable, `2` = no agent — the
+   explicit signal step 3 branches on), and its *output* is the "before" list step 4
+   compares against. Branching on the return code — rather than "try the add and
+   rescue any failure" — matters: a bad passphrase or broken key must fail loudly,
+   not get mistaken for "no agent" and silently spawn one.
 
-3. **Try to add the key** (`ssh-add -`). The private key is piped in over **stdin** —
-   it never becomes a file and never appears in a process list. If an agent was
-   inherited from your shell, the key lands there and we're done.
+3. **Spawn an agent — only when the probe said there is none** (`rc 2`):
+
+   - **Start it** (`ssh-agent -s`). This agent is a normal background process —
+     it **keeps running after the play finishes**.
+   - **Save its socket path** in `ssh_agent_key_sock`. A new agent has a new
+     address, and nothing else on the system knows it yet. Every later `ssh-add` in
+     the role uses this variable to talk to the right agent.
+   - **Tell the play's SSH connections about it.** This is the subtle one: when
+     Ansible SSHes to your hosts, those ssh processes get `ansible-playbook`'s
+     environment — **not** the environment of a task. So they'd never see the new
+     agent on their own, and the key would be loaded somewhere the play can't use.
+     The role appends `-o IdentityAgent=<sock>` to `ansible_ssh_common_args` (skipped
+     when already present, so repeat runs can't stack duplicates), which tells ssh
+     explicitly which agent to ask.
+   - **Print the reuse line** — `export SSH_AUTH_SOCK=<sock>`. Paste that in your
+     terminal and your shell (and your next ansible run) will find the same agent
+     instead of spawning another.
+
+4. **Add the key** (`ssh-add -`). The private key is piped in over **stdin** — it
+   never becomes a file and never appears in a process list. It lands in the inherited
+   agent, or the just-spawned one. A failure here is a *real* failure (wrong
+   passphrase, invalid key) and stops the play with ssh-add's own error. The key's
+   public half (derived in memory) is compared against step 2's list, so a key that
+   was already loaded reports `ok`, not `changed`.
 
    **If the key has a passphrase:** `ssh-add` has no terminal to prompt on, so it uses
    ssh's built-in fallback — it runs the program named in the `SSH_ASKPASS` env var
@@ -124,32 +148,14 @@ Load-only also works: `roles: [ssh_agent_key]` defaults to unlock.
    helper contains no secret, the role reads nothing from your shell's environment,
    and with a raw key it is never even called. (It also refuses `ssh-add`'s "try
    again" re-prompt, so a wrong passphrase fails in a second instead of looping
-   forever.)
-
-   **Rescue — only runs if the add failed** (usually: no agent running):
-
-   - **Spawn an agent** (`ssh-agent -s`). This agent is a normal background process —
-     it **keeps running after the play finishes**.
-   - **Save its socket path** in `ssh_agent_key_sock`. Remember: a new agent has a new
-     address, and nothing else on the system knows it yet. Every later `ssh-add` in
-     the role uses this variable to talk to the right agent.
-   - **Add the key again**, this time pointed at the new agent.
-   - **Tell the play's SSH connections about it.** This is the subtle one: when
-     Ansible SSHes to your hosts, those ssh processes get `ansible-playbook`'s
-     environment — **not** the environment of a task. So they'd never see the new
-     agent on their own, and the key would be loaded somewhere the play can't use.
-     The role appends `-o IdentityAgent=<sock>` to `ansible_ssh_common_args`, which
-     tells ssh explicitly which agent to ask.
-   - **Print the reuse line** — `export SSH_AUTH_SOCK=<sock>`. Paste that in your
-     terminal and your shell (and your next ansible run) will find the same agent
-     instead of spawning another.
+   forever — don't "simplify" that line away.)
 
 ### lock
 
-4. **Check we know which key to remove** — either you gave it the vaulted private key
+5. **Check we know which key to remove** — either you gave it the vaulted private key
    (normal case) or an explicit `ssh_agent_key_public` line.
 
-5. **Remove the key** — the public line (derived in memory from your private key, see
+6. **Remove the key** — the public line (derived in memory from your private key, see
    "How can lock work without unlock?" above) is piped to `ssh-add -d /dev/stdin`.
    Idempotent: if the key is already gone, the agent is empty, or there's no agent at
    all, the task reports `ok` — it only says `changed` when it actually removed
