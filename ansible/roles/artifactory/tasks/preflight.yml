@@ -14,23 +14,36 @@
     fail_msg: "artifactory_url must be set (e.g. https://artifactory.example.com)."
     quiet: true
 
+# Resolve the effective token into an INTERNAL fact. bootstrap.yml sets _af_token
+# to the token it minted; if bootstrap was skipped, fall back to the supplied
+# artifactory_access_token. Using an internal fact (never an extra-var) means the
+# minted token can't be shadowed by a higher-precedence artifactory_access_token
+# on the command line.
+- name: Resolve the effective access token
+  ansible.builtin.set_fact:
+    _af_token: "{{ _af_token | default(artifactory_access_token | default('')) }}"
+  no_log: true
+
 - name: Assert credentials are present
   ansible.builtin.assert:
     that:
-      - (artifactory_access_token | length > 0) or (artifactory_admin_password | length > 0)
+      - (_af_token | length > 0) or (artifactory_admin_password | length > 0)
     fail_msg: >-
-      Provide either artifactory_access_token (preferred) or
-      artifactory_admin_password. Set ARTIFACTORY_TOKEN / ARTIFACTORY_PASSWORD
-      in the environment, or pass --extra-vars.
+      No usable credential. Provide artifactory_access_token (preferred) or
+      artifactory_admin_password (ARTIFACTORY_TOKEN / ARTIFACTORY_PASSWORD in the
+      environment, or --extra-vars). On a fresh self-hosted instance you can
+      instead leave the token empty and let the bootstrap phase mint one
+      (artifactory_bootstrap_enabled, needs container access) — if you are seeing
+      this, bootstrap was disabled or produced no token.
     quiet: true
 
 - name: Decide auth scheme (token Bearer vs basic)
   ansible.builtin.set_fact:
-    _af_use_basic: "{{ artifactory_access_token | length == 0 }}"
+    _af_use_basic: "{{ _af_token | length == 0 }}"
     _af_headers: >-
       {{
-        {'Authorization': 'Bearer ' + artifactory_access_token}
-        if (artifactory_access_token | length > 0) else {}
+        {'Authorization': 'Bearer ' + _af_token}
+        if (_af_token | length > 0) else {}
       }}
   no_log: true
 

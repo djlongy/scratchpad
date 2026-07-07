@@ -14,8 +14,82 @@
       url_password: "{{ (artifactory_admin_password if (_af_use_basic | default(false)) else omit) }}"
       return_content: true
   block:
-    - name: Run preflight (auth, health, output paths)
-      ansible.builtin.import_tasks: preflight.yml
+    # Resolve the effective token into the internal fact AT ROLE ENTRY, every
+    # invocation — so the bootstrap gate reads a fresh value (not a set_fact left
+    # sticky from an earlier role invocation in the same play) and downstream tasks
+    # all read one source of truth.
+    - name: Resolve the effective access token
+      ansible.builtin.set_fact:
+        _af_token: "{{ artifactory_access_token | default('') }}"
+      no_log: true
+      tags: [always]
+
+    # --check on a fresh instance can't proceed without minting (a destructive,
+    # non-check-safe act), so report the intent and stop cleanly instead of
+    # hard-failing later on a missing token.json / absent credential.
+    - name: "Check mode — a fresh instance would be bootstrapped here"
+      when:
+        - ansible_check_mode
+        - artifactory_bootstrap_enabled | bool
+        - (_af_token | length) == 0
+        - (artifactory_admin_password | default('') | length) == 0
+      tags: [always]
+      block:
+        - name: "Check mode — report and stop"
+          ansible.builtin.debug:
+            msg: >-
+              [check mode] No credential supplied and bootstrap is enabled — a
+              fresh instance would mint + store an admin token here. Skipping the
+              rest of the role under --check (minting is not check-safe).
+        - name: "Check mode — end play for this host"
+          ansible.builtin.meta: end_host
+
+    # Bootstrap ONLY when there is no usable credential at all: no token AND no
+    # admin password (a password-only/basic-auth setup keeps working WITHOUT a
+    # restart+mint), not under --check, and gated on the resolved _af_token.
+    - name: Bootstrap a durable admin token when no credential was supplied
+      ansible.builtin.import_tasks: bootstrap.yml
+      when:
+        - artifactory_bootstrap_enabled | bool
+        - not ansible_check_mode
+        - (_af_token | length) == 0
+        - (artifactory_admin_password | default('') | length) == 0
+      tags: [always, bootstrap]
+
+    # Preflight, with OPT-IN self-heal: if a SUPPLIED token is rejected (401/403)
+    # and artifactory_bootstrap_on_auth_failure is set, mint a fresh admin token
+    # via bootstrap and retry instead of hard-failing. Any other preflight failure
+    # — or a rejected token with self-heal off — is re-raised unchanged.
+    - name: Preflight (auth, health, output paths)
+      block:
+        - name: Run preflight
+          ansible.builtin.import_tasks: preflight.yml
+      rescue:
+        - name: Re-raise unless this is a self-healable auth rejection
+          ansible.builtin.fail:
+            msg: "{{ ansible_failed_result.msg | default('preflight failed') }}"
+          when: >-
+            not (artifactory_bootstrap_on_auth_failure | bool
+                 and artifactory_bootstrap_enabled | bool
+                 and not ansible_check_mode
+                 and (_af_ping.status | default(0) | int) in [401, 403])
+
+        - name: "Self-heal | Supplied token rejected — minting a fresh one"
+          ansible.builtin.debug:
+            msg: >-
+              Supplied token rejected (HTTP {{ _af_ping.status }}). Self-heal is
+              enabled — minting a fresh admin token via bootstrap and retrying.
+
+        - name: "Self-heal | Discard the rejected token"
+          ansible.builtin.set_fact:
+            _af_token: ""
+          no_log: true
+
+        - name: "Self-heal | Bootstrap a fresh admin token"
+          ansible.builtin.import_tasks: bootstrap.yml
+
+        - name: "Self-heal | Re-run preflight with the freshly minted token"
+          ansible.builtin.import_tasks: preflight.yml
       tags: [always]
 
     - name: Backup live Artifactory configuration

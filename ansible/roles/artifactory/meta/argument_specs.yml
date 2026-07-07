@@ -31,6 +31,113 @@ argument_specs:
         type: str
         required: false
         description: Admin password for basic auth.
+      artifactory_bootstrap_enabled:
+        type: bool
+        default: true
+        description: >-
+          When no access token is supplied, self-provision a durable admin token
+          via JFrog's automatic-admin-token mechanism (Access >= 7.38.4) instead
+          of failing. Needs host/container access (self-hosted); the minted token
+          is stored to Vault so subsequent runs skip bootstrap.
+      artifactory_confirm_bootstrap:
+        type: bool
+        default: false
+        description: >-
+          Explicit acknowledgement required to auto-bootstrap (which RESTARTS
+          Access) on a protected environment without a token.
+      artifactory_bootstrap_on_auth_failure:
+        type: bool
+        default: false
+        description: >-
+          When a SUPPLIED token is rejected (401/403), discard it and mint a fresh
+          one via bootstrap instead of hard-failing. Default false = fail-secure.
+      artifactory_bootstrap_method:
+        type: str
+        choices: [docker, native]
+        default: docker
+        description: >-
+          How to drive the instance for bootstrap. docker = docker exec/restart;
+          native = package/systemd install (write file to disk, systemd restart,
+          slurp token.json — needs root on the host).
+      artifactory_bootstrap_container:
+        type: str
+        default: artifactory
+        description: "[docker] Name of the container running Artifactory/Access."
+      artifactory_bootstrap_container_user:
+        type: str
+        default: artifactory
+        description: "[docker] In-container user that owns the Access var tree."
+      artifactory_bootstrap_service:
+        type: str
+        default: artifactory
+        description: "[native] systemd unit that runs Access (restarted to trigger generation)."
+      artifactory_bootstrap_service_user:
+        type: str
+        default: artifactory
+        description: "[native] On-disk owner of the Access bootstrap/token files."
+      artifactory_bootstrap_native_become:
+        type: bool
+        default: true
+        description: "[native] Use become (root) for the on-disk file ops + systemd restart."
+      artifactory_bootstrap_keys_dir:
+        type: str
+        default: /opt/jfrog/artifactory/var/bootstrap/etc/access/keys
+        description: In-container Access bootstrap keys dir where generate.token.json is placed.
+      artifactory_bootstrap_token_file:
+        type: str
+        default: /opt/jfrog/artifactory/var/etc/access/keys/token.json
+        description: In-container path Access writes the transient admin token to.
+      artifactory_bootstrap_skip_restart:
+        type: bool
+        default: false
+        description: >-
+          Skip the Access restart (set true only when the trigger file was placed
+          before the container's first boot, so first boot already generated it).
+      artifactory_bootstrap_token_retries:
+        type: int
+        default: 60
+        description: Poll count for token.json (x delay seconds).
+      artifactory_bootstrap_token_delay:
+        type: int
+        default: 3
+        description: Delay in seconds between token.json polls.
+      artifactory_bootstrap_token_expires_in:
+        type: int
+        default: 0
+        description: TTL (seconds) of the minted durable token; 0 = non-expiring.
+      artifactory_bootstrap_token_description:
+        type: str
+        default: "ansible-managed admin bootstrap token"
+        description: Description recorded on the minted durable token.
+      artifactory_bootstrap_vault_store:
+        type: bool
+        default: false
+        description: >-
+          Store the minted token to HashiCorp Vault immediately
+          (read-merge-write, no clobber). Set the mount/path in inventory.
+      artifactory_bootstrap_vault_mount:
+        type: str
+        default: ""
+        description: KV v2 mount for the stored token (e.g. kv-example).
+      artifactory_bootstrap_vault_path:
+        type: str
+        default: ""
+        description: KV v2 path for the stored token (e.g. apps/artifactory/runtime).
+      artifactory_bootstrap_vault_field:
+        type: str
+        default: admin_access_token
+        description: Field name under the Vault path to write the token to.
+      artifactory_bootstrap_write_sidecar:
+        type: bool
+        default: true
+        description: Also write the minted token to the local 0600 sidecar file.
+      artifactory_bootstrap_sidecar_file:
+        type: str
+        required: false
+        description: >-
+          Dedicated 0600 file for the bootstrap admin token (separate from
+          artifactory_generated_tokens_file so a token-minting apply cannot clobber
+          the break-glass record). Defaults under playbook_dir.
       artifactory_validate_certs:
         type: bool
         default: true

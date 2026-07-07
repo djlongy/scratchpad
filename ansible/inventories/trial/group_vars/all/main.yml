@@ -1,0 +1,32 @@
+---
+# Trial environment (artifactory-trial-01) — a Dockerised JFrog platform.
+# Not a protected env, so auto-bootstrap does not need artifactory_confirm_bootstrap.
+artifactory_env: trial
+
+# ── Hands-off admin-token bootstrap ────────────────────────────────────────
+# A fresh instance has no admin API token. Rather than stop for a manual UI
+# login + hand-minted token, the role self-provisions one via JFrog's automatic
+# admin token mechanism (see roles/artifactory/tasks/bootstrap.yml). The trial
+# runs the official image in a container named 'artifactory', so the bootstrap
+# defaults (method=docker, container/paths) apply as-is — we only wire WHERE the
+# minted durable token is stored so subsequent runs reuse it.
+artifactory_bootstrap_vault_store: true
+artifactory_bootstrap_vault_mount: kv-example
+artifactory_bootstrap_vault_path: apps/artifactory/runtime
+artifactory_bootstrap_vault_field: admin_access_token
+
+# Idempotent credential resolution (THIS is what makes reruns skip bootstrap):
+#   * fresh instance  -> field absent -> lookup returns '' -> bootstrap mints + stores
+#   * later runs       -> token read back from Vault      -> bootstrap skipped
+# errors='warn' downgrades a missing path/field to a warning (verified: present
+# field -> token; missing field -> ''; missing path -> warns, not fatal, -> '').
+artifactory_access_token: >-
+  {{ lookup('community.hashi_vault.vault_kv2_get',
+            artifactory_bootstrap_vault_path,
+            engine_mount_point=artifactory_bootstrap_vault_mount,
+            errors='warn').secret[artifactory_bootstrap_vault_field]
+     | default('', true) }}
+
+# The real FQDN + host connection live in a gitignored group_vars/all/local.yml
+# (as with the dev/prod sim inventories), e.g.:
+#   artifactory_url: https://artifactory.example.com

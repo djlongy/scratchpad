@@ -25,11 +25,14 @@ profile. See [`docs/api-reference.md`](docs/api-reference.md) for the API surfac
 
 ## Requirements
 
-- Ansible 2.15+ (runs from the controller; the role talks HTTP, no host access needed).
+- Ansible 2.15+ (runs from the controller; the role talks HTTP, no host access
+  needed — *except* for the zero-touch bootstrap below, which restarts Access).
 - An **admin access token** (preferred) or admin user/password. A platform-admin
   token is needed for the Access-managed sections (projects, environments, LDAP,
   Vault); an Artifactory-only admin token still does repos/groups/users/permissions/
-  SSO/Xray and simply skips what it can't reach.
+  SSO/Xray and simply skips what it can't reach. **On a fresh self-hosted instance
+  you can supply neither** — leave the token empty and the role bootstraps one
+  itself (see *Zero-touch admin-token bootstrap* below).
 
 ## Quick start
 
@@ -48,6 +51,93 @@ ansible-playbook playbooks/artifactory.yml -i inventories/prod
 
 # 3. Drift: live state vs the env's group_vars
 ansible-playbook playbooks/artifactory.yml -i inventories/prod -e artifactory_mode=compare
+```
+
+## Zero-touch admin-token bootstrap (fresh instances)
+
+A brand-new Artifactory has **no admin API token**, and the **Access** service
+(projects, environments, LDAP, Vault, tokens) rejects Basic auth outright —
+`POST /access/api/v1/tokens` with `admin:password` returns
+`401 Unsupported authentication method Basic` unless the (default-off)
+`access.token.allow-basic-auth` is enabled. So historically the run stopped for a
+manual UI login to mint a token by hand.
+
+Instead, when **no `artifactory_access_token` is supplied**, the role
+self-provisions one using JFrog's purpose-built *automatic admin token*
+mechanism (Access **≥ 7.38.4**) — no UI, no password, no permanent security
+downgrade:
+
+```
+place {} into  <JFROG_HOME>/var/bootstrap/etc/access/keys/generate.token.json
+  → restart Access (the file is read at startup, not live)
+  → Access writes a TRANSIENT admin token to <JFROG_HOME>/var/etc/access/keys/token.json
+     (scope=admin, aud=jfac@*, 15-min TTL; the file self-deletes after ~1 min)
+  → wait for the platform to be ready (ping 200)
+  → mint a DURABLE admin token via POST /access/api/v1/tokens (transient token as Bearer)
+  → store it to HashiCorp Vault (read-merge-write, no clobber) + a 0600 sidecar
+  → adopt it as the credential for the rest of the run
+```
+
+It is **idempotent**: the minted token is stored to Vault, so the next run
+supplies it (via an inventory lookup) and the whole phase is skipped — a rerun is
+`changed=0`. `access.token.allow-basic-auth` is left **false** throughout.
+
+**Requirements / scope**
+
+- Needs **host access** — it restarts Access. Two methods (`artifactory_bootstrap_method`):
+  - `docker` (default) — `docker exec`/`docker restart`; only the docker **CLI** +
+    docker-group membership required, not the Python SDK.
+  - `native` — package/systemd install: writes the trigger file to disk, restarts
+    Access with `systemd` (`artifactory_bootstrap_service`, default `artifactory`),
+    reads `token.json` via `slurp`. Needs **root** on the host
+    (`artifactory_bootstrap_native_become`, default true). The `JFROG_HOME` var
+    paths are the same as docker (e.g. `/opt/jfrog/artifactory/var`), so
+    `keys_dir`/`token_file` need no change.
+  - It **cannot** run against SaaS (`*.jfrog.io`) or a pure-`localhost` API target —
+    supply a token there instead.
+- Runs only when `artifactory_access_token` is empty **and**
+  `artifactory_bootstrap_enabled` (default `true`).
+- On a **protected env** (`artifactory_protected_envs`) it refuses to restart
+  Access unattended unless `-e artifactory_confirm_bootstrap=true` — a forgotten
+  token on prod must not silently bounce the service.
+
+**Credential precedence & failure handling**
+
+- A **supplied non-empty token always wins** — bootstrap only fires when the
+  resolved token is empty. So a permanent admin token (e.g. an inventory Vault
+  lookup) reconfigures the instance on every run and never triggers bootstrap.
+- A supplied token that is **rejected (401/403)** — invalid/expired/revoked — is a
+  **hard fail by default** (fail-secure: fix the credential). Set
+  `artifactory_bootstrap_on_auth_failure=true` to instead discard it and mint a
+  fresh one (still honours the protected-env confirmation + needs host access).
+- **Reuse across runs** happens only through your inventory `artifactory_access_token`
+  source, not by re-reading the sidecar. With HashiCorp Vault + the lookup wired,
+  the next run reads the stored token and skips bootstrap automatically. **Without a
+  Vault store** (Ansible Vault / plain), the role writes the 0600 sidecar and
+  **warns loudly** that you must save the token into your credential source —
+  otherwise the next run mints another admin token (the old one is left unrevoked).
+
+**Where bootstrap belongs in a package-install pipeline:** let the **config role**
+(this one) own the mint — it checks for a token and bootstraps if absent, which
+works whether or not the install role cooperated. The install role does **not** need
+to mint. Note `token.json` self-deletes ~1 min after first boot, so an install-time
+pre-boot mint would be gone before this role runs — hence this role drives the full
+place → restart → capture → mint on a fresh (user-less) instance, where the restart
+is free.
+
+**Key variables** (all `artifactory_bootstrap_*`, see `defaults/main.yml`):
+`enabled`, `confirm_bootstrap`, `method` (`docker`), `container`, `keys_dir`,
+`token_file`, `skip_restart` (true if the trigger file was placed before first
+boot — then no restart is needed), `token_expires_in` (0 = non-expiring),
+`vault_store` + `vault_mount`/`vault_path`/`vault_field`, `write_sidecar`.
+
+```bash
+# Fresh self-hosted instance — no token needed, just container access:
+ansible-playbook playbooks/artifactory_trial.yml -i inventories/trial \
+  -e artifactory_bootstrap_vault_store=true \
+  -e artifactory_bootstrap_vault_mount=kv-example \
+  -e artifactory_bootstrap_vault_path=apps/artifactory/runtime
+# → mints + stores the admin token, then configures the instance in one pass.
 ```
 
 ## What it manages

@@ -1,0 +1,407 @@
+---
+# roles/artifactory/tasks/bootstrap.yml
+# Self-provision a DURABLE admin access token on a fresh Artifactory when none is
+# supplied, so a blank instance goes to fully-configured with no manual UI login
+# or hand-minted token. Uses JFrog's "automatic admin token" mechanism (Access
+# >= 7.38.4) — NOT basic auth, which the Access API rejects
+# ("Unsupported authentication method Basic"), and NOT a permanent
+# allow-basic-auth downgrade.
+#
+# Flow:
+#   place {} into <var>/bootstrap/etc/access/keys/generate.token.json
+#     -> restart Access (the file is read at startup, not live)
+#     -> Access writes a TRANSIENT admin token to <var>/etc/access/keys/token.json
+#        (scope=admin, aud=jfac@*, subject=admin, 15-min TTL; the file itself
+#         self-deletes after bootstrap-token-delete-in-minutes, default 1 — so we
+#         capture it fast)
+#     -> wait for the platform to be ready (ping 200)
+#     -> mint a DURABLE admin token via POST /access/api/v1/tokens using the
+#        transient one as Bearer
+#     -> store the durable token to HashiCorp Vault (read-merge-write, no clobber)
+#        and a 0600 sidecar
+#
+# IDEMPOTENT: the caller (main.yml) only imports this when there is NO usable
+# credential — the resolved _af_token AND artifactory_admin_password are both
+# empty — and not under --check. The minted token is stored to Vault, so the next
+# run supplies it via the inventory lookup and this whole phase is skipped.
+#
+# Requires host/container access (self-hosted). It cannot run against SaaS
+# (jfrog.io) or a pure-localhost API target — supply artifactory_access_token
+# there instead.
+
+# Fail CLEANLY on a mis-targeted run before touching docker/systemd — bootstrap
+# is host-local and destructive (it restarts Access). An empty URL would otherwise
+# surface later as an obscure ping error, and SaaS/localhost targets can't be
+# bootstrapped at all.
+- name: "Bootstrap | Assert a self-hosted, non-SaaS target with a base URL"
+  ansible.builtin.assert:
+    that:
+      - artifactory_url | length > 0
+      - "'.jfrog.io' not in artifactory_url"
+    fail_msg: >-
+      Bootstrap needs artifactory_url set to a self-hosted instance and host
+      access — it cannot run against SaaS (*.jfrog.io) or with an empty URL.
+      Supply artifactory_access_token for those targets instead.
+    quiet: true
+
+- name: "Bootstrap | Prerequisites for the chosen bootstrap method"
+  ansible.builtin.assert:
+    that:
+      - artifactory_bootstrap_method in ['docker', 'native']
+      - >-
+        (artifactory_bootstrap_method == 'docker' and artifactory_bootstrap_container | length > 0)
+        or (artifactory_bootstrap_method == 'native' and artifactory_bootstrap_service | length > 0)
+    fail_msg: >-
+      Set artifactory_bootstrap_method to 'docker' (needs
+      artifactory_bootstrap_container) or 'native' (package/systemd install; needs
+      artifactory_bootstrap_service), or supply artifactory_access_token.
+    quiet: true
+
+# Bootstrap RESTARTS Access — refuse to do that unattended on a protected env
+# (a forgotten token on prod must not silently bounce the service).
+- name: "Bootstrap | Guard — auto-bootstrap on a protected env needs confirmation"
+  ansible.builtin.assert:
+    that:
+      - artifactory_confirm_bootstrap | bool
+    fail_msg: >-
+      Refusing to auto-bootstrap protected environment '{{ artifactory_env }}'
+      without a token — it RESTARTS Access. Supply artifactory_access_token, or
+      re-run with -e artifactory_confirm_bootstrap=true to allow the restart.
+    quiet: true
+  when: artifactory_env in artifactory_protected_envs
+
+# Guard the delegation foot-gun: with the default artifactory_delegate_to=localhost,
+# the docker commands run on the CONTROLLER. Before any restart, prove the target
+# container exists AND is an Artifactory image — so a forgotten token can never
+# bounce (and inject a trigger file into) an unrelated local container.
+- name: "Bootstrap | Inspect the target container's image (docker)"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - "--format"
+      - "{{ '{{.Config.Image}}' }}"
+      - "{{ artifactory_bootstrap_container }}"
+  register: _af_bs_img
+  changed_when: false
+  failed_when: false
+  when: artifactory_bootstrap_method == 'docker'
+
+- name: "Bootstrap | Assert the target really is an Artifactory container (docker)"
+  ansible.builtin.assert:
+    that:
+      - _af_bs_img.rc == 0
+      - ((_af_bs_img.stdout | default('') | lower) is search('artifactory|jfrog'))
+    fail_msg: >-
+      Container '{{ artifactory_bootstrap_container }}' was not found or is not a
+      JFrog/Artifactory image on the delegated host
+      (image='{{ _af_bs_img.stdout | default('') | trim }}',
+      delegate={{ artifactory_delegate_to | default('localhost') }}). Point
+      artifactory_delegate_to at the Artifactory host — refusing to restart an
+      unrelated container.
+    quiet: true
+  when: artifactory_bootstrap_method == 'docker'
+
+- name: "Bootstrap | Announce"
+  ansible.builtin.debug:
+    msg: >-
+      No access token supplied — bootstrapping a durable admin token via the
+      JFrog automatic-admin-token mechanism ({{ artifactory_bootstrap_method }}
+      method:
+      {{ artifactory_bootstrap_container if artifactory_bootstrap_method == 'docker'
+         else artifactory_bootstrap_service }}).
+
+# ── 1. Place the trigger file ──────────────────────────────────────────────
+# docker: use the docker CLI (argv) so the target needs only the CLI + docker
+# group, not the Python SDK. native: write it straight to the on-disk Access
+# bootstrap dir, owned by the service user, as root.
+- name: "Bootstrap | Place generate.token.json in the Access bootstrap keys dir (docker)"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "-u"
+      - "{{ artifactory_bootstrap_container_user }}"
+      - "{{ artifactory_bootstrap_container }}"
+      - sh
+      - "-c"
+      - "mkdir -p '{{ artifactory_bootstrap_keys_dir }}' && printf '{}' > '{{ artifactory_bootstrap_keys_dir }}/generate.token.json'"
+  changed_when: true
+  when: artifactory_bootstrap_method == 'docker'
+
+- name: "Bootstrap | Ensure the Access bootstrap keys dir exists (native)"
+  ansible.builtin.file:
+    path: "{{ artifactory_bootstrap_keys_dir }}"
+    state: directory
+    owner: "{{ artifactory_bootstrap_service_user }}"
+    group: "{{ artifactory_bootstrap_service_user }}"
+    mode: "0750"
+  become: "{{ artifactory_bootstrap_native_become | bool }}"
+  when: artifactory_bootstrap_method == 'native'
+
+- name: "Bootstrap | Place generate.token.json in the Access bootstrap keys dir (native)"
+  ansible.builtin.copy:
+    content: "{}"
+    dest: "{{ artifactory_bootstrap_keys_dir }}/generate.token.json"
+    owner: "{{ artifactory_bootstrap_service_user }}"
+    group: "{{ artifactory_bootstrap_service_user }}"
+    mode: "0644"
+  become: "{{ artifactory_bootstrap_native_become | bool }}"
+  when: artifactory_bootstrap_method == 'native'
+
+# ── 2. Restart Access to trigger generation (startup-read, not live) ───────
+- name: "Bootstrap | Restart the Artifactory container to trigger token generation (docker)"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - restart
+      - "{{ artifactory_bootstrap_container }}"
+  changed_when: true
+  when:
+    - artifactory_bootstrap_method == 'docker'
+    - not (artifactory_bootstrap_skip_restart | bool)
+
+- name: "Bootstrap | Restart Access via systemd to trigger token generation (native)"
+  ansible.builtin.systemd_service:
+    name: "{{ artifactory_bootstrap_service }}"
+    state: restarted
+  become: "{{ artifactory_bootstrap_native_become | bool }}"
+  when:
+    - artifactory_bootstrap_method == 'native'
+    - not (artifactory_bootstrap_skip_restart | bool)
+
+# ── 3. Capture the transient admin token before it self-deletes ────────────
+- name: "Bootstrap | Wait for token.json and read the transient admin token (docker)"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ artifactory_bootstrap_container }}"
+      - sh
+      - "-c"
+      - "test -f '{{ artifactory_bootstrap_token_file }}' && cat '{{ artifactory_bootstrap_token_file }}'"
+  register: _af_bs_tok
+  changed_when: false
+  failed_when: false
+  retries: "{{ artifactory_bootstrap_token_retries }}"
+  delay: "{{ artifactory_bootstrap_token_delay }}"
+  until:
+    - _af_bs_tok.rc == 0
+    - (_af_bs_tok.stdout | default('') | trim | length) > 0
+  no_log: true
+  when: artifactory_bootstrap_method == 'docker'
+
+- name: "Bootstrap | Wait for token.json and read the transient admin token (native)"
+  ansible.builtin.slurp:
+    src: "{{ artifactory_bootstrap_token_file }}"
+  register: _af_bs_tok_native
+  become: "{{ artifactory_bootstrap_native_become | bool }}"
+  changed_when: false
+  failed_when: false
+  retries: "{{ artifactory_bootstrap_token_retries }}"
+  delay: "{{ artifactory_bootstrap_token_delay }}"
+  until: (_af_bs_tok_native.content | default('') | length) > 0
+  no_log: true
+  when: artifactory_bootstrap_method == 'native'
+
+# Fail if neither method produced content — check the raw reads BEFORE parsing
+# (from_json on '' errors). docker → command stdout; native → slurp .content (b64).
+- name: "Bootstrap | Fail if the transient token never materialised"
+  ansible.builtin.fail:
+    msg: >-
+      token.json did not appear at {{ artifactory_bootstrap_token_file }} after
+      the restart. Confirm Access started cleanly and the version is >= 7.38.4.
+  when: >-
+    (artifactory_bootstrap_method == 'docker' and (_af_bs_tok.stdout | default('') | trim | length) == 0)
+    or (artifactory_bootstrap_method == 'native' and (_af_bs_tok_native.content | default('') | length) == 0)
+
+# Parse token.json straight to a DICT fact. Storing the raw JSON STRING in a fact
+# and re-parsing FAILS: Ansible coerces a JSON-looking string back into a dict, so
+# a later from_json is handed a dict, not a str. Parsing to a dict here sidesteps
+# that (a dict fact stays a dict).
+- name: "Bootstrap | Parse the captured token.json"
+  ansible.builtin.set_fact:
+    _af_bs_json: >-
+      {{ (_af_bs_tok.stdout | from_json) if artifactory_bootstrap_method == 'docker'
+         else (_af_bs_tok_native.content | b64decode | from_json) }}
+  no_log: true
+
+- name: "Bootstrap | Extract the transient admin token"
+  ansible.builtin.set_fact:
+    _af_bs_transient: "{{ _af_bs_json.token | default(_af_bs_json.access_token | default('')) }}"
+  no_log: true
+
+- name: "Bootstrap | Assert a transient token was captured"
+  ansible.builtin.assert:
+    that:
+      - _af_bs_transient | length > 0
+    fail_msg: "token.json was present but carried no 'token'/'access_token' field."
+    quiet: true
+
+# ── 4. Wait for the platform, then mint the durable token ──────────────────
+# Right after a restart nginx/router return 502 until the services are up; the
+# transient token is valid for 15 minutes, so waiting here is safe.
+- name: "Bootstrap | Wait for the platform to be ready (ping 200)"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.ping }}"
+    method: GET
+    status_code: [200]
+  register: _af_bs_ping
+  check_mode: false
+  changed_when: false
+  retries: "{{ artifactory_health_retries }}"
+  delay: "{{ artifactory_health_delay }}"
+  until: _af_bs_ping.status == 200
+
+- name: "Bootstrap | Mint a durable admin access token via the Access API"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.tokens }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _af_bs_transient }}"
+      Content-Type: application/x-www-form-urlencoded
+    body_format: form-urlencoded
+    body:
+      username: "{{ artifactory_admin_username }}"
+      scope: applied-permissions/admin
+      expires_in: "{{ artifactory_bootstrap_token_expires_in }}"
+      description: "{{ artifactory_bootstrap_token_description }}"
+    status_code: [200]
+  register: _af_bs_mint
+  failed_when: false
+  no_log: true
+
+# no_log hides the mint task's own output (the request carries the Bearer token),
+# so surface the failure explicitly from the response — status + Access errors
+# only, which never contain the token.
+- name: "Bootstrap | Surface a mint failure with the Access error"
+  ansible.builtin.fail:
+    msg: >-
+      Access token mint failed (HTTP {{ _af_bs_mint.status | default('n/a') }}):
+      {{ _af_bs_mint.json.errors | default(_af_bs_mint.json | default('no response body')) }}.
+      The transient token may have expired, or the scope/username was rejected.
+  when: (_af_bs_mint.status | default(0) | int) != 200
+
+# Adopt into the INTERNAL fact _af_token (preflight reads this). Not the public
+# artifactory_access_token, which a higher-precedence extra-var would shadow.
+- name: "Bootstrap | Adopt the durable token as the credential for this run"
+  ansible.builtin.set_fact:
+    _af_token: "{{ _af_bs_mint.json.access_token | default('') }}"
+  no_log: true
+
+- name: "Bootstrap | Assert a non-empty durable token before persisting it"
+  ansible.builtin.assert:
+    that:
+      - _af_token | length > 0
+    fail_msg: "Mint returned no access_token — refusing to persist an empty token."
+    quiet: true
+
+# ── 5. Persist the durable token — 0600 sidecar FIRST, then Vault ──────────
+# Write the local sidecar BEFORE the Vault store: if the Vault write then fails
+# (permission, cas conflict, Vault down) the play hard-fails to surface it, but
+# the freshly-minted (non-expiring) token is already recorded locally — so it can
+# be stored/revoked by hand instead of being orphaned on the server and re-minted
+# on the next run.
+- name: "Bootstrap | Persist the durable admin token to the 0600 sidecar"
+  ansible.builtin.copy:
+    content: "{{ {'admin_access_token': _af_token} | to_nice_yaml }}"
+    # A DEDICATED file — NOT artifactory_generated_tokens_file, which
+    # security/tokens.yml full-overwrites when artifactory_manage_tokens is on,
+    # which would wipe this break-glass admin record.
+    dest: "{{ artifactory_bootstrap_sidecar_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: artifactory_bootstrap_write_sidecar | bool
+
+- name: "Bootstrap | Read the existing Vault secret (merge target)"
+  community.hashi_vault.vault_kv2_get:
+    path: "{{ artifactory_bootstrap_vault_path }}"
+    engine_mount_point: "{{ artifactory_bootstrap_vault_mount }}"
+  register: _af_bs_vault_get
+  # Tolerate ONLY a missing path (fresh KV → 404 → merge onto {}). A genuine
+  # error (permission, Vault down) still surfaces on the write's cas mismatch.
+  failed_when: false
+  no_log: true
+  delegate_to: localhost
+  become: false
+  when:
+    - artifactory_bootstrap_vault_store | bool
+    - artifactory_bootstrap_vault_path | length > 0
+
+- name: "Bootstrap | Store the durable admin token to HashiCorp Vault (no clobber)"
+  community.hashi_vault.vault_kv2_write:
+    path: "{{ artifactory_bootstrap_vault_path }}"
+    engine_mount_point: "{{ artifactory_bootstrap_vault_mount }}"
+    # default(x, true) replaces None/empty too — a soft-deleted current version
+    # returns data: null, which a plain default() would NOT replace (Jinja default
+    # only fills UNDEFINED), and None | combine(...) then errors after the mint.
+    cas: "{{ _af_bs_vault_get.data.metadata.version | default(0, true) | int }}"
+    data: >-
+      {{ (_af_bs_vault_get.data.data | default({}, true))
+         | combine({artifactory_bootstrap_vault_field: _af_token}) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+  when:
+    - artifactory_bootstrap_vault_store | bool
+    - artifactory_bootstrap_vault_path | length > 0
+
+- name: "Bootstrap | Report where the token was stored"
+  ansible.builtin.debug:
+    msg: >-
+      Durable admin token minted and adopted for this run.
+      Vault: {{ 'stored at ' + artifactory_bootstrap_vault_mount + '/' +
+                artifactory_bootstrap_vault_path + ' (field ' +
+                artifactory_bootstrap_vault_field + ')'
+                if (artifactory_bootstrap_vault_store | bool and
+                    artifactory_bootstrap_vault_path | length > 0)
+                else 'not configured (set artifactory_bootstrap_vault_*)' }}.
+      Sidecar: {{ artifactory_bootstrap_sidecar_file
+                  if artifactory_bootstrap_write_sidecar | bool else 'disabled' }}.
+
+# No HashiCorp Vault store configured → this run's token lives only in the sidecar
+# (or in memory). The role never reads the sidecar back, so the NEXT run won't
+# find it and will mint ANOTHER admin token. Make that loud so the operator saves
+# it into their credential source (Ansible Vault / group_vars).
+- name: "Bootstrap | WARN — no persistent store; save the token or it re-mints next run"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠  ACTION REQUIRED — no HashiCorp Vault store is configured for the minted
+      admin token{{ ' (it is only in memory — enable artifactory_bootstrap_write_sidecar)'
+                     if not (artifactory_bootstrap_write_sidecar | bool)
+                     else ', written only to ' + artifactory_bootstrap_sidecar_file }}.
+      SAVE it into your credential source (e.g. Ansible Vault group_vars as
+      artifactory_access_token) now — the role does NOT read the sidecar back, so
+      the next run will mint ANOTHER admin token and leave the old one unrevoked.
+      For automatic storage set artifactory_bootstrap_vault_store + _vault_mount +
+      _vault_path.
+  when:
+    - not (artifactory_bootstrap_vault_store | bool and artifactory_bootstrap_vault_path | length > 0)
+
+# ── 6. Best-effort cleanup (Access self-deletes both anyway) ────────────────
+- name: "Bootstrap | Remove the bootstrap + transient token files (docker)"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ artifactory_bootstrap_container }}"
+      - sh
+      - "-c"
+      - "rm -f '{{ artifactory_bootstrap_keys_dir }}/generate.token.json' '{{ artifactory_bootstrap_token_file }}'"
+  changed_when: false
+  failed_when: false
+  when: artifactory_bootstrap_method == 'docker'
+
+- name: "Bootstrap | Remove the bootstrap + transient token files (native)"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ artifactory_bootstrap_keys_dir }}/generate.token.json"
+    - "{{ artifactory_bootstrap_token_file }}"
+  become: "{{ artifactory_bootstrap_native_become | bool }}"
+  changed_when: false
+  failed_when: false
+  when: artifactory_bootstrap_method == 'native'

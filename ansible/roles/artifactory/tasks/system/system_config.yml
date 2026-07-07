@@ -32,7 +32,7 @@
   artifactory_config_apply:
     url: "{{ artifactory_ep.system_config }}"
     config: "{{ _af_syscfg }}"
-    token: "{{ artifactory_access_token | default('', true) }}"
+    token: "{{ _af_token | default(artifactory_access_token | default('', true), true) }}"
     username: "{{ artifactory_admin_username if (_af_use_basic | default(false)) else omit }}"
     password: "{{ artifactory_admin_password if (_af_use_basic | default(false)) else omit }}"
     validate_certs: "{{ artifactory_validate_certs }}"

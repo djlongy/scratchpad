@@ -103,6 +103,74 @@ artifactory_health_delay: 10
 # target host instead.
 artifactory_delegate_to: localhost
 
+# ── Bootstrap: automatic admin token (fresh instance, hands-off) ───────────
+# When NO artifactory_access_token is supplied, self-provision a durable admin
+# token via JFrog's "automatic admin token" mechanism (Access >= 7.38.4) instead
+# of failing — a blank instance becomes fully configured with no manual UI login
+# and no hand-minted token. See tasks/bootstrap.yml for the flow.
+#
+# It RESTARTS Access (the bootstrap file is read at startup), so it needs
+# host/container access (self-hosted). It cannot run against SaaS (jfrog.io) or a
+# pure-localhost API target — supply artifactory_access_token there. The minted
+# token is stored to Vault, so the NEXT run supplies it (via an inventory lookup)
+# and this phase is skipped entirely — fully idempotent.
+#
+# Basic auth is NEVER used for token creation (the Access API rejects it), and
+# allow-basic-auth is left FALSE — no permanent security downgrade.
+artifactory_bootstrap_enabled: true
+# Confirmation required before auto-bootstrap (and its Access restart) on a
+# protected env — guards against a forgotten token bouncing prod.
+artifactory_confirm_bootstrap: false
+# Self-heal a SUPPLIED-but-rejected token. Default OFF = fail-secure: a 401/403
+# from an invalid/expired/revoked token hard-fails so you fix the credential.
+# Set true (e.g. in a fresh-install pipeline) to instead discard the bad token,
+# mint a fresh one via bootstrap, and continue. Still honours the protected-env
+# confirmation and needs host access.
+artifactory_bootstrap_on_auth_failure: false
+# How the instance runs.
+#   docker = talk to a container via docker exec/restart (portable across compose
+#            bind-mount layouts; needs the docker CLI + docker-group membership).
+#   native = package/systemd install — write the trigger file straight to disk,
+#            restart Access via systemd, read token.json via slurp. Needs root on
+#            the Artifactory host (artifactory_bootstrap_native_become).
+# The JFROG_HOME var paths below are the SAME for both (e.g. package install
+# JFROG_HOME=/opt/jfrog/artifactory), so keys_dir/token_file need no change.
+artifactory_bootstrap_method: docker
+# docker method:
+artifactory_bootstrap_container: artifactory
+artifactory_bootstrap_container_user: artifactory
+# native method (package/systemd):
+artifactory_bootstrap_service: artifactory        # systemd unit that runs Access
+artifactory_bootstrap_service_user: artifactory   # owner of the on-disk Access files
+artifactory_bootstrap_native_become: true         # root needed to write/read + restart
+# In-container paths (stable in the official image; override for custom installs).
+artifactory_bootstrap_keys_dir: /opt/jfrog/artifactory/var/bootstrap/etc/access/keys
+artifactory_bootstrap_token_file: /opt/jfrog/artifactory/var/etc/access/keys/token.json
+# Set true only when the trigger file was placed BEFORE the container's first
+# boot (install-time) — then first boot generates the token and no restart is
+# needed here.
+artifactory_bootstrap_skip_restart: false
+# Poll for token.json: retries x delay seconds. token.json self-deletes ~1 min
+# after creation, so keep the delay short enough to catch it.
+artifactory_bootstrap_token_retries: 60
+artifactory_bootstrap_token_delay: 3
+# Durable token minted from the transient one. 0 = non-expiring (rotate by
+# clearing the Vault field and re-running). Set seconds to force rotation.
+artifactory_bootstrap_token_expires_in: 0
+artifactory_bootstrap_token_description: "ansible-managed admin bootstrap token"
+# Store the minted token to HashiCorp Vault immediately (read-merge-write, no
+# clobber of sibling fields). Set the mount/path in inventory (env-specific).
+artifactory_bootstrap_vault_store: false
+artifactory_bootstrap_vault_mount: ""
+artifactory_bootstrap_vault_path: ""
+artifactory_bootstrap_vault_field: admin_access_token
+# Also write the token to the local 0600 sidecar (a break-glass record). This is
+# a DEDICATED file, separate from artifactory_generated_tokens_file (which
+# security/tokens.yml full-overwrites when artifactory_manage_tokens is on) so the
+# admin break-glass record can never be clobbered by a token-minting apply run.
+artifactory_bootstrap_write_sidecar: true
+artifactory_bootstrap_sidecar_file: "{{ playbook_dir }}/artifactory-bootstrap-admin-token.yml"
+
 # ── Apply behaviour ───────────────────────────────────────────────────────
 # When true, objects that already exist are PATCHed/POSTed to match desired
 # state. When false, existing objects are left as-is (create-if-absent) — the
