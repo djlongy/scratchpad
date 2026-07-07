@@ -32,6 +32,9 @@
       DISPLAY: ":0"
       SSH_AGENT_KEY_PASSPHRASE: "{{ ssh_agent_key_passphrase }}"
     _ssh_add_cmd: "ssh-add{{ (' -t ' ~ ssh_agent_key_lifetime) if (ssh_agent_key_lifetime | int) > 0 else '' }} -"
+    # The key's public half (derived in memory) — how we tell whether the key
+    # was ALREADY in the agent, so re-runs honestly report "ok" not "changed".
+    _ssh_pub_blob: "{{ (ssh_agent_key_content | ssh_agent_key_pubkey(ssh_agent_key_passphrase)).split(' ')[1] }}"
   block:
     - name: Unlock | Check the key material was provided
       ansible.builtin.assert:
@@ -57,7 +60,7 @@
             cmd: "{{ _ssh_add_cmd }}"
             stdin: "{{ ssh_agent_key_content }}"
           environment: "{{ _ssh_askpass_env | combine(_ssh_agent_env) }}"
-          changed_when: false
+          changed_when: _ssh_pub_blob not in _ssh_agent_key_before.stdout
           no_log: true
       rescue:
         - name: Unlock | No agent — spawn one (persists after the run)
@@ -75,7 +78,7 @@
             cmd: "{{ _ssh_add_cmd }}"
             stdin: "{{ ssh_agent_key_content }}"
           environment: "{{ _ssh_askpass_env | combine({'SSH_AUTH_SOCK': ssh_agent_key_sock}) }}"
-          changed_when: false
+          changed_when: true
           no_log: true
 
         # Ansible's own SSH connections inherit ansible-playbook's environment,
@@ -95,23 +98,3 @@
               Spawned a new ssh-agent (it keeps running after this play). To use
               it from your shell or your next run:
               export SSH_AUTH_SOCK={{ ssh_agent_key_sock }}
-
-    # Re-adding an already-loaded key is a no-op (the agent dedupes), so the
-    # honest "changed" signal is: did the agent's key list actually change?
-    - name: Unlock | List keys again — changed only if the key was new
-      ansible.builtin.command:
-        cmd: ssh-add -L
-      environment: "{{ _ssh_agent_env }}"
-      register: _ssh_agent_key_after
-      changed_when: _ssh_agent_key_after.stdout != _ssh_agent_key_before.stdout
-
-    # The agent deletes keys BY PUBLIC KEY, so remember the public line our add
-    # introduced. lock.yml removes exactly this — and nothing, if the key was
-    # already in the agent before we ran. A re-run adds nothing new (empty
-    # diff), so keep whatever an earlier unlock in this play already recorded.
-    - name: Unlock | Remember the key we added (lock removes exactly this)
-      ansible.builtin.set_fact:
-        _ssh_agent_key_added: >-
-          {{ _ssh_agent_key_after.stdout_lines
-             | difference(_ssh_agent_key_before.stdout_lines)
-             | first | default(_ssh_agent_key_added | default('')) }}

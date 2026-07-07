@@ -5,9 +5,11 @@
 # never touches disk. The key lives encrypted in Ansible Vault
 # (--ask-vault-pass / -e @vault.yml); if the key itself also has a passphrase,
 # set ssh_agent_key_passphrase and the role unlocks it with that.
+# unlock and lock are independent: each takes the same vaulted key.
 
-# REQUIRED (unlock). Private key text (PEM / OpenSSH). Wire this from a vaulted
-# variable in the calling play. Never hardcode a key here.
+# REQUIRED (unlock AND lock). Private key text (PEM / OpenSSH). Wire this from
+# a vaulted variable in the calling play. unlock adds it; lock derives its
+# public half in memory to know what to remove. Never hardcode a key here.
 ssh_agent_key_content: ""
 
 # Passphrase to unlock the private key, if it has one. Leave empty for a raw
@@ -19,9 +21,9 @@ ssh_agent_key_passphrase: ""
 # stops. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
 ssh_agent_key_lifetime: 0
 
-# LOCK ONLY. lock removes the key unlock added in this play; set this to a
-# public key line ("ssh-ed25519 AAAA... comment") to remove a key that was
-# loaded some other way.
+# LOCK override. Normally lock derives the public key from
+# ssh_agent_key_content; set this to a public key line
+# ("ssh-ed25519 AAAA... comment") to remove a key without the private half.
 ssh_agent_key_public: ""
 
 # OUTPUT (set by unlock when it had to spawn an agent): the spawned agent's

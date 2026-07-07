@@ -28,17 +28,28 @@ argument_specs:
     description:
       - "Feeds the private key to ssh-add over stdin — never written to disk, never on a command line."
       - "Uses the agent the play inherited; if none is running, spawns one (it persists after the run) and retries."
-      - "run_once + delegate_to localhost are baked in — call bare from pre_tasks."
+      - "run_once + delegate_to localhost are baked in — call from pre_tasks."
     options: *unlock_options
   lock:
-    short_description: "Remove the key unlock added"
+    short_description: "Remove the SSH key from the agent (independent of unlock)"
     description:
-      - "Deletes the key unlock loaded, by its public key over stdin. Skips when unlock added nothing."
-      - "run_once + delegate_to localhost are baked in — call bare from post_tasks."
+      - "Give lock the same vaulted key: it derives the public half in memory and deletes exactly that."
+      - "No state is carried from unlock — lock works in any play, playbook or run. Already-gone is ok."
+      - "run_once + delegate_to localhost are baked in — call from post_tasks or its own playbook."
     options:
+      ssh_agent_key_content:
+        description:
+          - "The same private key text unlock uses — lock derives the public key from it."
+          - "Required unless ssh_agent_key_public is set."
+        type: str
+        default: ""
+      ssh_agent_key_passphrase:
+        description:
+          - "The key's passphrase, needed to derive the public key from an encrypted key."
+        type: str
+        default: ""
       ssh_agent_key_public:
         description:
-          - "Public key line of an identity to remove ('ssh-ed25519 AAAA... comment')."
-          - "Only needed to lock a key that was NOT added by unlock in this play."
+          - "Explicit public key line to remove ('ssh-ed25519 AAAA... comment') — overrides derivation."
         type: str
         default: ""

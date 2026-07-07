@@ -1,27 +1,51 @@
 ---
 # roles/ssh_agent_key/tasks/lock.yml
 #
-# Remove the key unlock added, by feeding its public key to `ssh-add -d` over
-# stdin (agents delete by public key; nothing touches disk). If unlock added
-# nothing — the key was already in the agent, or unlock never ran — there is
-# nothing of ours to remove and the task skips. To lock a key loaded outside
-# this play, pass its public line in ssh_agent_key_public. An agent unlock
-# spawned is left running (only the key is removed).
+# Remove the key from the agent — fully INDEPENDENT of unlock: give lock the
+# same vaulted key and it derives the public half in memory (filter_plugins/)
+# to know exactly what to delete. No state is carried from unlock, so lock
+# works in a different play, a different playbook, or a different day.
+# Idempotent: a key that is already gone (or no agent at all) is "ok".
 #
-# Call it bare from post_tasks:
+# Call it from post_tasks — or its own playbook — with the key wired in:
 #   - ansible.builtin.import_role: {name: ssh_agent_key, tasks_from: lock}
+#     vars:
+#       ssh_agent_key_content: "{{ vault_ssh_private_key }}"
 
-- name: Lock | Remove the key unlock added from the agent
-  ansible.builtin.command:
-    cmd: ssh-add -d /dev/stdin
-    stdin: "{{ _ssh_agent_key_target }}"
-  environment: >-
-    {{ {'SSH_AUTH_SOCK': ssh_agent_key_sock}
-       if (ssh_agent_key_sock | default('') | length > 0) else {} }}
-  vars:
-    _ssh_agent_key_target: "{{ ssh_agent_key_public or (_ssh_agent_key_added | default('')) }}"
-  when: _ssh_agent_key_target | length > 0
-  changed_when: true
+- name: Lock | Remove the SSH key from the agent
   run_once: true
   delegate_to: localhost
   become: false
+  vars:
+    # What to delete: an explicit public line wins; otherwise derive it from
+    # the private key, exactly like unlock derives what it adds.
+    _ssh_agent_key_target: >-
+      {{ ssh_agent_key_public if (ssh_agent_key_public | length > 0)
+         else (ssh_agent_key_content | ssh_agent_key_pubkey(ssh_agent_key_passphrase)
+               if (ssh_agent_key_content | length > 0) else '') }}
+  block:
+    - name: Lock | Check we know which key to remove
+      ansible.builtin.assert:
+        that:
+          - _ssh_agent_key_target | length > 0
+        fail_msg: >-
+          Give lock the same vaulted ssh_agent_key_content you unlock with
+          (it derives the public key from it), or pass ssh_agent_key_public.
+        quiet: true
+
+    - name: Lock | Remove the key from the agent (by public key, over stdin)
+      ansible.builtin.command:
+        cmd: ssh-add -d /dev/stdin
+        stdin: "{{ _ssh_agent_key_target }}"
+      environment: >-
+        {{ {'SSH_AUTH_SOCK': ssh_agent_key_sock}
+           if (ssh_agent_key_sock | default('') | length > 0) else {} }}
+      register: _ssh_agent_key_del
+      # Idempotent: rc 0 = removed now; "Could not remove" / empty agent / no
+      # agent at all = already not loaded — ok, unchanged.
+      changed_when: _ssh_agent_key_del.rc == 0
+      failed_when:
+        - _ssh_agent_key_del.rc != 0
+        - "'Could not remove' not in _ssh_agent_key_del.stderr"
+        - "'no identities' not in (_ssh_agent_key_del.stderr ~ _ssh_agent_key_del.stdout)"
+        - "'connecting to agent' not in _ssh_agent_key_del.stderr"
