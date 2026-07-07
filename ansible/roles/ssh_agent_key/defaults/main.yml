@@ -1,30 +1,25 @@
 ---
 # roles/ssh_agent_key/defaults/main.yml
 #
-# Unlock/lock a private SSH key in ssh-agent, straight from memory — the key is
-# never written to disk. Linux-first: plain OpenSSH agent semantics, no platform
-# quirks. Behavioural defaults only; the key material itself is a required input
-# wired from a vaulted variable at the playbook level.
+# Unlock/lock a private SSH key in your running ssh-agent, straight from
+# memory — the key never touches disk. The role uses the agent the play
+# inherited (your shell's SSH_AUTH_SOCK); it never spawns agents or reads
+# anything else from the environment.
 
 # REQUIRED (unlock). Private key text (PEM / OpenSSH). Wire this from a vaulted
 # variable in the calling play. Never hardcode a key here.
 ssh_agent_key_content: ""
 
-# Passphrase for an encrypted key. Supplied to ssh-add through a static
-# SSH_ASKPASS helper fed from the environment — no expect/pexpect dependency,
-# and the passphrase never touches disk or argv. Empty = key is unencrypted.
+# Passphrase for an encrypted key, from a vaulted variable. Handed to ssh-add
+# through its SSH_ASKPASS hook (files/askpass.sh) — never written to disk,
+# never on a command line. Leave empty for an unencrypted key.
 ssh_agent_key_passphrase: ""
 
-# The ssh-agent socket to load the key into. Defaults to the caller's inherited
-# agent. If empty / unreachable, unlock spawns a throwaway agent for this play
-# and points the play's SSH connections at it (see tasks/unlock.yml).
-ssh_agent_key_auth_sock: "{{ lookup('env', 'SSH_AUTH_SOCK') }}"
-
-# Key lifetime in the agent, in seconds. 0 = persist until locked or the agent
+# Key lifetime in the agent, in seconds. 0 = stays until locked or the agent
 # restarts. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
 ssh_agent_key_lifetime: 0
 
-# LOCK-ONLY fallback. lock.yml normally removes the exact key unlock captured in
-# the same play; set this to the key's PUBLIC line ("ssh-ed25519 AAAA... comment")
-# to lock a key that was loaded outside this play.
+# LOCK ONLY. lock removes the key unlock added in this play; set this to a
+# public key line ("ssh-ed25519 AAAA... comment") to remove a key that was
+# loaded some other way.
 ssh_agent_key_public: ""

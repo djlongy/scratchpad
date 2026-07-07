@@ -1,53 +1,23 @@
 ---
 # roles/ssh_agent_key/tasks/lock.yml
 #
-# Remove the key that unlock.yml loaded. If unlock spawned a throwaway agent,
-# the whole agent is killed; otherwise the key is deleted from the inherited
-# agent by its public key — fed to `ssh-add -d /dev/stdin`, so nothing touches
-# disk here either.
+# Remove the key unlock added, by feeding its public key to `ssh-add -d` over
+# stdin (agents delete by public key; nothing touches disk). If unlock added
+# nothing — the key was already in the agent, or unlock never ran — there is
+# nothing of ours to remove and the task skips. To lock a key loaded outside
+# this play, pass its public line in ssh_agent_key_public.
 #
-# run_once + delegate_to localhost are baked in — call it bare from post_tasks:
+# Call it bare from post_tasks:
 #   - ansible.builtin.import_role: {name: ssh_agent_key, tasks_from: lock}
 
-- name: Lock | Remove the SSH key from ssh-agent
+- name: Lock | Remove the key unlock added from the agent
+  ansible.builtin.command:
+    cmd: ssh-add -d /dev/stdin
+    stdin: "{{ _ssh_agent_key_target }}"
+  vars:
+    _ssh_agent_key_target: "{{ ssh_agent_key_public or (_ssh_agent_key_added | default('')) }}"
+  when: _ssh_agent_key_target | length > 0
+  changed_when: true
   run_once: true
   delegate_to: localhost
   become: false
-  vars:
-    _ssh_agent_key_lock_pub: >-
-      {{ ssh_agent_key_public if (ssh_agent_key_public | length > 0)
-         else (_ssh_agent_key_pub | default('')) }}
-  block:
-    # kill by pid, not `ssh-agent -k` env: jinja2_native turns the captured pid
-    # into an int, which env values (and `| length` checks) choke on.
-    - name: Lock | Kill the throwaway agent spawned by unlock
-      ansible.builtin.command:
-        cmd: "kill {{ _ssh_agent_key_spawned_pid }}"
-      when: _ssh_agent_key_spawned_pid | default('') | string | length > 0
-      changed_when: true
-
-    - name: Lock | Delete the key from the inherited agent
-      when: _ssh_agent_key_spawned_pid | default('') | string | length == 0
-      block:
-        - name: Lock | Assert we know which key to remove
-          ansible.builtin.assert:
-            that:
-              - _ssh_agent_key_lock_pub | length > 0
-            fail_msg: >-
-              No public key recorded — run unlock in the same play first (it
-              captures the key it loads), or pass ssh_agent_key_public.
-            quiet: true
-
-        - name: Lock | Remove the key from the agent (public key over stdin)
-          ansible.builtin.command:
-            cmd: ssh-add -d /dev/stdin
-            stdin: "{{ _ssh_agent_key_lock_pub }}"
-          environment:
-            SSH_AUTH_SOCK: "{{ _ssh_agent_key_sock | default(ssh_agent_key_auth_sock) }}"
-          register: _ssh_agent_key_del
-          # Idempotent: already-gone (agent empty / key not found) is fine.
-          changed_when: _ssh_agent_key_del.rc == 0
-          failed_when:
-            - _ssh_agent_key_del.rc != 0
-            - "'agent has no identities' not in (_ssh_agent_key_del.stderr ~ _ssh_agent_key_del.stdout)"
-            - "'Could not remove' not in _ssh_agent_key_del.stderr"

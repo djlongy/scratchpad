@@ -1,170 +1,76 @@
 ---
 # roles/ssh_agent_key/tasks/unlock.yml
 #
-# Load the private key into ssh-agent — memory-only. The key reaches ssh-add over
-# stdin (never a file, never argv); an optional passphrase goes through a static
-# SSH_ASKPASS helper fed from the environment (no expect/pexpect, no secret on
-# disk). Linux-first: plain OpenSSH agent semantics.
-#
-# Flow: the key is first loaded into a short-lived PROBE agent — that validates
-# the key + passphrase without touching the real agent AND captures its public
-# key (lock.yml deletes by it; ssh-keygen -y can't derive it from a pipe, so a
-# probe agent is the only disk-free way). Then the key is added to the inherited
-# agent, or — work-role rescue parity — to a throwaway agent spawned for this
-# play, with the play's SSH connections pointed at it via IdentityAgent.
+# Load the private key into the play's ssh-agent, from memory — the key reaches
+# ssh-add over stdin and never touches disk. Uses the agent your shell already
+# exports (SSH_AUTH_SOCK); the role never spawns agents or reads/overrides env.
+# See the README for a plain-English walkthrough of every task below.
 #
 # run_once + delegate_to localhost are baked in — call it bare from pre_tasks:
 #   - ansible.builtin.import_role: {name: ssh_agent_key, tasks_from: unlock}
 
-- name: Unlock | Load the SSH key into ssh-agent (memory-only)
+- name: Unlock | Load the SSH key into your ssh-agent
   run_once: true
   delegate_to: localhost
   become: false
-  vars:
-    # Passphrase plumbing for every ssh-add call: askpass helper + env-fed value.
-    # SSH_ASKPASS_REQUIRE=force needs OpenSSH >= 8.4; DISPLAY covers older ones
-    # (askpass fires when no TTY + DISPLAY set — Ansible tasks never have a TTY).
-    _ssh_agent_key_askpass_env: >-  # pragma: allowlist secret — var refs only, no literal
-      {{ {'SSH_ASKPASS': _ssh_agent_key_askpass.path | default(''),
-          'SSH_ASKPASS_REQUIRE': 'force',
-          'DISPLAY': ':0',
-          'SSH_AGENT_KEY_PASSPHRASE': ssh_agent_key_passphrase}
-         if (ssh_agent_key_passphrase | length > 0) else {} }}
-    _ssh_agent_key_add_cmd: >-
-      ssh-add{{ (' -t ' ~ ssh_agent_key_lifetime) if (ssh_agent_key_lifetime | int) > 0 else '' }} -
   block:
-    - name: Unlock | Assert the SSH key material was provided
+    - name: Unlock | Check the key material was provided
       ansible.builtin.assert:
         that:
           - ssh_agent_key_content | length > 0
         fail_msg: >-
-          ssh_agent_key_content is empty. Wire it from a vaulted key variable in
-          the calling play.
+          ssh_agent_key_content is empty — wire it from your vaulted key
+          variable in the calling play.
         quiet: true
 
-    # --- Optional passphrase helper (static file — contains no secret) ---------
-    - name: Unlock | Create the askpass helper file
-      ansible.builtin.tempfile:
-        state: file
-        prefix: askpass.
-      register: _ssh_agent_key_askpass
-      when: ssh_agent_key_passphrase | length > 0
-
-    - name: Unlock | Write the askpass helper (echoes the env-fed passphrase)
-      ansible.builtin.copy:
-        dest: "{{ _ssh_agent_key_askpass.path }}"
-        content: |
-          #!/bin/sh
-          printf '%s\n' "$SSH_AGENT_KEY_PASSPHRASE"
-        mode: "0700"
-      when: ssh_agent_key_passphrase | length > 0
-
-    # --- Probe agent: validate the key and capture its public key --------------
-    - name: Unlock | Start the probe agent
-      ansible.builtin.command:
-        cmd: ssh-agent -s
-      register: _ssh_agent_key_probe
-      changed_when: false
-
-    - name: Unlock | Parse the probe agent socket + pid
-      ansible.builtin.set_fact:
-        _ssh_agent_key_probe_sock: "{{ _ssh_agent_key_probe.stdout | regex_search('SSH_AUTH_SOCK=([^;]+);', '\\1') | first }}"
-        _ssh_agent_key_probe_pid: "{{ _ssh_agent_key_probe.stdout | regex_search('SSH_AGENT_PID=([0-9]+);', '\\1') | first }}"
-
-    - name: Unlock | Load the key into the probe agent (validates key + passphrase)
-      ansible.builtin.command:
-        cmd: "{{ _ssh_agent_key_add_cmd }}"
-        stdin: "{{ ssh_agent_key_content }}"
-      environment: "{{ {'SSH_AUTH_SOCK': _ssh_agent_key_probe_sock} | combine(_ssh_agent_key_askpass_env) }}"
-      changed_when: false
-      no_log: true
-
-    - name: Unlock | Capture the key's public line from the probe agent
+    - name: Unlock | List the agent's current keys
       ansible.builtin.command:
         cmd: ssh-add -L
-      environment:
-        SSH_AUTH_SOCK: "{{ _ssh_agent_key_probe_sock }}"
-      register: _ssh_agent_key_probe_list
-      changed_when: false
-
-    - name: Unlock | Record the public key (consumed by lock.yml)
-      ansible.builtin.set_fact:
-        _ssh_agent_key_pub: "{{ _ssh_agent_key_probe_list.stdout_lines | first }}"
-        # The base64 blob (field 2) identifies the key regardless of comment.
-        _ssh_agent_key_blob: "{{ (_ssh_agent_key_probe_list.stdout_lines | first).split()[1] }}"
-
-    # --- Pick the real agent: inherited first, else spawn (work-role rescue) ---
-    - name: Unlock | Probe the inherited ssh-agent
-      ansible.builtin.command:
-        cmd: ssh-add -L
-      environment:
-        SSH_AUTH_SOCK: "{{ ssh_agent_key_auth_sock }}"
       register: _ssh_agent_key_before
       changed_when: false
-      # rc 0 = agent has keys; rc 1 = agent reachable, empty; rc 2 = no agent.
-      failed_when: false
+      failed_when: false  # rc 1 just means the agent is empty; rc 2 is caught next
 
-    - name: Unlock | Use the inherited agent
-      ansible.builtin.set_fact:
-        _ssh_agent_key_sock: "{{ ssh_agent_key_auth_sock }}"
-        _ssh_agent_key_spawned_pid: ""
-      when: _ssh_agent_key_before.rc != 2
+    - name: Unlock | Check an ssh-agent is reachable
+      ansible.builtin.assert:
+        that:
+          - _ssh_agent_key_before.rc != 2
+        fail_msg: >-
+          No ssh-agent is reachable. Start one in your shell first
+          (eval "$(ssh-agent)") or wrap the run: ssh-agent ansible-playbook site.yml
+        quiet: true
 
-    - name: Unlock | No inherited agent — spawn one for this play
-      when: _ssh_agent_key_before.rc == 2
-      block:
-        - name: Unlock | Start a throwaway ssh-agent
-          ansible.builtin.command:
-            cmd: ssh-agent -s
-          register: _ssh_agent_key_spawn
-          changed_when: true
-
-        - name: Unlock | Capture the spawned agent socket + pid
-          ansible.builtin.set_fact:
-            _ssh_agent_key_sock: "{{ _ssh_agent_key_spawn.stdout | regex_search('SSH_AUTH_SOCK=([^;]+);', '\\1') | first }}"
-            _ssh_agent_key_spawned_pid: "{{ _ssh_agent_key_spawn.stdout | regex_search('SSH_AGENT_PID=([0-9]+);', '\\1') | first }}"
-
-        # A task-spawned agent is invisible to Ansible's own ssh connections (they
-        # inherit ansible-playbook's env, not task env) — point them at it.
-        - name: Unlock | Point this play's SSH connections at the spawned agent
-          ansible.builtin.set_fact:
-            ansible_ssh_common_args: >-
-              {{ (hostvars[item].ansible_ssh_common_args | default('')) ~ ' -o IdentityAgent="' ~ _ssh_agent_key_sock ~ '"' }}
-          delegate_to: "{{ item }}"
-          delegate_facts: true
-          loop: "{{ ansible_play_hosts_all }}"
-
-    # --- Load into the real agent ----------------------------------------------
-    - name: Unlock | Add the key to the agent (stdin — never on disk)
+    # The key text goes in over stdin. If it is passphrase-protected, ssh-add
+    # (having no terminal) asks the SSH_ASKPASS helper, which echoes the vaulted
+    # passphrase we place in this task's process environment — with an
+    # unencrypted key the helper is simply never called. no_log because the
+    # task args contain the key and passphrase.
+    - name: Unlock | Add the key to the agent (from memory, over stdin)
       ansible.builtin.command:
-        cmd: "{{ _ssh_agent_key_add_cmd }}"
+        cmd: "ssh-add{{ (' -t ' ~ ssh_agent_key_lifetime) if (ssh_agent_key_lifetime | int) > 0 else '' }} -"
         stdin: "{{ ssh_agent_key_content }}"
-      environment: "{{ {'SSH_AUTH_SOCK': _ssh_agent_key_sock} | combine(_ssh_agent_key_askpass_env) }}"
-      # Re-adding a present key is a no-op (the agent dedupes) — report changed
-      # only when this key's blob wasn't in the agent before.
-      changed_when: _ssh_agent_key_blob not in (_ssh_agent_key_before.stdout | default(''))
+      environment:
+        SSH_ASKPASS: "{{ role_path }}/files/askpass.sh"
+        SSH_ASKPASS_REQUIRE: force
+        DISPLAY: ":0"
+        SSH_AGENT_KEY_PASSPHRASE: "{{ ssh_agent_key_passphrase }}"
+      changed_when: false
       no_log: true
 
-    - name: Unlock | Report
-      ansible.builtin.debug:
-        msg: >-
-          SSH key unlocked in
-          {{ 'a throwaway agent spawned for this play' if (_ssh_agent_key_spawned_pid | string | length > 0)
-             else 'the inherited ssh-agent' }}{{
-          (' — auto-expires in ' ~ ssh_agent_key_lifetime ~ 's') if (ssh_agent_key_lifetime | int) > 0
-          else ' — lock it in post_tasks (tasks_from: lock)' }}.
-
-  always:
-    # kill by pid, not `ssh-agent -k` env: jinja2_native turns the captured pid
-    # into an int, which env values (and `| length` checks) choke on.
-    - name: Unlock | Kill the probe agent
+    # Re-adding an already-loaded key is a no-op (the agent dedupes), so the
+    # honest "changed" signal is: did the agent's key list actually change?
+    - name: Unlock | List keys again — changed only if the key was new
       ansible.builtin.command:
-        cmd: "kill {{ _ssh_agent_key_probe_pid }}"
-      when: _ssh_agent_key_probe_pid | default('') | string | length > 0
-      changed_when: false
+        cmd: ssh-add -L
+      register: _ssh_agent_key_after
+      changed_when: _ssh_agent_key_after.stdout != _ssh_agent_key_before.stdout
 
-    - name: Unlock | Remove the askpass helper
-      ansible.builtin.file:
-        path: "{{ _ssh_agent_key_askpass.path }}"
-        state: absent
-      when: _ssh_agent_key_askpass.path is defined
+    # The agent deletes keys BY PUBLIC KEY, so remember the public line our add
+    # introduced. lock.yml removes exactly this — and nothing, if the key was
+    # already in the agent before we ran. A re-run adds nothing new (empty
+    # diff), so keep whatever an earlier unlock in this play already recorded.
+    - name: Unlock | Remember the key we added (lock removes exactly this)
+      ansible.builtin.set_fact:
+        _ssh_agent_key_added: >-
+          {{ _ssh_agent_key_after.stdout_lines
+             | difference(_ssh_agent_key_before.stdout_lines)
+             | first | default(_ssh_agent_key_added | default('')) }}
