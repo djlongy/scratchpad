@@ -1,31 +1,56 @@
 ---
 argument_specs:
   main:
-    short_description: "Load a private SSH key into a running ssh-agent from memory"
+    short_description: "Unlock a private SSH key into ssh-agent from memory (alias of unlock)"
     description:
-      - "Feeds a private SSH key to ssh-add over stdin so it is never written to disk."
-      - "Loads into the caller's inherited ssh-agent when reachable; otherwise spawns a throwaway agent for the current run."
-      - "Idempotent: reports changed only when the agent's identity set actually changes."
-    options:
+      - "Default entry point — identical to the unlock entry point."
+    options: &unlock_options
       ssh_agent_key_content:
         description:
           - "The private SSH key text (PEM or OpenSSH format)."
           - "REQUIRED. Wire from a vaulted variable at the play level; never hardcode."
         type: str
         required: true
+      ssh_agent_key_passphrase:
+        description:
+          - "Passphrase for an encrypted key, supplied via an SSH_ASKPASS helper fed from the environment."
+          - "Never written to disk or argv. Empty means the key is unencrypted."
+        type: str
+        default: ""
       ssh_agent_key_auth_sock:
         description:
           - "ssh-agent socket to load the key into."
-          - "Defaults to the caller's inherited SSH_AUTH_SOCK (the launchd agent on macOS)."
+          - "Defaults to the caller's inherited SSH_AUTH_SOCK; if unreachable, a throwaway agent is spawned for the play."
         type: str
         default: "{{ lookup('env', 'SSH_AUTH_SOCK') }}"
-      ssh_agent_key_comment:
-        description: "Cosmetic label used in the completion message."
-        type: str
-        default: "ansible"
       ssh_agent_key_lifetime:
         description:
           - "Key lifetime in the agent, in seconds."
-          - "0 persists until the agent restarts; a value > 0 passes ssh-add -t <seconds>."
+          - "0 persists until locked or the agent restarts; a value > 0 passes ssh-add -t <seconds>."
         type: int
         default: 0
+  unlock:
+    short_description: "Load the SSH key into ssh-agent (memory-only)"
+    description:
+      - "Feeds the private key to ssh-add over stdin — never written to disk, never in argv."
+      - "Validates the key + passphrase in a short-lived probe agent and captures the public key for lock."
+      - "Uses the inherited agent when reachable; otherwise spawns a throwaway agent and points the play's SSH connections at it."
+      - "run_once + delegate_to localhost are baked in — call bare from pre_tasks."
+    options: *unlock_options
+  lock:
+    short_description: "Remove the SSH key loaded by unlock"
+    description:
+      - "Kills the throwaway agent if unlock spawned one; otherwise deletes the key from the inherited agent by its public key (over stdin — disk-free)."
+      - "run_once + delegate_to localhost are baked in — call bare from post_tasks."
+    options:
+      ssh_agent_key_public:
+        description:
+          - "Public key line of the identity to remove ('ssh-ed25519 AAAA... comment')."
+          - "Only needed when lock runs without a prior unlock in the same play — unlock records the key it loaded."
+        type: str
+        default: ""
+      ssh_agent_key_auth_sock:
+        description:
+          - "ssh-agent socket to remove the key from, when unlock did not run in this play."
+        type: str
+        default: "{{ lookup('env', 'SSH_AUTH_SOCK') }}"

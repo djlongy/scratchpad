@@ -1,23 +1,30 @@
 ---
 # roles/ssh_agent_key/defaults/main.yml
 #
-# Load a private SSH key into a running ssh-agent, straight from memory — the key
-# is never written to disk. Behavioural defaults only; the key material itself is
-# a required input wired from a vaulted variable at the playbook level.
+# Unlock/lock a private SSH key in ssh-agent, straight from memory — the key is
+# never written to disk. Linux-first: plain OpenSSH agent semantics, no platform
+# quirks. Behavioural defaults only; the key material itself is a required input
+# wired from a vaulted variable at the playbook level.
 
-# REQUIRED. Private key text (PEM / OpenSSH). Wire this from a vaulted variable in
-# the calling play, e.g. ssh_agent_key_content: "{{ vault_ssh_private_key }}".
-# Never hardcode a key here.
+# REQUIRED (unlock). Private key text (PEM / OpenSSH). Wire this from a vaulted
+# variable in the calling play. Never hardcode a key here.
 ssh_agent_key_content: ""
 
+# Passphrase for an encrypted key. Supplied to ssh-add through a static
+# SSH_ASKPASS helper fed from the environment — no expect/pexpect dependency,
+# and the passphrase never touches disk or argv. Empty = key is unencrypted.
+ssh_agent_key_passphrase: ""
+
 # The ssh-agent socket to load the key into. Defaults to the caller's inherited
-# agent (on macOS, the persistent launchd agent). If empty / unreachable, the role
-# spawns a throwaway agent for this run only (see tasks/main.yml rescue block).
+# agent. If empty / unreachable, unlock spawns a throwaway agent for this play
+# and points the play's SSH connections at it (see tasks/unlock.yml).
 ssh_agent_key_auth_sock: "{{ lookup('env', 'SSH_AUTH_SOCK') }}"
 
-# Cosmetic label used in the completion message.
-ssh_agent_key_comment: "ansible"
-
-# Key lifetime in the agent, in seconds. 0 = persist until the agent restarts.
-# A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
+# Key lifetime in the agent, in seconds. 0 = persist until locked or the agent
+# restarts. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
 ssh_agent_key_lifetime: 0
+
+# LOCK-ONLY fallback. lock.yml normally removes the exact key unlock captured in
+# the same play; set this to the key's PUBLIC line ("ssh-ed25519 AAAA... comment")
+# to lock a key that was loaded outside this play.
+ssh_agent_key_public: ""

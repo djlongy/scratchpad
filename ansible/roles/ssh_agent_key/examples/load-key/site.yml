@@ -8,8 +8,10 @@
 #        ansible-playbook site.yml --ask-vault-pass
 #        ssh-add -l                                        # verify it is loaded
 #
-# On macOS the key lands in the launchd agent and is usable from your terminal
-# straight after the play. Re-running is idempotent (no duplicate add).
+# The key lands in your running ssh-agent and is usable from your terminal
+# straight after the play. Re-running is idempotent (no duplicate add). To
+# bracket a play instead (unlock at start, lock at end) see the role README's
+# pre_tasks/post_tasks pattern (tasks_from: unlock / lock).
 
 - name: Load an SSH key from Ansible Vault into the ssh-agent
   hosts: localhost

@@ -30,9 +30,11 @@ ansible-playbook site.yml --ask-vault-pass
 ssh-add -l
 ```
 
-On macOS your login shell shares a persistent `launchd` ssh-agent, so the key is usable
+The key lands in your running ssh-agent (your inherited `SSH_AUTH_SOCK`), so it is usable
 from your terminal immediately after the play. Re-running is idempotent — the role only
-reports `changed` when the agent's identity set actually changes.
+reports `changed` when the key wasn't already in the agent. To bracket a play instead
+(unlock at the start, lock at the end), see the role README's `pre_tasks`/`post_tasks`
+pattern (`tasks_from: unlock` / `tasks_from: lock`).
 
 ## How the "never on disk" guarantee holds
 

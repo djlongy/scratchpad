@@ -1,76 +1,96 @@
 # ssh_agent_key
 
-Load a private SSH key into a running `ssh-agent` **straight from memory** — the key is
-fed to `ssh-add` over stdin and is never written to disk, never appears in `argv`, and
-(with `no_log`) never appears in task output.
+Unlock/lock a private SSH key in `ssh-agent` **straight from memory** — the key is fed
+to `ssh-add` over stdin, so it never touches disk, never appears in `argv`, and (with
+`no_log`) never appears in task output. Linux-first: plain OpenSSH agent semantics, no
+platform quirks, no `expect`/`pexpect` dependency.
 
-Run it on the control node with the key supplied from an Ansible Vault variable, so the
-private key only ever exists encrypted at rest and in the agent's memory.
+Two entry points, designed to bracket a play:
 
-## How it works
+- **`unlock`** — load the key at the start of the play (`pre_tasks`)
+- **`lock`** — remove it at the end (`post_tasks`)
 
-- **Inherited agent first.** On macOS your login shell shares a persistent `launchd`
-  ssh-agent (`SSH_AUTH_SOCK` is always set). A key added into that inherited socket
-  stays loaded and is usable from your terminal after the play ends.
-- **Throwaway agent fallback.** If no agent is reachable (`SSH_AUTH_SOCK` unset — common
-  over plain SSH / tmux / CI), a `block`/`rescue` spawns a throwaway agent so the run is
-  self-sufficient. A `debug` note flags that a spawned agent is **not** visible to an
-  interactive shell — an Ansible child process cannot export `SSH_AUTH_SOCK` up into your
-  terminal. On macOS this path should effectively never fire.
-- **Idempotent.** The agent's identity list is snapshotted before and after the add; the
-  task reports `changed` only when the identity set actually changed (re-adding an
-  already-present key is a harmless no-op — the agent dedupes).
+`run_once` + `delegate_to: localhost` are baked into both, so call them bare.
 
-## Never on disk
+## Usage
 
-`ssh-add -` reads the key from **stdin**; the `command` module's `stdin:` parameter feeds
-it directly from the vaulted variable. To keep Ansible's own module payload off disk too,
-run with **pipelining enabled** (`pipelining = True` in `ansible.cfg`, or
-`ansible_pipelining: true` on the play) so the AnsiballZ module — which embeds task args —
-is piped to the interpreter instead of being written to `~/.ansible/tmp`.
+```yaml
+- name: Deploy with the vaulted key unlocked for the duration of the play
+  hosts: web
+  gather_facts: false            # facts would need SSH before the key is unlocked
+  pre_tasks:
+    - name: Unlock the deploy key
+      ansible.builtin.import_role:
+        name: ssh_agent_key
+        tasks_from: unlock
+      vars:
+        ssh_agent_key_content: "{{ vault_deploy_key }}"
+        ssh_agent_key_passphrase: "{{ vault_deploy_key_passphrase }}"   # if encrypted
+    - name: Gather facts now the key is available
+      ansible.builtin.setup:
+  roles:
+    - deploy
+  post_tasks:
+    - name: Lock the deploy key
+      ansible.builtin.import_role:
+        name: ssh_agent_key
+        tasks_from: lock
+```
+
+Standalone (load only — `roles:` defaults to unlock):
+
+```yaml
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_pipelining: true     # keeps Ansible's own module payload off ~/.ansible/tmp
+  roles:
+    - role: ssh_agent_key
+      vars:
+        ssh_agent_key_content: "{{ vault_deploy_key }}"
+```
 
 ## Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ssh_agent_key_content` | `""` | **Required.** Private key text (PEM / OpenSSH). Wire from a vaulted var. |
-| `ssh_agent_key_auth_sock` | `"{{ lookup('env', 'SSH_AUTH_SOCK') }}"` | Agent socket to load into. |
-| `ssh_agent_key_comment` | `"ansible"` | Cosmetic label in the completion message. |
-| `ssh_agent_key_lifetime` | `0` | Seconds; `0` = until agent restart, `>0` = `ssh-add -t`. |
+| `ssh_agent_key_content` | `""` | **Required (unlock).** Private key text (PEM / OpenSSH). Wire from a vaulted var. |
+| `ssh_agent_key_passphrase` | `""` | Passphrase for an encrypted key. Env-fed to an `SSH_ASKPASS` helper — never on disk/argv. |
+| `ssh_agent_key_auth_sock` | `$SSH_AUTH_SOCK` | Agent socket to use. Unreachable → a throwaway agent is spawned for the play. |
+| `ssh_agent_key_lifetime` | `0` | Seconds; `0` = until locked/agent restart, `>0` = `ssh-add -t` auto-expiry. |
+| `ssh_agent_key_public` | `""` | **lock only.** Public key line to remove when unlock didn't run in this play. |
 
-## Minimal usage
+## How it works
 
-```yaml
-- name: Load an SSH key from Ansible Vault into the ssh-agent
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars:
-    ansible_pipelining: true
-  roles:
-    - role: ssh_agent_key
-      vars:
-        ssh_agent_key_content: "{{ vault_ssh_private_key }}"   # from a vaulted var
-```
-
-```bash
-ansible-playbook -i inventories/hosts.yml playbooks/load_ssh_agent_key.yml
-ssh-add -l          # verify it's loaded
-```
-
-## Runnable example
-
-A complete, self-contained walkthrough (its own `ansible.cfg`, `inventory.yml`, an
-encrypted-var stub, and `site.yml`) lives in [`examples/load-key/`](examples/load-key/) —
-`cd` in and follow its README to create the vaulted key and load it.
+- **unlock** first loads the key into a short-lived **probe agent** — this validates the
+  key + passphrase without touching your real agent, and captures the public key that
+  `lock` later deletes by (`ssh-keygen -y` can't read a pipe, so a probe agent is the
+  only disk-free way to derive it). The probe agent is killed in `always`.
+- **Inherited agent first, spawn as rescue.** If `SSH_AUTH_SOCK` points at a reachable
+  agent, the key goes there (Ansible's SSH connections inherit that socket and just
+  work). If not — headless/CI — a throwaway agent is spawned and the play's connections
+  are pointed at it via `ansible_ssh_common_args` `-o IdentityAgent=...`.
+- **Passphrases without expect.** An encrypted key is unlocked via a static
+  `SSH_ASKPASS` helper script that echoes an environment variable — the helper contains
+  no secret, and the passphrase exists only in the task's process environment.
+  `SSH_ASKPASS_REQUIRE=force` needs OpenSSH ≥ 8.4 (RHEL 9 ships 8.7); `DISPLAY` is also
+  set so older releases take the askpass path too (no TTY under Ansible).
+- **Idempotent.** Re-adding a present key is a no-op (the agent dedupes); unlock reports
+  `changed` only when the key's blob wasn't in the agent before. lock treats
+  already-gone as ok.
+- **lock** kills the spawned agent if unlock created one; otherwise it deletes exactly
+  the key unlock loaded (`ssh-add -d /dev/stdin` with the captured public key — public
+  material, and still nothing on disk).
 
 ## Notes
 
+- `unlock`/`lock` state is carried in host facts on the play's first host — run both in
+  the **same play** (the `pre_tasks`/`post_tasks` pattern above). `lock` in a different
+  play needs `ssh_agent_key_public`.
 - **`IdentitiesOnly yes` defeats the agent.** If `~/.ssh/config` pins
-  `IdentityFile … + IdentitiesOnly yes` for a host, ssh uses **only** that on-disk key
-  and ignores the agent — the loaded key won't be used until you relax those lines (or
-  retire the on-disk key). Verify with `ssh -v <host>`: an agent key shows as
-  `Offering public key: … agent`; an on-disk key shows `… explicit`.
-- Single key per invocation. Call the role once per key if you need several loaded.
-- Per-environment isolation: give each environment its own keypair and wire a different
-  `ssh_agent_key_content` per env from inventory, so a leaked key can't open every host.
+  `IdentityFile` + `IdentitiesOnly yes` for a host, ssh ignores agent keys. Verify with
+  `ssh -v <host>`: an agent key offers as `... agent`, an on-disk key as `... explicit`.
+- Set `ansible_pipelining: true` (or enable pipelining globally) if you want Ansible's
+  own module payloads off disk too — the key itself never touches disk either way.
+- One key per unlock/lock pair. Call the role once per key for several.

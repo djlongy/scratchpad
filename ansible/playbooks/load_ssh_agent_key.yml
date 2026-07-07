@@ -2,8 +2,10 @@
 # playbooks/load_ssh_agent_key.yml
 #
 # Decrypt a private SSH key from Ansible Vault and load it into the operator's
-# ssh-agent — the key stays off disk. On macOS the key lands in the persistent
-# launchd agent and is immediately usable from your terminal.
+# ssh-agent — the key stays off disk. It lands in your running agent and is
+# immediately usable from your terminal. This is the load-only flow; to bracket
+# a play (unlock at start, lock at end) see the role README's
+# pre_tasks/post_tasks pattern (tasks_from: unlock / lock).
 #
 # Usage:
 #   ansible-playbook -i inventories/hosts.yml playbooks/load_ssh_agent_key.yml
