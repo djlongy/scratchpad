@@ -1,25 +1,24 @@
 ---
 # roles/ssh_agent_key/defaults/main.yml
 #
-# Unlock/lock a private SSH key in your running ssh-agent, straight from
-# memory — the key never touches disk. The role uses the agent the play
-# inherited (your shell's SSH_AUTH_SOCK); it never spawns agents or reads
-# anything else from the environment.
+# Unlock/lock a private SSH key in ssh-agent, straight from memory — the key
+# never touches disk. Expects a RAW (passphrase-less) key that lives encrypted
+# in Ansible Vault; the vault password (--ask-vault-pass / -e @vault.yml) is
+# the thing that protects it at rest.
 
 # REQUIRED (unlock). Private key text (PEM / OpenSSH). Wire this from a vaulted
 # variable in the calling play. Never hardcode a key here.
 ssh_agent_key_content: ""
 
-# Passphrase for an encrypted key, from a vaulted variable. Handed to ssh-add
-# through its SSH_ASKPASS hook (files/askpass.sh) — never written to disk,
-# never on a command line. Leave empty for an unencrypted key.
-ssh_agent_key_passphrase: ""
-
 # Key lifetime in the agent, in seconds. 0 = stays until locked or the agent
-# restarts. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
+# stops. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
 ssh_agent_key_lifetime: 0
 
 # LOCK ONLY. lock removes the key unlock added in this play; set this to a
 # public key line ("ssh-ed25519 AAAA... comment") to remove a key that was
 # loaded some other way.
 ssh_agent_key_public: ""
+
+# OUTPUT (set by unlock when it had to spawn an agent): the spawned agent's
+# socket path. Reuse it outside Ansible with: export SSH_AUTH_SOCK=<value>
+# ssh_agent_key_sock: (unset unless unlock spawned an agent)

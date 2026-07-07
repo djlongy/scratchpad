@@ -3,13 +3,12 @@ galaxy_info:
   role_name: ssh_agent_key
   author: djlongy
   description: >-
-    Unlocks/locks a private SSH key in your running ssh-agent straight from
-    memory — the key is fed to ssh-add over stdin and never touches disk.
-    unlock at the start of a play (pre_tasks), lock at the end (post_tasks);
-    passphrase-protected keys are supported via ssh-add's SSH_ASKPASS hook.
-    Runs on the control node with the key supplied from an Ansible Vault
-    variable; uses the play's inherited agent (headless runs: wrap the play,
-    ssh-agent ansible-playbook site.yml).
+    Unlocks/locks a private SSH key in ssh-agent straight from memory — the
+    key is fed to ssh-add over stdin and never touches disk. unlock at the
+    start of a play (pre_tasks), lock at the end (post_tasks). Runs on the
+    control node with a raw (passphrase-less) key supplied from an Ansible
+    Vault variable; uses the play's inherited agent, or spawns one that
+    persists after the run when none is available.
   license: MIT
   min_ansible_version: "2.14"
   platforms:

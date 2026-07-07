@@ -5,7 +5,8 @@
 # stdin (agents delete by public key; nothing touches disk). If unlock added
 # nothing — the key was already in the agent, or unlock never ran — there is
 # nothing of ours to remove and the task skips. To lock a key loaded outside
-# this play, pass its public line in ssh_agent_key_public.
+# this play, pass its public line in ssh_agent_key_public. An agent unlock
+# spawned is left running (only the key is removed).
 #
 # Call it bare from post_tasks:
 #   - ansible.builtin.import_role: {name: ssh_agent_key, tasks_from: lock}
@@ -14,6 +15,9 @@
   ansible.builtin.command:
     cmd: ssh-add -d /dev/stdin
     stdin: "{{ _ssh_agent_key_target }}"
+  environment: >-
+    {{ {'SSH_AUTH_SOCK': ssh_agent_key_sock}
+       if (ssh_agent_key_sock | default('') | length > 0) else {} }}
   vars:
     _ssh_agent_key_target: "{{ ssh_agent_key_public or (_ssh_agent_key_added | default('')) }}"
   when: _ssh_agent_key_target | length > 0
