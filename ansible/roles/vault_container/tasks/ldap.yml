@@ -1,0 +1,112 @@
+---
+# LDAP — enable + configure the LDAP auth method (FreeIPA here), then map groups
+# to policies. Tenant groups (vault-<tenant>-<env>) map to [default, <tenant>-<env>]
+# automatically; add non-tenant groups via vault_ctr_ldap_extra_groups.
+# All writes go via docker exec on the first node (root token in env, forwarded
+# to the leader). The bind password is read declared-var-first, Vault as fallback
+# (ADR-0011), and passed to Vault over stdin so it never hits argv.
+
+- name: "LDAP | Resolve the bind password (declared var first, Vault fallback)"
+  ansible.builtin.set_fact:
+    _vault_ctr_ldap_bindpass: >-
+      {{ vault_ctr_ldap_bindpass
+         if (vault_ctr_ldap_bindpass | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret=' + vault_ctr_ldap_bindpass_vault_path) }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: "LDAP | Assert the bind password resolved"
+  ansible.builtin.assert:
+    that:
+      - _vault_ctr_ldap_bindpass | length > 0
+    fail_msg: "LDAP bind password is empty — set vault_ctr_ldap_bindpass or _bindpass_vault_path."
+    quiet: true
+  run_once: true
+
+- name: "LDAP | Read the root token from the first node"
+  ansible.builtin.slurp:
+    src: "{{ vault_ctr_keys_dir }}/root_token.txt"
+  register: _vault_ctr_ldap_slurp
+  delegate_to: "{{ vault_ctr_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "LDAP | Set the root token fact"
+  ansible.builtin.set_fact:
+    _vault_ctr_ldap_token: "{{ _vault_ctr_ldap_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "LDAP | List enabled auth methods"
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ vault_ctr_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_ldap_token }}"
+  register: _vault_ctr_auth_list
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+- name: "LDAP | Enable the LDAP auth method"
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ vault_ctr_name }} vault auth enable ldap"
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_ldap_token }}"
+  when: "'ldap/' not in (_vault_ctr_auth_list.stdout | from_json).keys()"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+- name: "LDAP | Configure the LDAP auth method"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ vault_ctr_name }} vault write auth/ldap/config
+      url={{ vault_ctr_ldap_url }}
+      binddn={{ vault_ctr_ldap_binddn }}
+      bindpass=-
+      userdn={{ vault_ctr_ldap_userdn }}
+      userattr={{ vault_ctr_ldap_userattr }}
+      groupdn={{ vault_ctr_ldap_groupdn }}
+      groupattr={{ vault_ctr_ldap_groupattr }}
+      groupfilter={{ vault_ctr_ldap_groupfilter }}
+      starttls={{ vault_ctr_ldap_starttls | bool | lower }}
+      insecure_tls={{ vault_ctr_ldap_insecure_tls | bool | lower }}
+    stdin: "{{ _vault_ctr_ldap_bindpass }}"
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_ldap_token }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+- name: "LDAP | Map each tenant's LDAP group to its policy"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }} vault write
+      auth/ldap/groups/{{ vault_ctr_ldap_group_pattern | replace('{tenant}', item.tenant) | replace('{env}', item.env) }}
+      policies=default,{{ item.tenant }}-{{ item.env }}
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_ldap_token }}"
+  loop: "{{ vault_ctr_tenants }}"
+  loop_control:
+    label: "{{ item.tenant }}-{{ item.env }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+- name: "LDAP | Map extra (non-tenant) LDAP groups"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }} vault write
+      auth/ldap/groups/{{ item.group }} policies={{ item.policies | join(',') }}
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_ldap_token }}"
+  loop: "{{ vault_ctr_ldap_extra_groups }}"
+  loop_control:
+    label: "{{ item.group }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"

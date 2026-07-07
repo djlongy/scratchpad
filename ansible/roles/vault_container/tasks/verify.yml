@@ -1,0 +1,72 @@
+---
+# Verify — confirm each node is unsealed and, for HA, that all peers joined.
+
+- name: "Wait for every node to be unsealed (active or standby)"
+  ansible.builtin.uri:
+    url: "{{ vault_ctr_scheme }}://127.0.0.1:{{ vault_ctr_api_port }}/v1/sys/health"
+    validate_certs: false
+    status_code: [200, 429]
+  register: _vault_ctr_final_health
+  until: _vault_ctr_final_health.status in [200, 429]
+  retries: 30
+  delay: 5
+
+- name: "Verify | Read the root token from the first node"
+  ansible.builtin.slurp:
+    src: "{{ vault_ctr_keys_dir }}/root_token.txt"
+  register: _verify_tok
+  delegate_to: "{{ vault_ctr_first_node }}"
+  run_once: true
+  no_log: true
+  when: vault_ctr_is_ha | bool
+
+- name: "Verify | Set the token fact"
+  ansible.builtin.set_fact:
+    _verify_root_token: "{{ _verify_tok.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+  when: vault_ctr_is_ha | bool
+
+- name: "List Raft peers on the leader (HA only)"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }}
+      vault operator raft list-peers -format=json
+  environment:
+    VAULT_TOKEN: "{{ _verify_root_token }}"
+  register: _vault_ctr_peers
+  # Retry: a legitimate restart (e.g. a cert/config change earlier in the run)
+  # can trigger a Raft re-election, and list-peers needs an active leader — ride
+  # out the election window rather than fail spuriously.
+  until: _vault_ctr_peers.rc == 0
+  retries: 12
+  delay: 5
+  changed_when: false
+  failed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+  when: vault_ctr_is_ha | bool
+
+- name: "Assert all nodes joined the Raft cluster (HA only)"
+  ansible.builtin.assert:
+    that:
+      - _vault_ctr_peers.rc == 0
+      - (_vault_ctr_peers.stdout | from_json).data.config.servers | length == (vault_ctr_node_count | int)
+    fail_msg: >-
+      Expected {{ vault_ctr_node_count }} Raft peers but the leader reports a
+      different count. Inspect `vault operator raft list-peers` on
+      {{ vault_ctr_first_node }}.
+    quiet: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+  when: vault_ctr_is_ha | bool
+
+- name: "Report cluster status"
+  ansible.builtin.debug:
+    msg: >-
+      vault_container ready:
+      {{ vault_ctr_node_count }}-node
+      {{ 'Raft HA cluster' if vault_ctr_is_ha | bool else 'standalone Vault' }}.
+      Init material on {{ vault_ctr_first_node }}:{{ vault_ctr_keys_dir }}/vault_init.json
+  run_once: true

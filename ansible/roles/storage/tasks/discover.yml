@@ -6,6 +6,21 @@
 # records whether the volume's stack already exists. Output: _storage_resolved
 # (each input volume + _disk, _part_dev, _pv, _dm_dev, _exists, _vg_exists).
 
+# ── Reset accumulators (MUST be first) ───────────────────────────────────
+# _storage_disks / _storage_pv_map / _storage_resolved are built by APPENDING
+# (x | default([]) + [item]). set_fact values persist across plays for a host,
+# so a SECOND invocation of this role in the same playbook run (e.g. an explicit
+# storage play followed by baseline's own storage phase) would append to the
+# PREVIOUS run's lists — re-introducing a stale volume entry whose _exists was
+# computed when the disk was still blank, which then trips the FRESH guard on an
+# already-provisioned disk. Reset here so every invocation starts clean.
+- name: Reset per-run discovery accumulators
+  ansible.builtin.set_fact:
+    _storage_disks: []
+    _storage_pv_map: []
+    _storage_resolved: []
+    _storage_disk_report: {}
+
 # ── Root disk(s) — always excluded from auto-selection / provisioning ────
 - name: Identify the physical disk(s) backing /
   ansible.builtin.shell:

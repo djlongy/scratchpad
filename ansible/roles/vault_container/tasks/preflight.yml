@@ -1,0 +1,74 @@
+---
+# Preflight — validate prerequisites and derive the scaling topology.
+# Tagged `always` (via main.yml) so the derived facts exist for every phase,
+# even when the caller runs a single tag like --tags deploy.
+
+- name: "Assert at least one cluster node is defined"
+  ansible.builtin.assert:
+    that:
+      - vault_ctr_nodes | length > 0
+    fail_msg: >-
+      vault_ctr_nodes is empty. It defaults to the play's hosts; target the
+      Vault host(s) or pin vault_ctr_nodes in inventory.
+    quiet: true
+
+- name: "Derive cluster topology facts"
+  ansible.builtin.set_fact:
+    vault_ctr_node_count: "{{ vault_ctr_nodes | length }}"
+    vault_ctr_is_ha: "{{ (vault_ctr_nodes | length | int) > 1 }}"
+    vault_ctr_first_node: "{{ vault_ctr_nodes | first }}"
+    vault_ctr_scheme: "{{ 'https' if (vault_ctr_tls_enabled | bool) else 'http' }}"
+
+- name: "Announce resolved topology"
+  ansible.builtin.debug:
+    msg: >-
+      vault_container: {{ vault_ctr_node_count }} node(s) ->
+      {{ 'Raft HA' if (vault_ctr_is_ha | bool) else 'standalone (single server)' }};
+      first node = {{ vault_ctr_first_node }}; scheme = {{ vault_ctr_scheme }}
+  run_once: true
+
+- name: "WARN if the play looks limited (topology may be collapsed)"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: ansible_limit is set ({{ ansible_limit }}). vault_ctr_nodes
+      defaults to the play's hosts, so a --limit run can silently derive a
+      smaller/standalone topology than the real cluster. Pin vault_ctr_nodes
+      explicitly in inventory if this run should still see the full cluster.
+  run_once: true
+  when: ansible_limit is defined
+
+- name: "Check the data mount is a real mountpoint"
+  ansible.builtin.command:
+    cmd: "findmnt --noheadings --output TARGET --target {{ vault_ctr_data_mount }}"
+  register: _vault_ctr_findmnt
+  changed_when: false
+  failed_when: false
+
+- name: "Assert the second disk is mounted at the data mount"
+  ansible.builtin.assert:
+    that:
+      - _vault_ctr_findmnt.rc == 0
+      - (_vault_ctr_findmnt.stdout | trim) == vault_ctr_data_mount
+    fail_msg: >-
+      {{ vault_ctr_data_mount }} is not a dedicated mountpoint (findmnt ->
+      '{{ _vault_ctr_findmnt.stdout | trim }}'). Provision + mount the second
+      disk there first (e.g. via the `storage` role), or set
+      vault_ctr_require_mounted=false to bypass this guard.
+    quiet: true
+  when: vault_ctr_require_mounted | bool
+
+- name: "Check Docker Compose is available on the host"
+  ansible.builtin.command:
+    cmd: "docker compose version"
+  register: _vault_ctr_compose_check
+  changed_when: false
+  failed_when: false
+
+- name: "Assert Docker + Compose plugin are installed"
+  ansible.builtin.assert:
+    that:
+      - _vault_ctr_compose_check.rc == 0
+    fail_msg: >-
+      `docker compose` is not available. Install the Docker engine + compose
+      plugin before this role (e.g. compose the `docker` role ahead of it).
+    quiet: true

@@ -73,6 +73,16 @@
       mode: "{{ storage_default_mode }}"
   tags: [storage, always]
 
+# Reset the accumulator FIRST — set_fact persists across plays for a host, so a
+# 2nd storage invocation in one run (explicit storage play + baseline's storage
+# phase) would append to the previous run's list and double every volume. Must
+# live here (before normalise, which consumes _storage_input), NOT in
+# discover.yml's reset block, which runs AFTER normalise.
+- name: Reset the normalised-volume accumulator (leaks across plays otherwise)
+  ansible.builtin.set_fact:
+    _storage_volumes: []
+  tags: [storage, always]
+
 - name: Normalise volumes (defaults overridden by each entry)
   ansible.builtin.set_fact:
     _storage_volumes: "{{ (_storage_volumes | default([])) + [_storage_volume_defaults | combine(item)] }}"

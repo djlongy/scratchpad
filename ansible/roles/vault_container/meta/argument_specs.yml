@@ -1,142 +1,254 @@
 ---
 argument_specs:
   main:
-    short_description: "Run HashiCorp Vault (Raft HA) as a Docker container"
+    short_description: Auto-scaling containerized HashiCorp Vault on a persistent disk.
     description:
-      - >-
-        Deploys HashiCorp Vault as a Docker container with self-signed TLS,
-        Shamir unseal + auto-unseal on boot, KV v2 mounts, ACL policies, and
-        optional userpass / AppRole / LDAP auth.
-      - >-
-        Phase task files are tagged so callers can target install, config,
-        TLS, init, mounts, policies, and auth independently.
-
+      - Deploys Vault as a Docker container with all state on a persistent
+        second disk. The topology auto-scales from the play's host count.
     options:
-      vault_container_docker_image:
+      vault_ctr_image:
         type: str
-        description: "Vault container image. Default hashicorp/vault:1.19."
-      vault_container_version:
+        description: Vault container image reference.
+        default: "hashicorp/vault:1.19"
+      vault_ctr_name:
         type: str
-        description: "Vault CLI version installed on the host. Default 1.19.5."
-      vault_container_cli_arch:
+        description: Container and compose service name.
+        default: "vault"
+      vault_ctr_data_mount:
         type: str
-        description: "CLI arch for the release zip. Default amd64."
-      vault_container_cli_install_dir:
-        type: str
-        description: "Where the vault CLI binary is installed. Default /opt/vault-cli."
-      vault_container_cli_zip_url:
-        type: str
-        description: "HashiCorp release zip URL (derived from version + arch)."
-      vault_container_name:
-        type: str
-        description: "Docker container name. Default vault."
-      vault_container_restart_policy:
-        type: str
-        description: "Container restart policy. Default unless-stopped."
-      vault_container_extra_args:
-        type: list
-        elements: str
-        description: "Extra docker run args (IPC_LOCK, SKIP_SETCAP/SKIP_CHOWN)."
-      vault_container_domain:
-        type: str
-        description: "Service domain for TLS SANs / external addr. Set in inventory."
-      vault_container_api_port:
-        type: int
-        description: "Vault API port. Default 8200."
-      vault_container_cluster_port:
-        type: int
-        description: "Vault cluster (Raft) port. Default 8201."
-      vault_container_host_data_dir:
-        type: str
-        description: "Host dir bind-mounted as Vault storage. Default /opt/vault."
-      vault_container_keys_dir:
-        type: str
-        description: "Host dir holding unseal keys/root token. Default <data_dir>/keys."
-      vault_container_config_dir:
-        type: str
-        description: "Host config dir. Default /etc/vault.d."
-      vault_container_certs_dir:
-        type: str
-        description: "Host TLS certs dir. Default <config_dir>/certs."
-      vault_container_init_key_shares:
-        type: int
-        description: "Shamir key shares at init. Default 1 (bump for prod)."
-      vault_container_init_key_threshold:
-        type: int
-        description: "Shamir unseal threshold at init. Default 1 (bump for prod)."
-      vault_container_unseal_max_retries:
-        type: int
-        description: "auto-unseal: max retries on boot. Default 30."
-      vault_container_unseal_sleep_interval:
-        type: int
-        description: "auto-unseal: seconds between retries. Default 2."
-      vault_container_kv_mounts:
-        type: list
-        elements: dict
-        description: "KV v2 mounts to create. Each: {mount, description}."
-      vault_container_policies:
-        type: list
-        elements: dict
         description: >-
-          ACL policies to apply. Each: {name, description}; name maps to
-          templates/policies/<name>.hcl.j2.
-      vault_container_userpass_enabled:
+          Mount point of the persistent second disk. Must be a real mountpoint
+          (guarded by preflight); all Vault state lives under it.
+        default: "/opt/vault"
+      vault_ctr_require_mounted:
         type: bool
+        description: Fail preflight unless data_mount is a dedicated mountpoint.
         default: true
-        description: "Enable userpass auth (break-glass admin)."
-      vault_container_userpass_admin_user:
+      vault_ctr_api_port:
+        type: int
+        description: Vault API / listener port.
+        default: 8200
+      vault_ctr_cluster_port:
+        type: int
+        description: Vault Raft cluster port.
+        default: 8201
+      vault_ctr_advertise_addr:
         type: str
-        description: "Break-glass userpass username. Default svc-superadmin."
-      vault_container_userpass_admin_password:
-        type: str
-        description: "Break-glass password — supply encrypted via vault.yml."
-      vault_container_userpass_admin_policies:
+        description: >-
+          Address peers and clients use to reach this node. Defaults to the
+          node IP (ansible_host); set to an FQDN where DNS resolves.
+        default: "{{ ansible_host }}"
+      vault_ctr_nodes:
         type: list
         elements: str
-        description: "Policies bound to the break-glass user."
-      vault_container_userpass_admin_ttl:
+        description: >-
+          Cluster members. Defaults to the play's hosts (ansible_play_hosts_all)
+          so 1 host yields standalone Raft and N hosts yield Raft HA. Pin to
+          decouple the cluster from --limit.
+      vault_ctr_key_shares:
+        type: int
+        description: Number of unseal key shares generated at init.
+        default: 1
+      vault_ctr_key_threshold:
+        type: int
+        description: Unseal key shares required to unseal.
+        default: 1
+      vault_ctr_auto_unseal:
+        type: bool
+        description: >-
+          Install a systemd unit that unseals Vault on boot (self-healing after a
+          reboot). Places the unseal key on every node; false leaves nodes sealed
+          after a reboot until `--tags unseal`.
+        default: false
+      vault_ctr_autounseal_keys_file:
         type: str
-        description: "Break-glass token TTL. Default 1h."
-      vault_container_userpass_admin_max_ttl:
+        description: Host path the auto-unseal keys are written to (when enabled).
+        default: "{{ vault_ctr_keys_dir }}/unseal_keys"
+      vault_ctr_autounseal_script_path:
         type: str
-        description: "Break-glass token max TTL. Default 4h."
-      vault_container_approles:
+        description: Host path the auto-unseal boot script is installed to.
+        default: "/usr/local/bin/vault-container-unseal.sh"
+      vault_ctr_manage_policies:
+        type: bool
+        description: Ensure kv-<env> mounts + write the multi-tenant/extra ACL policies.
+        default: false
+      vault_ctr_kv_mount_prefix:
+        type: str
+        description: KV mount name prefix; a tenant's mount is <prefix>-<env>.
+        default: "kv"
+      vault_ctr_tenants:
         type: list
         elements: dict
         description: >-
-          AppRole accounts for automation. Each: {name, policies, token_ttl,
-          token_max_ttl}.
-      vault_container_ldap_enabled:
+          {tenant, env} pairs. Each yields a policy "<tenant>-<env>" scoped to
+          <prefix>-<env>/data/<tenant>/* and an LDAP group mapping.
+        default: []
+      vault_ctr_policies:
+        type: list
+        elements: dict
+        description: Extra non-tenant policies ({name, template} under templates/policies/).
+        default: []
+      vault_ctr_admin_kv_mounts:
+        type: list
+        elements: str
+        description: KV mounts the bundled admin.hcl.j2 policy grants full CRUD on.
+        default: []
+      vault_ctr_ldap_enabled:
         type: bool
+        description: Enable + configure the LDAP auth method and group mappings.
         default: false
-        description: "Enable LDAP auth method."
-      vault_container_ldap_url:
+      vault_ctr_ldap_url:
         type: str
-        description: "LDAP/LDAPS URL."
-      vault_container_ldap_userdn:
+        description: LDAP server URL (e.g. ldaps://host).
+        default: ""
+      vault_ctr_ldap_binddn:
         type: str
-        description: "Base DN for user search."
-      vault_container_ldap_groupdn:
+        description: Bind DN used to search the directory.
+        default: ""
+      vault_ctr_ldap_bindpass:
         type: str
-        description: "Base DN for group search."
-      vault_container_ldap_userattr:
+        description: Bind password (declared-var-first; else _bindpass_vault_path).
+        default: ""
+      vault_ctr_ldap_bindpass_vault_path:
         type: str
-        description: "User attribute. Default uid."
-      vault_container_ldap_groupattr:
+        description: HC-Vault fallback for the bind password ("mount/data/path:field").
+        default: ""
+      vault_ctr_ldap_userdn:
         type: str
-        description: "Group attribute. Default cn."
-      vault_container_ldap_groupfilter:
+        description: Base DN for user search.
+        default: ""
+      vault_ctr_ldap_groupdn:
         type: str
-        description: "LDAP group search filter."
-      vault_container_ldap_binddn:
+        description: Base DN for group search.
+        default: ""
+      vault_ctr_ldap_group_pattern:
         type: str
-        description: "Bind DN for LDAP search."
-      vault_container_ldap_bindpass:
-        type: str
-        description: "Bind password — supply encrypted via vault.yml."
-      vault_container_ldap_insecure_tls:
+        description: LDAP group name pattern for a tenant ({tenant}/{env} placeholders).
+        default: "vault-{tenant}-{env}"
+      vault_ctr_ldap_extra_groups:
+        type: list
+        elements: dict
+        description: Non-tenant LDAP group->policy mappings ({group, policies}).
+        default: []
+      vault_ctr_ldap_insecure_tls:
         type: bool
-        description: "Skip LDAPS cert verification (closed-network self-signed CA)."
-      vault_container_ldap_group_policies:
-        type: dict
-        description: "Map of LDAP group name → list of Vault policies."
+        description: Skip LDAPS cert verification (self-signed directory CA).
+        default: true
+      vault_ctr_tls_enabled:
+        type: bool
+        description: Serve the Vault API over TLS.
+        default: true
+      vault_ctr_tls_generate:
+        type: bool
+        description: >-
+          Self-sign a CA + multi-SAN server certificate on the controller. When
+          false, supply vault_ctr_tls_ca_cert / _server_cert / _server_key.
+        default: true
+      vault_ctr_tls_local_dir:
+        type: str
+        description: Controller-side directory persisting the generated CA/cert.
+      vault_ctr_tls_ca_cert:
+        type: str
+        description: Controller path to a CA cert (when tls_generate=false).
+        default: ""
+      vault_ctr_tls_server_cert:
+        type: str
+        description: Controller path to a server cert (when tls_generate=false).
+        default: ""
+      vault_ctr_tls_server_key:
+        type: str
+        description: Controller path to a server key (when tls_generate=false).
+        default: ""
+      vault_ctr_tls_extra_sans:
+        type: list
+        elements: str
+        description: >-
+          Extra SAN entries (e.g. "DNS:vault.dev.example.com", "IP:10.0.0.55").
+          Node IPs and short hostnames are added automatically.
+        default: []
+      vault_ctr_domain:
+        type: str
+        description: When set, "<host>.<domain>" is added to cert SANs per node.
+        default: ""
+      vault_ctr_ui:
+        type: bool
+        description: Enable the Vault web UI.
+        default: true
+      vault_ctr_disable_mlock:
+        type: bool
+        description: Disable mlock (typical for containers).
+        default: true
+      vault_ctr_manage_firewall:
+        type: bool
+        description: Open the API + cluster ports via firewalld when present.
+        default: true
+      vault_ctr_backup_enabled:
+        type: bool
+        description: Install a systemd timer that takes scheduled Raft snapshots (leader-only).
+        default: true
+      vault_ctr_backup_dir:
+        type: str
+        description: Host path snapshots are written to (a local path or an NFS mountpoint).
+        default: "{{ vault_ctr_data_mount }}/backups"
+      vault_ctr_backup_schedule:
+        type: str
+        description: systemd OnCalendar expression for the backup timer.
+        default: "*-*-* 02:00:00"
+      vault_ctr_backup_retention_days:
+        type: int
+        description: Delete snapshots older than this many days.
+        default: 7
+      vault_ctr_backup_nfs_server:
+        type: str
+        description: NFS server for the backup target; set with _export to mount it at the backup dir.
+        default: ""
+      vault_ctr_backup_nfs_export:
+        type: str
+        description: NFS export path for the backup target.
+        default: ""
+      vault_ctr_backup_nfs_opts:
+        type: str
+        description: Mount options for the NFS backup share.
+        default: "rw,hard,nfsvers=4.1,_netdev,nofail"
+      vault_ctr_restore_snapshot:
+        type: str
+        description: >-
+          Snapshot to restore with --tags restore. "latest"/empty = newest
+          across all nodes; else an absolute .snap path (on the leader).
+        default: "latest"
+      vault_ctr_backup_policy_name:
+        type: str
+        description: Vault policy name for the scoped backup token (snapshot read-only).
+        default: "vault-backup"
+      vault_ctr_backup_token_period:
+        type: str
+        description: Period (TTL) of the periodic backup token; the script renews it each run.
+        default: "768h"
+      vault_ctr_backup_token_file:
+        type: str
+        description: Host path the scoped backup token is written to on each node.
+        default: "{{ vault_ctr_keys_dir }}/backup_token"
+      vault_ctr_backup_script_path:
+        type: str
+        description: Host path the backup script is installed to.
+        default: "/usr/local/bin/vault-container-backup.sh"
+      vault_ctr_tls_cn:
+        type: str
+        description: Common name on the self-signed server certificate.
+        default: "vault"
+      vault_ctr_tls_validity_days:
+        type: int
+        description: Validity (days) of the generated CA + server certificate.
+        default: 3650
+      vault_ctr_log_level:
+        type: str
+        description: Vault server log level.
+        default: "info"
+      vault_ctr_log_format:
+        type: str
+        description: Vault server log format (json/standard).
+        default: "json"
+      vault_ctr_telemetry_enabled:
+        type: bool
+        description: Emit the Prometheus telemetry stanza in vault.hcl.
+        default: true

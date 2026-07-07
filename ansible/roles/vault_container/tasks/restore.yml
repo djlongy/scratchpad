@@ -1,0 +1,195 @@
+---
+# Restore — roll the cluster back to a Raft snapshot (DESTRUCTIVE, opt-in).
+# Gated by the `never` tag: only runs with `--tags restore`.
+#
+# For a SAME-CLUSTER rollback (identical membership, same unseal keys — the case
+# these scheduled snapshots produce) the correct, minimal operation is a single
+# `raft snapshot restore -force` on the ACTIVE leader: Vault replaces the data
+# in place and replicates it to the followers automatically. No follower wipe,
+# container restart or re-unseal is needed (and doing so would break quorum).
+#
+#   ansible-playbook ... --tags restore [-e vault_ctr_restore_snapshot=/path.snap]
+# (omit / set "latest" to restore the newest snapshot in the backup dir.)
+
+- name: "Restore | Find the active leader"
+  ansible.builtin.command:
+    cmd: "docker exec {{ vault_ctr_name }} vault status -format=json"
+  register: _rst_status
+  changed_when: false
+  failed_when: false
+
+- name: "Restore | Identify the leader host"
+  ansible.builtin.set_fact:
+    _rst_leader: "{{ item }}"
+  loop: "{{ vault_ctr_nodes }}"
+  when: (hostvars[item]._rst_status.stdout | default('{}') | from_json).is_self | default(false)
+  run_once: true
+
+- name: "Restore | Assert an active leader was found"
+  ansible.builtin.assert:
+    that:
+      - _rst_leader is defined
+    fail_msg: >-
+      No active Raft leader found — the cluster must be up and unsealed to
+      restore. Bring it up first (a normal run), then retry --tags restore.
+    quiet: true
+  run_once: true
+
+# "latest" must be resolved ACROSS ALL NODES, not just the leader: with a
+# per-node local backup dir, only the leader snapshots and only the leader
+# prunes, so after a leadership flap-back a former leader can hold the newest
+# snapshot. Filenames are timestamped (vault-snapshot-YYYYMMDD-HHMMSS.snap), so
+# a lexical sort of the full paths orders them by time.
+- name: "Restore | Find each node's newest snapshot"
+  ansible.builtin.shell:
+    cmd: "ls -t {{ vault_ctr_backup_dir }}/vault-snapshot-*.snap 2>/dev/null | head -1"
+  register: _rst_node_latest
+  changed_when: false
+  when: vault_ctr_restore_snapshot in ['', 'latest']
+
+- name: "Restore | Reset the cross-node candidate list"
+  ansible.builtin.set_fact:
+    _rst_snaps: []
+  run_once: true
+
+- name: "Restore | Collect each node's newest snapshot"
+  ansible.builtin.set_fact:
+    _rst_snaps: >-
+      {{ _rst_snaps
+         + ([{'node': item, 'path': (hostvars[item]._rst_node_latest.stdout | trim)}]
+            if (hostvars[item]._rst_node_latest.stdout | default('') | trim | length > 0) else []) }}
+  loop: "{{ vault_ctr_nodes }}"
+  run_once: true
+  when: vault_ctr_restore_snapshot in ['', 'latest']
+
+- name: "Restore | Choose the snapshot to restore (explicit path OR newest across nodes)"
+  ansible.builtin.set_fact:
+    _rst_chosen: >-
+      {{ {'node': _rst_leader, 'path': vault_ctr_restore_snapshot}
+         if (vault_ctr_restore_snapshot not in ['', 'latest'])
+         else (_rst_snaps | sort(attribute='path') | last) }}
+  run_once: true
+  when: >-
+    (vault_ctr_restore_snapshot not in ['', 'latest']) or (_rst_snaps | length > 0)
+
+- name: "Restore | Assert a snapshot was found"
+  ansible.builtin.assert:
+    that:
+      - _rst_chosen is defined
+      - (_rst_chosen.path | default('') | trim) | length > 0
+    fail_msg: >-
+      No snapshot to restore. Pass -e vault_ctr_restore_snapshot=/abs/path.snap
+      or ensure {{ vault_ctr_backup_dir }} on some node holds snapshots.
+    quiet: true
+  run_once: true
+
+- name: "Restore | Announce"
+  ansible.builtin.debug:
+    msg: >-
+      Restoring {{ _rst_chosen.path | basename }} (from {{ _rst_chosen.node }})
+      on leader {{ _rst_leader }} — {{ vault_ctr_node_count }} node(s)
+  run_once: true
+
+# Stage the snapshot onto the LEADER host if it lives on another node.
+- name: "Restore | Fetch the chosen snapshot to the controller (off-leader)"
+  ansible.builtin.fetch:
+    src: "{{ _rst_chosen.path }}"
+    dest: "/tmp/vault-ctr-restore-staged.snap"
+    flat: true
+  delegate_to: "{{ _rst_chosen.node }}"
+  run_once: true
+  when: _rst_chosen.node != _rst_leader
+
+- name: "Restore | Stage it onto the leader host (off-leader)"
+  ansible.builtin.copy:
+    src: "/tmp/vault-ctr-restore-staged.snap"
+    dest: "/tmp/vault-ctr-restore.snap"
+    mode: "0600"
+  delegate_to: "{{ _rst_leader }}"
+  run_once: true
+  when: _rst_chosen.node != _rst_leader
+
+- name: "Restore | Resolve the leader-side snapshot path"
+  ansible.builtin.set_fact:
+    _rst_leader_path: "{{ _rst_chosen.path if _rst_chosen.node == _rst_leader else '/tmp/vault-ctr-restore.snap' }}"
+  run_once: true
+
+- name: "Restore | Read the root token from the first node"
+  ansible.builtin.slurp:
+    src: "{{ vault_ctr_keys_dir }}/root_token.txt"
+  register: _rst_tok
+  delegate_to: "{{ vault_ctr_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "Restore | Set the token fact"
+  ansible.builtin.set_fact:
+    _rst_token: "{{ _rst_tok.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+# ── Restore on the active leader — replicates to followers automatically ─────
+- name: "Restore | Copy the snapshot into the leader container"
+  ansible.builtin.command:
+    cmd: "docker cp {{ _rst_leader_path }} {{ vault_ctr_name }}:/tmp/restore.snap"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ _rst_leader }}"
+
+- name: "Restore | Apply the snapshot (-force) on the leader"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }}
+      vault operator raft snapshot restore -force /tmp/restore.snap
+  environment:
+    VAULT_TOKEN: "{{ _rst_token }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ _rst_leader }}"
+
+- name: "Restore | Allow the restored state to replicate"
+  ansible.builtin.pause:
+    seconds: 8
+  run_once: true
+
+- name: "Restore | Confirm every node is still unsealed"
+  ansible.builtin.uri:
+    url: "{{ vault_ctr_scheme }}://127.0.0.1:{{ vault_ctr_api_port }}/v1/sys/health"
+    validate_certs: false
+    status_code: [200, 429]
+  register: _rst_health
+  retries: 20
+  delay: 5
+  until: _rst_health.status in [200, 429]
+
+- name: "Restore | Verify Raft membership on the leader"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }}
+      vault operator raft list-peers -format=json
+  environment:
+    VAULT_TOKEN: "{{ _rst_token }}"
+  register: _rst_peers
+  changed_when: false
+  failed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ _rst_leader }}"
+
+- name: "Restore | Report"
+  ansible.builtin.debug:
+    msg: >-
+      Restore complete from {{ _rst_chosen.path | basename }} (from
+      {{ _rst_chosen.node }}) on {{ _rst_leader }}. Raft peers:
+      {{ (_rst_peers.stdout | from_json).data.config.servers | length
+         if _rst_peers.rc == 0 else 'unavailable' }}/{{ vault_ctr_node_count }}
+  run_once: true
+
+- name: "Restore | Remove the in-container snapshot copy"
+  ansible.builtin.command:
+    cmd: "docker exec {{ vault_ctr_name }} rm -f /tmp/restore.snap"
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ _rst_leader }}"

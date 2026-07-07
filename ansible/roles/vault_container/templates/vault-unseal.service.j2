@@ -1,0 +1,18 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=vault_container — unseal Vault on boot
+After=docker.service network-online.target
+Wants=network-online.target
+Documentation=https://developer.hashicorp.com/vault/docs/concepts/seal
+
+[Service]
+Type=oneshot
+ExecStart={{ vault_ctr_autounseal_script_path }}
+RemainAfterExit=yes
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vault-container-unseal
+
+[Install]
+WantedBy=multi-user.target

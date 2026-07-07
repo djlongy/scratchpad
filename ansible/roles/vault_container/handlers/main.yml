@@ -1,9 +1,12 @@
 ---
-- name: Restart vault
-  ansible.builtin.service:
-    name: vault
-    state: restarted
+# Restart reloads the bind-mounted vault.hcl. Compose-file changes (image,
+# ports, volumes) are applied by `docker compose up -d` in deploy.yml.
+- name: Restart vault container
+  ansible.builtin.command:
+    cmd: "docker compose restart"
+    chdir: "{{ vault_ctr_data_mount }}"
+  changed_when: true
 
 - name: Reload systemd
-  ansible.builtin.systemd:
+  ansible.builtin.systemd_service:
     daemon_reload: true

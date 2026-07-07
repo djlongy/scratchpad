@@ -1,0 +1,44 @@
+---
+# Deploy — render config, bring up the container, wait until the API answers.
+
+- name: "Template the Vault HCL config"
+  ansible.builtin.template:
+    src: vault.hcl.j2
+    dest: "{{ vault_ctr_config_dir }}/vault.hcl"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vault container
+
+- name: "Template the docker-compose file"
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ vault_ctr_data_mount }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vault container
+
+- name: "Ensure the Vault container is running"
+  ansible.builtin.command:
+    cmd: "docker compose up -d"
+    chdir: "{{ vault_ctr_data_mount }}"
+  register: _vault_ctr_up
+  changed_when: >-
+    (['Started', 'Created', 'Recreated'] | select('in', _vault_ctr_up.stderr) | list | length > 0)
+    or (['Started', 'Created', 'Recreated'] | select('in', _vault_ctr_up.stdout) | list | length > 0)
+
+- name: "Apply any pending config changes (restart)"
+  ansible.builtin.meta: flush_handlers
+
+- name: "Wait for the Vault API to respond"
+  ansible.builtin.uri:
+    url: "{{ vault_ctr_scheme }}://127.0.0.1:{{ vault_ctr_api_port }}/v1/sys/health"
+    validate_certs: false
+    # 200 active · 429 standby · 501 not-initialized · 503 sealed — all mean
+    # the API is up. We only need the listener answering here.
+    status_code: [200, 429, 472, 473, 501, 503]
+  register: _vault_ctr_health
+  retries: 20
+  delay: 5
+  until: _vault_ctr_health.status in [200, 429, 472, 473, 501, 503]

@@ -1,0 +1,146 @@
+---
+# TLS — a self-signed CA + multi-SAN server certificate.
+#
+# Generated ONCE on the controller (the Ansible venv is guaranteed to have
+# `cryptography`), persisted in vault_ctr_tls_local_dir so re-runs reuse the
+# same CA, then distributed to every node's certs dir. Set
+# vault_ctr_tls_generate=false to supply your own cert/key/CA instead.
+
+# ── Derive SAN entries (identical on every host; no run_once needed) ──────
+- name: "Assemble certificate SAN hostnames and IPs"
+  ansible.builtin.set_fact:
+    _vault_ctr_san_dns: "{{ ['localhost'] + vault_ctr_nodes + _vault_ctr_fqdns }}"
+    _vault_ctr_san_ip: >-
+      {{ ['127.0.0.1'] + (vault_ctr_nodes | map('extract', hostvars, 'ansible_host') | list) }}
+  vars:
+    _vault_ctr_fqdns: >-
+      {{ [] if (vault_ctr_domain | length == 0)
+         else (vault_ctr_nodes | product(['.' + vault_ctr_domain]) | map('join', '') | list) }}
+
+- name: "Build the final SAN list"
+  ansible.builtin.set_fact:
+    vault_ctr_tls_sans: >-
+      {{ ((_vault_ctr_san_dns | map('regex_replace', '^', 'DNS:') | list)
+          + (_vault_ctr_san_ip | map('regex_replace', '^', 'IP:') | list)
+          + vault_ctr_tls_extra_sans) | unique }}
+
+# ── Self-signed generation (controller side) ─────────────────────────────
+- name: "Generate self-signed CA + server certificate on the controller"
+  when: vault_ctr_tls_generate | bool
+  delegate_to: localhost
+  become: false
+  run_once: true
+  block:
+    - name: "Ensure the local TLS directory exists"
+      ansible.builtin.file:
+        path: "{{ vault_ctr_tls_local_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "Generate the CA private key"
+      community.crypto.openssl_privatekey:
+        path: "{{ vault_ctr_tls_local_dir }}/ca.key"
+        type: RSA
+        size: 4096
+        mode: "0600"
+
+    - name: "Generate the CA signing request"
+      community.crypto.openssl_csr:
+        path: "{{ vault_ctr_tls_local_dir }}/ca.csr"
+        privatekey_path: "{{ vault_ctr_tls_local_dir }}/ca.key"
+        common_name: "vault_container CA"
+        basic_constraints:
+          - "CA:TRUE"
+        basic_constraints_critical: true
+        key_usage:
+          - keyCertSign
+          - cRLSign
+        key_usage_critical: true
+        mode: "0644"
+
+    - name: "Self-sign the CA certificate"
+      community.crypto.x509_certificate:
+        path: "{{ vault_ctr_tls_local_dir }}/ca.crt"
+        csr_path: "{{ vault_ctr_tls_local_dir }}/ca.csr"
+        privatekey_path: "{{ vault_ctr_tls_local_dir }}/ca.key"
+        provider: selfsigned
+        selfsigned_not_after: "+{{ vault_ctr_tls_validity_days }}d"
+        mode: "0644"
+
+    - name: "Generate the server private key"
+      community.crypto.openssl_privatekey:
+        path: "{{ vault_ctr_tls_local_dir }}/vault.key"
+        type: RSA
+        size: 2048
+        mode: "0600"
+
+    - name: "Generate the server signing request (multi-SAN)"
+      community.crypto.openssl_csr:
+        path: "{{ vault_ctr_tls_local_dir }}/vault.csr"
+        privatekey_path: "{{ vault_ctr_tls_local_dir }}/vault.key"
+        common_name: "{{ vault_ctr_tls_cn }}"
+        subject_alt_name: "{{ vault_ctr_tls_sans }}"
+        key_usage:
+          - digitalSignature
+          - keyEncipherment
+        extended_key_usage:
+          - serverAuth
+          - clientAuth
+        mode: "0644"
+
+    - name: "Sign the server certificate with the CA"
+      community.crypto.x509_certificate:
+        path: "{{ vault_ctr_tls_local_dir }}/vault.crt"
+        csr_path: "{{ vault_ctr_tls_local_dir }}/vault.csr"
+        ownca_path: "{{ vault_ctr_tls_local_dir }}/ca.crt"
+        ownca_privatekey_path: "{{ vault_ctr_tls_local_dir }}/ca.key"
+        provider: ownca
+        ownca_not_after: "+{{ vault_ctr_tls_validity_days }}d"
+        mode: "0644"
+
+- name: "Assert provided certificate paths when not generating"
+  ansible.builtin.assert:
+    that:
+      - vault_ctr_tls_ca_cert | length > 0
+      - vault_ctr_tls_server_cert | length > 0
+      - vault_ctr_tls_server_key | length > 0
+    fail_msg: >-
+      vault_ctr_tls_generate is false but one of vault_ctr_tls_ca_cert /
+      _server_cert / _server_key is unset.
+    quiet: true
+  when: not (vault_ctr_tls_generate | bool)
+
+# ── Resolve source paths and distribute to every node ────────────────────
+- name: "Resolve certificate source paths (controller)"
+  ansible.builtin.set_fact:
+    _vault_ctr_src_ca: "{{ (vault_ctr_tls_local_dir ~ '/ca.crt') if (vault_ctr_tls_generate | bool) else vault_ctr_tls_ca_cert }}"
+    _vault_ctr_src_cert: "{{ (vault_ctr_tls_local_dir ~ '/vault.crt') if (vault_ctr_tls_generate | bool) else vault_ctr_tls_server_cert }}"
+    _vault_ctr_src_key: "{{ (vault_ctr_tls_local_dir ~ '/vault.key') if (vault_ctr_tls_generate | bool) else vault_ctr_tls_server_key }}"
+
+- name: "Distribute the CA certificate to nodes"
+  ansible.builtin.copy:
+    src: "{{ _vault_ctr_src_ca }}"
+    dest: "{{ vault_ctr_certs_dir }}/ca.crt"
+    owner: "{{ vault_ctr_uid }}"
+    group: "{{ vault_ctr_gid }}"
+    mode: "0644"
+  notify: Restart vault container
+
+- name: "Distribute the server certificate to nodes"
+  ansible.builtin.copy:
+    src: "{{ _vault_ctr_src_cert }}"
+    dest: "{{ vault_ctr_certs_dir }}/vault.crt"
+    owner: "{{ vault_ctr_uid }}"
+    group: "{{ vault_ctr_gid }}"
+    mode: "0644"
+  notify: Restart vault container
+
+- name: "Distribute the server private key to nodes"
+  ansible.builtin.copy:
+    src: "{{ _vault_ctr_src_key }}"
+    dest: "{{ vault_ctr_certs_dir }}/vault.key"
+    owner: "{{ vault_ctr_uid }}"
+    group: "{{ vault_ctr_gid }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart vault container

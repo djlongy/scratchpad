@@ -1,21 +1,77 @@
 ---
-# Apply Vault ACL policies from templates/policies/<name>.hcl.j2.
-#
-# Each entry in vault_container_policies is just a name + description; the role
-# expects a matching template under templates/policies/<name>.hcl.j2
-# that gets rendered (so the policy can reference KV mount names from
-# vault_container_kv_mounts).
+# Policies — multi-tenant, environment-scoped ACL policies (+ optional extras).
+# Idempotent. All writes go via `docker exec` on the first node with the root
+# token in the process env (never argv); writes forward to the active leader.
 
-- name: Apply Vault ACL policies
-  community.hashi_vault.vault_write:
-    url: "https://{{ ansible_host }}:{{ vault_container_api_port }}"
-    token: "{{ _vault_root_token }}"
-    ca_cert: "{{ vault_container_certs_dir }}/ca.crt"
-    path: "sys/policies/acl/{{ item.name }}"
-    data:
-      policy: "{{ lookup('template', 'policies/' + item.name + '.hcl.j2') }}"
-  loop: "{{ vault_container_policies }}"
-  loop_control:
-    label: "{{ item.name }} — {{ item.description | default('') }}"
-  delegate_to: "{{ groups['vault_leader'][0] }}"
+- name: "Policies | Read the root token from the first node"
+  ansible.builtin.slurp:
+    src: "{{ vault_ctr_keys_dir }}/root_token.txt"
+  register: _vault_ctr_pol_slurp
+  delegate_to: "{{ vault_ctr_first_node }}"
   run_once: true
+  no_log: true
+
+- name: "Policies | Set the root token fact"
+  ansible.builtin.set_fact:
+    _vault_ctr_pol_token: "{{ _vault_ctr_pol_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+# ── Ensure the per-environment KV v2 mounts exist ────────────────────────────
+- name: "Policies | List existing secret mounts"
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ vault_ctr_name }} vault secrets list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_pol_token }}"
+  register: _vault_ctr_mounts
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+- name: "Policies | Enable the kv-<env> mount for each tenant environment"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }}
+      vault secrets enable -path={{ vault_ctr_kv_mount_prefix }}-{{ item }} kv-v2
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_pol_token }}"
+  loop: "{{ vault_ctr_tenants | map(attribute='env') | unique | list }}"
+  when: "(vault_ctr_kv_mount_prefix ~ '-' ~ item ~ '/') not in (_vault_ctr_mounts.stdout | from_json).keys()"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+# ── Write one scoped policy per tenant × environment ─────────────────────────
+- name: "Policies | Write each tenant policy (<tenant>-<env>)"
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ vault_ctr_name }}
+      vault policy write {{ item.tenant }}-{{ item.env }} -
+    stdin: "{{ lookup('template', 'policies/tenant.hcl.j2') }}"
+  vars:
+    _t: "{{ item }}"
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_pol_token }}"
+  loop: "{{ vault_ctr_tenants }}"
+  loop_control:
+    label: "{{ item.tenant }}-{{ item.env }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
+
+# ── Write any extra (non-tenant) policies ────────────────────────────────────
+- name: "Policies | Write extra policies"
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ vault_ctr_name }}
+      vault policy write {{ item.name }} -
+    stdin: "{{ lookup('template', 'policies/' + item.template) }}"
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_pol_token }}"
+  loop: "{{ vault_ctr_policies }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+{{ ansible_managed | comment }}
+# vault_container — unseal Vault on boot (systemd oneshot).
+# Waits for the container's API, then feeds the threshold unseal keys until the
+# node reports unsealed. Installed + enabled ONLY when vault_ctr_auto_unseal.
+set -euo pipefail
+
+CONTAINER="{{ vault_ctr_name }}"
+KEYS_FILE="{{ vault_ctr_autounseal_keys_file }}"
+HEALTH="{{ vault_ctr_scheme }}://127.0.0.1:{{ vault_ctr_api_port }}/v1/sys/health?standbyok=true&uninitcode=200&sealedcode=200"
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S'): $*"; }
+
+if [ ! -r "${KEYS_FILE}" ]; then
+    log "ERROR: unseal keys not readable at ${KEYS_FILE}"; exit 1
+fi
+
+log "waiting for the Vault API..."
+for _ in $(seq 1 60); do
+    curl -sk --fail "${HEALTH}" >/dev/null 2>&1 && break
+    sleep 2
+done
+
+is_sealed() {
+    docker exec "${CONTAINER}" vault status -format=json 2>/dev/null \
+        | python3 -c 'import sys,json; print("y" if json.load(sys.stdin).get("sealed") else "n")' 2>/dev/null
+}
+
+for _ in $(seq 1 10); do
+    if [ "$(is_sealed)" != "y" ]; then
+        log "Vault is unsealed."; exit 0
+    fi
+    log "Vault sealed — unsealing..."
+    while IFS= read -r key; do
+        [ -n "${key}" ] && docker exec "${CONTAINER}" vault operator unseal "${key}" >/dev/null 2>&1 || true
+    done < "${KEYS_FILE}"
+    sleep 2
+done
+
+log "ERROR: still sealed after retries"; exit 1

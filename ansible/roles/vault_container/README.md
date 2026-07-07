@@ -1,191 +1,240 @@
 # vault_container
 
-Deploys a **3-node HashiCorp Vault Raft HA cluster as a Docker container**,
-with self-signed TLS for testing and an example FreeIPA LDAP auth backend.
+Self-contained, **auto-scaling** containerized HashiCorp Vault. Runs Vault as a
+Docker container with **all state on a persistent second disk**, and derives its
+topology from the hosts in the play:
 
-Validated against a 3-VM AlmaLinux 9 lab (Vault 1.19.5, Raft HA, HTTPS via
-a shared self-signed CA, login as a FreeIPA user verified end-to-end).
+| Hosts in play | Result |
+|---|---|
+| **1** | Standalone Raft (single server) — no `retry_join`, ready to grow later |
+| **N** | Raft HA cluster — every node `retry_join`s all peers |
 
-Cert issuance, audit logging, backup timers, JWT/OIDC, K8s auth, and ESO
-integration are deliberately **out of scope** — bring your own once the
-cluster is up.
+This role is **fully self-contained**: it imports **no** tasks from
+`hashicorp_vault` or `hashicorp_vault_docker`. It reuses proven *config*
+(container uid mapping, `SKIP_SETCAP/SKIP_CHOWN`, Raft/TLS listener shape) but
+shares no code.
 
-## Layout
+## What it does
 
-```
-roles/vault_container/
-├── defaults/main.yml
-├── tasks/
-│   ├── main.yml
-│   ├── install.yml
-│   ├── selfsigned_tls.yml
-│   ├── config.yml
-│   ├── service.yml
-│   ├── cluster_init.yml
-│   ├── auto_unseal.yml
-│   ├── kv_mounts.yml
-│   ├── policies.yml
-│   ├── auth_userpass.yml
-│   ├── auth_approle.yml
-│   └── ldap_auth.yml
-├── templates/
-│   ├── vault.hcl.j2
-│   ├── vault.service.j2
-│   ├── unseal-vault.sh.j2
-│   ├── unseal-vault.service.j2
-│   └── policies/
-│       ├── ops-superadmin.hcl.j2
-│       ├── ops-admin.hcl.j2
-│       └── svc-automation.hcl.j2
-└── handlers/
-```
+1. **preflight** — assert the data mount is a real mountpoint, Docker Compose is
+   present, and derive the scaling facts (`vault_ctr_is_ha`, first node, scheme).
+2. **prereqs** — create state directories on the disk, open firewall ports.
+3. **tls** — self-sign a CA + multi-SAN server cert on the controller (or use
+   your own), distribute to every node.
+4. **deploy** — template `vault.hcl` + `docker-compose.yml`, start the container,
+   wait for the API.
+5. **init** — initialize once, unseal the leader, then unseal followers so they
+   join the Raft cluster. Unseal key(s) + root token are written to
+   `<keys_dir>/vault_init.json` (mode 0400) on the first node.
+6. **verify** — confirm every node is unsealed and (HA) all peers joined.
+7. **backup** — install a systemd timer that takes scheduled Raft snapshots
+   (leader-only) to a local or NFS-mounted path, with age-based retention.
 
-A reference inventory lives at `inventories/vault/` and a thin entry-point
-playbook at `playbooks/vault_cluster.yml`.
+## Prerequisites (composed at the playbook level)
 
-## Phase order (matters)
+Because the role consumes a **pre-mounted** disk and an **already-installed**
+Docker, wire these ahead of it (it asserts both and fails fast otherwise):
 
-1. **install** — packages, vault user, Docker, CLI binary, image pull.
-2. **selfsigned_tls** — control-node generates a CA + ONE shared cert
-   with SANs for every node, ships them to `/etc/vault.d/certs/`, and
-   installs the CA into the host trust store.
-3. **config** — render `vault.hcl` with raft storage + retry_join +
-   listener TLS config (using the shared cert) + `leader_ca_cert_file`
-   on every retry_join (the container doesn't see the host trust
-   store; the CA file path inside the bind-mount is what the joining
-   peers use to validate the leader's cert).
-4. **service** — render systemd unit + start vault. Container runs
-   `--user <host vault uid:gid>` so bind-mount perms work, plus
-   `SKIP_SETCAP=1 SKIP_CHOWN=1 + --cap-add IPC_LOCK` (see "Container
-   user gotcha" below).
-5. **cluster_init** — `vault operator init` on the leader (Shamir,
-   single key for the lab; bump `key_shares`/`key_threshold` for prod),
-   write the unseal key + root token to `/opt/vault/keys/`, unseal the
-   leader, then unseal each follower.
-6. **auto_unseal** — deploy `unseal-vault.sh` + `unseal-vault.service`
-   (Type=oneshot, `After=vault.service`, `WantedBy=multi-user.target`)
-   so the cluster auto-unseals after every host reboot or container
-   restart. The script polls `/v1/sys/health` until the API is up,
-   then runs `vault operator unseal` until `Sealed=false`. Lab-grade —
-   reads the single Shamir share from `/opt/vault/keys/`. Replace with
-   KMS-backed seal for prod and this step becomes unnecessary.
-7. **post-setup phases** (each tag-targetable):
-   - **kv** — create the KV v2 mounts listed in `vault_container_kv_mounts`
-     (default: `kv-default`; add `kv-prod`, `kv-stage`, `kv-dev` etc.).
-   - **policies** — render + apply ACL policies. Each entry in
-     `vault_container_policies` maps to `templates/policies/<name>.hcl.j2`.
-     Three sample policies ship with the role:
-     - `ops-superadmin` — break-glass, 1h non-renewable.
-     - `ops-admin` — daily operator, 24h.
-     - `svc-automation` — read-only KV + child tokens for IaC tooling.
-     Templates reference `vault_container_kv_mounts` so adding a mount
-     automatically grants the right paths to ops-* policies.
-   - **userpass** — enable userpass auth + create a break-glass admin
-     bound to `ops-superadmin`. Password from the encrypted vault file.
-   - **approle** — enable approle auth + create one role per entry in
-     `vault_container_approles` (samples: `svc-terraform`, `svc-ansible` bound
-     to `svc-automation`). Use `vault read auth/approle/role/<name>/role-id`
-     and `vault write -f auth/approle/role/<name>/secret-id` to mint
-     credentials for tooling.
-8. **ldap_auth** *(optional)* — example FreeIPA LDAP auth backend +
-   group→policy mapping.
+- **A persistent second disk mounted at `vault_ctr_data_mount`** — e.g. via the
+  universal [`storage`](../storage/README.md) role.
+- **Docker engine + compose plugin** — e.g. via the [`docker`](../docker) role.
 
-### Targeting individual phases
-
-Every phase has a tag — useful when iterating:
-
-```bash
-# Re-render + reapply just the policies after editing a template:
-ansible-playbook -i inventories/vault/hosts.yml playbooks/vault_cluster.yml --tags policies
-
-# Add a KV mount you defined in inventory:
-ansible-playbook -i inventories/vault/hosts.yml playbooks/vault_cluster.yml --tags kv
-
-# Just the resilience bits (after switching seal types, say):
-ansible-playbook -i inventories/vault/hosts.yml playbooks/vault_cluster.yml --tags auto_unseal
-```
-
-## Quick start
-
-```bash
-# 1. Edit inventories/vault/group_vars/vault/main.yml for your hosts.
-# 2. Copy vault.yml.example to vault.yml and ansible-vault encrypt it.
-# 3. Run the full bring-up:
-ansible-playbook -i inventories/vault/hosts.yml playbooks/vault_cluster.yml --ask-vault-pass
-```
-
-## Container user gotcha
-
-The Vault image's entrypoint
-([source](https://github.com/hashicorp/vault/blob/main/scripts/docker/docker-entrypoint.sh))
-does two things that bite the `--user <host_vault_uid>:<gid>` mapping
-pattern:
-
-- runs `setcap` on the vault binary (needs root + SETFCAP capability)
-- if running as root, drops to the image's internal `vault` user
-  (uid 100) before exec-ing vault server
-
-So if you pass `--user 0:0`, the entrypoint silently switches the running
-uid to 100 — and any bind-mounted files owned by your host's vault uid
-(e.g. 995) become unreadable.
-
-The pattern that works across the host↔container boundary:
+## Minimal usage
 
 ```yaml
-vault_container_extra_args:
-  - "--cap-add IPC_LOCK"   # vault expects to mlock; harmless with disable_mlock=true
-  - "-e SKIP_SETCAP=1"     # we'll set capabilities outside the container if needed
-  - "-e SKIP_CHOWN=1"      # bind-mounted dirs are pre-chowned
+# playbooks/L3_platform/vault_container.yml
+- name: Deploy containerized HashiCorp Vault (auto-scaling)
+  hosts: vault_container          # 1 host -> standalone; 3 hosts -> Raft HA
+  become: true
+  roles:
+    - role: storage               # provision + mount the second disk
+    - role: docker                # container engine + compose plugin
+    - role: vault_container
 ```
 
-Combined with the role's `--user <host_vault_uid>:<host_vault_gid>`, the
-container processes appear as your host's vault user end-to-end.
+```yaml
+# inventories/<env>/group_vars/vault_container.yml
+# The second disk the `storage` role provisions and mounts at /opt/vault:
+storage_volumes:
+  - name: vault-data
+    disk: "by-size:50G"
+    lvm: true
+    vg: vg_vault
+    lv: lv_vault
+    size: 100%FREE
+    fstype: xfs
+    mount: /opt/vault
+    provision: true
 
-## retry_join + self-signed certs
-
-When using a private CA, every `retry_join` block needs
-`leader_ca_cert_file = "/etc/vault.d/certs/ca.crt"`. The role's template
-injects this automatically; if you drop in a Let's Encrypt cert later you
-can remove it (system trust store covers LE).
-
-## LDAP via FreeIPA
-
-`tasks/ldap_auth.yml` is opinionated for FreeIPA. To use:
-
-1. Set `vault_container_ldap_enabled: true` in inventory.
-2. Provide `vault_container_ldap_url`, `vault_container_ldap_userdn`, `vault_container_ldap_groupdn`,
-   and the bind credential variable (typically encrypted in vault.yml).
-3. Define `vault_container_ldap_group_policies` as a dict of
-   `<freeipa group>: [<vault policy>, ...]`.
-
-The task enables `auth/ldap`, writes the config, and creates a
-`groups/<name>` mapping per entry. After provisioning, log in with:
-
-```
-vault login -method=ldap username=<freeipa user>
+vault_ctr_data_mount: /opt/vault
+vault_ctr_tls_extra_sans:
+  - "DNS:vault.dev.example.com"
 ```
 
-Token policies will be the union of `default` + the policies bound to
-each FreeIPA group the user belongs to.
+Run everything, or a single phase for fast iteration:
 
-## Production checklist (when adopting)
+```bash
+ansible-playbook -i inventories/dev/hosts.yml playbooks/L3_platform/vault_container.yml
+ansible-playbook ... playbooks/L3_platform/vault_container.yml --tags deploy
+ansible-playbook ... playbooks/L3_platform/vault_container.yml --list-tags
+```
 
-This role is a STARTING POINT. Before running prod:
+> **Do not `--limit` a subset during deploy/init.** Topology is derived from the
+> play's hosts, so a limited run would misconfigure Raft. Target the whole group,
+> or pin `vault_ctr_nodes` explicitly in inventory.
 
-- Replace self-signed certs with a real CA (Let's Encrypt via DNS-01,
-  internal PKI, etc.) and drop the `selfsigned_tls` step.
-- Bump `key_shares`/`key_threshold` (single-key Shamir is fine for lab,
-  never prod).
-- Replace the file-on-disk auto-unseal helper with KMS-backed seal
-  (AWS KMS, GCP KMS, Transit, etc.) — root token + unseal key in
-  `/opt/vault/keys/` is a dev convenience.
-- Add audit logging (`vault audit enable file path=/var/log/vault/audit.log`).
-- Add backup timers (raft snapshots).
-- Tighten the listener block's TLS cipher list.
-- Pin the Vault image to a specific tag, not a moving label.
+## Key variables
 
-## Variables
+See `defaults/main.yml` (full list) and `meta/argument_specs.yml` (contract).
 
-See `defaults/main.yml` for the full list. Sensitive values belong in
-`inventories/vault/group_vars/vault/vault.yml` (ansible-vault encrypted);
-non-sensitive tunables in `main.yml` next to it.
+| Variable | Default | Purpose |
+|---|---|---|
+| `vault_ctr_image` | `hashicorp/vault:1.19` | Container image |
+| `vault_ctr_data_mount` | `/opt/vault` | **Second-disk mountpoint** (all state under it) |
+| `vault_ctr_require_mounted` | `true` | Fail unless it is a real mountpoint |
+| `vault_ctr_nodes` | play's hosts | Cluster members (auto-scales) |
+| `vault_ctr_advertise_addr` | `{{ ansible_host }}` | Peer/client address (IP by default) |
+| `vault_ctr_api_port` / `_cluster_port` | `8200` / `8201` | Listener ports |
+| `vault_ctr_key_shares` / `_threshold` | `1` / `1` | Unseal key sharing |
+| `vault_ctr_tls_enabled` | `true` | Serve TLS |
+| `vault_ctr_tls_generate` | `true` | Self-sign a CA + cert |
+| `vault_ctr_tls_extra_sans` | `[]` | Extra SANs (FQDNs/VIPs) |
+| `vault_ctr_domain` | `""` | Adds `<host>.<domain>` to SANs |
+
+## Secrets
+
+The unseal key(s) and root token are written to
+`<vault_ctr_keys_dir>/vault_init.json` (0400) **on the first node's persistent
+disk**. Move them into your out-of-band secret store per site policy — this role
+does not push them anywhere. Tasks handling them use `no_log: true`.
+
+## Backup & restore
+
+The role installs a **scheduled Raft snapshot backup** (the correct backup for a
+Raft-backed Vault — not a copy of `/vault/data`). A systemd timer runs on every
+node; only the **active leader** actually snapshots (checked via `is_self`), so
+exactly one snapshot is produced per schedule. The snapshot is taken inside the
+container and `docker cp`'d out to `vault_ctr_backup_dir` on the host, so
+container-user / NFS-squash permissions never block it. Old snapshots are pruned
+by age.
+
+```yaml
+# defaults — override in inventory
+vault_ctr_backup_enabled: true
+vault_ctr_backup_dir: /opt/vault/backups        # the "given path"
+vault_ctr_backup_schedule: "*-*-* 02:00:00"      # systemd OnCalendar (daily 02:00)
+vault_ctr_backup_retention_days: 7
+```
+
+**NFS backup target** (the common work pattern — mount NFS as the backup
+location). Set both vars and point the backup dir at a dedicated mountpoint; the
+role installs `nfs-utils` and mounts it (`nofail`) before backing up:
+
+```yaml
+vault_ctr_backup_dir: /mnt/vault-backups
+vault_ctr_backup_nfs_server: "nfs.example.com"
+vault_ctr_backup_nfs_export: "/exports/vault-backups"
+```
+
+Run just the backup setup: `--tags backup`. Trigger a snapshot immediately:
+`systemctl start vault-container-backup.service` on any node (only the leader
+acts). Check status: `systemctl list-timers vault-container-backup.timer`.
+
+**Restore** is destructive and **opt-in** (gated by the `never` tag):
+
+Use the **`vault_container` platform playbook** so `--tags` only touches this
+role (the L0_lab E2E playbook also carries vsphere_vm/baseline/storage, whose
+`always`-tasks would fire under a tag filter):
+
+```bash
+# newest snapshot ACROSS ALL NODES:
+ansible-playbook -i inventories/<env>/hosts.yml \
+  playbooks/L3_platform/vault_container.yml --tags restore
+# a specific snapshot (absolute path on the leader):
+ansible-playbook ... playbooks/L3_platform/vault_container.yml --tags restore \
+  -e vault_ctr_restore_snapshot=/opt/vault/backups/vault-snapshot-20260707-020000.snap
+```
+
+Restore applies the snapshot on the **active leader** with `-force`; Vault
+replaces the data in place and replicates it to the followers automatically —
+no follower wipe, restart or re-unseal (those would break quorum). `"latest"`
+is resolved **across every node** (not just the leader) and staged onto the
+leader, so a leadership flap-back can't restore a stale local snapshot. It
+targets **same-cluster rollback** (identical membership + unseal keys, which is
+what the scheduled snapshots produce). Restoring a snapshot from a *different*
+cluster is a separate migration workflow — out of scope here.
+
+**Auth:** backups use a **scoped periodic token** (policy: `read` on
+`sys/storage/raft/snapshot`) minted on the leader and distributed 0400 to each
+node; the script renews it each run and the backup phase re-mints it if it's
+gone (self-heals after a rollback to a pre-mint snapshot — re-run `--tags
+backup` afterwards). Only **restore** uses the root token, and only from the
+first node. No root token is spread across the cluster.
+
+> **HA backups belong off-node.** The default backup dir is per-node local,
+> which is fine for single-node but is not real DR for a cluster — point
+> `vault_ctr_backup_dir` at a shared/NFS location (see above) so a lost node
+> doesn't take its snapshots with it.
+
+## Multi-tenant policies & LDAP (optional)
+
+Two optional, **data-driven** phases turn the cluster into a multi-tenant store
+where a user sees only their tenant's slice of their environment.
+
+**Policies** (`--tags policies`, gated by `vault_ctr_manage_policies`). Environment
+== a KV mount (`kv-<env>`); tenant == a path prefix inside it. Each `{tenant, env}`
+in `vault_ctr_tenants` yields a policy `<tenant>-<env>` granting access to **only**
+`kv-<env>/data/<tenant>/*`. The role ensures each `kv-<env>` mount exists. Extra
+non-tenant policies come from `vault_ctr_policies` (templates under
+`templates/policies/`; a generic `admin.hcl.j2` is bundled).
+
+```yaml
+vault_ctr_manage_policies: true
+vault_ctr_tenants:
+  - {tenant: acme,   env: prod}   # -> policy acme-prod   (kv-prod/data/acme/*)
+  - {tenant: globex, env: dev}    # -> policy globex-dev  (kv-dev/data/globex/*)
+```
+
+**LDAP** (`--tags ldap`, gated by `vault_ctr_ldap_enabled`). Enables + configures
+the LDAP auth method (FreeIPA here) and maps groups to policies. Each tenant's
+LDAP group — `vault-<tenant>-<env>` by default (`vault_ctr_ldap_group_pattern`) —
+maps to `[default, <tenant>-<env>]`, so a directory user in `vault-acme-prod` gets
+exactly the `acme-prod` policy. Non-tenant groups go in `vault_ctr_ldap_extra_groups`.
+The bind password is resolved **declared-var-first** (`vault_ctr_ldap_bindpass`),
+falling back to HashiCorp Vault (`vault_ctr_ldap_bindpass_vault_path`), and is
+passed to Vault over stdin (never argv).
+
+```yaml
+vault_ctr_ldap_enabled: true
+vault_ctr_ldap_url: "ldaps://ldap.example.com"
+vault_ctr_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=newen,dc=au"
+vault_ctr_ldap_bindpass_vault_path: "kv-secrets/data/platform/ldap/runtime:bindpass"
+vault_ctr_ldap_userdn:  "cn=users,cn=accounts,dc=newen,dc=au"
+vault_ctr_ldap_groupdn: "cn=groups,cn=accounts,dc=newen,dc=au"
+```
+
+Result: `vault login -method=ldap username=<user>` gives a token carrying only
+that user's tenant policies — proven with tenant-isolation tests (an `acme-prod`
+user cannot read `globex` or any other environment).
+
+## Notes
+
+- **Storage backend is always Raft** — a single node runs standalone Raft, so it
+  can be grown into an HA cluster later without a storage migration.
+- **Re-runs are idempotent**: existing init material is reused from the disk;
+  the container is only restarted when config actually changes.
+- **Reboot / restart = re-seal.** By default a restarted node comes up **sealed**.
+  Bring it back **non-destructively** with `--tags unseal` (runs `unseal.yml` only —
+  it never re-initialises or wipes anything):
+
+  ```bash
+  ansible-playbook -i inventories/<env>/hosts.yml \
+    playbooks/L3_platform/vault_container.yml --tags unseal
+  ```
+
+  For hands-off recovery, set **`vault_ctr_auto_unseal: true`** — the role ships a
+  boot-time systemd unit (`vault-container-unseal.service`) that unseals each node
+  automatically after a reboot. This stores the unseal key on **every** node;
+  toggling the flag back to `false` disables the unit and removes those keys. For
+  a stricter posture keep it off, or move to transit/KMS auto-unseal (keys never
+  on the node) — out of scope for this role.
