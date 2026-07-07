@@ -24,7 +24,7 @@
     # Passphrase plumbing for every ssh-add call: askpass helper + env-fed value.
     # SSH_ASKPASS_REQUIRE=force needs OpenSSH >= 8.4; DISPLAY covers older ones
     # (askpass fires when no TTY + DISPLAY set — Ansible tasks never have a TTY).
-    _ssh_agent_key_askpass_env: >-
+    _ssh_agent_key_askpass_env: >-  # pragma: allowlist secret — var refs only, no literal
       {{ {'SSH_ASKPASS': _ssh_agent_key_askpass.path | default(''),
           'SSH_ASKPASS_REQUIRE': 'force',
           'DISPLAY': ':0',
