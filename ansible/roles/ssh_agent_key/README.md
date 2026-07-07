@@ -2,9 +2,9 @@
 
 Unlock/lock a private SSH key in `ssh-agent`, **straight from memory** — the key is fed
 to `ssh-add` over stdin, so it never touches disk, never appears on a command line, and
-(`no_log`) never appears in task output. The key is a **raw, passphrase-less** key that
-lives encrypted in Ansible Vault; the vault password (`--ask-vault-pass` /
-`-e @vault.yml`) is what protects it at rest.
+(`no_log`) never appears in task output. The key lives encrypted in Ansible Vault
+(`--ask-vault-pass` / `-e @vault.yml`); if the key itself also has a passphrase, set
+`ssh_agent_key_passphrase` (from a vaulted var) and the role unlocks it with that.
 
 Two entry points, designed to bracket a play:
 
@@ -49,6 +49,7 @@ So for this role, "the sock" is simply **the address of the agent**:
         tasks_from: unlock
       vars:
         ssh_agent_key_content: "{{ vault_ssh_private_key }}"
+        ssh_agent_key_passphrase: "{{ vault_ssh_key_passphrase }}"   # only if the key has one
     - name: Gather facts now the key is available
       ansible.builtin.setup:
   roles:
@@ -67,7 +68,8 @@ Load-only (no lock) also works: `roles: [ssh_agent_key]` defaults to unlock.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ssh_agent_key_content` | `""` | **Required (unlock).** Raw private key text, from a vaulted var. |
+| `ssh_agent_key_content` | `""` | **Required (unlock).** Private key text, from a vaulted var. |
+| `ssh_agent_key_passphrase` | `""` | Passphrase to unlock the key, if it has one. From a vaulted var. |
 | `ssh_agent_key_lifetime` | `0` | Seconds; `0` = until locked/agent stops, `>0` = `ssh-add -t` auto-expiry. |
 | `ssh_agent_key_public` | `""` | **lock only.** Public key line, to remove a key unlock didn't add. |
 | `ssh_agent_key_sock` | *output* | Set by unlock **only when it spawned an agent** — that agent's socket path. |
@@ -86,6 +88,16 @@ Load-only (no lock) also works: `roles: [ssh_agent_key]` defaults to unlock.
 3. **Try to add the key** (`ssh-add -`). The private key is piped in over **stdin** —
    it never becomes a file and never appears in a process list. If an agent was
    inherited from your shell, the key lands there and we're done.
+
+   **If the key has a passphrase:** `ssh-add` has no terminal to prompt on, so it uses
+   ssh's built-in fallback — it runs the program named in the `SSH_ASKPASS` env var
+   and takes its output as the answer. Ours is `files/askpass.sh`, three lines that
+   echo `$SSH_AGENT_KEY_PASSPHRASE` — a variable the task places in **ssh-add's own
+   process environment**, filled from your vaulted `ssh_agent_key_passphrase`. The
+   helper contains no secret, the role reads nothing from your shell's environment,
+   and with a raw key it is never even called. (It also refuses `ssh-add`'s "try
+   again" re-prompt, so a wrong passphrase fails in a second instead of looping
+   forever.)
 
    **Rescue — only runs if that failed** (usually: no agent running):
 
@@ -124,9 +136,9 @@ Load-only (no lock) also works: `roles: [ssh_agent_key]` defaults to unlock.
 
 ## Notes
 
-- **Raw keys only.** A passphrase-protected key fails (`ssh-add` has no terminal to
-  ask on). Store the key passphrase-less inside Ansible Vault — encryption at rest
-  comes from the vault, not from a key passphrase.
+- **Passphrase-protected keys** need `ssh_agent_key_passphrase` set (from a vaulted
+  var) — without it, `ssh-add` fails immediately (no terminal to ask on). Needs
+  OpenSSH ≥ 8.4 (`SSH_ASKPASS_REQUIRE`); RHEL 9 ships 8.7.
 - **State is play-scoped.** unlock remembers what it added in a host fact on the
   play's first host — run unlock and lock in the *same play* (the pattern above).
 - **`IdentitiesOnly yes` defeats the agent.** If `~/.ssh/config` pins

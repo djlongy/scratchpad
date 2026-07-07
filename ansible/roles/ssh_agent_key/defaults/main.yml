@@ -2,13 +2,18 @@
 # roles/ssh_agent_key/defaults/main.yml
 #
 # Unlock/lock a private SSH key in ssh-agent, straight from memory — the key
-# never touches disk. Expects a RAW (passphrase-less) key that lives encrypted
-# in Ansible Vault; the vault password (--ask-vault-pass / -e @vault.yml) is
-# the thing that protects it at rest.
+# never touches disk. The key lives encrypted in Ansible Vault
+# (--ask-vault-pass / -e @vault.yml); if the key itself also has a passphrase,
+# set ssh_agent_key_passphrase and the role unlocks it with that.
 
 # REQUIRED (unlock). Private key text (PEM / OpenSSH). Wire this from a vaulted
 # variable in the calling play. Never hardcode a key here.
 ssh_agent_key_content: ""
+
+# Passphrase to unlock the private key, if it has one. Leave empty for a raw
+# (passphrase-less) key. Wire from a vaulted variable; it is handed to ssh-add
+# via its SSH_ASKPASS hook (files/askpass.sh) — never on disk or a command line.
+ssh_agent_key_passphrase: ""
 
 # Key lifetime in the agent, in seconds. 0 = stays until locked or the agent
 # stops. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.

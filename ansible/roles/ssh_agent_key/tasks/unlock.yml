@@ -4,9 +4,9 @@
 # Load the private key into an ssh-agent, from memory — the key reaches ssh-add
 # over stdin and never touches disk. Work-role shape: TRY the agent the play
 # inherited; if there isn't one, RESCUE by spawning an agent (which persists
-# after the run) and adding the key again. The key is expected raw (no
-# passphrase) — it lives encrypted in Ansible Vault instead. See the README for
-# a plain-English walkthrough of every task.
+# after the run) and adding the key again. A passphrase-protected key is
+# unlocked with ssh_agent_key_passphrase (via ssh's SSH_ASKPASS hook). See the
+# README for a plain-English walkthrough of every task.
 #
 # run_once + delegate_to localhost are baked in — call it bare from pre_tasks:
 #   - ansible.builtin.import_role: {name: ssh_agent_key, tasks_from: unlock}
@@ -22,6 +22,15 @@
     _ssh_agent_env: >-
       {{ {'SSH_AUTH_SOCK': ssh_agent_key_sock}
          if (ssh_agent_key_sock | default('') | length > 0) else {} }}
+    # Passphrase plumbing (only matters when ssh_agent_key_passphrase is set):
+    # ssh-add has no terminal here, so it asks the SSH_ASKPASS helper for the
+    # passphrase; the helper echoes the value we place in the task's process
+    # environment. An unencrypted key never invokes the helper.
+    _ssh_askpass_env:
+      SSH_ASKPASS: "{{ role_path }}/files/askpass.sh"
+      SSH_ASKPASS_REQUIRE: force
+      DISPLAY: ":0"
+      SSH_AGENT_KEY_PASSPHRASE: "{{ ssh_agent_key_passphrase }}"
     _ssh_add_cmd: "ssh-add{{ (' -t ' ~ ssh_agent_key_lifetime) if (ssh_agent_key_lifetime | int) > 0 else '' }} -"
   block:
     - name: Unlock | Check the key material was provided
@@ -47,7 +56,7 @@
           ansible.builtin.command:
             cmd: "{{ _ssh_add_cmd }}"
             stdin: "{{ ssh_agent_key_content }}"
-          environment: "{{ _ssh_agent_env }}"
+          environment: "{{ _ssh_askpass_env | combine(_ssh_agent_env) }}"
           changed_when: false
           no_log: true
       rescue:
@@ -65,8 +74,7 @@
           ansible.builtin.command:
             cmd: "{{ _ssh_add_cmd }}"
             stdin: "{{ ssh_agent_key_content }}"
-          environment:
-            SSH_AUTH_SOCK: "{{ ssh_agent_key_sock }}"
+          environment: "{{ _ssh_askpass_env | combine({'SSH_AUTH_SOCK': ssh_agent_key_sock}) }}"
           changed_when: false
           no_log: true
 
