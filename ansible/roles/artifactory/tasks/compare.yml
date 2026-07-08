@@ -55,6 +55,7 @@
     dest: "{{ _af_drift_file }}"
     mode: "0640"
   delegate_to: localhost
+  become: false  # controller write — never sudo on the operator's machine
   run_once: true
 
 - name: "Compare | Drift gate"

@@ -347,6 +347,7 @@
     state: directory
     mode: "0750"
   delegate_to: localhost
+  become: false  # controller write — never sudo on the operator's machine
   run_once: true
   when: artifactory_mode == 'backup'
 
@@ -375,6 +376,7 @@
         dest: "{{ _af_syscfg_ref }}"
         mode: "0640"
       delegate_to: localhost
+      become: false  # controller write — never sudo on the operator's machine
   rescue:
     - name: "Backup | Note that the system-config reference was skipped"
       ansible.builtin.debug:
@@ -454,4 +456,5 @@
     dest: "{{ artifactory_state_file }}"
     mode: "0640"
   delegate_to: localhost
+  become: false  # controller write — never sudo on the operator's machine
   when: artifactory_mode == 'backup'

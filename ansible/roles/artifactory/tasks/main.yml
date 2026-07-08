@@ -5,6 +5,13 @@
 
 - name: Artifactory configuration
   delegate_to: "{{ artifactory_delegate_to | default(omit) }}"
+  # The role is API-driven and runs unprivileged — with the default
+  # artifactory_delegate_to=localhost, a play-level `become: true` would
+  # otherwise leak onto every task here and try to sudo on the CONTROLLER
+  # (interactive password prompt / hang). Tasks that genuinely need root
+  # (bootstrap's native method, on the Artifactory host) escalate explicitly
+  # at task level, which overrides this block default.
+  become: false
   module_defaults:
     ansible.builtin.uri:
       validate_certs: "{{ artifactory_validate_certs }}"

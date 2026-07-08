@@ -36,5 +36,6 @@
     dest: "{{ artifactory_generated_tokens_file }}"
     mode: "0600"
   delegate_to: localhost
+  become: false  # controller write — never sudo on the operator's machine
   no_log: true
   when: _tok.results | default([]) | selectattr('json', 'defined') | list | length > 0
