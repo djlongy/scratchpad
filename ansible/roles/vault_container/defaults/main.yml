@@ -6,7 +6,16 @@
 # single-host run yields a standalone Vault and an N-host run yields Raft HA.
 
 # ── Container image ──────────────────────────────────────────────────────
-vault_ctr_image: "hashicorp/vault:1.19"
+# Pin an EXACT version — never a floating tag like hashicorp/vault:1.19 (it drifts
+# and breaks reproducibility). 1.19.5 is the latest 1.19.x Community image and is
+# LDAP-verified against FreeIPA (direct-bind AND binddn/search, dev + live cluster,
+# 10/10 logins). NOTE for future debuggers: an earlier persistent "failed to bind
+# as user" here was NOT a version bug and NOT a FreeIPA bug — it was stuck runtime
+# state in a long-lived container (from heavy re-config/lockout churn during
+# debugging); recreating the container fixed it. Every clean 1.19.3/1.19.5/1.20.4/
+# 1.21.3 container authenticates fine. Newer 1.19.x are Enterprise-only; the
+# Community upgrade path is a newer minor (1.20.x/1.21.x) — re-verify LDAP on bump.
+vault_ctr_image: "hashicorp/vault:1.19.5"
 vault_ctr_name: "vault"
 
 # ── Persistent storage (SECOND DISK) ─────────────────────────────────────
@@ -119,6 +128,10 @@ vault_ctr_ldap_insecure_tls: true          # self-signed FreeIPA CA in the lab
 vault_ctr_ldap_group_pattern: "vault-{tenant}-{env}"
 vault_ctr_ldap_extra_groups: []
 #   - {group: vault-admins, policies: [default, vault-admin]}
+# Per-user authorisation — authorises a specific directory user directly
+# (auth/ldap/users/<name>), independent of group membership resolution.
+vault_ctr_ldap_users: []
+#   - {user: long, policies: [default, vault-admin]}
 
 # ── Backup (scheduled Raft snapshots) ────────────────────────────────────
 # A systemd timer runs on every node; only the active leader snapshots. The

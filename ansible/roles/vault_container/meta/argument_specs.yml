@@ -130,6 +130,13 @@ argument_specs:
         elements: dict
         description: Non-tenant LDAP group->policy mappings ({group, policies}).
         default: []
+      vault_ctr_ldap_users:
+        type: list
+        elements: dict
+        description: >-
+          Per-user LDAP authorisations ({user, policies}) written to
+          auth/ldap/users/<name> — direct, independent of group resolution.
+        default: []
       vault_ctr_ldap_insecure_tls:
         type: bool
         description: Skip LDAPS cert verification (self-signed directory CA).

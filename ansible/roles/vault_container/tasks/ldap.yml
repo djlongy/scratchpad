@@ -110,3 +110,19 @@
   changed_when: true
   run_once: true
   delegate_to: "{{ vault_ctr_first_node }}"
+
+# Per-user authorisation (auth/ldap/users/<name>) — authorises a specific
+# directory user directly, independent of group membership resolution.
+- name: "LDAP | Authorise individual users (auth/ldap/users)"
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ vault_ctr_name }} vault write
+      auth/ldap/users/{{ item.user }} policies={{ item.policies | join(',') }}
+  environment:
+    VAULT_TOKEN: "{{ _vault_ctr_ldap_token }}"
+  loop: "{{ vault_ctr_ldap_users }}"
+  loop_control:
+    label: "{{ item.user }} -> {{ item.policies | join(',') }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ vault_ctr_first_node }}"
