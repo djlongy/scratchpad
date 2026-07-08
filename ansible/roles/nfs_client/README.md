@@ -14,6 +14,14 @@ realm) — this **must match the server** or files show as `nobody:nobody`.
 > separate `/net` drive. Do **not** also apply `nfs_home_client` (which mounts
 > NFS *over* `/home`, the roaming model) to the same host — pick one per fleet.
 
+## TL;DR
+
+**Most common: converge the autofs mounts.** Set `nfs_client_server` (match `nfs_client_kerberos` to the server), then run — mounts appear on demand under `/net`; re-running is idempotent.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml [--tags nfs_client] [--limit <host>]
+```
+
 ## Minimal config
 
 ```yaml

@@ -10,6 +10,14 @@ Installs and configures ClamAV antivirus on Linux hosts. Manages:
 Distro-agnostic — package names, config paths, and service names are keyed on
 `ansible_os_family` (`RedHat` / `Debian`) in `vars/main.yml`.
 
+## TL;DR
+
+**Most common: redeploy the scan units.** Install once, then re-run with `--tags scan` to refresh the scheduled-scan timer/service (needs `clamav_scan_enabled: true`). First install (everything): drop the `--tags`.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags scan
+```
+
 ## Prerequisites
 
 **RedHat/EL only — EPEL required.**  ClamAV packages ship in EPEL, not the

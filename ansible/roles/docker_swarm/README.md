@@ -13,6 +13,20 @@ to per-app roles or the calling playbook.
 Fully portable — every input lives in inventory. No environment label,
 IP, domain, or hostname is hardcoded.
 
+## TL;DR
+
+**Most common: rolling-restart the live cluster.** `redeploy` is `never`-gated — it drains and restarts nodes one by one; pair with `--limit` so you don't bounce all the managers at once.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/docker_swarm.yml --tags redeploy --limit swarm_workers
+```
+
+First-time bootstrap (and any idempotent re-converge) runs with no tags:
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/docker_swarm.yml
+```
+
 ## Inventory groups
 
 Exactly two groups are recognised:

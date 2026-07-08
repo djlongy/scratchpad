@@ -8,6 +8,14 @@ rejoin** (including realm-cutover re-enrolment).
 
 Pairs with [`freeipa_server`](../freeipa_server/).
 
+## TL;DR
+
+**Most common: enrol a host into the realm.** Idempotent — `preflight` detects stale enrolments and rejoins, and a healthy client re-run makes no changes; `--limit` a new host to enrol just it.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml [--limit host01]
+```
+
 ## Supported platforms
 
 EL-family (RHEL/Rocky/Alma/CentOS/Fedora) and Debian/Ubuntu — packaging is handled

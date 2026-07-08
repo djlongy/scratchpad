@@ -11,6 +11,15 @@ Hosts build in parallel for free.
 > Ansible-native, inventory-driven create/destroy (e.g. spinning up SOE desktops
 > to then hand to `baseline`).
 
+## TL;DR
+
+**Most common: provision a VM.** Add the host to inventory (with its `vsphere_vm_*` vars) and run scoped to it — a no-tag run creates/ensures; recreate-from-scratch is the guarded `--tags redeploy` variant.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --limit <newhost>
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true --limit <newhost>
+```
+
 ## Requirements
 
 - `community.vmware` **>= 6.x** + `pyvmomi` on the controller (4.x is incompatible with pyVmomi 9).

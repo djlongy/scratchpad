@@ -12,3 +12,11 @@ This role installs and configures Prometheus Node Exporter. It includes:
 - Ensuring proper monitoring integration with Prometheus
 
 The role provides comprehensive system metrics export for infrastructure monitoring.
+
+## TL;DR
+
+**Most common: install node_exporter.** Run-once per host and idempotent on re-run; skip hosts running the `alloy` role (they already get node metrics via Alloy's built-in exporter).
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml [--limit <host>]
+```

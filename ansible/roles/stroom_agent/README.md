@@ -12,6 +12,14 @@ fetched alongside the script.
 inventory — the role deliberately has no defaults for those two values and
 will assert if they are empty.
 
+## TL;DR
+
+**Most common: re-configure the log sender.** Edit `stroom_datafeed_url` / `stroom_feed_name` (or rotate mTLS certs), then run `--tags configure` to rewrite `log-sender.conf`; a bare run is a full install → configure → service converge.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/L5_apps/stroom_agent.yml --tags configure
+```
+
 ---
 
 ## How it works

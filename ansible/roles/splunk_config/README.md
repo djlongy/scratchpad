@@ -10,6 +10,15 @@ anything touches git — re-seeding from HashiCorp Vault on apply.
 
 See **Why capture-first** below for the design rationale.
 
+## TL;DR
+
+**Most common: snapshot a live Splunk estate.** `--tags export` harvests each container's config, scrubs secrets, and writes `manifest.yml` + bundles under `files/snapshots/<stack>/`; both modes are `never`-gated, so a bare run does nothing.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/splunk_config.yml --tags export   # capture
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/splunk_config.yml --tags apply    # restore
+```
+
 ## Why capture-first (not hand-authored YAML)
 
 In Splunk, **the files _are_ the config** — ~100+ `.conf` types plus dashboards

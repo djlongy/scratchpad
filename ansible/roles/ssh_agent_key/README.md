@@ -13,6 +13,14 @@ Two entry points, **fully independent of each other** — each just takes the va
 
 `run_once` + `delegate_to: localhost` are baked into both.
 
+## TL;DR
+
+**Most common: unlock the vaulted key for a play.** Import the role with `tasks_from: unlock` in `pre_tasks` (and `tasks_from: lock` in `post_tasks`); run the play with `--ask-vault-pass` so the key can be decrypted and loaded into `ssh-agent` from memory. No `--tags` — it is a bracket/utility role, not a standalone converge.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --ask-vault-pass
+```
+
 ## ssh-agent in 30 seconds (read this first)
 
 `ssh-agent` is a small background program that holds private keys **in memory**. When

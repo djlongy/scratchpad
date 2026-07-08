@@ -9,6 +9,14 @@ renders the compose template with the resolved object names injected, and runs
 Adding a workload is a thin role — a compose template, a manifest, and a
 two-line `tasks/main.yml` — never a copy of this engine.
 
+## TL;DR
+
+**Most common: deploy a stack via its wrapper.** This is a generic engine — never run it directly; a thin `<app>_swarm` wrapper (e.g. `mattermost_swarm`) supplies the compose template + manifest and imports it, so run *that* role's play. A no-tag run does the full idempotent deploy; `--tags redeploy` destroys and recreates.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<app>_swarm.yml [--tags redeploy]
+```
+
 ## How a stack is described
 
 A wrapper role (e.g. `mattermost_swarm`) ships:

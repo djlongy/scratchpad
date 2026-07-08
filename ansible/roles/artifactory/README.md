@@ -23,6 +23,14 @@ translation. All you need is the instance URL and an admin API token.
 Built for JFrog Artifactory Enterprise; ansible-lint clean at the `production`
 profile. See [`docs/api-reference.md`](docs/api-reference.md) for the API surface.
 
+## TL;DR
+
+**Most common: apply desired state from group_vars.** Edit each env's `group_vars` (repos / users / permissions / projects), then run with the default `apply` mode to reconcile the instance.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/artifactory.yml
+```
+
 ## Requirements
 
 - Ansible 2.15+ (runs from the controller; the role talks HTTP, no host access

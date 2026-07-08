@@ -10,6 +10,16 @@ role-local action plugin, so the role works dropped into any repo with no extra
 plugin path wiring. Every option is exposed in `defaults/main.yml`; nothing is
 hardcoded.
 
+## TL;DR
+
+**Most common: wire it into a play's `post_tasks`.** Include the role after your roles and name the backend(s); it ships one JSON audit record per run.
+
+```yaml
+post_tasks:
+  - ansible.builtin.include_role: { name: audit_logging }
+    vars: { audit_logging_backends: [splunk] }
+```
+
 ## Backends
 
 | `audit_logging_backends` entry | Ships to | Transport |

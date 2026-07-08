@@ -23,6 +23,16 @@ Current entrypoints:
 `_ensure_one_secret.yml` is an internal helper — leading underscore by
 convention; not meant to be called directly.
 
+## TL;DR
+
+**Most common: include a helper via `tasks_from`.** Never run standalone — import the role and pick an entrypoint (e.g. `ensure_secrets` to resolve secrets from scope → Vault → generate).
+
+```yaml
+- ansible.builtin.import_role:
+    name: common
+    tasks_from: ensure_secrets
+```
+
 ---
 
 ## generate_passphrase

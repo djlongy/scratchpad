@@ -11,6 +11,16 @@ variables (see _Minimal configuration_ below).
 
 ---
 
+## TL;DR
+
+**Most common: push a client-config update.** Update the vaulted `velociraptor_client_config`, then re-run scoped to `--tags configure` (a full no-tag run does install → configure → service).
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/security/velociraptor_client.yml --tags configure
+```
+
+---
+
 ## Requirements
 
 - Ansible 2.14+

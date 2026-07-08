@@ -5,6 +5,14 @@ consistent, hardened foundation before app roles run. Everything beyond the core
 OS setup is **opt-in via override host/group vars**, so enabling a capability
 never surprises an existing fleet.
 
+## TL;DR
+
+**Most common: re-converge the baseline (idempotent).** A no-tags run applies everything; opt-in capabilities are enabled via host/group vars. Narrow to one area with a tag, e.g. `--tags agents`.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags baseline
+```
+
 ## Execution order
 
 Phases run in a deliberate dependency order, each idempotent and individually

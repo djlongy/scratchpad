@@ -4,6 +4,14 @@ Installs the Splunk Universal Forwarder on Linux hosts as a generic,
 defaults-driven engine. This is a **host-installed** role — for Docker Swarm
 deployments use the separate `splunk_swarm` role.
 
+## TL;DR
+
+**Most common: re-configure an installed forwarder.** Edit `splunk_forwarder_deployment_server` / `splunk_forwarder_forward_servers`, then run `--tags configure` to rewrite `deploymentclient.conf` / `outputs.conf`; a bare run is a full install → configure → service reconcile.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/L5_apps/splunk_forwarder.yml --tags configure
+```
+
 ## What it does
 
 - Installs the UF from a `.tgz` tarball via `ansible.builtin.unarchive`

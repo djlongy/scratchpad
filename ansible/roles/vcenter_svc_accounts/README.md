@@ -16,6 +16,14 @@ For each entry it:
 
 Idempotent: users are created once; the Role + permission grant re-converge every run.
 
+## TL;DR
+
+**Most common: converge the service accounts.** Edit the `vcenter_service_accounts` list (accounts + their privilege sets) and re-run — users are created once, the Role + grant re-converge each run. Runs as a `localhost` play.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/provision_vcenter_svc_accounts.yml
+```
+
 ## Why
 
 The SSO administrator is all-powerful and shared. Automation should hold only the

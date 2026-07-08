@@ -7,6 +7,20 @@ reconciliation, and an opt-in post-install hardening baseline.
 
 Pairs with [`freeipa_client`](../freeipa_client/) for host enrolment.
 
+## TL;DR
+
+**Most common: reconcile identity (users/groups/HBAC/sudo).** Edit the `freeipa_idam_*` lists (or the per-tenant files), then re-run `--tags idam` — idempotent, primary-only.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags idam
+```
+
+Install is a separate one-time run (no tags does install + everything):
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml
+```
+
 ## Quick start
 
 Requirements: `ansible-galaxy collection install freeipa.ansible_freeipa`

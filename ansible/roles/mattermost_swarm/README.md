@@ -10,6 +10,14 @@ The engine pre-creates the external docker objects (secrets/configs/networks/
 volumes) and renders this role's compose template with the resolved (versioned)
 object names injected as `secret_names` / `config_names` / `network_names`.
 
+## TL;DR
+
+**Most common: redeploy the stack after a change.** Edit `defaults/main.yml` (image / DB / LDAP) or rotate a Vault secret, then re-run — a new versioned secret name diffs the compose file and rolls only the affected service.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/mattermost_swarm.yml [--limit <host>]
+```
+
 ## Secrets — `/run/secrets` only
 
 No plaintext secret value is ever read into an Ansible var or baked into the

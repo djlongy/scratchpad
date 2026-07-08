@@ -14,6 +14,15 @@ This role is **fully self-contained**: it imports **no** tasks from
 (container uid mapping, `SKIP_SETCAP/SKIP_CHOWN`, Raft/TLS listener shape) but
 shares no code.
 
+## TL;DR
+
+**Most common: converge/deploy the cluster.** Idempotent — put the members in the `vault_container` group and run the whole group (topology is derived from the play's hosts, so never `--limit` a subset). Day-2: add tenant policies with `--tags policies`.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/L3_platform/vault_container.yml
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/L3_platform/vault_container.yml --tags policies
+```
+
 ## What it does
 
 1. **preflight** — assert the data mount is a real mountpoint, Docker Compose is
@@ -207,10 +216,10 @@ passed to Vault over stdin (never argv).
 ```yaml
 vault_ctr_ldap_enabled: true
 vault_ctr_ldap_url: "ldaps://ldap.example.com"
-vault_ctr_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=newen,dc=au"
+vault_ctr_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=example,dc=com"
 vault_ctr_ldap_bindpass_vault_path: "kv-secrets/data/platform/ldap/runtime:bindpass"
-vault_ctr_ldap_userdn:  "cn=users,cn=accounts,dc=newen,dc=au"
-vault_ctr_ldap_groupdn: "cn=groups,cn=accounts,dc=newen,dc=au"
+vault_ctr_ldap_userdn:  "cn=users,cn=accounts,dc=example,dc=com"
+vault_ctr_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
 ```
 
 Result: `vault login -method=ldap username=<user>` gives a token carrying only

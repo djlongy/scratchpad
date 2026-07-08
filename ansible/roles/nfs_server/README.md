@@ -4,6 +4,14 @@ One NFS server role for a **dual-purpose storage host**: generic exports (e.g.
 docker_swarm app data) *and* per-user/shared user storage. Every export source is
 a list, so config scales out from inventory. Renders a single `/etc/exports`.
 
+## TL;DR
+
+**Most common: re-render exports after adding a share/user.** Edit `nfs_server_exports` / `nfs_server_users` / `nfs_server_shares`, then re-run — a no-tag run does everything; scope to just `/etc/exports` with the `exports` tag.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml [--tags exports] [--limit <host>]
+```
+
 ## Phases (tags)
 
 | Tag | Phase |

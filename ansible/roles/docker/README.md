@@ -12,6 +12,14 @@ Install and configure **Docker CE** on EL (RHEL/AlmaLinux 8/9) and Debian/Ubuntu
 - Enables and starts the `docker` systemd service
 - Optionally adds users to the `docker` group for unprivileged socket access
 
+## TL;DR
+
+**Most common: re-converge a host.** Set the repo/registry vars in group_vars (air-gap) or accept the defaults, then run the role — every phase is idempotent.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml [--tags configure] [--limit docker_hosts]
+```
+
 ## Tagging model
 
 Follows the **refinement** model: a no-tag run executes every phase. Tags narrow scope for fast iteration.

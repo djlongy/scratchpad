@@ -10,6 +10,14 @@ Manages **firewalld** on EL- and Debian-family hosts via:
 Env-agnostic: every value lives in `inventories/<env>/group_vars/` or `host_vars/`.
 The role's `defaults/main.yml` ships empty lists for all configurable surfaces.
 
+## TL;DR
+
+**Most common: apply updated firewall rules.** Edit `firewalld_services` / `firewalld_zones` / `firewalld_source_zone_bindings` in group_vars, then re-run — a no-tag run re-renders the XML and applies the bindings.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/firewalld.yml [--tags services,bindings]
+```
+
 ## Why XML templates instead of per-port firewalld module calls?
 
 Defining a service once as `/etc/firewalld/services/harbor.xml` and then

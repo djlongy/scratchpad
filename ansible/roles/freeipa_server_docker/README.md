@@ -10,6 +10,14 @@ This role is **thin**: it owns only the container lifecycle. All declarative con
 is a full IPA server, so every native `freeipa.ansible_freeipa` module works there in server
 context. **Validated E2E** against a live realm (AlmaLinux 9, `ipa-server-4.13.1`).
 
+## TL;DR
+
+**Most common: redeploy the container after an image bump.** Set `freeipa_server_deployment: container`, bump the image tag, and re-run — the container self-upgrades `ipa-server-upgrade` against the `/data` volume.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_container.yml [--tags deploy] [--limit <host>]
+```
+
 ## Why containerize
 
 Update FreeIPA independently of the host OS: swap the image tag → the container runs
