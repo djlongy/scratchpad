@@ -70,10 +70,11 @@
     quiet: true
   when: artifactory_env in artifactory_protected_envs
 
-# Guard the delegation foot-gun: with the default artifactory_delegate_to=localhost,
-# the docker commands run on the CONTROLLER. Before any restart, prove the target
-# container exists AND is an Artifactory image — so a forgotten token can never
-# bounce (and inject a trigger file into) an unrelated local container.
+# Guard the delegation foot-gun: bootstrap's host actions run on
+# artifactory_bootstrap_delegate_to (the play host by default). Before any
+# restart, prove the target container exists AND is an Artifactory image — so a
+# forgotten token can never bounce (and inject a trigger file into) an
+# unrelated container.
 - name: "Bootstrap | Inspect the target container's image (docker)"
   ansible.builtin.command:
     argv:
@@ -83,6 +84,7 @@
       - "{{ '{{.Config.Image}}' }}"
       - "{{ artifactory_bootstrap_container }}"
   register: _af_bs_img
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   changed_when: false
   failed_when: false
   when: artifactory_bootstrap_method == 'docker'
@@ -96,9 +98,9 @@
       Container '{{ artifactory_bootstrap_container }}' was not found or is not a
       JFrog/Artifactory image on the delegated host
       (image='{{ _af_bs_img.stdout | default('') | trim }}',
-      delegate={{ artifactory_delegate_to | default('localhost') }}). Point
-      artifactory_delegate_to at the Artifactory host — refusing to restart an
-      unrelated container.
+      host={{ artifactory_bootstrap_delegate_to }}). Point
+      artifactory_bootstrap_delegate_to at the Artifactory host — refusing to
+      restart an unrelated container.
     quiet: true
   when: artifactory_bootstrap_method == 'docker'
 
@@ -126,6 +128,7 @@
       - sh
       - "-c"
       - "mkdir -p '{{ artifactory_bootstrap_keys_dir }}' && printf '{}' > '{{ artifactory_bootstrap_keys_dir }}/generate.token.json'"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   changed_when: true
   when: artifactory_bootstrap_method == 'docker'
 
@@ -136,6 +139,7 @@
     owner: "{{ artifactory_bootstrap_service_user }}"
     group: "{{ artifactory_bootstrap_service_user }}"
     mode: "0750"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   become: "{{ artifactory_bootstrap_native_become | bool }}"
   when: artifactory_bootstrap_method == 'native'
 
@@ -146,6 +150,7 @@
     owner: "{{ artifactory_bootstrap_service_user }}"
     group: "{{ artifactory_bootstrap_service_user }}"
     mode: "0644"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   become: "{{ artifactory_bootstrap_native_become | bool }}"
   when: artifactory_bootstrap_method == 'native'
 
@@ -156,6 +161,7 @@
       - docker
       - restart
       - "{{ artifactory_bootstrap_container }}"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   changed_when: true
   when:
     - artifactory_bootstrap_method == 'docker'
@@ -165,6 +171,7 @@
   ansible.builtin.systemd_service:
     name: "{{ artifactory_bootstrap_service }}"
     state: restarted
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   become: "{{ artifactory_bootstrap_native_become | bool }}"
   when:
     - artifactory_bootstrap_method == 'native'
@@ -180,6 +187,7 @@
       - sh
       - "-c"
       - "test -f '{{ artifactory_bootstrap_token_file }}' && cat '{{ artifactory_bootstrap_token_file }}'"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   register: _af_bs_tok
   changed_when: false
   failed_when: false
@@ -194,6 +202,7 @@
 - name: "Bootstrap | Wait for token.json and read the transient admin token (native)"
   ansible.builtin.slurp:
     src: "{{ artifactory_bootstrap_token_file }}"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   register: _af_bs_tok_native
   become: "{{ artifactory_bootstrap_native_become | bool }}"
   changed_when: false
@@ -390,6 +399,7 @@
       - sh
       - "-c"
       - "rm -f '{{ artifactory_bootstrap_keys_dir }}/generate.token.json' '{{ artifactory_bootstrap_token_file }}'"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   changed_when: false
   failed_when: false
   when: artifactory_bootstrap_method == 'docker'
@@ -401,6 +411,7 @@
   loop:
     - "{{ artifactory_bootstrap_keys_dir }}/generate.token.json"
     - "{{ artifactory_bootstrap_token_file }}"
+  delegate_to: "{{ artifactory_bootstrap_delegate_to }}"
   become: "{{ artifactory_bootstrap_native_become | bool }}"
   changed_when: false
   failed_when: false

@@ -143,6 +143,14 @@ artifactory_bootstrap_container_user: artifactory
 artifactory_bootstrap_service: artifactory        # systemd unit that runs Access
 artifactory_bootstrap_service_user: artifactory   # owner of the on-disk Access files
 artifactory_bootstrap_native_become: true         # root needed to write/read + restart
+
+# WHERE bootstrap's host actions run (docker exec/restart, native file/systemd
+# tasks): the PLAY HOST by default — a `hosts: <artifactory-host>` play touches
+# the files/service right there, a `hosts: localhost` play works a controller-
+# local install. Only override when the play runs somewhere else entirely and
+# Artifactory lives on a third host. API/uri tasks are separate — they follow
+# artifactory_delegate_to.
+artifactory_bootstrap_delegate_to: "{{ inventory_hostname }}"
 # In-container paths (stable in the official image; override for custom installs).
 artifactory_bootstrap_keys_dir: /opt/jfrog/artifactory/var/bootstrap/etc/access/keys
 artifactory_bootstrap_token_file: /opt/jfrog/artifactory/var/etc/access/keys/token.json

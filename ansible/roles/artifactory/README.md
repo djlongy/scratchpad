@@ -92,10 +92,12 @@ supplies it (via an inventory lookup) and the whole phase is skipped — a rerun
     reads `token.json` via `slurp`. Needs **root** on the host
     (`artifactory_bootstrap_native_become`, default true). The `JFROG_HOME` var
     paths are the same as docker (e.g. `/opt/jfrog/artifactory/var`), so
-    `keys_dir`/`token_file` need no change. **For a remote native host, set
-    `artifactory_delegate_to` to that host** — the role default (`localhost`)
-    would otherwise run the systemd/file tasks (and their `become`) on the
-    controller. Controller-side outputs (drift reports, backup state, generated
+    `keys_dir`/`token_file` need no change. Bootstrap's host actions run on
+    **the play host** by default (`artifactory_bootstrap_delegate_to`,
+    default `{{ inventory_hostname }}`) — so a `hosts: <artifactory-host>`
+    play touches the files/service right there, sudo included; override the
+    var only when Artifactory lives on a host the play doesn't target.
+    Controller-side outputs (drift reports, backup state, generated
     users/tokens sidecars, the bootstrap token sidecar) always stay on the
     controller regardless, with `become: false` pinned.
   - It **cannot** run against SaaS (`*.jfrog.io`) or a pure-`localhost` API target —
@@ -140,8 +142,8 @@ boot — then no restart is needed), `token_expires_in` (0 = non-expiring),
 # Fresh self-hosted instance — no token needed, just container access:
 ansible-playbook playbooks/artifactory_trial.yml -i inventories/trial \
   -e artifactory_bootstrap_vault_store=true \
-  -e artifactory_bootstrap_vault_mount=kv-example \
-  -e artifactory_bootstrap_vault_path=apps/artifactory/runtime
+  -e artifactory_bootstrap_vault_mount=kv-mgt \
+  -e artifactory_bootstrap_vault_path=apps/artifactory-trial/runtime
 # → mints + stores the admin token, then configures the instance in one pass.
 ```
 
@@ -153,8 +155,12 @@ ansible-playbook playbooks/artifactory_trial.yml -i inventories/trial \
     - role: artifactory
       vars:
         artifactory_url: "https://artifactory.example.internal"
-        artifactory_delegate_to: "{{ inventory_hostname }}"  # API + bootstrap run on the host
         artifactory_bootstrap_method: native
+        # bootstrap's file/systemd tasks run on THIS host automatically
+        # (artifactory_bootstrap_delegate_to defaults to the play host);
+        # API calls run from the controller (artifactory_delegate_to default).
+        # Add artifactory_delegate_to: "{{ inventory_hostname }}" only if the
+        # API is reachable from the host but not from the controller.
         # No Vault store configured -> the minted admin token lands in the 0600
         # sidecar on the CONTROLLER and the run WARNS loudly: save it into your
         # Ansible Vault group_vars as artifactory_access_token before the next

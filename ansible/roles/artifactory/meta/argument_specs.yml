@@ -59,6 +59,15 @@ argument_specs:
           How to drive the instance for bootstrap. docker = docker exec/restart;
           native = package/systemd install (write file to disk, systemd restart,
           slurp token.json — needs root on the host).
+      artifactory_bootstrap_delegate_to:
+        type: str
+        default: "{{ inventory_hostname }}"
+        description: >-
+          Where bootstrap's HOST actions run (docker exec/restart, native
+          file/systemd tasks). Defaults to the play host, so a
+          hosts: <artifactory-host> play acts on that host directly; override
+          only when Artifactory lives on a third host. API tasks are separate
+          (artifactory_delegate_to).
       artifactory_bootstrap_container:
         type: str
         default: artifactory
@@ -118,11 +127,11 @@ argument_specs:
       artifactory_bootstrap_vault_mount:
         type: str
         default: ""
-        description: KV v2 mount for the stored token (e.g. kv-example).
+        description: KV v2 mount for the stored token (e.g. kv-mgt).
       artifactory_bootstrap_vault_path:
         type: str
         default: ""
-        description: KV v2 path for the stored token (e.g. apps/artifactory/runtime).
+        description: KV v2 path for the stored token (e.g. apps/artifactory-trial/runtime).
       artifactory_bootstrap_vault_field:
         type: str
         default: admin_access_token
