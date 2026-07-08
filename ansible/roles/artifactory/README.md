@@ -92,7 +92,12 @@ supplies it (via an inventory lookup) and the whole phase is skipped — a rerun
     reads `token.json` via `slurp`. Needs **root** on the host
     (`artifactory_bootstrap_native_become`, default true). The `JFROG_HOME` var
     paths are the same as docker (e.g. `/opt/jfrog/artifactory/var`), so
-    `keys_dir`/`token_file` need no change.
+    `keys_dir`/`token_file` need no change. **For a remote native host, set
+    `artifactory_delegate_to` to that host** — the role default (`localhost`)
+    would otherwise run the systemd/file tasks (and their `become`) on the
+    controller. Controller-side outputs (drift reports, backup state, generated
+    users/tokens sidecars, the bootstrap token sidecar) always stay on the
+    controller regardless, with `become: false` pinned.
   - It **cannot** run against SaaS (`*.jfrog.io`) or a pure-`localhost` API target —
     supply a token there instead.
 - Runs only when `artifactory_access_token` is empty **and**
@@ -138,6 +143,22 @@ ansible-playbook playbooks/artifactory_trial.yml -i inventories/trial \
   -e artifactory_bootstrap_vault_mount=kv-example \
   -e artifactory_bootstrap_vault_path=apps/artifactory/runtime
 # → mints + stores the admin token, then configures the instance in one pass.
+```
+
+```yaml
+# Native (systemd) install on a remote host, no HashiCorp Vault:
+- hosts: artifactory
+  gather_facts: false
+  roles:
+    - role: artifactory
+      vars:
+        artifactory_url: "https://artifactory.example.internal"
+        artifactory_delegate_to: "{{ inventory_hostname }}"  # API + bootstrap run on the host
+        artifactory_bootstrap_method: native
+        # No Vault store configured -> the minted admin token lands in the 0600
+        # sidecar on the CONTROLLER and the run WARNS loudly: save it into your
+        # Ansible Vault group_vars as artifactory_access_token before the next
+        # run, or another admin token gets minted (old one left unrevoked).
 ```
 
 ## What it manages
