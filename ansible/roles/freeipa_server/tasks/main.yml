@@ -95,6 +95,15 @@
   when: freeipa_server_is_primary | bool
   tags: [backup]
 
+# Force an on-demand backup NOW (primary only) — opt-in via `--tags backup_now`
+# only (never on a normal converge). For a nightly CI/CD job: it triggers the
+# deployed backup service synchronously and fails the play (→ red pipeline) if
+# the backup errors. See tasks/backup_run.yml.
+- name: Force a FreeIPA backup on demand (primary only; opt-in)
+  ansible.builtin.import_tasks: backup_run.yml
+  when: freeipa_server_is_primary | bool
+  tags: [never, backup_now]
+
 # IDAM pipeline — three phases: 1. desired (assemble + validate), 2. apply,
 # 3. prune (reconcile.yml). Desired-assembly carries every consumer's tag — apply,
 # reconcile AND the hard-delete ops all need the assembled lists first (delete.yml

@@ -1,0 +1,75 @@
+---
+# roles/freeipa_server/tasks/backup_run.yml
+# Force an on-demand FreeIPA backup NOW (primary only) — for a nightly CI/CD job.
+#
+# Triggers the already-deployed freeipa-backup.service (Type=oneshot) SYNCHRONOUSLY:
+# `systemctl start` on a oneshot unit blocks until the script exits and returns
+# non-zero if it failed, so a backup failure fails this task → fails the play →
+# turns the pipeline red (visible on the morning dashboard). It reuses the exact
+# scheduled backup script (ipa-backup --data --online + retention prune + the
+# node_exporter textfile metrics), so a forced run and the 02:00 timer run are
+# byte-for-byte identical.
+#
+# `never`-tagged: runs ONLY with an explicit `--tags backup_now`, never on a
+# normal converge. Requires the unit to already exist (deployed by `--tags
+# backup`); asserts that with an actionable message.
+#
+#   ansible-playbook -i inventories/<env>/hosts.yml <freeipa play> --tags backup_now
+
+- name: "Backup-now | Stat the backup service unit"
+  ansible.builtin.stat:
+    path: /etc/systemd/system/freeipa-backup.service
+  register: _freeipa_backup_unit
+
+- name: "Backup-now | Assert the backup unit is deployed"
+  ansible.builtin.assert:
+    that:
+      - _freeipa_backup_unit.stat.exists
+    fail_msg: >-
+      freeipa-backup.service is not deployed on {{ inventory_hostname }} — run the
+      role once with `--tags backup` first (it installs the script, service and
+      timer), then `--tags backup_now` can force a run.
+    quiet: true
+
+- name: "Backup-now | Force a FreeIPA backup and fail loudly on error"
+  block:
+    # Deliberate command-over-module: we are INVOKING a oneshot batch job and need
+    # its exit code as the CI failure signal, not converging a service to a desired
+    # state. `systemctl start` on a oneshot blocks until ExecStart exits and returns
+    # non-zero on failure; the systemd module's contract is state, not
+    # "run-and-surface-rc", so command is the honest tool.
+    - name: "Backup-now | Trigger freeipa-backup.service (synchronous)"  # noqa: command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl start freeipa-backup.service
+      changed_when: true
+
+    - name: "Backup-now | Report the newest backup"
+      ansible.builtin.command:
+        cmd: >-
+          find {{ freeipa_backup_dir }} -maxdepth 1 -type d -name 'ipa-data-*'
+          -printf '%TY-%Tm-%Td %TH:%TM  %p\n'
+      register: _freeipa_backup_list
+      changed_when: false
+
+    - name: "Backup-now | Show the latest backup"
+      ansible.builtin.debug:
+        msg: >-
+          FreeIPA backup OK on {{ inventory_hostname }} — latest:
+          {{ (_freeipa_backup_list.stdout_lines | sort | last)
+             if _freeipa_backup_list.stdout_lines | length > 0
+             else '(none found — check the journal)' }}
+
+  rescue:
+    - name: "Backup-now | Backup failed — capture the service journal"
+      ansible.builtin.command:
+        cmd: journalctl -u freeipa-backup.service -n 40 --no-pager
+      register: _freeipa_backup_journal
+      changed_when: false
+      failed_when: false
+
+    - name: "Backup-now | Re-raise with the failure log inline"
+      ansible.builtin.fail:
+        msg: |-
+          FreeIPA backup FAILED on {{ inventory_hostname }}.
+          Recent freeipa-backup.service journal:
+          {{ _freeipa_backup_journal.stdout | default('(journal unavailable)') }}

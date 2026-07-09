@@ -66,6 +66,7 @@ A no-tag run runs everything except the `never`-tagged ops.
 | `certs` (`ca`) | Import trusted external CAs into the IPA trust store (primary, opt-in) |
 | `hardening` | Opt-in post-install hardening (primary) |
 | `backup` | Scheduled ipa-backup timer + opt-in controller offload (primary) |
+| `backup_now` | Force an on-demand backup NOW; fails the run on error (primary, `never`; for nightly CI) |
 | `idam` (`users`/`groups`/`hbac`/`sudo`) | Declarative IDAM reconciliation (primary) |
 | `dns` | Declarative DNS zones / forward-zones / records (primary, opt-in) |
 | `automember` | Auto group/hostgroup membership rules (primary, opt-in) |
@@ -182,6 +183,31 @@ freeipa_server_trusted_external_cas:
   (e.g. `ipa-data-2026-06-22-…`). `never`-tagged so it can't run by accident. DM password from Vault.
 - **Offload to controller** — set `freeipa_server_backup_fetch_name` (a backup name, or `all`);
   copies to `freeipa_server_backup_controller_path` on the next backup run.
+
+### Force a backup on demand (nightly CI/CD)
+
+`--tags backup_now` triggers the deployed backup **synchronously** and returns non-zero if
+`ipa-backup` fails — so a scheduled pipeline goes red and the failure shows on the morning
+dashboard, with the service journal dumped inline. It reuses the exact scheduled script
+(same `ipa-backup --data --online`, retention prune, and node_exporter metrics), so a forced
+run is identical to the 02:00 timer run. `never`-tagged (won't run on a normal converge) and
+primary-only; the backup unit must already be deployed (any host configured with `--tags
+backup`, which a normal run does).
+
+```bash
+# nightly job — force a backup, fail the pipeline on error
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags backup_now
+```
+
+CI — a scheduled pipeline (nightly) so every failure lands on the pipelines dashboard:
+
+```yaml
+freeipa_backup:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  script:
+    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/freeipa_idam.yml --tags backup_now
+```
 
 ## Declarative DNS
 
