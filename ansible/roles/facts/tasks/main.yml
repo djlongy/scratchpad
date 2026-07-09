@@ -1,0 +1,44 @@
+---
+# roles/facts/tasks/main.yml
+#
+# Gather all facts → build facts_known → display it next to facts_passed →
+# optionally pause for review (only at -v or higher). A self-contained
+# troubleshooting aid: safe to import anywhere, changes nothing.
+
+- name: "Facts | Gather all facts (subset: all)"
+  ansible.builtin.setup:
+    gather_subset:
+      - all
+
+# Pick the requested keys out of ansible_facts. select('in', ansible_facts)
+# keeps only keys that actually exist on THIS host, so one curated list works
+# across distros/platforms (absent keys are silently dropped, never an error).
+# An empty facts_known_keys means "show everything gathered".
+- name: "Facts | Build facts_known from the gathered facts"
+  ansible.builtin.set_fact:
+    facts_known: >-
+      {{ ansible_facts if (facts_known_keys | length == 0)
+         else dict(_facts_present | zip(_facts_present | map('extract', ansible_facts) | list)) }}
+  vars:
+    _facts_present: "{{ facts_known_keys | select('in', ansible_facts) | list }}"
+
+# The two dicts, together and labelled, so provenance is obvious at a glance.
+- name: "Facts | Merge known facts with the passed variables"
+  ansible.builtin.set_fact:
+    facts_report:
+      facts_known: "{{ facts_known }}"
+      facts_passed: "{{ facts_passed }}"
+
+- name: "Facts | Display facts_known + facts_passed"
+  ansible.builtin.debug:
+    var: facts_report
+
+# Wait for ENTER so you can confirm the above is what you expect before the play
+# carries on. Only at -v or higher — a normal run displays and moves straight on.
+- name: "Facts | Pause to review before continuing (only at -v or higher)"
+  ansible.builtin.pause:
+    prompt: >-
+      Review the facts above. Press ENTER to continue — or Ctrl-C then A to abort.
+  when:
+    - facts_pause | bool
+    - (ansible_verbosity | int) >= (facts_pause_min_verbosity | int)

@@ -1,0 +1,30 @@
+---
+# playbooks/facts.yml
+#
+# Troubleshooting play anyone can run: gather all facts on the target(s), print a
+# readable set of the useful ones next to any variables you pass, then pause for
+# review (only when you run it with -v). Read-only — it changes nothing.
+#
+#   # just look at the facts of one host
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/facts.yml --limit myhost
+#
+#   # pause to confirm before continuing (interactive)
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/facts.yml --limit myhost -v
+#
+#   # also show some variables you care about, next to the facts
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/facts.yml --limit myhost \
+#     -e '{"facts_passed": {"target_url": "https://example.com", "run_mode": "check"}}'
+#
+#   # dump the ENTIRE ansible_facts dict instead of the curated set
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/facts.yml --limit myhost \
+#     -e '{"facts_known_keys": []}'
+#
+# Default host pattern is `all` — always scope with --limit so you only gather
+# and print the host(s) you're troubleshooting.
+
+- name: Show facts (troubleshooting)
+  hosts: "{{ facts_hosts | default('all') }}"
+  gather_facts: false          # the role gathers subset=all itself
+  become: false
+  roles:
+    - role: facts

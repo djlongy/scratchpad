@@ -1,0 +1,56 @@
+---
+# roles/facts/defaults/main.yml
+#
+# Troubleshooting helper. Gathers all facts, shows a readable "facts_known" dict
+# next to the variables you hand it ("facts_passed"), then optionally pauses so
+# you can eyeball everything before the play continues. Drop it into a play (or
+# run the bundled playbook) whenever something isn't behaving and you want to
+# confirm what Ansible actually sees.
+
+# Variables you want shown alongside the gathered facts. Pass a dict at import:
+#   - ansible.builtin.import_role: {name: facts}
+#     vars:
+#       facts_passed:
+#         target_url: "{{ target_url }}"
+#         run_mode: "{{ run_mode }}"
+facts_passed: {}
+
+# Which gathered ansible_facts keys to surface as facts_known.
+# - A non-empty list = just those keys (any key absent on this host is skipped,
+#   so the same list works across distros/platforms).
+# - An EMPTY list ([]) = show the ENTIRE ansible_facts dict (everything gathered).
+# The default is a curated set of the facts most useful when troubleshooting
+# (identity, OS, network, runtime).
+facts_known_keys:
+  - hostname
+  - fqdn
+  - nodename
+  - distribution
+  - distribution_version
+  - distribution_release
+  - os_family
+  - kernel
+  - architecture
+  - machine
+  - system
+  - virtualization_type
+  - default_ipv4
+  - default_ipv6
+  - all_ipv4_addresses
+  - interfaces
+  - dns
+  - python
+  - service_mgr
+  - pkg_mgr
+  - processor_vcpus
+  - memtotal_mb
+  - date_time
+
+# Pause (wait for ENTER) after displaying, so you can confirm before continuing.
+# Gated on verbosity — a normal run just displays and moves on; the pause only
+# fires at -v or higher (see facts_pause_min_verbosity). Set false to never pause.
+facts_pause: true
+
+# Minimum ansible verbosity (the -v count) for the pause to fire. 1 = pause at
+# -v or higher. Raise it if you only want to stop at -vv / -vvv.
+facts_pause_min_verbosity: 1

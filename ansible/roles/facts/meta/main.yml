@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  role_name: facts
+  author: djlongy
+  description: >-
+    Troubleshooting helper — gather all facts, display a curated facts_known
+    dict next to the variables you pass in (facts_passed), then optionally pause
+    for review at -v or higher. Read-only; safe to drop into any play.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+    - name: Debian
+      versions: [all]
+    - name: Ubuntu
+      versions: [all]
+  galaxy_tags:
+    - facts
+    - debug
+    - troubleshooting
+
+dependencies: []

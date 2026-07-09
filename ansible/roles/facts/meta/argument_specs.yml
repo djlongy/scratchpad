@@ -1,0 +1,29 @@
+---
+argument_specs:
+  main:
+    short_description: "Gather all facts and display them (plus passed vars), with an optional review pause"
+    description:
+      - "Troubleshooting helper. Gathers subset=all, builds facts_known from the gathered facts, shows it merged with the caller's facts_passed dict, then optionally pauses for review at -v or higher."
+      - "Read-only — it changes nothing on the target."
+    options:
+      facts_passed:
+        description:
+          - "Dict of variables to display alongside the gathered facts. Pass it at import time."
+        type: dict
+        default: {}
+      facts_known_keys:
+        description:
+          - "ansible_facts keys to surface as facts_known; keys absent on the host are skipped."
+          - "An empty list shows the ENTIRE ansible_facts dict."
+        type: list
+        elements: str
+      facts_pause:
+        description:
+          - "Whether to pause (wait for ENTER) after displaying. Still gated on verbosity."
+        type: bool
+        default: true
+      facts_pause_min_verbosity:
+        description:
+          - "Minimum verbosity (the -v count) for the pause to fire. 1 = pause at -v or higher."
+        type: int
+        default: 1
