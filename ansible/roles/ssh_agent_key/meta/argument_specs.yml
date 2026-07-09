@@ -26,7 +26,8 @@ argument_specs:
       ssh_agent_key_public:
         description:
           - "The key's public line ('ssh-ed25519 AAAA... comment'). OPTIONAL for unlock."
-          - "When set, the already-loaded check uses it directly and the ssh_agent_key_pubkey filter is never invoked — pass it (and to lock) to bypass the filter plugin entirely."
+          - "When set, the already-loaded check uses it directly instead of the ssh_agent_key_pubkey filter."
+          - "Pass it to both unlock and lock to bypass the filter plugin entirely."
         type: str
         default: ""
   unlock:
