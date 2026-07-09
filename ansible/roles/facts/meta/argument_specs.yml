@@ -3,7 +3,8 @@ argument_specs:
   main:
     short_description: "Gather all facts and display them (plus passed vars), with an optional review pause"
     description:
-      - "Troubleshooting helper. Gathers subset=all, builds facts_known from the gathered facts, shows it merged with the caller's facts_passed dict, then optionally pauses for review at -v or higher."
+      - "Troubleshooting helper. Gathers subset=all and builds facts_known from the gathered facts."
+      - "Shows it merged with the caller's facts_passed dict, then optionally pauses for review at -v or higher."
       - "Read-only — it changes nothing on the target."
     options:
       facts_passed:
