@@ -33,9 +33,6 @@
       DISPLAY: ":0"
       SSH_AGENT_KEY_PASSPHRASE: "{{ ssh_agent_key_passphrase }}"
     _ssh_add_cmd: "ssh-add{{ (' -t ' ~ ssh_agent_key_lifetime) if (ssh_agent_key_lifetime | int) > 0 else '' }} -"
-    # The key's public half (derived in memory) — how we tell whether the key
-    # was ALREADY in the agent, so re-runs honestly report "ok" not "changed".
-    _ssh_pub_blob: "{{ (ssh_agent_key_content | ssh_agent_key_pubkey(ssh_agent_key_passphrase)).split(' ')[1] }}"
   block:
     - name: Unlock | Check the key material was provided
       ansible.builtin.assert:
@@ -45,6 +42,26 @@
           ssh_agent_key_content is empty — wire it from your vaulted key
           variable in the calling play.
         quiet: true
+
+    # The key's public half — how we tell whether the key was ALREADY in the
+    # agent, so re-runs honestly report "ok" not "changed" (a precise per-key
+    # match on the base64 blob, not a count). TWO separate tasks, not a ternary:
+    # a filter name is resolved at TEMPLATE COMPILE time, so even a not-taken
+    # `… if x else (… | ssh_agent_key_pubkey)` branch makes the whole role need
+    # the plugin. A skipped task never compiles its expression — so when you pass
+    # ssh_agent_key_public the filter task below is skipped and the plugin is not
+    # required at all. The filter is ONLY referenced (and needed) when no public
+    # key is supplied.
+    - name: Unlock | Public blob from the supplied public key (no plugin)
+      ansible.builtin.set_fact:
+        _ssh_pub_blob: "{{ ssh_agent_key_public.split(' ')[1] }}"
+      when: ssh_agent_key_public | default('') | length > 0
+
+    - name: Unlock | Derive the public blob from the private key (filter fallback)
+      ansible.builtin.set_fact:
+        _ssh_pub_blob: "{{ (ssh_agent_key_content | ssh_agent_key_pubkey(ssh_agent_key_passphrase)).split(' ')[1] }}"
+      when: ssh_agent_key_public | default('') | length == 0
+      no_log: true
 
     # This listing doubles as the agent PROBE: rc 0/1 = agent reachable
     # (with/without keys), rc 2 = no usable agent. Branching on that rc is

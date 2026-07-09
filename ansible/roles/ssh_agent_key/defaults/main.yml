@@ -7,9 +7,10 @@
 # set ssh_agent_key_passphrase and the role unlocks it with that.
 # unlock and lock are independent: each takes the same vaulted key.
 
-# REQUIRED (unlock AND lock). Private key text (PEM / OpenSSH). Wire this from
-# a vaulted variable in the calling play. unlock adds it; lock derives its
-# public half in memory to know what to remove. Never hardcode a key here.
+# Private key text (PEM / OpenSSH). REQUIRED by unlock (it feeds this to
+# ssh-add). For lock it is optional — only needed when you don't pass
+# ssh_agent_key_public (lock then derives the public half from it via the
+# filter). Wire from a vaulted variable; never hardcode a key here.
 ssh_agent_key_content: ""
 
 # Passphrase to unlock the private key, if it has one. Leave empty for a raw
@@ -21,9 +22,15 @@ ssh_agent_key_passphrase: ""
 # stops. A value > 0 passes `ssh-add -t <seconds>` so the key auto-expires.
 ssh_agent_key_lifetime: 0
 
-# LOCK override. Normally lock derives the public key from
-# ssh_agent_key_content; set this to a public key line
-# ("ssh-ed25519 AAAA... comment") to remove a key without the private half.
+# The key's PUBLIC line ("ssh-ed25519 AAAA... comment") — non-secret, fine in
+# plain group_vars. OPTIONAL but recommended: pass it to BOTH unlock and lock
+# and the ssh_agent_key_pubkey filter plugin is never referenced at all (each
+# path that would call it is a task skipped by `when:`), so the plugin becomes
+# an unused convenience you can drop. Omit it and the role derives the public
+# half from the private key via the filter (unlock: idempotency check; lock:
+# what to delete). A filter name is resolved at template COMPILE time, so this
+# had to be split into when-gated tasks — a ternary would need the plugin even
+# on the branch it doesn't take.
 ssh_agent_key_public: ""
 
 # OUTPUT (set by unlock when it had to spawn an agent): the spawned agent's

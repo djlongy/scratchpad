@@ -2,35 +2,50 @@
 # roles/ssh_agent_key/tasks/lock.yml
 #
 # Remove the key from the agent — fully INDEPENDENT of unlock: give lock the
-# same vaulted key and it derives the public half in memory (filter_plugins/)
-# to know exactly what to delete. No state is carried from unlock, so lock
-# works in a different play, a different playbook, or a different day.
-# Idempotent: a key that is already gone (or no agent at all) is "ok".
+# key's PUBLIC line (ssh_agent_key_public) and it deletes exactly that, or give
+# it the private key (ssh_agent_key_content) and it derives the public half in
+# memory (filter_plugins/) to know what to delete. No state is carried from
+# unlock, so lock works in a different play, a different playbook, or a different
+# day. Idempotent: a key that is already gone (or no agent at all) is "ok".
 #
 # Call it from post_tasks — or its own playbook — with the key wired in:
 #   - ansible.builtin.import_role: {name: ssh_agent_key, tasks_from: lock}
 #     vars:
-#       ssh_agent_key_content: "{{ vault_ssh_private_key }}"
+#       ssh_agent_key_public: "{{ vault_ssh_public_key }}"   # plugin-free path
+# (Pass ssh_agent_key_public and the ssh_agent_key_pubkey filter is never
+#  referenced — see the two split tasks below for why that matters.)
 
 - name: Lock | Remove the SSH key from the agent
   run_once: true
   delegate_to: localhost
   become: false
-  vars:
-    # What to delete: an explicit public line wins; otherwise derive it from
-    # the private key, exactly like unlock derives what it adds.
-    _ssh_agent_key_target: >-
-      {{ ssh_agent_key_public if (ssh_agent_key_public | length > 0)
-         else (ssh_agent_key_content | ssh_agent_key_pubkey(ssh_agent_key_passphrase)
-               if (ssh_agent_key_content | length > 0) else '') }}
   block:
+    # What to delete, in TWO separate tasks — not a ternary. A filter name is
+    # resolved at TEMPLATE COMPILE time, so a `… if x else (… | ssh_agent_key_pubkey)`
+    # ternary needs the plugin even when x is set and the filter branch is never
+    # taken. A skipped task never compiles its expression — so passing
+    # ssh_agent_key_public skips the filter task entirely and lock needs no plugin.
+    - name: Lock | Target public key from the supplied public line (no plugin)
+      ansible.builtin.set_fact:
+        _ssh_agent_key_target: "{{ ssh_agent_key_public }}"
+      when: ssh_agent_key_public | default('') | length > 0
+
+    - name: Lock | Derive the target from the private key (filter fallback)
+      ansible.builtin.set_fact:
+        _ssh_agent_key_target: "{{ ssh_agent_key_content | ssh_agent_key_pubkey(ssh_agent_key_passphrase) }}"
+      when:
+        - ssh_agent_key_public | default('') | length == 0
+        - ssh_agent_key_content | default('') | length > 0
+      no_log: true
+
     - name: Lock | Check we know which key to remove
       ansible.builtin.assert:
         that:
-          - _ssh_agent_key_target | length > 0
+          - _ssh_agent_key_target | default('') | length > 0
         fail_msg: >-
-          Give lock the same vaulted ssh_agent_key_content you unlock with
-          (it derives the public key from it), or pass ssh_agent_key_public.
+          Give lock the key's public line (ssh_agent_key_public), or the same
+          vaulted ssh_agent_key_content you unlock with (it derives the public
+          key from it).
         quiet: true
 
     - name: Lock | Remove the key from the agent (by public key, over stdin)

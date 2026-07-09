@@ -53,6 +53,26 @@ bundled filter (`filter_plugins/`) recomputes the public line **in memory** on t
 controller, and that is fed to `ssh-add -d`. Same input as unlock, opposite action,
 zero shared state — which is why they work across different plays, playbooks and days.
 
+### Don't want the filter plugin? Pass the public key.
+
+The filter plugin exists only to *derive* the public key when you give the role the
+private key alone. If you also pass **`ssh_agent_key_public`** (the `.pub` line — it's
+non-secret, so plain group_vars is fine) to **both unlock and lock**, the plugin is
+**never referenced at all** and can be deleted:
+
+- **unlock** — `ssh_agent_key_content` (+ `ssh_agent_key_passphrase`) is still added over
+  stdin; `ssh_agent_key_public` is used for the precise "is this exact key already
+  loaded?" check (`ssh-add -L` grep — per-key, not a count).
+- **lock** — `ssh_agent_key_public` alone; `ssh-add -d` removes exactly that key,
+  independent of unlock (so a key leaked by a failed-then-rerun play still gets removed).
+
+This is wired as **`when:`-gated tasks, not a ternary**, on purpose: Ansible resolves a
+filter *name* at template **compile** time, so `x if cond else (… | ssh_agent_key_pubkey)`
+would require the plugin even when `cond` is true and that branch never runs. A skipped
+task never compiles its expression, so passing the public key genuinely bypasses the
+plugin. Verified by deleting the `.py` and running the full flow (passes with the public
+key; fails only when neither the public key nor the plugin is available).
+
 ## Usage
 
 Bracketing one play:

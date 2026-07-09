@@ -23,6 +23,12 @@ argument_specs:
           - "0 persists until locked or the agent stops; a value > 0 passes ssh-add -t <seconds>."
         type: int
         default: 0
+      ssh_agent_key_public:
+        description:
+          - "The key's public line ('ssh-ed25519 AAAA... comment'). OPTIONAL for unlock."
+          - "When set, the already-loaded check uses it directly and the ssh_agent_key_pubkey filter is never invoked — pass it (and to lock) to bypass the filter plugin entirely."
+        type: str
+        default: ""
   unlock:
     short_description: "Load the SSH key into ssh-agent (memory-only)"
     description:
