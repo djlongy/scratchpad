@@ -4,7 +4,7 @@
 # Phase order (a no-tag run executes everything):
 #   preflight  → hostname/time guards + stale-enrolment detection & cleanup
 #   enroll     → upstream ipaclient join (idempotent; re-joins if preflight found stale)
-#   dns        → seed this host's A/PTR record server-side (opt-in; admin-join only)
+#   dns        → seed this host's A/PTR record server-side (on by default; admin-join only)
 #   configure  → post-join client config (automount homes, verification)
 #   resilience → ensure login survives IPA/storage outages (SSSD cache + SSH keys)
 
@@ -29,6 +29,14 @@
   when:
     - inventory_hostname in (groups[freeipa_client_server_group] | default([]))
     - not (freeipa_client_on_master | bool)
+  tags: [always]
+
+- name: Ensure network facts are present (tag-isolated / gather_facts:false runs)
+  # Self-heals ansible_default_ipv4 for any phase (dns, configure) when a --tags run
+  # or a gather_facts:false caller skipped fact-gathering. No-ops on a normal run.
+  ansible.builtin.setup:
+    gather_subset: ['!all', '!min', 'network']
+  when: ansible_default_ipv4 is not defined
   tags: [always]
 
 - name: Run FreeIPA client preflight (incl. stale-rejoin cleanup)

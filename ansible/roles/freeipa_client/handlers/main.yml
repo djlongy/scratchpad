@@ -3,3 +3,4 @@
   ansible.builtin.service:
     name: sssd
     state: restarted
+  become: true

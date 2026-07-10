@@ -91,7 +91,8 @@ freeipa_client_all_ip_addresses: false   # register all NIC IPs (not just the pr
 # once, machine keeps it current"). Admin-join only (needs admin creds); skipped
 # for OTP-joined hosts. Tolerant — warns (not fails) if IPA isn't authoritative
 # for the zone. The zone is freeipa_client_dns_zone (defaults to the realm domain).
-freeipa_client_seed_dns_record: false
+# On by default (set false to disable).
+freeipa_client_seed_dns_record: true
 freeipa_client_seed_dns_reverse: true    # also seed the reverse PTR (when a reverse zone exists)
 freeipa_client_dns_zone: "{{ freeipa_client_domain }}"  # IPA-owned zone the A record lives in
 # Reverse zone for the PTR. Empty = auto-derive the /24 zone (c.b.a.in-addr.arpa)
@@ -126,8 +127,15 @@ freeipa_client_ntp_pool: ""
 # ── Subordinate IDs (optional, rootless-container hosts) ─────────────────────
 freeipa_client_subid: false
 
-# ── Preflight tolerances ─────────────────────────────────────────────────────
-freeipa_client_preflight_time_tolerance_sec: 120
+# ── Preflight packages ────────────────────────────────────────────────────────
+# Packages preflight needs BEFORE the upstream ipaclient role installs anything:
+# ipa-client (ipa-client-install for stale-uninstall), krb5-workstation
+# (kinit/kdestroy health-check), chrony (chronyc tracking), bind-utils (dig).
+freeipa_client_packages:
+  - ipa-client
+  - krb5-workstation
+  - chrony
+  - bind-utils
 
 # ── Offline resilience (login survives IPA/storage being down) ────────────────
 # SSSD caches credentials (offline auth) and serves SSH keys via sss_ssh_authorizedkeys

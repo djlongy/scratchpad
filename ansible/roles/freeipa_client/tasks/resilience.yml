@@ -11,6 +11,7 @@
     group: root
     mode: "0600"
     no_extra_spaces: false
+  become: true                           # /etc/sssd/sssd.conf is root-owned, mode 0600
   loop:
     - {opt: cache_credentials, val: "true"}
     - {opt: krb5_store_password_if_offline, val: "true"}
@@ -25,6 +26,7 @@
   changed_when: false
   failed_when: false
   check_mode: false
+  become: true                           # sshd -T reads host keys; root-only, else garbage/rc≠0
 
 - name: Warn if AuthorizedKeysCommand is not sss_ssh_authorizedkeys
   ansible.builtin.debug:

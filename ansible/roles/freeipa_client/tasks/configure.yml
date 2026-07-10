@@ -19,6 +19,7 @@
     name: sssd
     state: started
     enabled: true
+  become: true                           # systemd unit management needs root
 
 - name: Confirm IPA CA cert is present in the system trust
   ansible.builtin.stat:
@@ -98,9 +99,12 @@
     - freeipa_client_servers | length > 0   # need an explicit server for the authoritative query
   block:
     - name: Ensure dig is available for the authoritative A-record check
+      # Installed cross-OS here because preflight's package install is RedHat-only —
+      # this keeps the drift self-heal working on Debian/Ubuntu clients too.
       ansible.builtin.package:
         name: "{{ 'bind-utils' if ansible_os_family == 'RedHat' else 'dnsutils' }}"
         state: present
+      become: true                           # package install requires root
 
     - name: Query the authoritative A record from the IPA DNS server
       # dig @server bypasses /etc/hosts and the SSSD cache (unlike getent).
@@ -117,6 +121,7 @@
       ansible.builtin.service:
         name: sssd
         state: restarted
+      become: true                           # systemd unit management needs root
       when:
         - (_freeipa_client_dns_a.rc | default(1)) == 0
         - ansible_default_ipv4.address not in (_freeipa_client_dns_a.stdout | default(''))

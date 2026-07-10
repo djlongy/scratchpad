@@ -50,6 +50,9 @@ secring.*
 # exception: the freeipa_server shared credential RESOLVER (no secrets — pure var
 # indirection); the *credentials* blanket above would silently strip it from the role
 !ansible/roles/*/tasks/resolve_credentials.yml
+# exception: the freeipa_client admin-password RESOLVER (no secrets — declared-var-first
+# with a Vault fallback, no_log; the *password* blanket above would otherwise strip it)
+!ansible/roles/*/tasks/resolve_admin_password.yml
 *token*
 *tokens*
 *.env

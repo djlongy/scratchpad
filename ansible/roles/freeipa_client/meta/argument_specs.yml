@@ -11,20 +11,51 @@ argument_specs:
         type: str
         required: true
         description: Kerberos realm to join (uppercase domain).
+      freeipa_client_fqdn:
+        type: str
+        required: false
+        description: >-
+          This client's own FQDN, built from inventory_hostname + domain (not
+          gathered facts). Used as the join hostname, the kinit -k principal, and
+          (with set_hostname) the OS hostname target.
+      freeipa_client_set_hostname:
+        type: bool
+        default: true
+        description: Set the OS hostname to freeipa_client_fqdn before join.
+      freeipa_client_server_group:
+        type: str
+        default: freeipa
+        description: >-
+          Inventory group of FreeIPA servers. Used both to build freeipa_client_servers
+          and as the server-guard group in preflight (a host in this group ends the
+          play unless freeipa_client_on_master is true).
       freeipa_client_servers:
         type: list
         elements: str
         required: false
         description: FreeIPA server FQDNs to enrol against (else SRV discovery).
+      freeipa_client_admin_principal:
+        type: str
+        default: admin
+        description: IPA admin principal used for admin-join and for the DNS-seed API calls.
       freeipa_client_admin_password:
         type: str
         required: false
         no_log: true
-        description: IPA admin password for admin-join. Declared vars win over Vault; set this (e.g. from an ansible-vault var) — with it set, no HashiCorp Vault is needed.
+        description: >-
+          IPA admin password for admin-join. Declared vars win over Vault; set this
+          (e.g. from an ansible-vault var) — with it set, no HashiCorp Vault is needed.
       freeipa_client_vault_secret:
         type: str
         required: false
-        description: HashiCorp Vault KV path holding the admin password (admin-join). FALLBACK only — used when freeipa_client_admin_password is empty. Required unless that is set or use_otp.
+        description: >-
+          HashiCorp Vault KV path holding the admin password (admin-join). FALLBACK
+          only — used when freeipa_client_admin_password is empty. Required unless
+          that is set or use_otp.
+      freeipa_client_admin_password_field:
+        type: str
+        no_log: true
+        description: HashiCorp Vault KV field name holding the admin password, read from freeipa_client_vault_secret. Only used on the Vault fallback path.
       freeipa_client_use_otp:
         type: bool
         required: false
@@ -33,6 +64,25 @@ argument_specs:
         type: str
         required: false
         description: One-time enrolment password (when use_otp).
+      freeipa_client_force_join:
+        type: bool
+        default: false
+        description: Join even if the host entry already exists on the server.
+      freeipa_client_kinit_attempts:
+        type: int
+        default: 5
+        description: Number of kinit retries the upstream ipaclient role attempts during join.
+      freeipa_client_no_dns_lookup:
+        type: bool
+        default: false
+        description: Ignore SRV discovery and use freeipa_client_servers only.
+      freeipa_client_on_master:
+        type: bool
+        default: false
+        description: >-
+          Only true when deliberately (re)configuring a client ON an IPA server. Also
+          the escape hatch for preflight's server-group guard — set true to run the
+          client role on a host in freeipa_client_server_group.
       freeipa_client_rejoin_stale:
         type: bool
         required: false
@@ -57,10 +107,14 @@ argument_specs:
         type: str
         required: false
         description: IPA automount location for NFS home dirs ("" disables).
+      freeipa_client_all_ip_addresses:
+        type: bool
+        default: false
+        description: Register all NIC IPs at join, not just the primary.
       freeipa_client_seed_dns_record:
         type: bool
-        required: false
-        description: Seed this host's A (+PTR) record server-side at enrol time (admin-join only).
+        default: true
+        description: Seed this host's A (+PTR) record server-side at enrol time (admin-join only). On by default (set false to disable).
       freeipa_client_seed_dns_reverse:
         type: bool
         required: false
@@ -81,3 +135,50 @@ argument_specs:
         type: bool
         required: false
         description: Force an immediate A-record refresh on drift (needs enable_dns_updates).
+      freeipa_client_no_dns_sshfp:
+        type: bool
+        default: false
+        description: Publish SSHFP records at join (false = publish).
+      freeipa_client_ssh_trust_dns:
+        type: bool
+        default: true
+        description: Trust SSHFP records from DNS (sshd VerifyHostKeyDNS).
+      freeipa_client_no_ssh:
+        type: bool
+        default: false
+        description: Skip the upstream role's ssh_config management.
+      freeipa_client_no_sshd:
+        type: bool
+        default: false
+        description: Skip the upstream role's sshd_config management.
+      freeipa_client_no_dnssec_validation:
+        type: bool
+        default: true
+        description: Disable DNSSEC validation in the client's resolver configuration.
+      freeipa_client_configure_dns_resolver:
+        type: bool
+        default: false
+        description: Repoint the client's resolver at the IPA DNS servers (off by default — most estates resolve the realm via site DNS forwarders instead).
+      freeipa_client_no_ntp:
+        type: bool
+        default: false
+        description: Skip installer-managed NTP. Set true only if time sync is guaranteed by the baseline.
+      freeipa_client_ntp_servers:
+        type: list
+        elements: str
+        default: []
+        description: Explicit NTP servers for the upstream role to configure (empty = installer default).
+      freeipa_client_ntp_pool:
+        type: str
+        default: ""
+        description: NTP pool for the upstream role to configure ("" = not set).
+      freeipa_client_subid:
+        type: bool
+        default: false
+        description: Enable IPA-managed subordinate UID/GID ranges (rootless-container hosts).
+      freeipa_client_packages:
+        type: list
+        elements: str
+        description: >-
+          Packages preflight installs (RedHat family only) before the upstream
+          ipaclient role runs — ipa-client, krb5-workstation, chrony, bind-utils.

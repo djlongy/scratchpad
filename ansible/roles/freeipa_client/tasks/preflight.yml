@@ -6,9 +6,22 @@
 # uninstalled so enroll.yml can cleanly re-join. A healthy, correct enrolment is
 # left untouched (idempotent — enroll.yml then no-ops).
 
+# Note: the FreeIPA-server guard (end_host) lives at the top of main.yml, tagged
+# `always`, so it fires on every invocation — including tag-limited runs that skip
+# this preflight phase. Do not reinstate it here (it would only carry the `preflight`
+# tag and be bypassed under, e.g., --tags configure).
+
+- name: Install preflight tooling (ipa-client, krb5, chrony, bind-utils)
+  ansible.builtin.dnf:
+    name: "{{ freeipa_client_packages }}"
+    state: present
+  become: true                           # package install requires root
+  when: ansible_os_family == 'RedHat'
+
 - name: Set the system hostname to the client FQDN
   ansible.builtin.hostname:
     name: "{{ freeipa_client_fqdn }}"
+  become: true                           # hostnamectl/hostname change requires root
   when: freeipa_client_set_hostname | bool
 
 - name: Ensure chrony is synchronised (Kerberos needs < 5 min skew)
@@ -83,6 +96,7 @@
   ansible.builtin.command: ipa-client-install --uninstall --unattended
   register: _freeipa_client_uninstall
   changed_when: _freeipa_client_uninstall.rc == 0
+  become: true                           # ipa-client-install --uninstall requires root
   failed_when:
     - _freeipa_client_uninstall.rc != 0
     - "'not configured' not in (_freeipa_client_uninstall.stdout | default('') ~ _freeipa_client_uninstall.stderr | default(''))"
