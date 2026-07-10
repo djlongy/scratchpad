@@ -8,6 +8,29 @@
 #   configure  → post-join client config (automount homes, verification)
 #   resilience → ensure login survives IPA/storage outages (SSSD cache + SSH keys)
 
+# Server guard — runs on EVERY invocation regardless of --tags selection.
+# Must live here (not in a tag-gated phase file) and carry `always`, otherwise a
+# tag-limited run (e.g. --tags configure) skips the guard but still executes the
+# other phases against a FreeIPA server host that happens to be in the target group.
+- name: End host — this host is a FreeIPA server, not a client
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is in the '{{ freeipa_client_server_group }}'
+      inventory group (FreeIPA servers). Ending host — the client role must not
+      run on a server. Set freeipa_client_on_master=true only for the deliberate
+      configure-a-client-on-a-master case.
+  when:
+    - inventory_hostname in (groups[freeipa_client_server_group] | default([]))
+    - not (freeipa_client_on_master | bool)
+  tags: [always]
+
+- name: End play for FreeIPA server hosts
+  ansible.builtin.meta: end_host
+  when:
+    - inventory_hostname in (groups[freeipa_client_server_group] | default([]))
+    - not (freeipa_client_on_master | bool)
+  tags: [always]
+
 - name: Run FreeIPA client preflight (incl. stale-rejoin cleanup)
   ansible.builtin.import_tasks: preflight.yml
   tags: [preflight]
