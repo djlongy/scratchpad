@@ -66,6 +66,10 @@
   when: vault_ctr_backup_enabled | bool
   tags: [backup]
 
+- name: "Remove-peers — evict stale Raft peers after a scale-down (opt-in)"
+  ansible.builtin.import_tasks: remove_peers.yml
+  tags: [never, remove_peers]
+
 - name: "Restore — roll back to a Raft snapshot (opt-in, destructive)"
   ansible.builtin.import_tasks: restore.yml
   tags: [never, restore]

@@ -7,7 +7,12 @@ topology from the hosts in the play:
 | Hosts in play | Result |
 |---|---|
 | **1** | Standalone Raft (single server) — no `retry_join`, ready to grow later |
-| **N** | Raft HA cluster — every node `retry_join`s all peers |
+| **N (odd ≥ 3)** | Raft HA cluster — every node `retry_join`s all peers |
+
+> **Only odd node counts are valid** (1, 3, 5, 7…). Preflight **refuses an even
+> count** — with N=2, Raft quorum is 2, so a single node failure loses quorum and
+> Vault stops serving writes (worse than standalone). Grow/shrink **1 ↔ 3**
+> directly; never pause on 2. See *Scaling the cluster* below.
 
 This role is **fully self-contained**: it imports **no** tasks from
 `hashicorp_vault` or `hashicorp_vault_docker`. It reuses proven *config*
@@ -109,6 +114,44 @@ See `defaults/main.yml` (full list) and `meta/argument_specs.yml` (contract).
 | `vault_ctr_tls_generate` | `true` | Self-sign a CA + cert |
 | `vault_ctr_tls_extra_sans` | `[]` | Extra SANs (FQDNs/VIPs) |
 | `vault_ctr_domain` | `""` | Adds `<host>.<domain>` to SANs |
+
+## Scaling the cluster (grow / shrink)
+
+Topology follows the hosts in the play (`vault_ctr_nodes`, default
+`ansible_play_hosts_all`). Preflight enforces an **odd** count; `verify.yml`
+asserts that Raft membership exactly matches the desired set (no missing nodes,
+no stale peers) on **every** run — standalone included.
+
+**Grow (1 → 3):** add the two new hosts to the group and re-run the playbook.
+Keep the original node **first** in the host list — `init` inspects the first
+node, sees the cluster is already initialised, and skips init; the two new nodes
+`retry_join`, inherit the Shamir seal, and are unsealed as followers.
+
+> ⚠️ Do **not** let a new host sort ahead of the initialised one. If the first
+> node in `vault_ctr_nodes` is uninitialised, `init` would run `operator init`
+> again and create a second, conflicting cluster. Append new hosts.
+
+**Shrink (3 → 1):** Raft does not auto-evict a node just because it left the
+play — a removed host lingers as a **ghost peer** that still counts toward
+quorum. Removal is a deliberate, `never`-gated step:
+
+```bash
+# 1. Drop the retiring hosts from the group (survivors only in the play).
+# 2. While the cluster STILL HAS A LEADER (before powering the old nodes off):
+ansible-playbook -i inventories/<env>/hosts.yml \
+  playbooks/L3_platform/vault_container.yml --tags remove_peers
+# 3. Decommission the retired nodes. A normal run now verifies clean.
+```
+
+`--tags remove_peers` evicts every Raft member not in `vault_ctr_nodes` and
+re-checks. It runs from the first surviving node — Vault forwards the eviction to
+the active leader, so it works even when the current leader is one of the nodes
+being removed. It never removes a node still in the play. If you skip it, the next
+normal run **fails** in `verify.yml` with the exact `raft remove-peer` commands.
+
+> To re-add a node that was previously evicted, wipe its stale Raft data
+> (`/opt/vault/data/*`, keeping `keys`/`config`/`certs`) before the grow run — a
+> removed peer stays sealed with old state and will not rejoin otherwise.
 
 ## Secrets
 

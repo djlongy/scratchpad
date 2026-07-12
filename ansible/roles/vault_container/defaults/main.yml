@@ -44,6 +44,9 @@ vault_ctr_advertise_addr: "{{ ansible_host }}"
 # Derived from the hosts in the current play: 1 host -> standalone Raft,
 # N hosts -> Raft HA joining all N. Pin an explicit list to decouple the
 # cluster from --limit. Do NOT --limit a subset during deploy/init.
+# Only ODD counts are valid (1, 3, 5, 7…) — preflight refuses an even count
+# because 2-node Raft has no fault tolerance (quorum = floor(N/2)+1). Grow/shrink
+# 1 <-> 3 directly; a scale-down evicts stale peers via `--tags remove_peers`.
 vault_ctr_nodes: "{{ ansible_play_hosts_all }}"
 
 # ── Seal / init ──────────────────────────────────────────────────────────

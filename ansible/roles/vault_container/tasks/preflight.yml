@@ -19,6 +19,27 @@
     vault_ctr_first_node: "{{ vault_ctr_nodes | first }}"
     vault_ctr_scheme: "{{ 'https' if (vault_ctr_tls_enabled | bool) else 'http' }}"
 
+# Raft tolerates the loss of (N-1)/2 nodes: quorum = floor(N/2)+1. Only ODD
+# counts give real fault tolerance — an EVEN count (esp. 2) has NONE, because
+# quorum then needs every-but-none of the nodes (2-node quorum = 2, so a single
+# failure loses quorum and Vault stops serving writes). Standalone (1) is the
+# sanctioned single-node case. So the only valid topologies are 1, 3, 5, 7…
+# (all odd). This guard also catches a scale-DOWN that would land on an even
+# count — grow/shrink 1<->3 directly, never pause on 2.
+- name: "Assert a valid Raft topology (standalone or an ODD HA count)"
+  ansible.builtin.assert:
+    that:
+      - (vault_ctr_node_count | int) is odd
+    fail_msg: >-
+      vault_ctr_nodes resolves to {{ vault_ctr_node_count }} node(s) — not a safe
+      Raft topology. Use 1 (standalone) or an ODD number >= 3 (3, 5, 7…). An even
+      count has no fault tolerance: quorum = floor(N/2)+1, so one failure at N=2
+      halts writes. If this is a --limit run, vault_ctr_nodes may have collapsed
+      to a subset — target the whole group or pin vault_ctr_nodes explicitly.
+    success_msg: "Topology OK: {{ vault_ctr_node_count }} node(s) (odd)."
+    quiet: true
+  run_once: true
+
 - name: "Announce resolved topology"
   ansible.builtin.debug:
     msg: >-
