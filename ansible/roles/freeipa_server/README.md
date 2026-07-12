@@ -441,6 +441,16 @@ Removed **users** are archived (preserved, recoverable). **Authoritative is real
 run it against a *complete* assembled desired state, never a partial tenant file, or it prunes the
 other tenants.
 
+> **The scope marker is a plain SUBSTRING match.** Object reconcile deletes a found object only
+> when `freeipa_idam_reconcile_scope` appears *anywhere inside its name* — no anchoring, no regex,
+> no word boundary. Pick a marker that cannot occur in unrelated names: `prod` also matches a
+> hand-made `reproduction-team`; a distinctive prefix like `acme-prod-` is safe. Three guard rails
+> always hold: a **blank** marker deletes nothing (fail-safe), names on the protected lists are
+> never touched, and the special marker `*` (every undeclared in-type object is an orphan) is an
+> explicit opt-in for realms this role owns outright — never use it on a shared/multi-tenant realm.
+> The export carver (`freeipa_server_export_scope`) uses the same substring semantics, so a marker
+> that carves the export cleanly is also a safe reconcile scope.
+
 **`freeipa_idam_reconcile_memberships_only`** (default `false`) is the **safe nightly drift-revoke
 mode**: runs the membership reconcile (strips members no longer declared) but **suppresses every
 deletion**. It enables the strip on its own (no `authoritative` needed) and, removing nothing, is
@@ -559,6 +569,29 @@ are **not** migrated (Kerberos keys are realm-salted) — plan a password campai
 `freeipa_migrate_dryrun: true` is the safe default; set `freeipa_migrate_source`,
 `freeipa_migrate_source_host` and a bind-password source in inventory. Runs via
 `playbooks/L2_identity/freeipa_migrate.yml`.
+
+## Troubleshooting
+
+### Raw-output parsing drift (after a FreeIPA upgrade)
+
+Several filters in `filter_plugins/freeipa_idam.py` parse the *text* of
+`ipa <type>-find --all --raw` with regexes (there is no JSON API on the CLI path). A FreeIPA
+upgrade that reformats that output cannot corrupt the realm — every consumer fails safe — but
+each degrades differently. What you'll see:
+
+| Symptom | Cause | Severity |
+|---|---|---|
+| Prechecked types (hostgroups, HBAC, sudo, pwpolicy, …) suddenly report **every** entry changed; runs get slower but the end state stays correct | `_parse_raw_entries` no longer recognises entries — the conservative fallback re-includes everything | Performance only — fix at leisure |
+| Run **fails** with `freeipa_idam_evict_payload: … no group entries could be parsed` | The eviction parsing canary: `group-find` output no longer yields `cn:` blocks | Intentional hard stop — eviction would otherwise silently stop enforcing |
+| Run **fails** on `Eviction \| Read current members of all groups` | `ipa group-find` errored — rc >1, **or rc 1 with `ipa: ERROR` on stderr** (expired Kerberos ticket, IPA API down; verified live: ipa returns rc 1 for both zero-matches *and* real errors, so the task also gates on stderr). `no_log` censors the detail — rerun the command manually on the server | Environmental, not a format change |
+| Evictions stop with **no** error and `freeipa_idam_current_managed_users` is `[]` at `-vv` | The `member: uid=…` line format changed — the uid regexes select nothing (canary can't distinguish this from genuinely empty groups) | Silent — explicitly check this one after upgrades |
+
+The drill: run `ipa group-find --all --raw --sizelimit=0` (or the failing type's `*-find`) on
+the server, compare against the regexes in `filter_plugins/freeipa_idam.py`
+(`_RAW_ATTR_RE`, and the `cn:` / `member: uid=` patterns in `freeipa_idam_evict_payload`),
+adjust them, then paste a sample of the **new** output into the RAW fixtures in
+`ansible/tests/unit/roles/test_freeipa_idam_filters.py` so the fix is pinned —
+`pytest ansible/tests/unit -q` runs in CI.
 
 ## See also
 

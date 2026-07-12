@@ -867,11 +867,20 @@
 # ONE group-find covers every group's current members, and the payload compiles in
 # a single filter call — per-group queries/accumulation would cost one full ipa CLI
 # bootstrap per group.
+# A failure here must be LOUD — a blanket failed_when: false silently skipped eviction
+# enforcement forever. ipa exit codes (verified live on package IPA 4.12.2, 2026/07/12):
+# rc=0 matches; rc=1 for BOTH zero-matches (benign, ipa writes nothing to stderr) AND
+# real errors ('ipa: ERROR: did not receive Kerberos credentials', API down) — rc alone
+# cannot distinguish, so also gate on 'ipa: ERROR' in stderr. no_log hides the detail on
+# failure: rerun the command manually on the server (README 'Raw-output parsing drift'
+# has the drill).
 - name: Eviction | Read current members of all groups (one query)
   ansible.builtin.command: "ipa group-find --all --raw --sizelimit=0"
   register: _freeipa_idam_evict_current
   changed_when: false
-  failed_when: false
+  failed_when: >-
+    _freeipa_idam_evict_current.rc not in [0, 1]
+    or ('ipa: ERROR' in (_freeipa_idam_evict_current.stderr | default('')))
   no_log: true
   when: (_freeipa_idam_evict_candidates | default([])) | length > 0
 

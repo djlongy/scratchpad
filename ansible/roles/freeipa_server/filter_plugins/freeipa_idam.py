@@ -1,22 +1,32 @@
 # -*- coding: utf-8 -*-
 """FreeIPA IDAM helper filters (Ansible filter plugins).
 
-Two small, general-purpose filters the role's reconcile uses:
+The data-shaping layer of the role's declarative IDAM reconcile — task files gather
+state and call modules; these filters do the computation in between. Five groups:
 
-  freeipa_idam_merge(base, extra, key="name", union_fields=None)
-      Append `extra` onto `base`, deduped by `key`. Used to layer generated objects
-      (e.g. the RBAC overlay from freeipa_rbac.py) onto a hand-written / exported native
-      baseline without a separate var: baseline wins on a name collision, listed
-      `union_fields` are unioned into the base item.
+  composition      freeipa_idam_merge (layer the RBAC overlay onto the baseline,
+                   baseline wins), freeipa_idam_identity_merge (flatten per-tenant
+                   files, stamp ownership), freeipa_idam_named (bare-string
+                   shorthand), freeipa_export_scope (slice a snapshot per tenant)
+  deletion safety  freeipa_idam_orphans (in-scope + undeclared + unprotected; blank
+                   scope marker deletes NOTHING), freeipa_idam_evictions /
+                   freeipa_idam_evict_payload (strip only role-managed members)
+  bulk compilers   freeipa_idam_sudorules_payload, freeipa_idam_pwexp_bumps,
+                   freeipa_dns_reverse_defaulted — one module call per type,
+                   because every ansible_freeipa invocation costs a full
+                   Python + ipalib bootstrap on the server
+  prechecks        freeipa_idam_changed_subset, freeipa_idam_hbac_state_mismatch —
+                   parse one cheap `ipa <type>-find --all --raw` and gate the
+                   per-item module loops on an actual diff (conservative: any
+                   parse doubt re-includes the entry)
+  validation       freeipa_idam_validate — every shape + reference problem in one
+                   pass (a deliberate Python port of a formerly inline-Jinja engine)
 
-  freeipa_idam_orphans(found, desired, match, protected=None)
-      Compute the orphan object names to delete per type, for the authoritative object
-      reconcile: found names that contain the scope marker `match`, are NOT desired, and
-      are NOT protected. A blank `match` yields nothing (fail-safe).
-
-(The earlier access-matrix compilers were retired in favour of the thin RBAC overlay in
-freeipa_rbac.py — the overlay generates only role groups + nesting + memberships, and every
-other object stays native; see roles/freeipa_server/README.md.)
+MAINTENANCE NOTE for new eyes: the precheck/eviction filters scrape `ipa *-find
+--all --raw` text. If a FreeIPA upgrade changes that format, prechecks degrade
+safely (extra module calls, correct end state) and the eviction path fails LOUDLY
+via its parsing canary — see 'Raw-output parsing drift' in the role README.
+Unit tests: ansible/tests/unit/roles/test_freeipa_idam_filters.py (CI-enforced).
 """
 from __future__ import annotations
 
@@ -333,6 +343,23 @@ def freeipa_dns_reverse_defaulted(records: list[dict], default_flag) -> list[dic
     return out
 
 
+def _evict_current_members(group_find_raw: str) -> dict[str, list[str]]:
+    """``{group_cn: [member logins]}`` parsed from ``ipa group-find --all --raw``
+    output — user members only (``member: uid=...``; nested cn=...,cn=groups DNs
+    are intentionally not matched)."""
+    member_re = re.compile(r"^\s*member:\s+uid=([^,]+)", re.IGNORECASE)
+    cn_re = re.compile(r"^\s*cn:\s+(\S+)", re.IGNORECASE | re.MULTILINE)
+    current_by_group: dict[str, list[str]] = {}
+    for block in (group_find_raw or "").split("\n\n"):
+        cn_match = cn_re.search(block)
+        if not cn_match:
+            continue
+        current_by_group[cn_match.group(1)] = [
+            m.group(1) for line in block.splitlines()
+            if (m := member_re.match(line))]
+    return current_by_group
+
+
 def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
                                managed: list[str]) -> list[dict]:
     """Compile the managed-subset eviction payload from ONE ``ipa group-find
@@ -345,17 +372,24 @@ def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
     Returns ``[{name, user: [login, ...]}, ...]`` for groups needing eviction;
     a candidate group absent from the output (not created yet) contributes
     nothing — exactly like the old per-group query's failed_when: false.
+
+    PARSING CANARY: unlike the precheck filters (whose parse failures degrade to
+    redundant-but-correct module calls), a parse failure here would make eviction
+    silently stop enforcing. So non-empty output that yields ZERO parsed groups —
+    the signature of a --raw format change after a FreeIPA upgrade — raises
+    instead of returning []. An empty string (--check mode skips the find) stays
+    a silent no-op.
     """
-    member_re = re.compile(r"^\s*member:\s+uid=([^,]+)", re.IGNORECASE)
-    cn_re = re.compile(r"^\s*cn:\s+(\S+)", re.IGNORECASE | re.MULTILINE)
-    current_by_group: dict[str, list[str]] = {}
-    for block in (group_find_raw or "").split("\n\n"):
-        cn_match = cn_re.search(block)
-        if not cn_match:
-            continue
-        current_by_group[cn_match.group(1)] = [
-            m.group(1) for line in block.splitlines()
-            if (m := member_re.match(line))]
+    current_by_group = _evict_current_members(group_find_raw)
+    if (group_find_raw or "").strip() and not current_by_group:
+        raise AnsibleFilterError(
+            "freeipa_idam_evict_payload: 'ipa group-find --all --raw' returned "
+            f"{len(group_find_raw)} chars of output but no group entries could be "
+            "parsed ('cn: <name>' blocks). The raw output format has likely changed "
+            "(FreeIPA upgrade?) — refusing to continue, because membership eviction "
+            "would otherwise silently stop enforcing. Compare the live output with "
+            "the regexes in freeipa_idam_evict_payload() and see 'Raw-output "
+            "parsing drift' in roles/freeipa_server/README.md.")
     payload = []
     for group in candidates or []:
         name = (group or {}).get("name")
