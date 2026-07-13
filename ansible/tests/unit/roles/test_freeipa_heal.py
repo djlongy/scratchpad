@@ -24,6 +24,7 @@ DEFAULTS = ROLE / "defaults" / "main.yml"
 ROLE_VARS = ROLE / "vars" / "main.yml"
 ARG_SPECS = ROLE / "meta" / "argument_specs.yml"
 RENDERER = ROLE / "files" / "ipa_pki_proxy_render.py"
+HTTPD_RENDERER = ROLE / "files" / "ipa_httpd_render.py"
 
 
 def heal_text() -> str:
@@ -154,3 +155,104 @@ def test_heal_backs_up_the_broken_file_verifies_and_gives_actionable_failure() -
     assert "is not search('STOPPED')" in text
     assert "freeipa_server_heal_verify_retries" in text
     assert "journalctl -u httpd" in text             # actionable failure guidance
+
+
+# ── Round 2: generalised full-httpd-config-loss recovery ─────────────────────
+
+def test_vars_define_the_full_httpd_file_set_and_ca_cert_paths() -> None:
+    text = ROLE_VARS.read_text()
+    for path in (
+        "/etc/httpd/conf.d/ipa.conf",
+        "/etc/httpd/conf.d/ipa-rewrite.conf",
+        "/etc/ipa/kdcproxy/ipa-kdc-proxy.conf",
+        "/usr/share/ipa/html/ca.crt",
+        "/etc/ipa/ca.crt",
+    ):
+        assert path in text, path
+    # The probe iterates a declared list of the installer-generated httpd files.
+    assert "freeipa_server_heal_ipa_httpd_files" in text
+
+
+def test_heal_recovers_full_httpd_config_loss_via_freeipa_templates() -> None:
+    text = heal_text()
+    # The generalised renderer is invoked (the 3 non-secret confs), plus the
+    # existing pki-proxy renderer for the secret-bearing file.
+    assert "ipa_httpd_render.py" in text
+    assert "ipa_pki_proxy_render.py" in text
+    # The served CA cert is republished from the on-disk source.
+    assert "freeipa_server_heal_ca_cert_served" in text
+    assert "freeipa_server_heal_ca_cert_source" in text
+    # Defect flags for the two new loss classes.
+    assert "_freeipa_heal_std_confs_missing" in text
+    assert "_freeipa_heal_ca_cert_missing" in text
+
+
+def test_std_conf_render_only_fires_when_a_file_is_missing() -> None:
+    """Round-1 (only ipa-pki-proxy.conf broken) must NOT trigger the std render."""
+    tasks = flatten(yaml.safe_load(heal_text()))
+    std_render = next(
+        t for t in tasks
+        if "ipa_httpd_render.py" in str(t.get("ansible.builtin.script", ""))
+    )
+    assert std_render["when"] == "_freeipa_heal_std_confs_missing | default(false)"
+
+
+def test_pki_proxy_render_is_gated_on_the_pki_proxy_defect() -> None:
+    """Full-loss and round-1 both render pki-proxy; a std-only loss need not."""
+    tasks = flatten(yaml.safe_load(heal_text()))
+    pki_render = next(
+        t for t in tasks
+        if "ipa_pki_proxy_render.py" in str(t.get("ansible.builtin.script", ""))
+    )
+    assert pki_render["when"] == "_freeipa_heal_pki_proxy_broken | default(false)"
+
+
+def test_ca_cert_republish_is_guarded_and_fails_loud_if_source_gone() -> None:
+    text = heal_text()
+    # The republish only runs when the served cert is missing.
+    tasks = flatten(yaml.safe_load(text))
+    republish = next(
+        t for t in tasks
+        if t.get("ansible.builtin.copy", {}).get("dest", "")
+        == "{{ freeipa_server_heal_ca_cert_served }}"
+    )
+    assert "_freeipa_heal_ca_cert_missing" in str(republish["when"])
+    # If the SOURCE is also gone, that is deeper than a file loss → ipa-restore.
+    assert "ipa-restore" in text
+
+
+def test_nss_conf_is_reported_never_rendered() -> None:
+    text = heal_text()
+    # nss.conf is probed for diagnostics only …
+    assert "freeipa_server_heal_nss_conf" in text
+    assert "never rendered" in text or "diagnostic only" in text.lower()
+    # … and there is NO renderer/template that would fabricate it.
+    assert "nss.conf.template" not in text
+    assert "nss.conf.template" not in HTTPD_RENDERER.read_text()
+
+
+def test_httpd_renderer_reuses_freeipa_own_templating_and_is_byte_safe() -> None:
+    src = HTTPD_RENDERER.read_text()
+    # Reuses FreeIPA's OWN renderer + live constants — not a hand-copied template.
+    assert "ipautil.template_file" in src
+    assert "from ipaplatform.paths import paths" in src
+    assert "from ipaplatform.constants import constants" in src
+    # Renders exactly the three installer-generated confs.
+    for tmpl in ("ipa.conf.template", "ipa-rewrite.conf.template",
+                 "ipa-kdc-proxy.conf.template"):
+        assert tmpl in src
+    # Dry-run prints only a sha (writes nothing); never rewrites a present file;
+    # re-creates the kdc-proxy symlink.
+    assert "--stdout-sha" in src
+    assert "if os.path.exists(target):" in src and "continue" in src
+    assert "os.symlink" in src
+
+
+def test_post_heal_verify_asserts_every_file_returned() -> None:
+    text = heal_text()
+    # The end-state assert re-stats the whole set and requires none missing.
+    assert "_freeipa_heal_files_after" in text
+    assert "rejectattr('stat.exists')" in text
+    # Fail-loud guidance for the unrecoverable (data-damage) case.
+    assert "ipa-restore" in text
+    assert "DATA-level damage" in text or "data-level" in text.lower()

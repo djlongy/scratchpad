@@ -91,23 +91,42 @@ watchdog) is on by default — disable wholesale with
 
 ### Self-heal: configured but broken (`heal`, on by default)
 
-"Already configured" is decided from `/etc/ipa/default.conf` alone, so a server whose
-Apache↔Dogtag reverse-proxy config (`/etc/httpd/conf.d/ipa-pki-proxy.conf`) is missing,
-corrupt, or carries the wrong AJP secret sails through the upstream install and then
-breaks — FreeIPA admin tools (`ipa-crlgen-manage`, `ipa-backup`) fail *"Unable to read
-…ipa-pki-proxy.conf"*, a corrupt file stops `ipactl` from starting httpd, and a file
-built from the generic Red Hat template makes every CA request fail *"no such entry"*
-(its AJP secret doesn't match Tomcat). Before install, the role probes for that state
-(read-only; a healthy host is a strict `changed=0` no-op) and, when genuinely broken,
-**re-renders `ipa-pki-proxy.conf` from FreeIPA's own template**
-(`/usr/share/ipa/ipa-pki-proxy.conf.template`) with the *real* deployed values — the AJP
-secret and port from Tomcat's `server.xml`, the server FQDN, and the CRL marker — the
-exact bytes the installer wrote, so the secret always matches and "no such entry" cannot
-occur. (`ipa-server-upgrade` is *not* used: it does not regenerate this file.) The stack
-is then restarted and verified all-RUNNING. A half-finished (aborted) `ipa-server-install`
-fails fast with the cleanup command instead of installing on top. A cleanly
-stopped-but-intact server is *not* healed — the normal service-start path handles it. Opt
-out with `freeipa_server_heal_enabled: false`.
+"Already configured" is decided from `/etc/ipa/default.conf` alone, so a server that has
+**lost some or all of the httpd config files the installer generates** sails through the
+upstream install and then breaks. Those files —
+`/etc/httpd/conf.d/{ipa.conf, ipa-rewrite.conf, ipa-kdc-proxy.conf (a symlink),
+ipa-pki-proxy.conf}` and the served CA cert `/usr/share/ipa/html/ca.crt` — are RPM
+`%ghost` entries: `ipa-server-common` owns the paths but ships them **empty**; the
+installer renders them from `/usr/share/ipa/*.template` with the live deployment values.
+Losing them breaks the server in different ways: a missing `ipa-rewrite.conf` (Included by
+`ssl.conf`) makes **httpd fail its own config test** so `ipactl` cannot start it; a missing
+`ipa-pki-proxy.conf` kills CA request routing (*"Unable to read …ipa-pki-proxy.conf"* from
+`ipa-crlgen-manage` / `ipa-backup`); a `ipa-pki-proxy.conf` built from the generic Red Hat
+template makes every CA request fail (its AJP secret doesn't match Tomcat); a missing
+served `ca.crt` stops the CA cert being served.
+
+Before install, the role probes for that state (read-only; a healthy host is a strict
+`changed=0` no-op) and, when genuinely broken, **re-renders each missing file from
+FreeIPA's own templates** — reusing FreeIPA's `ipautil.template_file` with the live
+constants (`ipaplatform.paths`/`constants`) plus REALM/FQDN/DOMAIN from `default.conf`, so
+the output is the *exact bytes the installer wrote* (sha256-identical). `ipa-pki-proxy.conf`
+gets the real AJP secret and port from Tomcat's `server.xml`, so "no such entry" cannot
+occur; the served `ca.crt` is republished from `/etc/ipa/ca.crt`. The stack is then
+restarted and verified all-RUNNING with `httpd -t` clean and every file back.
+
+Two mechanisms that **do not work** were tested and rejected: `dnf reinstall` restores
+only the *templates* (the rendered `%ghost` files stay empty), and `ipa-server-upgrade`
+does **not** regenerate them from scratch — it aborts *"/etc/httpd/conf.d/ipa.conf not
+found"* (its HTTPInstance step reads the file rather than creating it). `nss.conf` is
+**never fabricated**: `mod_nss` is legacy (absent on EL9/RHEL9, package-owned when
+present) — the heal only reports on it.
+
+A half-finished (aborted) `ipa-server-install` fails fast with the cleanup command instead
+of installing on top. A cleanly stopped-but-intact server is *not* healed — the normal
+service-start path handles it. If the server is **still unhealthy after every file is
+restored**, the heal fails loud pointing at data-level LDAP/Dogtag damage with
+`ipa-restore` guidance (a file re-render can't fix that). Opt out with
+`freeipa_server_heal_enabled: false`.
 
 ## Credentials — declared vars first, HashiCorp Vault as fallback
 

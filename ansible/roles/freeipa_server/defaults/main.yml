@@ -502,16 +502,21 @@ freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
 freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"
 
 # ── Configured-but-broken self-heal (tasks/heal.yml; runs before install) ───
-# A CONFIGURED server (default.conf present) whose Apache↔Dogtag reverse-proxy
-# config (/etc/httpd/conf.d/ipa-pki-proxy.conf) is missing, corrupt, or carries
-# the WRONG AJP secret (the generic Red Hat template case → "no such entry") is
-# self-healed: the file is re-rendered from FreeIPA's OWN template with the real
-# deployed AJP secret/port/FQDN/CRL marker (the exact bytes the installer wrote),
-# then the stack is restarted. (Empirically ipa-server-upgrade does NOT
-# regenerate this file, so re-rendering FreeIPA's template is the correct fix.)
-# Healthy hosts are a strict no-op; fresh installs are untouched. Also fails FAST
-# (with the cleanup command) on a half-finished/aborted ipa-server-install
-# instead of installing on top of it.
+# A CONFIGURED server (default.conf present) that has LOST some/all of the httpd
+# config files the INSTALLER generates — ipa.conf, ipa-rewrite.conf,
+# ipa-kdc-proxy.conf (+ its conf.d symlink), ipa-pki-proxy.conf — and/or the served
+# CA cert (/usr/share/ipa/html/ca.crt) is self-healed. Each missing file is
+# re-rendered from FreeIPA's OWN template (the exact bytes the installer wrote,
+# sha256-identical) and the served CA cert is republished from /etc/ipa/ca.crt.
+# ipa-pki-proxy.conf is rendered with the real deployed AJP secret/port/FQDN/CRL
+# marker so CA routing works. Empirically NEITHER dnf-reinstall (restores only the
+# templates) NOR ipa-server-upgrade (aborts "ipa.conf not found") regenerates the
+# rendered files, so template-render is the correct fix. nss.conf is NOT touched
+# (legacy mod_nss, absent on EL9 / package-owned) — only reported. Healthy hosts
+# are a strict no-op; fresh installs are untouched. Fails FAST (with the cleanup
+# command) on a half-finished/aborted ipa-server-install instead of installing on
+# top, and fails LOUD (with ipa-restore guidance) if the server is still unhealthy
+# after recovery (data-level LDAP/Dogtag damage — not a file loss).
 freeipa_server_heal_enabled: true
 # ipactl settle probes after a heal, 10s apart, before the run fails.
 freeipa_server_heal_verify_retries: 12

@@ -548,7 +548,7 @@ argument_specs:
       # ── Configured-but-broken self-heal (heal.yml, before install) ──
       freeipa_server_heal_enabled:
         type: bool
-        description: Self-heal a broken ipa-pki-proxy.conf by re-rendering FreeIPA's template; fail fast on aborted half-installs. Default on.
+        description: Self-heal a configured server that lost its installer-generated httpd config files (ipa.conf, ipa-rewrite.conf, ipa-kdc-proxy.conf + symlink, ipa-pki-proxy.conf) and/or the served CA cert, by re-rendering FreeIPA's own templates and republishing ca.crt; fail fast on aborted half-installs; fail loud (ipa-restore guidance) if still broken after recovery. Default on.
       freeipa_server_heal_verify_retries:
         type: int
         description: ipactl settle probes after a heal (10s apart) before the run fails.
