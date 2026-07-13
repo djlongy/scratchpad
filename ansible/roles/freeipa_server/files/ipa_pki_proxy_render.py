@@ -79,13 +79,13 @@ def main() -> None:
     if "--stdout-sha" in sys.argv:
         sys.stdout.write(hashlib.sha256(rendered.encode()).hexdigest() + "\n")
         return
-    # Mode 0644 reproduces exactly what the FreeIPA installer writes for this
-    # file (a self-heal must produce the same artifact as a fresh install, not a
-    # subtly different one). The embedded AJP secret only authorises the
-    # loopback-bound (localhost:8009) AJP connector — FreeIPA's own accepted
-    # posture for conf.d/ipa-pki-proxy.conf. Created atomically with the final
-    # mode (O_CREAT mode arg) so there is no world-readable-then-tighten window.
-    fd = os.open(OUTPUT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)  # NOSONAR - S2612: installer parity; AJP secret gates loopback-only
+    # Mode 0640 (rw-r-----) per Red Hat's documented permission for this file.
+    # It embeds the Dogtag AJP secret, so it must NOT be world-readable. httpd's
+    # master process reads conf.d as root at startup, so root:root 0640 loads
+    # fine — no service impact. Created atomically with the final mode (O_CREAT
+    # mode arg) so the secret is never exposed through a world-readable-then-
+    # tighten window.
+    fd = os.open(OUTPUT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)  # NOSONAR - S2612: 0640 root-only per Red Hat; file holds the Dogtag AJP secret
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(rendered)
 

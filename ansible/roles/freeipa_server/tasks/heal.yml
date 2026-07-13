@@ -161,7 +161,7 @@
         src: "{{ freeipa_server_heal_pki_proxy_conf }}"
         dest: "{{ freeipa_server_heal_pki_proxy_conf }}.broken-{{ ansible_date_time.iso8601_basic_short | default('backup') }}"
         remote_src: true
-        mode: "0644"
+        mode: "0640"
       when: _freeipa_heal_pki_proxy.stat.exists
 
     # Render FreeIPA's OWN template with the real deployed AJP secret/port/FQDN/
