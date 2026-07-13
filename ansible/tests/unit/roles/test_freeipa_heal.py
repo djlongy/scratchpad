@@ -21,7 +21,6 @@ ROLE = REPO_ROOT / "ansible" / "roles" / "freeipa_server"
 HEAL_TASKS = ROLE / "tasks" / "heal.yml"
 MAIN_TASKS = ROLE / "tasks" / "main.yml"
 DEFAULTS = ROLE / "defaults" / "main.yml"
-ROLE_VARS = ROLE / "vars" / "main.yml"
 ARG_SPECS = ROLE / "meta" / "argument_specs.yml"
 RENDERER = ROLE / "files" / "ipa_pki_proxy_render.py"
 HTTPD_RENDERER = ROLE / "files" / "ipa_httpd_render.py"
@@ -134,8 +133,8 @@ def test_heal_pki_proxy_absence_only_counts_when_a_ca_is_deployed() -> None:
 
     assert "not _freeipa_heal_pki_proxy.stat.exists" in text
     assert "_freeipa_heal_ca.stat.exists" in text
-    assert "freeipa_server_heal_pki_server_xml" in ROLE_VARS.read_text()
-    assert "freeipa_server_heal_pki_proxy_conf" in ROLE_VARS.read_text()
+    assert "freeipa_server_heal_pki_server_xml" in DEFAULTS.read_text()
+    assert "freeipa_server_heal_pki_proxy_conf" in DEFAULTS.read_text()
 
 
 def test_aborted_half_install_fails_fast_with_the_cleanup_command() -> None:
@@ -159,8 +158,10 @@ def test_heal_backs_up_the_broken_file_verifies_and_gives_actionable_failure() -
 
 # ── Round 2: generalised full-httpd-config-loss recovery ─────────────────────
 
-def test_vars_define_the_full_httpd_file_set_and_ca_cert_paths() -> None:
-    text = ROLE_VARS.read_text()
+def test_defaults_define_the_full_httpd_file_set_and_ca_cert_paths() -> None:
+    # All path defaults live in defaults/main.yml (overridable, not hardcoded in
+    # tasks and not hidden in a high-precedence vars/main.yml).
+    text = DEFAULTS.read_text()
     for path in (
         "/etc/httpd/conf.d/ipa.conf",
         "/etc/httpd/conf.d/ipa-rewrite.conf",
@@ -171,6 +172,12 @@ def test_vars_define_the_full_httpd_file_set_and_ca_cert_paths() -> None:
         assert path in text, path
     # The probe iterates a declared list of the installer-generated httpd files.
     assert "freeipa_server_heal_ipa_httpd_files" in text
+
+
+def test_role_has_no_high_precedence_vars_file() -> None:
+    # Convention: every default is an overridable default in defaults/main.yml;
+    # there is no vars/main.yml shadowing them at high precedence.
+    assert not (ROLE / "vars" / "main.yml").exists()
 
 
 def test_heal_recovers_full_httpd_config_loss_via_freeipa_templates() -> None:

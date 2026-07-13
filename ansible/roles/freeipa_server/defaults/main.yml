@@ -15,6 +15,11 @@ freeipa_server_domain: "{{ domain | default('') }}"
 freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
 # This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
 freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
+# Derived systemd identifiers (override only to break convention). The 389-ds
+# instance is named after the realm with dots→dashes; resilience.yml + the
+# recovery script order themselves against this dirsrv unit.
+freeipa_server_realm_systemd_instance: "{{ freeipa_server_realm | replace('.', '-') }}"
+freeipa_server_dirsrv_service_name: "dirsrv@{{ freeipa_server_realm_systemd_instance }}.service"
 
 # Deployment substrate. "package" (default) = FreeIPA as host RPMs (this role installs it via
 # upstream ipaserver/ipareplica). "container" = FreeIPA already runs in a container (stood up by
@@ -520,6 +525,36 @@ freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"
 freeipa_server_heal_enabled: true
 # ipactl settle probes after a heal, 10s apart, before the run fails.
 freeipa_server_heal_verify_retries: 12
+
+# Platform paths the self-heal phase probes/repairs. These are fixed OS/FreeIPA
+# locations — overridable here (never hardcoded in tasks) but rarely changed.
+freeipa_server_heal_pki_proxy_conf: "/etc/httpd/conf.d/ipa-pki-proxy.conf"
+freeipa_server_heal_pki_server_xml: "/etc/pki/pki-tomcat/server.xml"
+# The other installer-generated IPA httpd config files (RPM %ghost — the package
+# owns the paths but ships them empty; the installer renders them from
+# /usr/share/ipa/*.template). A configured server can lose these too; the heal
+# re-renders each MISSING one from FreeIPA's own template (files/ipa_httpd_render.py)
+# — ipa-server-upgrade is proven NOT to regenerate them (it aborts "ipa.conf not
+# found"), and dnf reinstall restores only the templates, not the rendered output.
+freeipa_server_heal_ipa_conf: "/etc/httpd/conf.d/ipa.conf"
+freeipa_server_heal_ipa_rewrite_conf: "/etc/httpd/conf.d/ipa-rewrite.conf"
+# ipa-kdc-proxy.conf in conf.d is a SYMLINK to the file under /etc/ipa/kdcproxy.
+freeipa_server_heal_kdcproxy_symlink: "/etc/httpd/conf.d/ipa-kdc-proxy.conf"
+freeipa_server_heal_kdcproxy_target: "/etc/ipa/kdcproxy/ipa-kdc-proxy.conf"
+# The served CA certificate (published by the installer from /etc/ipa/ca.crt).
+freeipa_server_heal_ca_cert_served: "/usr/share/ipa/html/ca.crt"
+freeipa_server_heal_ca_cert_source: "/etc/ipa/ca.crt"
+# nss.conf: mod_nss is LEGACY (gone on EL9/RHEL9 — FreeIPA uses mod_ssl). When
+# present it is package-owned (mod_nss), NEVER IPA-rendered — the heal only
+# REPORTS on it, it never fabricates it. Probed for diagnostics only.
+freeipa_server_heal_nss_conf: "/etc/httpd/conf.d/nss.conf"
+# The full set of installer-generated IPA httpd files whose absence the heal
+# treats as "configured but broken" (each re-rendered from its own template).
+freeipa_server_heal_ipa_httpd_files:
+  - "{{ freeipa_server_heal_ipa_conf }}"
+  - "{{ freeipa_server_heal_ipa_rewrite_conf }}"
+  - "{{ freeipa_server_heal_kdcproxy_symlink }}"
+  - "{{ freeipa_server_heal_kdcproxy_target }}"
 
 # ── Cold-start resilience tuning (behavioural — sensible defaults) ───────────
 # Master toggle for the whole resilience phase (recovery timer, ccache cleanup,
