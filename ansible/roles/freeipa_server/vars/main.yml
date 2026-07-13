@@ -4,3 +4,7 @@
 
 freeipa_server_realm_systemd_instance: "{{ freeipa_server_realm | replace('.', '-') }}"
 freeipa_server_dirsrv_service_name: "dirsrv@{{ freeipa_server_realm_systemd_instance }}.service"
+
+# Fixed platform paths probed/verified by the self-heal phase (tasks/heal.yml).
+freeipa_server_heal_pki_proxy_conf: "/etc/httpd/conf.d/ipa-pki-proxy.conf"
+freeipa_server_heal_pki_server_xml: "/etc/pki/pki-tomcat/server.xml"

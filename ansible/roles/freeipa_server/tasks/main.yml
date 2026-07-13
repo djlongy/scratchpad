@@ -56,6 +56,16 @@
   ansible.builtin.import_tasks: preflight.yml
   tags: [preflight]
 
+# Self-heal a configured-but-broken server BEFORE the upstream include: a broken
+# httpd/PKI wiring otherwise no-ops through upstream ("already configured") and
+# dies at the ipa service-start task. Mutating repair, so it lives outside the
+# assert-only preflight. Tagged install so a --tags install repair run heals
+# too; --tags heal targets it alone.
+- name: Self-heal a configured-but-broken FreeIPA server (httpd/PKI wiring)
+  ansible.builtin.import_tasks: heal.yml
+  when: freeipa_server_heal_enabled | bool
+  tags: [install, heal]
+
 # Host-package install. Skipped for deployment: container — the FreeIPA container image
 # owns install/replica-join (done by the freeipa_server_docker role); this role then runs
 # inside the already-configured container for the declarative phases only.

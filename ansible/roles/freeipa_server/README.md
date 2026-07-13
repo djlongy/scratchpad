@@ -61,6 +61,7 @@ A no-tag run runs everything except the `never`-tagged ops.
 | Tag | Runs |
 |---|---|
 | `preflight` | FIPS/time/FQDN/primary-up dependency guards |
+| `heal` | Self-heal a configured-but-broken server (also runs under `install`) |
 | `install` | Vault creds + upstream primary/replica install |
 | `configure` / `resilience` | Cold-start timeout override + recovery timer |
 | `certs` (`ca`) | Import trusted external CAs into the IPA trust store (primary, opt-in) |
@@ -87,6 +88,26 @@ The resilience phase (cold-start recovery timer, ccache cleanup, SSSD self-heal
 watchdog) is on by default — disable wholesale with
 `freeipa_server_resilience_enabled: false`, or just the watchdog with
 `freeipa_server_sssd_selfheal: false`.
+
+### Self-heal: configured but broken (`heal`, on by default)
+
+"Already configured" is decided from `/etc/ipa/default.conf` alone, so a server whose
+Apache↔Dogtag reverse-proxy config (`/etc/httpd/conf.d/ipa-pki-proxy.conf`) is missing,
+corrupt, or carries the wrong AJP secret sails through the upstream install and then
+breaks — FreeIPA admin tools (`ipa-crlgen-manage`, `ipa-backup`) fail *"Unable to read
+…ipa-pki-proxy.conf"*, a corrupt file stops `ipactl` from starting httpd, and a file
+built from the generic Red Hat template makes every CA request fail *"no such entry"*
+(its AJP secret doesn't match Tomcat). Before install, the role probes for that state
+(read-only; a healthy host is a strict `changed=0` no-op) and, when genuinely broken,
+**re-renders `ipa-pki-proxy.conf` from FreeIPA's own template**
+(`/usr/share/ipa/ipa-pki-proxy.conf.template`) with the *real* deployed values — the AJP
+secret and port from Tomcat's `server.xml`, the server FQDN, and the CRL marker — the
+exact bytes the installer wrote, so the secret always matches and "no such entry" cannot
+occur. (`ipa-server-upgrade` is *not* used: it does not regenerate this file.) The stack
+is then restarted and verified all-RUNNING. A half-finished (aborted) `ipa-server-install`
+fails fast with the cleanup command instead of installing on top. A cleanly
+stopped-but-intact server is *not* healed — the normal service-start path handles it. Opt
+out with `freeipa_server_heal_enabled: false`.
 
 ## Credentials — declared vars first, HashiCorp Vault as fallback
 

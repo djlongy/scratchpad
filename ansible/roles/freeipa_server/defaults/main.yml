@@ -501,6 +501,21 @@ freeipa_migrate_ca_dest: "/root/.freeipa-migrate-src-ca.crt"
 freeipa_migrate_bind_pw_file: "/root/.freeipa-migrate-bind-pw"
 freeipa_migrate_ccache: "FILE:/root/.freeipa-migrate-ccache"
 
+# ── Configured-but-broken self-heal (tasks/heal.yml; runs before install) ───
+# A CONFIGURED server (default.conf present) whose Apache↔Dogtag reverse-proxy
+# config (/etc/httpd/conf.d/ipa-pki-proxy.conf) is missing, corrupt, or carries
+# the WRONG AJP secret (the generic Red Hat template case → "no such entry") is
+# self-healed: the file is re-rendered from FreeIPA's OWN template with the real
+# deployed AJP secret/port/FQDN/CRL marker (the exact bytes the installer wrote),
+# then the stack is restarted. (Empirically ipa-server-upgrade does NOT
+# regenerate this file, so re-rendering FreeIPA's template is the correct fix.)
+# Healthy hosts are a strict no-op; fresh installs are untouched. Also fails FAST
+# (with the cleanup command) on a half-finished/aborted ipa-server-install
+# instead of installing on top of it.
+freeipa_server_heal_enabled: true
+# ipactl settle probes after a heal, 10s apart, before the run fails.
+freeipa_server_heal_verify_retries: 12
+
 # ── Cold-start resilience tuning (behavioural — sensible defaults) ───────────
 # Master toggle for the whole resilience phase (recovery timer, ccache cleanup,
 # SSSD self-heal). Recommended on; disable wholesale if you manage these yourself.

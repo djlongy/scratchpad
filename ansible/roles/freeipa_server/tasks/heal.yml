@@ -1,0 +1,235 @@
+---
+# roles/freeipa_server/tasks/heal.yml
+# Self-heal a CONFIGURED-but-BROKEN FreeIPA server BEFORE install/converge.
+#
+# Why: "already configured" is decided from /etc/ipa/default.conf alone, so a
+# configured host whose Apache↔Dogtag reverse-proxy config
+# (/etc/httpd/conf.d/ipa-pki-proxy.conf) is missing, corrupt, or carries the
+# WRONG AJP secret sails through the upstream ipaserver no-op and then breaks:
+#   * missing  → FreeIPA admin tools (ipa-crlgen-manage, ipa-backup, …) fail
+#                "Unable to read /etc/httpd/conf.d/ipa-pki-proxy.conf", and CA
+#                request routing is dead (verified on IPA 4.12 / OL9-family).
+#   * corrupt  → httpd fails its config test, so `ipactl` cannot start the stack.
+#   * wrong secret (the generic Red Hat template case) → httpd starts but every
+#                CA request fails "no such entry" (the AJP secret must match
+#                Tomcat's server.xml).
+#
+# EMPIRICAL NOTE (tested live, refutes the obvious fix): `ipa-server-upgrade`
+# does NOT regenerate ipa-pki-proxy.conf on this FreeIPA — it succeeds with the
+# file still missing. The only reliable, correct repair is to re-render
+# FreeIPA's OWN template (/usr/share/ipa/ipa-pki-proxy.conf.template) with the
+# REAL deployed values (AJP secret/port from server.xml, FQDN, CRL marker) — the
+# exact bytes the installer wrote (proven sha256-identical). files/…render.py
+# does this without the secret ever leaving the host or hitting a log.
+#
+# States handled:
+#   fresh host                      → untouched (install.yml owns that path)
+#   aborted half-install            → FAIL FAST with the cleanup command
+#   configured + healthy            → strict no-op (changed=0)
+#   configured + stopped-but-intact → untouched (primary/replica start services)
+#   configured + broken/missing/wrong-secret proxy conf → re-render + restart
+
+- name: Heal | Check whether FreeIPA is already configured
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_heal_configured
+
+# ── Aborted-install guard (unconfigured hosts only) ─────────────────────────
+# ipa-server-install writes /var/lib/ipa/sysrestore state as soon as it starts
+# mutating the system; a successful UNINSTALL empties it. State present WITHOUT
+# /etc/ipa/default.conf = a previous install aborted part-way (or the config was
+# deleted). Installing on top yields a half-install — fail fast instead.
+- name: Heal | Look for leftover installer state from an aborted install
+  ansible.builtin.find:
+    paths: /var/lib/ipa/sysrestore
+    file_type: file
+  register: _freeipa_heal_sysrestore
+  when: not _freeipa_heal_configured.stat.exists
+
+- name: Heal | Fail fast on a partial/aborted FreeIPA install
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_heal_sysrestore.files | default([]) | length) == 0
+    fail_msg: >-
+      This host has leftover FreeIPA installer state (/var/lib/ipa/sysrestore)
+      but no /etc/ipa/default.conf — a previous ipa-server-install aborted
+      part-way (or the install was manually gutted). Refusing to install on top
+      of it. Clean up first on the host:
+      `ipa-server-install --uninstall -U`, verify /var/lib/ipa/sysrestore is
+      empty, then re-run this role for a fresh install.
+    quiet: true
+  when: not _freeipa_heal_configured.stat.exists
+
+# ── Health probes (configured hosts only; all read-only) ────────────────────
+- name: Heal | Probe deployed PKI and Apache wiring
+  when: _freeipa_heal_configured.stat.exists
+  block:
+    # ipa-pki-proxy.conf only exists where Dogtag is deployed, so its absence is
+    # a defect only on a CA-bearing server (never on a CA-less install).
+    - name: Heal | Check whether a PKI (Dogtag) instance is deployed
+      ansible.builtin.stat:
+        path: "{{ freeipa_server_heal_pki_server_xml }}"
+      register: _freeipa_heal_ca
+
+    - name: Heal | Check the Apache PKI proxy config exists
+      ansible.builtin.stat:
+        path: "{{ freeipa_server_heal_pki_proxy_conf }}"
+      register: _freeipa_heal_pki_proxy
+
+    - name: Heal | Validate the Apache configuration syntax
+      ansible.builtin.command: httpd -t
+      register: _freeipa_heal_httpd_syntax
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Heal | Probe IPA service status
+      ansible.builtin.command: ipactl status
+      register: _freeipa_heal_ipactl
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    # The proxy conf must carry the SAME AJP secret Tomcat requires — a
+    # hand-crafted file from the generic template has a different one, which
+    # breaks every CA request ("no such entry") while httpd itself runs fine.
+    # Prints only ok/mismatch/unknown — never the secret values.
+    - name: Heal | Cross-check the AJP secret between Tomcat and the proxy conf
+      ansible.builtin.shell: |
+        set -o pipefail
+        xml_secret=$(grep -oE '(requiredSecret|secret)="[^"]+"' \
+          '{{ freeipa_server_heal_pki_server_xml }}' | head -n1 | sed 's/.*="//; s/"$//')
+        proxy_secrets=$(grep -oE 'secret=[^ "]+' \
+          '{{ freeipa_server_heal_pki_proxy_conf }}' | sed 's/^secret=//' | sort -u)
+        if [ -z "$xml_secret" ] || [ -z "$proxy_secrets" ]; then
+          echo unknown
+        elif printf '%s\n' "$proxy_secrets" | grep -Fqvx "$xml_secret"; then
+          echo mismatch
+        else
+          echo ok
+        fi
+      args:
+        executable: /bin/bash
+      register: _freeipa_heal_ajp
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when:
+        - _freeipa_heal_ca.stat.exists
+        - _freeipa_heal_pki_proxy.stat.exists
+
+    # A CA-bearing server needs a valid proxy conf. Heal when it is absent, when
+    # httpd's own config test fails, when the AJP secret is wrong, or on a
+    # PARTIAL outage (LDAP up but httpd/pki down — a stack that started
+    # part-way). A cleanly all-stopped host is NOT healed here: config is intact,
+    # so the normal service-start path handles it.
+    - name: Heal | Evaluate whether this server needs healing
+      ansible.builtin.set_fact:
+        _freeipa_heal_needed: >-
+          {{ _freeipa_heal_ca.stat.exists
+             and ((not _freeipa_heal_pki_proxy.stat.exists)
+                  or ((_freeipa_heal_httpd_syntax.rc | default(0)) != 0)
+                  or (((_freeipa_heal_ajp.stdout | default('ok')) | trim) == 'mismatch')
+                  or ((_freeipa_heal_ipactl.rc | default(0) != 0)
+                      and ((_freeipa_heal_ipactl.stdout | default('')) is search('Directory Service: RUNNING'))
+                      and ((_freeipa_heal_ipactl.stdout | default('')) is search('(httpd|pki-tomcatd) Service: STOPPED')))) }}
+
+# ── Heal (only when broken) ─────────────────────────────────────────────────
+- name: Heal | Report a broken FreeIPA proxy config that would be healed (check mode)
+  ansible.builtin.debug:
+    msg: >-
+      FreeIPA is configured but its Apache/PKI reverse-proxy config is broken
+      (pki_proxy_present={{ _freeipa_heal_pki_proxy.stat.exists }},
+      httpd_syntax_rc={{ _freeipa_heal_httpd_syntax.rc | default('n/a') }},
+      ajp_secret={{ _freeipa_heal_ajp.stdout | default('n/a') | trim }},
+      ipactl_rc={{ _freeipa_heal_ipactl.rc | default('n/a') }}).
+      A real run re-renders ipa-pki-proxy.conf from FreeIPA's template and
+      restarts the stack.
+  when:
+    - _freeipa_heal_needed | default(false)
+    - ansible_check_mode
+
+- name: Heal | Regenerate ipa-pki-proxy.conf and restart the FreeIPA stack
+  when:
+    - _freeipa_heal_needed | default(false)
+    - not ansible_check_mode
+  block:
+    # Preserve whatever broken file was there (forensics) before overwriting.
+    - name: Heal | Back up the existing (broken) proxy config
+      ansible.builtin.copy:
+        src: "{{ freeipa_server_heal_pki_proxy_conf }}"
+        dest: "{{ freeipa_server_heal_pki_proxy_conf }}.broken-{{ ansible_date_time.iso8601_basic_short | default('backup') }}"
+        remote_src: true
+        mode: "0644"
+      when: _freeipa_heal_pki_proxy.stat.exists
+
+    # Render FreeIPA's OWN template with the real deployed AJP secret/port/FQDN/
+    # CRL marker — the exact bytes the installer wrote. no_log: the script emits
+    # nothing, but keep the guard in case of a stderr trace.
+    - name: Heal | Re-render ipa-pki-proxy.conf from FreeIPA's template
+      ansible.builtin.script:
+        cmd: files/ipa_pki_proxy_render.py
+        executable: /usr/bin/python3
+      changed_when: true
+      no_log: true
+
+    - name: Heal | Restart the FreeIPA stack to load the regenerated proxy config
+      ansible.builtin.command: ipactl restart
+      register: _freeipa_heal_restart
+      changed_when: true
+      failed_when: false
+
+    - name: Heal | Wait for all IPA services to report RUNNING
+      ansible.builtin.command: ipactl status
+      register: _freeipa_heal_verify
+      changed_when: false
+      failed_when: false
+      retries: "{{ freeipa_server_heal_verify_retries }}"
+      delay: 10
+      until: _freeipa_heal_verify.rc == 0 and (_freeipa_heal_verify.stdout is not search('STOPPED'))
+
+    - name: Heal | Re-validate Apache config after the regeneration
+      ansible.builtin.command: httpd -t
+      register: _freeipa_heal_httpd_after
+      changed_when: false
+      failed_when: false
+
+    - name: Heal | Confirm the regenerated proxy conf carries Tomcat's AJP secret
+      ansible.builtin.shell: |
+        set -o pipefail
+        xml_secret=$(grep -oE '(requiredSecret|secret)="[^"]+"' \
+          '{{ freeipa_server_heal_pki_server_xml }}' | head -n1 | sed 's/.*="//; s/"$//')
+        proxy_secrets=$(grep -oE 'secret=[^ "]+' \
+          '{{ freeipa_server_heal_pki_proxy_conf }}' | sed 's/^secret=//' | sort -u)
+        if [ -n "$xml_secret" ] && printf '%s\n' "$proxy_secrets" | grep -Fqx "$xml_secret" \
+           && ! printf '%s\n' "$proxy_secrets" | grep -Fqvx "$xml_secret"; then
+          echo ok
+        else
+          echo mismatch
+        fi
+      args:
+        executable: /bin/bash
+      register: _freeipa_heal_ajp_after
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Heal | Assert the server healed (services up, correct proxy conf)
+      ansible.builtin.assert:
+        that:
+          - _freeipa_heal_verify.rc == 0
+          - _freeipa_heal_verify.stdout is not search('STOPPED')
+          - (_freeipa_heal_httpd_after.rc | default(1)) == 0
+          - ((_freeipa_heal_ajp_after.stdout | default('mismatch')) | trim) == 'ok'
+        fail_msg: >-
+          Re-rendered ipa-pki-proxy.conf but this server is still unhealthy
+          (ipactl rc={{ _freeipa_heal_verify.rc }},
+          httpd_syntax_rc={{ _freeipa_heal_httpd_after.rc | default('n/a') }},
+          ajp_secret={{ _freeipa_heal_ajp_after.stdout | default('n/a') | trim }}).
+          The proxy conf was regenerated from FreeIPA's template with Tomcat's
+          real AJP secret, so a lingering failure points elsewhere — inspect
+          `ipactl status`, `httpd -t`, and
+          `journalctl -u httpd -u pki-tomcatd@pki-tomcat` on the host. A
+          .broken-* backup of the original file is beside it.
+        quiet: true

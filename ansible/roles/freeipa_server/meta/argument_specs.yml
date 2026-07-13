@@ -545,6 +545,14 @@ argument_specs:
         type: bool
         description: Turn migration mode off after the run. Keep false during the password-migration campaign.
 
+      # ── Configured-but-broken self-heal (heal.yml, before install) ──
+      freeipa_server_heal_enabled:
+        type: bool
+        description: Self-heal a broken ipa-pki-proxy.conf by re-rendering FreeIPA's template; fail fast on aborted half-installs. Default on.
+      freeipa_server_heal_verify_retries:
+        type: int
+        description: ipactl settle probes after a heal (10s apart) before the run fails.
+
       # ── Resilience (cold-start recovery / ccache cleanup / SSSD self-heal) ──
       freeipa_server_resilience_enabled:
         type: bool
