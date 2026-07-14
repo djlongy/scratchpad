@@ -47,6 +47,7 @@
 # just removals (--tags decommission) or let a full no-tag run honour the per-host flag.
 - name: Decommission this server from the realm (freeipa_server_state = absent)
   ansible.builtin.import_tasks: decommission.yml
+  become: true
   when:
     - freeipa_server_state == "absent"
     - freeipa_server_deployment != "container"
@@ -54,6 +55,7 @@
 
 - name: Run FreeIPA dependency-ordering preflight guards
   ansible.builtin.import_tasks: preflight.yml
+  become: true
   tags: [preflight]
 
 # Self-heal a configured-but-broken server BEFORE the upstream include: a broken
@@ -63,6 +65,7 @@
 # too; --tags heal targets it alone.
 - name: Self-heal a configured-but-broken FreeIPA server (httpd/PKI wiring)
   ansible.builtin.import_tasks: heal.yml
+  become: true
   when: freeipa_server_heal_enabled | bool
   tags: [install, heal]
 
@@ -71,16 +74,19 @@
 # inside the already-configured container for the declarative phases only.
 - name: Install FreeIPA (upstream primary or replica)
   ansible.builtin.import_tasks: install.yml
+  become: true
   when: freeipa_server_deployment != "container"
   tags: [install]
 
 - name: Apply FreeIPA cold-start resilience fixes
   ansible.builtin.import_tasks: resilience.yml
+  become: true
   when: freeipa_server_resilience_enabled | bool
   tags: [configure, resilience]
 
 - name: Import trusted external CA certificates (primary only)
   ansible.builtin.import_tasks: certs.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_trusted_external_cas | length > 0
@@ -93,6 +99,7 @@
 # shared resolver has set _freeipa_admin_password — module tasks always run after it.
 - name: Apply FreeIPA post-install hardening (opt-in)
   ansible.builtin.import_tasks: hardening.yml
+  become: true
   when: freeipa_server_is_primary | bool
   tags: [hardening]
   module_defaults: &freeipa_admin_defaults
@@ -102,6 +109,7 @@
 
 - name: Configure FreeIPA backup (primary only)
   ansible.builtin.import_tasks: backup.yml
+  become: true
   when: freeipa_server_is_primary | bool
   tags: [backup]
 
@@ -111,6 +119,7 @@
 # the backup errors. See tasks/backup_run.yml.
 - name: Force a FreeIPA backup on demand (primary only; opt-in)
   ansible.builtin.import_tasks: backup_run.yml
+  become: true
   when: freeipa_server_is_primary | bool
   tags: [never, backup_now]
 
@@ -121,6 +130,7 @@
 # reconcile.yml interlocks on the sentinel it sets, so a prune can never run unassembled.
 - name: Assemble + validate declarative IDAM desired state (primary only)
   ansible.builtin.import_tasks: idam_desired.yml
+  become: true
   when: freeipa_server_is_primary | bool
   tags: [idam, reconcile, delete, prune_preserved, users, groups, hbac, sudo]
 
@@ -129,6 +139,7 @@
 # — a prune-only run skips apply. Consumes the desired state assembled above.
 - name: Apply declarative IDAM data (primary only)
   ansible.builtin.import_tasks: idam.yml
+  become: true
   when: freeipa_server_is_primary | bool
   tags: [idam, users, groups, hbac, sudo]
   module_defaults: *freeipa_admin_defaults
@@ -139,6 +150,7 @@
 # interlock in reconcile.yml aborts if the desired phase above didn't run.
 - name: Reconcile orphaned matrix-managed objects (primary only; authoritative + scoped)
   ansible.builtin.import_tasks: reconcile.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_authoritative | bool
@@ -151,6 +163,7 @@
 # On by default; freeipa_idam_report: false to silence.
 - name: Report IDAM run summary (primary only)
   ansible.builtin.import_tasks: idam_report.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_idam_report | default(true) | bool
@@ -158,6 +171,7 @@
 
 - name: Manage declarative DNS zones/records (primary only; needs integrated DNS)
   ansible.builtin.import_tasks: dns_records.yml
+  become: true
   when:
     - freeipa_server_setup_dns | bool
     - freeipa_server_is_primary | bool
@@ -169,6 +183,7 @@
 
 - name: Reconcile automember rules (primary only)
   ansible.builtin.import_tasks: automember.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_automember_rules | length > 0
@@ -177,6 +192,7 @@
 
 - name: Establish Active Directory trust(s) (primary only)
   ansible.builtin.import_tasks: adtrust.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_ad_trusts | length > 0
@@ -185,6 +201,7 @@
 
 - name: Restore FreeIPA from a backup (break-glass; primary only)
   ansible.builtin.import_tasks: restore.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_restore_name | length > 0
@@ -192,6 +209,7 @@
 
 - name: Export live config to declarative group_vars (opt-in; primary only)
   ansible.builtin.import_tasks: export_config.yml
+  become: true
   when: freeipa_server_is_primary | bool
   tags: [never, export]
 
@@ -199,6 +217,7 @@
 # `never` tag (only --tags delete) AND freeipa_idam_delete: true (mock inventories only).
 - name: Delete (HARD-DELETE) declared IDAM objects — mock/test cleanup only
   ansible.builtin.import_tasks: delete.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_idam_delete | default(false) | bool
@@ -210,6 +229,7 @@
 # the `never` tag picks this op, --check = dry-run.
 - name: Prune (HARD-DELETE) orphaned preserved users
   ansible.builtin.import_tasks: prune_preserved.yml
+  become: true
   when:
     - freeipa_server_is_primary | bool
     - freeipa_idam_delete | default(false) | bool

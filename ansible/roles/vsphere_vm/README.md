@@ -20,6 +20,47 @@ ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --limit <newh
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true --limit <newhost>
 ```
 
+## Minimum required variables
+
+The role's `meta/argument_specs.yml` marks only **two** vars `required: true` —
+`vsphere_vm_server` and `vsphere_vm_datacenter` — but that is not enough to
+actually clone a working VM. The role's own runtime asserts (`preflight.yml`,
+`spec.yml`) and `community.vmware.vmware_guest` need the following minimal set:
+
+| Var | Why it's needed |
+|---|---|
+| `vsphere_vm_server` | vCenter FQDN (**hard-required**; preflight asserts it). |
+| `vsphere_vm_datacenter` | Target datacenter (**hard-required**; preflight asserts it). |
+| **Credentials** — `vsphere_vm_vault_secret` (+ `vsphere_vm_username`, `vsphere_vm_password_field`) **OR** `vsphere_vm_password` | preflight asserts a password source. `vsphere_vm_username` defaults to `administrator@vsphere.local`; `vsphere_vm_password_field` defaults to `password`. |
+| **Placement** — `vsphere_vm_cluster` **OR** `vsphere_vm_esxi_host` | Where the VM lands. For a standalone ESXi host also set `vsphere_vm_resource_pool` (its default pool is `Resources`). |
+| `vsphere_vm_datastore` | Default datastore for the clone (role default is empty). |
+| `vsphere_vm_template` | Source template to clone (`spec.yml` asserts it; not in argument_specs but effectively required). |
+| **Networking** — `vsphere_vm_network`, `vsphere_vm_netmask`, and per-host `ansible_host` | `vsphere_vm_network` is the dvPortGroup (role default empty); `ansible_host` becomes the guest's static IP; `vsphere_vm_netmask` defaults to `255.255.255.0`. `vsphere_vm_dns` is optional but usually wanted. |
+
+Tiny copy-pasteable minimal example (DRS cluster, Vault-backed credentials):
+
+```yaml
+# group_vars/vmware_vms.yml — the shared minimum
+vsphere_vm_server: "vcenter.example.com"
+vsphere_vm_datacenter: "Datacenter"
+vsphere_vm_vault_secret: "secret/vsphere/vcenter"   # KV path holding the vCenter password
+# vsphere_vm_username / vsphere_vm_password_field default to administrator@vsphere.local / password
+vsphere_vm_cluster: "Cluster"          # or: vsphere_vm_esxi_host + vsphere_vm_resource_pool
+vsphere_vm_datastore: "datastore1"
+vsphere_vm_template: "linux-almalinux-9-main"
+vsphere_vm_network: "VLAN10-SVC"
+vsphere_vm_netmask: "255.255.255.0"
+vsphere_vm_dns: [192.0.2.53]
+
+# host_vars/web01.yml (or inline beside the host) — the per-host unique
+ansible_host: 192.0.2.50               # becomes the VM's static IP
+```
+
+For a standalone ESXi host swap the placement line for
+`vsphere_vm_esxi_host: 192.0.2.11` plus `vsphere_vm_resource_pool: Resources`.
+Everything else (hardware, disk, gateway, tags, provisioning mode) has a sane
+default — see the sections below to tune it.
+
 ## Requirements
 
 - `community.vmware` **>= 6.x** + `pyvmomi` on the controller (4.x is incompatible with pyVmomi 9).

@@ -10,8 +10,9 @@
 - name: Deploy FreeIPA server
   hosts: freeipa
   gather_facts: true
-  become: true
-  become_user: root
-  become_method: ansible.builtin.sudo
+  # No play-level become: the freeipa_server role self-escalates per phase (least
+  # privilege) — its remote-host phases carry become: true while localhost-delegated
+  # credential lookups keep become: false. This lets the same play also run
+  # localhost-delegated roles (e.g. vsphere_vm) without sudo-ing on the control node.
   roles:
     - role: freeipa_server
