@@ -73,6 +73,7 @@ A no-tag run runs everything except the `never`-tagged ops.
 | `automember` | Auto group/hostgroup membership rules (primary, opt-in) |
 | `adtrust` (`trust`) | Active Directory trust(s) (primary, opt-in) |
 | `export` | Read-only config snapshot of a live realm (see [Adopt an existing instance](#adopt-an-existing-instance-config-export--snapshot)) |
+| `ca_report` | Read-only probe printing a paste-ready block of the CA topology vars (primary, `never`; see [Certificate Authority](#certificate-authority-ca)) |
 | `restore` | Break-glass restore from a backup (`never`) |
 | `delete` | HARD-DELETE declared IDAM objects (`never`; see [Destructive operations](#destructive-operations)) |
 | `prune_preserved` | HARD-DELETE orphaned preserved users (`never`; same section) |
@@ -181,25 +182,77 @@ there, then see the sibling `acme.yml` (literal) / `globex.yml` (templated) tena
 
 ## Install options (selected)
 
-`freeipa_server_ca_mode` (`self-signed`|`external-ca`|`ca-less`), `_setup_kra`,
-`_setup_dns`, `_forward_policy`, `_idstart`/`_idmax`, `_no_hbac_allow`, `_mkhomedir`,
-`_setup_ntp` + `_ntp_servers`, `_fips_required`. Full surface in `defaults/main.yml`.
+`_setup_kra`, `_setup_dns`, `_forward_policy`, `_idstart`/`_idmax`, `_no_hbac_allow`,
+`_mkhomedir`, `_setup_ntp` + `_ntp_servers`, `_fips_required`. The Certificate Authority
+options (`freeipa_server_ca_mode` and friends) have their own section below. Full surface
+in `defaults/main.yml`.
+
+## Certificate Authority (CA)
+
+Every FreeIPA install mints its **own** CA — two realms installed independently get two
+*different* CAs, so certs from one aren't trusted by the other. `freeipa_server_ca_mode`
+picks **which CA the realm serves** (the signer of every user/host/service cert it issues):
+
+| Mode (`freeipa_server_ca_mode`) | What it does | Trust outcome | When to pick it |
+|---|---|---|---|
+| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into |
+| `external-ca` | IPA's CA becomes a **sub-CA signed by your org root** (two-phase) | Certs **chain to your root** — anything already trusting your root trusts IPA's certs | Fit an existing PKI hierarchy; make test/prod certs chain to the same root |
+| `ca-less` | IPA runs with **no CA of its own** | You supply every HTTP/LDAP service cert yourself; IPA issues nothing | Rare — an external PKI owns all issuance and renewal |
+
+Two related knobs (both `""` = upstream default):
+- **`freeipa_server_subject_base`** — the base DN stamped on the **leaf** certs IPA issues
+  (users/hosts/services), e.g. `O=EXAMPLE.COM`. Default derives `O=<REALM>`.
+- **`freeipa_server_ca_subject`** — the DN of the **CA certificate itself** (the signer),
+  e.g. `CN=Certificate Authority,O=EXAMPLE.COM`. Default is `CN=Certificate Authority` +
+  the subject base.
+
+> **Capture a live server's CA settings** to reproduce it 1:1 on another realm:
+> `--tags ca_report` runs a **read-only** probe on the primary and prints a paste-ready
+> block of `freeipa_server_*` CA vars (mode, subject, KRA/DNS/PKINIT, trusted roots),
+> deriving the mode from the CA cert (issuer==subject + no AIA ⇒ self-signed; else
+> external-ca). See `tasks/ca_report.yml`.
+> ```bash
+> ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags ca_report
+> ```
 
 ### external-ca is two-phase
 
-`freeipa_server_ca_mode: external-ca` needs a CSR roundtrip: the first run emits
-`/root/ipa.csr` (sign it with your CA), then supply the signed chain via
-`freeipa_server_external_cert_files` and re-run. Preflight asserts the files are present.
-This makes the IPA CA a **subordinate** of your CA — to instead *trust other CAs alongside*
-the IPA CA, see below.
+`freeipa_server_ca_mode: external-ca` makes the IPA CA a **subordinate** of your org root
+via a CSR roundtrip:
 
-## Trusting external CAs (additive to the IPA CA)
+1. **Phase 1** — run with `freeipa_server_ca_mode: external-ca` and
+   `freeipa_server_external_cert_files: []`. The install stops after emitting the CSR at
+   **`/root/ipa.csr`** on the primary.
+2. **Sign it** — sign `/root/ipa.csr` with your org root CA. You get back the signed IPA
+   CA cert plus your root's chain.
+3. **Phase 2** — set `freeipa_server_external_cert_files: [signed-ipa-ca.crt, org-root-chain.crt]`
+   (paths on the control node) and **re-run**. Preflight asserts the files exist; the
+   install consumes them and finishes.
+
+The result: IPA's certs chain up to your root, so a test realm installed this way carries
+the same trust chain as prod. A worked, copy-pasteable inventory fragment lives at
+[`examples/external-ca/host_vars.example.yml`](examples/external-ca/host_vars.example.yml)
+(commented — **not** a runnable inventory; phase 1 partially configures a host and needs
+your root to sign, so run it deliberately).
+
+To instead *trust other CAs alongside* IPA's own CA (not replace the serving CA), see below.
+
+## Trusting external CAs (additive — does NOT change the serving CA)
 
 `freeipa_server_trusted_external_cas` imports third-party / other-domain CA certs into the
 IPA trust store (`ipa-cacert-manage install` + `ipa-certupdate`), so IPA and its enrolled
-clients **trust certs issued by those CAs**. Additive (does not change the IPA CA); primary
-only, replicates cluster-wide; idempotent; skipped in `ca-less`. Run the `certs` tag to apply
-just this. Auth uses the **DM** password from `freeipa_server_vault_secret` (fed on stdin).
+clients **trust certs issued by those CAs**. This is purely **additive** — it adds trusted
+roots *alongside* the serving CA; it does **not** change which CA IPA serves (use
+`external-ca` for that). Primary only, replicates cluster-wide; idempotent; skipped in
+`ca-less`. Run the `certs` tag to apply just this. Auth uses the **DM** password from
+`freeipa_server_vault_secret` (fed on stdin).
+
+> **Each entry must be a real CA certificate** — `basicConstraints: CA:TRUE` +
+> `keyUsage: keyCertSign`. `ipa-cacert-manage install` **rejects** a leaf/server cert, or a
+> CA cert missing those constraints, with *"not a valid CA certificate"* — **that is why
+> supplying a leaf PEM fails**. Supply the issuing **CA / root** PEM (the cert that *signs*
+> your certs), not the server cert. `certs.yml` preflights each staged PEM and fails early
+> with an actionable message naming the offending entry, instead of the cryptic upstream one.
 
 ```yaml
 freeipa_server_trusted_external_cas:

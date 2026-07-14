@@ -1,0 +1,74 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# EXAMPLE — external-ca (two-phase) install for the freeipa_server role.
+#
+# ⚠️  THIS IS A DOCUMENTED EXAMPLE, NOT A RUNNABLE INVENTORY. Do not drop it into a
+#     live inventory and run it blind: an external-ca phase-1 install PARTIALLY
+#     configures the host and then STOPS, waiting for YOUR org root CA to sign the
+#     emitted CSR. Run it deliberately, one phase at a time, on a host you intend to
+#     (re)build. Copy the relevant block into a real host_vars/<host>.yml when ready.
+#
+# GOAL: make a TEST realm's CA a SUB-CA of the SAME org root your production realm
+#       chains to, so test-issued certs carry an Authority Information Access (AIA)
+#       extension and validate against that shared root — matching prod 1:1.
+#
+# Capture prod's exact CA settings first with the read-only probe, then mirror them
+# here (mode, subject, KRA/DNS/PKINIT):
+#     ansible-playbook -i inventories/<prodenv>/hosts.yml \
+#         playbooks/freeipa_idam.yml --tags ca_report
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Scenario host in these comments: freeipa.central-qa.core.domain.lan
+# (a test realm to be signed by your existing org root CA).
+
+# ── PHASE 1 — emit the CSR ───────────────────────────────────────────────────
+# Run the install with external-ca selected and NO signed files yet. The role maps
+# this to ipaserver_external_ca=true; the installer stops after writing the CSR to
+# /root/ipa.csr on the primary, leaving the server partially configured.
+#
+#   ansible-playbook -i inventories/<testenv>/hosts.yml \
+#       playbooks/freeipa_idam.yml --tags install --limit freeipa-central-qa
+#
+freeipa_server_ca_mode: external-ca
+freeipa_server_external_cert_files: []          # empty on phase 1 → CSR is emitted
+
+# Match these to what --tags ca_report reported for prod (example values shown):
+freeipa_server_subject_base: "O=CENTRAL-QA.CORE.DOMAIN.LAN"
+freeipa_server_ca_subject: "CN=Certificate Authority,O=CENTRAL-QA.CORE.DOMAIN.LAN"
+freeipa_server_setup_kra: false
+freeipa_server_setup_dns: true
+freeipa_server_no_pkinit: false
+
+# ── SIGN — off-Ansible, with YOUR org root CA ────────────────────────────────
+# Fetch the CSR and have your org root CA (or its issuing sub-CA) sign it as a CA
+# certificate (the signer must permit a subordinate CA — pathlen/keyCertSign):
+#
+#   scp root@freeipa-central-qa:/root/ipa.csr ./ipa.csr
+#   # → sign ./ipa.csr with your org root, producing:
+#   #     signed-ipa-ca.crt      (the newly-signed IPA sub-CA certificate)
+#   #     org-root-chain.crt     (your root CA cert, plus any intermediates)
+#
+# Place both PEMs on the CONTROL NODE (e.g. under files/ next to this inventory).
+
+# ── PHASE 2 — consume the signed chain and finish ────────────────────────────
+# Set freeipa_server_external_cert_files to [signed-ipa-ca.crt, org-root-chain.crt]
+# (control-node paths) and RE-RUN the SAME install. Preflight asserts the files
+# exist; the installer imports them and completes. The IPA CA is now a sub-CA of
+# your org root, and every cert IPA issues chains to it.
+#
+#   ansible-playbook -i inventories/<testenv>/hosts.yml \
+#       playbooks/freeipa_idam.yml --tags install --limit freeipa-central-qa
+#
+# Uncomment for phase 2 (paths relative to the inventory, resolved by the installer
+# on the primary — stage them there, or use absolute control-node paths):
+# freeipa_server_external_cert_files:
+#   - /root/signed-ipa-ca.crt
+#   - /root/org-root-chain.crt
+
+# ── AFTER: verify the chain ──────────────────────────────────────────────────
+# Confirm the new realm's CA now carries an AIA extension and chains to your root:
+#   openssl x509 -in /etc/ipa/ca.crt -noout -text | grep -A2 'Authority Information Access'
+# Re-running --tags ca_report on the test primary should now classify it external-ca.
+#
+# NOTE: to instead TRUST other CAs alongside IPA's own CA (not replace the serving
+# CA), use freeipa_server_trusted_external_cas — see the role README.

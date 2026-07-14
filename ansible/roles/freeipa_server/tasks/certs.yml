@@ -71,6 +71,46 @@
   loop_control:
     label: "{{ item.name }}"
 
+# PREFLIGHT: ipa-cacert-manage install REJECTS any PEM that is not a proper CA
+# certificate — it must carry basicConstraints CA:TRUE (and keyUsage keyCertSign).
+# A leaf/server cert, or a CA missing those, fails upstream with a cryptic "not a
+# valid CA certificate / invalid / missing basic constraints". We validate the
+# staged PEMs here FIRST so the operator gets an actionable message naming the
+# offending entry instead of the opaque upstream error. Read-only (changed_when:false).
+- name: Trusted CAs | Read basicConstraints/keyUsage of each staged certificate
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.name }}.pem"
+      - -noout
+      - -ext
+      - basicConstraints,keyUsage
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _freeipa_trusted_ca_bc
+  changed_when: false
+  failed_when: false
+
+- name: Trusted CAs | Assert each staged certificate is a real CA (basicConstraints CA:TRUE)
+  ansible.builtin.assert:
+    that:
+      - "'CA:TRUE' in (item.stdout | default(''))"
+    fail_msg: >-
+      freeipa_server_trusted_external_cas entry '{{ item.item.name }}' is NOT a CA
+      certificate (needs basicConstraints CA:TRUE + keyUsage keyCertSign). You supplied
+      a leaf/server cert, or a CA cert missing those constraints — ipa-cacert-manage
+      install will reject it. Provide the issuing CA / root PEM (the certificate that
+      SIGNS your certs), not the server/leaf certificate itself. openssl reported for
+      '{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.item.name }}.pem':
+      {{ item.stdout | default('<no basicConstraints extension>') | trim }}
+    quiet: true
+  loop: "{{ _freeipa_trusted_ca_bc.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
 - name: Trusted CAs | List currently trusted CA certificates
   ansible.builtin.command: ipa-cacert-manage list
   register: _freeipa_trusted_ca_list

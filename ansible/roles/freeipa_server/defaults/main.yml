@@ -84,21 +84,47 @@ freeipa_server_firewalld_zone: ""        # "" → upstream default zone
 # (handled in preflight): { name, baseurl, gpgcheck }.
 freeipa_server_offline: false
 
-# ── CA design: self-signed | external-ca | ca-less ──────────────────────────
+# ── CA design: which Certificate Authority the realm serves ─────────────────
+# This picks the SERVING CA the installer mints — it decides whether the certs
+# IPA issues are trusted outside the realm. Choices (see README "Certificate
+# Authority" for the full narrative + the --tags ca_report live-capture probe):
+#   self-signed  IPA mints its OWN standalone root CA. Simplest; the CA is trusted
+#                only where you distribute /etc/ipa/ca.crt. Nothing chains above it.
+#   external-ca  IPA's CA becomes a SUB-CA signed by YOUR org root — two-phase (see
+#                below). Certs then chain to your root, so anything already trusting
+#                your root trusts IPA's certs. Use to fit an existing PKI hierarchy.
+#   ca-less      IPA runs with NO CA of its own; you supply every service cert (HTTP/
+#                LDAP) via upstream vars (see README). Rare; you own all cert renewal.
 freeipa_server_ca_mode: "self-signed"
+# subject_base = the base DN stamped on ALL certs IPA issues (users/hosts/services),
+# e.g. "O=EXAMPLE.COM". "" → upstream derives O=<REALM>. Sets the org/DC RDNs.
 freeipa_server_subject_base: ""          # "" → upstream derives O=<REALM>
+# ca_subject = the DN of the CA certificate ITSELF (the signer), e.g.
+# "CN=Certificate Authority,O=EXAMPLE.COM". "" → upstream default (CN=Certificate
+# Authority + the subject_base). Distinct from subject_base (the LEAF cert base).
 freeipa_server_ca_subject: ""            # "" → upstream default
 freeipa_server_random_serial_numbers: false
-# external-ca is two-phase: 1st run emits a CSR, you sign it, 2nd run consumes the certs.
+# external_cert_files — ONLY for ca_mode: external-ca. external-ca is TWO-PHASE:
+#   phase 1  (files empty)  → install emits /root/ipa.csr; sign it with your org root.
+#   phase 2  set this to [signed-ipa-ca.crt, org-root-chain.crt] and RE-RUN.
+# Preflight asserts the files exist on phase 2. Ignored in self-signed / ca-less.
 freeipa_server_external_cert_files: []
 # ca-less: provide HTTP/LDAP cert files via upstream vars (see README); not defaulted.
 
-# ── Trusted external CAs (ADDITIVE to the IPA CA) ────────────────────────────
-# Import third-party CA certs into the IPA trust store so IPA + enrolled clients (via
-# ipa-certupdate) trust certs they issue. Does NOT change the CA from ca_mode — adds roots
-# alongside it. Primary only, replicates cluster-wide; idempotent; skipped in ca-less mode.
-# Auth uses the DM password (vault_secret + dm_password_field, fed on stdin). Each item
-# needs `name` (trust-store nickname) + ONE source:
+# ── Trusted external CAs (ADDITIVE trust — does NOT change the serving CA) ────
+# Import third-party / other-domain CA certs into the IPA trust store so IPA + its
+# enrolled clients (via ipa-certupdate) TRUST certs those CAs issue. This is purely
+# ADDITIVE — it adds trusted roots ALONGSIDE the serving CA from ca_mode; it does NOT
+# change which CA IPA serves (use external-ca for that). Primary only, replicates
+# cluster-wide; idempotent; skipped in ca-less mode. Auth uses the DM password
+# (vault_secret + dm_password_field, fed on stdin).
+#
+# EACH ENTRY MUST BE A REAL CA CERTIFICATE — basicConstraints CA:TRUE + keyUsage
+# keyCertSign. ipa-cacert-manage install REJECTS a leaf/server cert or a CA missing
+# those constraints ("not a valid CA certificate"); certs.yml preflights this and
+# fails with an actionable message naming the bad entry. Supply the issuing CA / root
+# PEM (the cert that SIGNS your certs), not the server cert. Each item needs `name`
+# (trust-store nickname) + ONE source:
 #   src:     PEM file on the control node
 #   content: inline PEM
 #   url:     PEM the SERVER fetches (internal artifact repo pattern);

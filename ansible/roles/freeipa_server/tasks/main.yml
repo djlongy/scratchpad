@@ -213,6 +213,16 @@
   when: freeipa_server_is_primary | bool
   tags: [never, export]
 
+# Read-only CA-topology probe (primary only). Prints a paste-ready block of
+# freeipa_server_* CA vars so a TEST realm can reproduce this server's CA 1:1.
+# `never`-tagged like export — runs only with --tags ca_report; --check is a
+# no-op since it mutates nothing.
+- name: Report the CA topology as reproducible vars (opt-in; primary only)
+  ansible.builtin.import_tasks: ca_report.yml
+  become: true
+  when: freeipa_server_is_primary | bool
+  tags: [never, ca_report]
+
 # HARD-DELETE every DECLARED freeipa_idam_* object (mock/test cleanup). Double-gated:
 # `never` tag (only --tags delete) AND freeipa_idam_delete: true (mock inventories only).
 - name: Delete (HARD-DELETE) declared IDAM objects — mock/test cleanup only

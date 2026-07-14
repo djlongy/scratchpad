@@ -1,0 +1,182 @@
+---
+# roles/freeipa_server/tasks/ca_report.yml
+#
+# READ-ONLY CA-topology probe. Runs against a LIVE FreeIPA primary and prints a
+# ready-to-paste block of freeipa_server_* variables that reproduce this server's
+# Certificate Authority design — so you can stand up a TEST realm whose CA matches
+# production 1:1 (same mode, subject, KRA/DNS/PKINIT posture, trusted roots).
+#
+# Read-only: only openssl on local files + `ipactl status` / `ipa-pkinit-manage
+# status` / `ipa-cacert-manage list` (they read local config, no kinit needed).
+# Every task is changed_when:false; nothing here mutates the server. Opt-in: gated
+# behind the `ca_report` tag (main.yml tags it [never, ca_report]), primary only.
+#
+# HOW THE MODE IS DERIVED:
+#   issuer == subject  AND no Authority Information Access (AIA) extension
+#       -> self-signed  (a standalone root CA; not trusted outside this realm)
+#   issuer != subject  OR an AIA extension is present
+#       -> external-ca  (the IPA CA is a sub-CA signed by your org root; the AIA
+#                        points at the issuer, and certs chain up to that root)
+# ca-less (no IPA CA at all) is detected by the absence of /etc/ipa/ca.crt.
+
+- name: CA report | Assert this is the primary
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_is_primary | bool
+    fail_msg: "The CA report probes the CA store; run it on the FreeIPA primary only."
+    quiet: true
+
+- name: CA report | Check for the IPA CA certificate
+  ansible.builtin.stat:
+    path: /etc/ipa/ca.crt
+  register: _freeipa_ca_report_ca_crt
+
+# ca-less realms have no /etc/ipa/ca.crt — report that and stop (nothing else to probe).
+- name: CA report | Report a ca-less server and end the probe
+  when: not _freeipa_ca_report_ca_crt.stat.exists
+  block:
+    - name: CA report | ca-less server (no /etc/ipa/ca.crt)
+      ansible.builtin.debug:
+        msg:
+          - "# ── FreeIPA CA topology (captured from {{ inventory_hostname }}) ──"
+          - "# No /etc/ipa/ca.crt on this server -> installed WITHOUT an IPA CA."
+          - "freeipa_server_ca_mode: ca-less"
+          - "# ca-less means all service certs are supplied externally; see the role"
+          - "# defaults (freeipa_server_ca_mode) and README 'Certificate Authority' section."
+    - name: CA report | End play for this host (ca-less)
+      ansible.builtin.meta: end_host
+
+# ── Gather the raw material (all read-only) ─────────────────────────────────
+- name: CA report | Read the IPA CA subject and issuer
+  # RFC2253 prints the DN most-specific-first (CN before O), matching the form
+  # FreeIPA expects for freeipa_server_ca_subject (ipaserver_ca_subject).
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - /etc/ipa/ca.crt
+      - -noout
+      - -subject
+      - -issuer
+      - -nameopt
+      - RFC2253
+  register: _freeipa_ca_report_names
+  changed_when: false
+
+- name: CA report | Read the full IPA CA certificate text (for the AIA check)
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, /etc/ipa/ca.crt, -noout, -text]
+  register: _freeipa_ca_report_text
+  changed_when: false
+
+- name: CA report | Query ipactl status (which subsystems are running)
+  ansible.builtin.command: ipactl status
+  register: _freeipa_ca_report_ipactl
+  changed_when: false
+  failed_when: false
+
+- name: CA report | Detect the KRA subsystem (vault/key-recovery)
+  ansible.builtin.stat:
+    path: /etc/pki/pki-tomcat/kra
+  register: _freeipa_ca_report_kra
+
+- name: CA report | Query PKINIT status
+  ansible.builtin.command: ipa-pkinit-manage status
+  register: _freeipa_ca_report_pkinit
+  changed_when: false
+  failed_when: false
+
+- name: CA report | List the trusted CA certificates in the store
+  ansible.builtin.command: ipa-cacert-manage list
+  register: _freeipa_ca_report_cacerts
+  changed_when: false
+  failed_when: false
+
+# ── Derive the freeipa_server_* values ──────────────────────────────────────
+- name: CA report | Derive the CA topology facts
+  ansible.builtin.set_fact:
+    # subject= / issuer= lines from the openssl output.
+    _freeipa_ca_report_subject: >-
+      {{ (_freeipa_ca_report_names.stdout_lines
+          | select('match', '^subject=') | first | default('subject=')
+         ).split('subject=', 1)[1] | trim }}
+    _freeipa_ca_report_issuer: >-
+      {{ (_freeipa_ca_report_names.stdout_lines
+          | select('match', '^issuer=') | first | default('issuer=')
+         ).split('issuer=', 1)[1] | trim }}
+    _freeipa_ca_report_has_aia: >-
+      {{ 'Authority Information Access' in _freeipa_ca_report_text.stdout }}
+
+- name: CA report | Classify the CA mode and derive the subject base
+  ansible.builtin.set_fact:
+    # self-signed iff issuer == subject AND no AIA extension; else external-ca.
+    _freeipa_ca_report_mode: >-
+      {{ 'self-signed'
+         if (_freeipa_ca_report_subject == _freeipa_ca_report_issuer
+             and not (_freeipa_ca_report_has_aia | bool))
+         else 'external-ca' }}
+    # subject_base is the O= (and any DC=) RDNs of the CA subject — i.e. the CA
+    # subject with the leading CN=Certificate Authority stripped. Upstream's
+    # default subject base is O=<REALM>, so if this equals that it's the default.
+    # Strip the leading "CN=Certificate Authority," RDN (RFC2253 emits no space
+    # after the comma; ", ?" tolerates a space without needing a backslash class,
+    # which a YAML folded scalar mangles).
+    _freeipa_ca_report_subject_base: >-
+      {{ _freeipa_ca_report_subject
+         | regex_replace('^CN=Certificate Authority, ?', '') }}
+    _freeipa_ca_report_kra_present: "{{ _freeipa_ca_report_kra.stat.exists | default(false) }}"
+    _freeipa_ca_report_dns_present: >-
+      {{ 'named Service' in (_freeipa_ca_report_ipactl.stdout | default('')) }}
+    _freeipa_ca_report_pkinit_enabled: >-
+      {{ 'PKINIT is enabled' in (_freeipa_ca_report_pkinit.stdout | default('')) }}
+
+- name: CA report | Compute whether subject_base matches the upstream default
+  ansible.builtin.set_fact:
+    # Upstream derives subject base O=<REALM> when none is given. If the live
+    # value equals that, the server used the default and you can leave the var "".
+    _freeipa_ca_report_subject_base_is_default: >-
+      {{ _freeipa_ca_report_subject_base == ('O=' + freeipa_server_realm) }}
+
+# ── Emit the paste-ready block ──────────────────────────────────────────────
+- name: CA report | Print the reproducible freeipa_server_* CA block
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        [
+          '# ── FreeIPA CA topology captured from ' + inventory_hostname + ' ──',
+          '# Paste these into the TEST realm inventory group_vars to reproduce this',
+          '# server''s CA 1:1. Mode was derived from the CA cert (see notes below).',
+          '#',
+          '# CA subject : ' + _freeipa_ca_report_subject,
+          '# CA issuer  : ' + _freeipa_ca_report_issuer,
+          '# AIA ext    : ' + ('present  -> corroborates external-ca (sub-CA of your root)'
+                               if _freeipa_ca_report_has_aia | bool
+                               else 'absent   -> corroborates self-signed (standalone root)'),
+          '# Trusted CA store (ipa-cacert-manage list):',
+        ]
+        + (_freeipa_ca_report_cacerts.stdout_lines | default(['  <unavailable>']))
+          | map('regex_replace', '^', '#   ') | list
+        + [
+          '',
+          'freeipa_server_ca_mode: ' + _freeipa_ca_report_mode,
+          'freeipa_server_ca_subject: "' + _freeipa_ca_report_subject + '"',
+          ('freeipa_server_subject_base: ""   # matches upstream default O=' + freeipa_server_realm
+             if _freeipa_ca_report_subject_base_is_default | bool
+             else 'freeipa_server_subject_base: "' + _freeipa_ca_report_subject_base + '"'),
+          'freeipa_server_setup_kra: ' + (_freeipa_ca_report_kra_present | bool | string | lower),
+          'freeipa_server_setup_dns: ' + (_freeipa_ca_report_dns_present | bool | string | lower),
+          'freeipa_server_no_pkinit: ' + ((not (_freeipa_ca_report_pkinit_enabled | bool)) | string | lower),
+        ]
+        + (
+          [
+            '',
+            '# external-ca: this IPA CA is a SUB-CA of your org root. To rebuild a test',
+            '# realm the SAME way you must run the two-phase install (see README):',
+            '#   phase 1  freeipa_server_ca_mode: external-ca   -> emits /root/ipa.csr',
+            '#   sign     sign /root/ipa.csr with your org root CA',
+            '#   phase 2  freeipa_server_external_cert_files: [signed-ipa-ca.crt, org-root-chain.crt]',
+            '# The CAs currently in the trust store are listed above.',
+          ] if _freeipa_ca_report_mode == 'external-ca' else []
+        )
+      }}
