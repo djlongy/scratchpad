@@ -10,18 +10,20 @@
 # Approach: Check `ipactl status`, and if any services are STOPPED, start them
 # individually via systemctl before falling back to `ipactl start --force`.
 
+# named + ipa-dnskeysyncd only exist when IPA is installed with integrated DNS
+# (--setup-dns). On a DNS-less server (freeipa_server_setup_dns: false) those
+# units are absent, so enabling them errors — gate them on the DNS switch. The
+# ipactl-status-driven steps below already self-scope (ipactl only reports the
+# services this server actually runs), so only this hardcoded list needs gating.
 - name: Ensure FreeIPA services are enabled at boot
   ansible.builtin.systemd:
     name: "{{ item }}"
     enabled: true
-  loop:
-    - krb5kdc
-    - kadmin
-    - named
-    - httpd
-    - ipa-custodia
-    - ipa-otpd.socket
-    - ipa-dnskeysyncd
+  loop: >-
+    {{ ['krb5kdc', 'kadmin', 'httpd', 'ipa-custodia', 'ipa-otpd.socket']
+       + (['named', 'ipa-dnskeysyncd'] if (freeipa_server_setup_dns | bool) else []) }}
+  loop_control:
+    label: "{{ item }}"
 
 - name: Check FreeIPA service status
   ansible.builtin.command: ipactl status
