@@ -21,7 +21,12 @@
     ipaserver_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
     ipaserver_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
     ipaserver_setup_adtrust: "{{ freeipa_server_setup_adtrust }}"
-    ipaserver_external_ca: "{{ freeipa_server_ca_mode == 'external-ca' }}"
+    # external_ca is asserted ONLY in phase 1 (no signed cert files yet → emit the
+    # CSR). In phase 2 the signed cert files ARE supplied and external_ca MUST be
+    # false, so the installer resumes external-ca step two instead of regenerating
+    # the CSR. (Re-asserting external_ca in phase 2 makes ipaserver re-enter step one.)
+    ipaserver_external_ca: "{{ freeipa_server_ca_mode == 'external-ca'
+                               and (freeipa_server_external_cert_files | length == 0) }}"
     ipaserver_external_cert_files: "{{ freeipa_server_external_cert_files }}"
     ipaserver_random_serial_numbers: "{{ freeipa_server_random_serial_numbers }}"
     ipaserver_setup_kra: "{{ freeipa_server_setup_kra }}"
@@ -69,8 +74,15 @@
   ansible.builtin.include_role:
     name: freeipa.ansible_freeipa.ipaserver
 
+# Skip the service start during an external-ca PHASE 1 (CSR-emitting) run: the
+# installer stops after writing /root/ipa.csr and ipa.service is not yet configured,
+# so starting it would fail. Phase 2 (signed cert files supplied) and every normal
+# install run this task unchanged.
 - name: Ensure IPA service is enabled and started
   ansible.builtin.service:
     name: ipa
     state: started
     enabled: true
+  when: >-
+    not (freeipa_server_external_ca_allow_csr_phase | bool
+         and freeipa_server_external_cert_files | length == 0)

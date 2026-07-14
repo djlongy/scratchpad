@@ -116,3 +116,7 @@
     - freeipa_server_ca_mode == "external-ca"
     - freeipa_server_is_primary | bool
     - not _freeipa_server_configured.stat.exists
+    # opt-in escape hatch: skip this assert ONLY when the operator explicitly
+    # allowed phase 1 (CSR-emitting) to run with cert files still empty.
+    - not (freeipa_server_external_ca_allow_csr_phase | bool and
+      freeipa_server_external_cert_files | length == 0)

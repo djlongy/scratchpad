@@ -1,0 +1,254 @@
+---
+# playbooks/freeipa_signed_install.yml
+#
+# TURNKEY signed FreeIPA install — external-ca mode, signed by an org root CA held
+# by the certificate_authority role. It runs as TWO sequential ansible-playbook
+# invocations selected by an explicit phase gate. Prefer the wrapper (one command,
+# both phases, aborts on failure):
+#
+#   scripts/freeipa-signed-install.sh <host>
+#
+# or drive the two phases by hand (documented + supported):
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_signed_install.yml \
+#       --limit <host> -e freeipa_signed_install_phase=1     # emit CSR + sign
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_signed_install.yml \
+#       --limit <host> -e freeipa_signed_install_phase=2     # complete + distribute
+#
+# ── WHY TWO SEPARATE PROCESSES (do NOT collapse into one run) ─────────────────
+# external-ca is inherently TWO-PHASE: ipa-server-install emits a CSR for its CA
+# subsystem, that CSR is signed by an external CA, and the SIGNED cert is fed back
+# to COMPLETE the install ("step two").
+#
+# NOTE (verified against freeipa.ansible_freeipa 1.16.0): the `ipaserver` role does
+# NOT resume external-ca STEP TWO when it is invoked twice inside ONE ansible-playbook
+# process. On the second invocation it re-runs step one and REGENERATES the CSR
+# (upstream reports `pki_external_step_two: False`), so /etc/ipa/ca.crt is never
+# created and the install fails. Upstream's supported resume logic detects "step two"
+# by inspecting on-disk state that is only correct ACROSS SEPARATE processes — i.e.
+# two distinct ansible-playbook runs. Hence the hard phase split below: phase 1
+# emits+signs and STOPS; phase 2 is a FRESH process that supplies the signed cert
+# files and thereby resumes step two to completion.
+#
+# ── PHASE GATE (deterministic — NO state inference) ───────────────────────────
+# `freeipa_signed_install_phase` is a PLAYBOOK-LOCAL variable (not a role var);
+# set it EXPLICITLY per run, there is no auto-detection:
+#   phase 1 : freeipa_server install with ca_mode=external-ca,
+#             external_cert_files=[] and external_ca_allow_csr_phase=true → the
+#             install STOPS after writing /root/ipa.csr; the CSR is fetched to the
+#             control node and signed off the org root (certificate_authority
+#             sign_ipa). The run ends here — IPA is NOT up yet.
+#   phase 2 : (a fresh process) copy the signed IPA CA cert + root chain back,
+#             re-run freeipa_server install with external_cert_files set → the
+#             installer resumes step two and COMPLETES; then certificate_authority
+#             distribute drops the org root anchor into the host trust store.
+# The "phase gate" play below targets the freeipa group (so `--limit <host>` does
+# not filter it out) but runs its assert/banners on the control node (delegate_to:
+# localhost, run_once) — so a hand-run that forgets the phase var gets the actionable
+# assert message, not an undefined-var crash in a later play. Each work play then
+# gates its whole task block on `freeipa_signed_install_phase | int == <n>`, so a
+# single invocation only ever executes ONE phase's plays.
+#
+# ── WHY tasks_from: (playbook-level include_role with a task file) ────────────
+# 1. INSTALL-SCOPING. A full freeipa_server role run also executes idam/dns/
+#    hardening/backup phases AFTER install. Those are intentionally OUT OF SCOPE of
+#    a signed install; `tasks_from: install` runs ONLY the install path
+#    (resolve_credentials + primary/replica). Reconcile users/groups/DNS separately
+#    after phase 2.
+# 2. NEVER-TAGS. certificate_authority tags sign_ipa and distribute `never`
+#    (opt-in). `tasks_from: sign_ipa` / `tasks_from: distribute` invokes those
+#    phase task files directly so the turnkey command needs no --tags.
+# (These roles are composed at PLAYBOOK level — include_role/import_role INSIDE a
+#  role is what to avoid, not here.)
+#
+# become: the phase task files rely on the role's main.yml wrappers for escalation,
+# which we bypass — so become: true is set on each work play that needs root
+# (preflight mutates hostname/hosts, install runs ipa-server-install). The
+# certificate_authority phases self-manage delegation/become internally (sign_ipa
+# runs control-node only; distribute self-escalates per task).
+#
+# PKI paths derive from certificate_authority_pki_dir (default pki/ under the repo,
+# overridable with -e) so both phases agree on where the CSR, signed cert and chain
+# live. env = the environment label, used as the output stem, so outputs land at
+# pki/ipa/<env>-ipa-ca.crt + <env>-chain.crt.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE GATE — validate + announce the selected phase.
+# hosts: freeipa (NOT localhost) so the documented `--limit <host>` command does not
+# filter this play out — the assert/banners execute on the CONTROL NODE
+# (delegate_to: localhost, run_once) but the play targets the limited host, so the
+# gate fires under real hand-run usage too (missing phase → clean message, not an
+# undefined-var crash in a later play).
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "FreeIPA signed install — phase gate"
+  hosts: freeipa
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Assert an explicit install phase (1 or 2) was selected
+      ansible.builtin.assert:
+        that:
+          - freeipa_signed_install_phase is defined
+          - (freeipa_signed_install_phase | default('') | int) in [1, 2]
+        fail_msg: >-
+          Set the install phase EXPLICITLY (there is no auto-detection):
+          -e freeipa_signed_install_phase=1 (emit CSR + sign, STOPS) THEN, as a
+          SEPARATE run, -e freeipa_signed_install_phase=2 (complete + distribute).
+          Prefer the wrapper `scripts/freeipa-signed-install.sh <host>`, which runs
+          both in order and aborts between them on failure. external-ca step two only
+          resumes across SEPARATE ansible-playbook processes — see the header.
+        quiet: true
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Phase gate | announce PHASE 1 (emit CSR + sign, stops before completion)"
+      ansible.builtin.debug:
+        msg: >-
+          PHASE 1 selected — freeipa_server install emits /root/ipa.csr and STOPS;
+          the CSR is fetched and signed off the org root. Run phase 2 next.
+      when: (freeipa_signed_install_phase | default('') | int) == 1
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Phase gate | announce PHASE 2 (complete install + distribute trust)"
+      ansible.builtin.debug:
+        msg: >-
+          PHASE 2 selected — push the signed cert + chain back, complete the install
+          (this fresh process resumes external-ca step two), then distribute the root.
+      when: (freeipa_signed_install_phase | default('') | int) == 2
+      delegate_to: localhost
+      run_once: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 1 — install to the CSR checkpoint, then fetch /root/ipa.csr
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "FreeIPA signed install — phase 1 (emit CSR)"
+  hosts: freeipa
+  gather_facts: true
+  # Play-level become: the phase task files (preflight/install) rely on the role's
+  # main.yml become wrappers, which tasks_from bypasses — so escalate here. The
+  # control-node dir task below overrides with become: false.
+  become: true
+  vars:
+    _ca_pki_dir: "{{ certificate_authority_pki_dir | default(playbook_dir + '/../../pki') }}"
+    _ipa_csr_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa.csr"
+  tasks:
+    - name: Phase 1 — emit and fetch the FreeIPA external-ca CSR
+      when: (freeipa_signed_install_phase | default('') | int) == 1
+      block:
+        - name: Ensure the control-node pki/ipa directory exists for the fetched CSR
+          ansible.builtin.file:
+            path: "{{ _ca_pki_dir }}/ipa"
+            state: directory
+            mode: "0755"
+          delegate_to: localhost
+          become: false
+          run_once: true
+
+        - name: Run freeipa_server preflight guards (install-scoped)
+          ansible.builtin.include_role:
+            name: freeipa_server
+            tasks_from: preflight
+          vars:
+            freeipa_server_ca_mode: external-ca
+            freeipa_server_external_ca_allow_csr_phase: true
+            freeipa_server_external_cert_files: []
+
+        - name: Install FreeIPA phase 1 — external-ca CSR run (stops at /root/ipa.csr)
+          ansible.builtin.include_role:
+            name: freeipa_server
+            tasks_from: install
+          vars:
+            freeipa_server_ca_mode: external-ca
+            freeipa_server_external_ca_allow_csr_phase: true
+            freeipa_server_external_cert_files: []
+
+        - name: Fetch the emitted IPA CSR to the control node
+          ansible.builtin.fetch:
+            src: /root/ipa.csr
+            dest: "{{ _ipa_csr_control_path }}"
+            flat: true
+            fail_on_missing: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 1 (cont.) — sign the CSR off the org root CA on the control node
+# ─────────────────────────────────────────────────────────────────────────────
+# hosts: freeipa (NOT localhost) so the documented `--limit <host>` command does not
+# filter this play out — the sign itself is delegated to the control node.
+- name: "FreeIPA signed install — phase 1 (sign the IPA CSR off the org root)"
+  hosts: freeipa
+  gather_facts: false
+  become: false
+  vars:
+    _ca_pki_dir: "{{ certificate_authority_pki_dir | default(playbook_dir + '/../../pki') }}"
+    _ipa_csr_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa.csr"
+  tasks:
+    - name: Phase 1 — sign the fetched CSR off the org root
+      when: (freeipa_signed_install_phase | default('') | int) == 1
+      block:
+        - name: Sign the FreeIPA CA certificate off the root (certificate_authority sign_ipa)
+          ansible.builtin.include_role:
+            name: certificate_authority
+            tasks_from: sign_ipa
+            # delegate_to is invalid directly on include_role; apply: forwards it to
+            # the included sign_ipa tasks so signing runs on the control node even
+            # though this play targets the freeipa host (to survive --limit).
+            apply:
+              delegate_to: localhost
+              run_once: true
+          vars:
+            certificate_authority_ipa_csr_path: "{{ _ipa_csr_control_path }}"
+            certificate_authority_ipa_name: "{{ env | default('ipa') }}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHASE 2 — push the signed cert + chain back, complete install, distribute root
+# ─────────────────────────────────────────────────────────────────────────────
+# A FRESH ansible-playbook process (this is the whole point — see header): the
+# freeipa_server install re-run now resumes external-ca step two and completes.
+- name: "FreeIPA signed install — phase 2 (complete) + trust distribution"
+  hosts: freeipa
+  gather_facts: true
+  # Play-level become for the phase-2 install (tasks_from bypasses the role's
+  # become wrappers). certificate_authority distribute self-manages become per
+  # task internally, so play become is harmless there.
+  become: true
+  vars:
+    _ca_pki_dir: "{{ certificate_authority_pki_dir | default(playbook_dir + '/../../pki') }}"
+    _ipa_cert_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa-ca.crt"
+    _ipa_chain_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-chain.crt"
+    _ipa_cert_host_path: "/root/{{ env | default('ipa') }}-ipa-ca.crt"
+    _ipa_chain_host_path: "/root/{{ env | default('ipa') }}-chain.crt"
+    _ipa_signed_cert_files:
+      - src: "{{ _ipa_cert_control_path }}"
+        dest: "{{ _ipa_cert_host_path }}"
+      - src: "{{ _ipa_chain_control_path }}"
+        dest: "{{ _ipa_chain_host_path }}"
+  tasks:
+    - name: Phase 2 — complete the install and distribute the org root
+      when: (freeipa_signed_install_phase | default('') | int) == 2
+      block:
+        - name: Copy the signed IPA CA cert and root chain back onto the host
+          ansible.builtin.copy:
+            src: "{{ item.src }}"
+            dest: "{{ item.dest }}"
+            owner: root
+            group: root
+            mode: "0644"
+          loop: "{{ _ipa_signed_cert_files }}"
+          loop_control:
+            label: "{{ item.dest }}"
+
+        - name: Install FreeIPA phase 2 — feed the signed cert files (install completes)
+          ansible.builtin.include_role:
+            name: freeipa_server
+            tasks_from: install
+          vars:
+            freeipa_server_ca_mode: external-ca
+            freeipa_server_external_cert_files:
+              - "{{ _ipa_cert_host_path }}"
+              - "{{ _ipa_chain_host_path }}"
+
+        - name: Distribute the org root anchor into the host OS trust store (certificate_authority distribute)
+          ansible.builtin.include_role:
+            name: certificate_authority
+            tasks_from: distribute

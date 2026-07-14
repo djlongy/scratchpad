@@ -113,6 +113,12 @@ argument_specs:
         type: list
         elements: str
         description: Externally-signed cert files for phase 2 of an external-ca install.
+      freeipa_server_external_ca_allow_csr_phase:
+        type: bool
+        description: >-
+          Opt-in escape hatch: when true and external_cert_files is empty and ca_mode
+          is external-ca, the preflight assert is skipped so phase 1 runs and stops
+          after emitting /root/ipa.csr. Default false preserves fail-fast behaviour.
       freeipa_server_trusted_external_cas:
         type: list
         elements: dict

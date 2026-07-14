@@ -109,6 +109,12 @@ freeipa_server_random_serial_numbers: false
 #   phase 2  set this to [signed-ipa-ca.crt, org-root-chain.crt] and RE-RUN.
 # Preflight asserts the files exist on phase 2. Ignored in self-signed / ca-less.
 freeipa_server_external_cert_files: []
+# external_ca_allow_csr_phase — opt-in escape hatch for phase 1 of external-ca.
+# Preflight normally FAILS fast if ca_mode is external-ca and external_cert_files is
+# empty. Set true to allow that combination through deliberately, so phase 1 runs and
+# stops after emitting /root/ipa.csr (e.g. an automated CSR-sign-then-rerun pipeline
+# instead of a human). Default false preserves the fail-fast behaviour untouched.
+freeipa_server_external_ca_allow_csr_phase: false
 # ca-less: provide HTTP/LDAP cert files via upstream vars (see README); not defaulted.
 
 # ── Trusted external CAs (ADDITIVE trust — does NOT change the serving CA) ────
@@ -160,7 +166,7 @@ freeipa_server_no_pkinit: false
 # ── Active Directory trust (cross-forest identity; opt-in, default off) ──────
 # Trust an AD forest so AD users authenticate against IPA resources. Needs setup_adtrust
 # (passes --setup-adtrust), reachable AD DCs, and two-way DNS. Each trust → upstream ipatrust;
-# IPA admin + each AD admin password from Vault. Not exercised in this homelab (no AD).
+# IPA admin + each AD admin password from Vault. Not exercised in this environment (no AD).
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
 #  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }
