@@ -1,0 +1,68 @@
+---
+# roles/certificate_authority/defaults/main.yml
+#
+# File-based internal CA built on community.crypto (no CA daemon, no Vault PKI).
+# The system of record is a plain X.509 PEM tree under `certificate_authority_pki_dir`
+# (repo-root `pki/` by default). Ansible is a replaceable executor — every operation
+# has a bare-`openssl` break-glass equivalent (see the role README).
+#
+# Every value below is GENERIC and SAFE. Estate-specific data (real common names,
+# environment domains, name constraints) lives in inventory group_vars — NEVER here
+# (no environment literals in role code; the role stays portable).
+
+# On-disk PKI tree. Defaults to the repo-root pki/ relative to the playbook.
+# Override with -e certificate_authority_pki_dir=<abs> for a scratch/throwaway run.
+certificate_authority_pki_dir: "{{ playbook_dir }}/../../pki"
+
+# Root CA. `common_name` is the only estate value; `days` is its validity horizon.
+certificate_authority_root:
+  common_name: "Example Root CA"
+  days: 7300
+
+# TLS issuing intermediates (one map per environment). Each is signed DIRECTLY by
+# the root as a pathlen:0, name-constrained CA. Shape:
+#   { name: <stem>, common_name: <CN>, name_constraints: [<dns-suffix>, ...], days: <int> }
+# name_constraints entries are bare DNS suffixes (e.g. ".example.test") — the role
+# prefixes them with "DNS:" for the permitted-subtrees extension.
+certificate_authority_intermediates: []
+
+# Wildcard leaf certificates (one map per environment). Shape:
+#   { name: <stem>, common_name: "*.<domain>", issuer: <intermediate-name>, days: <int>, sans: [<extra>, ...] }
+# `issuer` references an intermediate `name`. `sans` is optional (the common_name is
+# always added as a SAN automatically).
+certificate_authority_wildcards: []
+
+# Re-issue any wildcard leaf whose remaining validity falls inside this window.
+certificate_authority_renew_within_days: 30
+
+# FreeIPA external-ca signing (opt-in, --tags sign_ipa). Control-node path of a CSR
+# fetched from a FreeIPA server, the output stem, and the emitted CA cert lifetime.
+certificate_authority_ipa_csr_path: ""
+certificate_authority_ipa_name: ""
+certificate_authority_ipa_days: 3650
+
+# CRL nextUpdate horizon (root + intermediate CRLs).
+certificate_authority_crl_days: 30
+
+# ── Credential resolution — passphrases are the ONLY secrets ──────
+# Every private key under pki/ is passphrase-encrypted PKCS#8. Resolution is
+# declared-var-FIRST (typically an Ansible-Vault group_var), HashiCorp Vault as an
+# optional fallback, then a fail-fast assert. Leave the passphrase vars set from a
+# vaulted group_var, OR point certificate_authority_vault_secret at a KV path whose
+# fields hold them. Never pass a passphrase on argv/stdout.
+certificate_authority_root_key_passphrase: ""
+certificate_authority_intermediate_key_passphrase: ""
+certificate_authority_wildcard_key_passphrase: ""
+
+# HashiCorp Vault fallback: KV path holding the passphrases (empty = no fallback),
+# and the field name each passphrase is stored under at that path.
+certificate_authority_vault_secret: ""
+certificate_authority_root_key_passphrase_field: "root_key_passphrase"
+certificate_authority_intermediate_key_passphrase_field: "intermediate_key_passphrase"
+certificate_authority_wildcard_key_passphrase_field: "wildcard_key_passphrase"
+
+# Trust-store distribution (--tags distribute) — where the root anchor lands on an
+# EL-family target and how the OS trust store is refreshed. Generic EL defaults.
+certificate_authority_trust_anchor_dir: "/etc/pki/ca-trust/source/anchors"
+certificate_authority_trust_update_command: "update-ca-trust"
+certificate_authority_trust_anchor_name: "internal-root-ca"

@@ -1,0 +1,46 @@
+---
+# roles/certificate_authority/tasks/crl.yml
+# Maintain CRL files for the root and each intermediate (CRLs exist,
+# but NO CDP/OCSP URLs are embedded in issued certs in v1 — no serving endpoint).
+# Empty revocation lists are valid: leaf compromise = reissue. ignore_timestamps
+# keeps re-runs idempotent (changed=0). Control node only.
+
+- name: CRL | Resolve the root + intermediate key passphrases
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _ca_resolve: [root, intermediate]
+
+- name: CRL | Ensure the crl directory exists
+  ansible.builtin.file:
+    path: "{{ certificate_authority_pki_dir }}/crl"
+    state: directory
+    mode: "0755"
+
+- name: CRL | Generate the root CRL
+  community.crypto.x509_crl:
+    path: "{{ certificate_authority_pki_dir }}/crl/root.crl"
+    privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
+    privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
+    issuer:
+      CN: "{{ certificate_authority_root.common_name }}"
+    last_update: "+0s"
+    next_update: "+{{ certificate_authority_crl_days }}d"
+    ignore_timestamps: true
+    revoked_certificates: []
+  no_log: true
+
+- name: CRL | Generate each intermediate CRL
+  community.crypto.x509_crl:
+    path: "{{ certificate_authority_pki_dir }}/crl/{{ item.name }}.crl"
+    privatekey_path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.key"
+    privatekey_passphrase: "{{ _ca_intermediate_key_passphrase }}"
+    issuer:
+      CN: "{{ item.common_name }}"
+    last_update: "+0s"
+    next_update: "+{{ certificate_authority_crl_days }}d"
+    ignore_timestamps: true
+    revoked_certificates: []
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true

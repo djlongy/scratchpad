@@ -1,0 +1,100 @@
+---
+# roles/certificate_authority/tasks/wildcards.yml
+# Per-environment wildcard leaf: key + CSR + intermediate-signed cert. Re-issued
+# when absent OR when remaining validity falls inside certificate_authority_renew_within_days.
+# A freshly issued cert is far outside its window, so a re-run is changed=0.
+# Runs on the control node (directives set on the import in main.yml).
+
+- name: Wildcards | Resolve the intermediate + wildcard key passphrases
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _ca_resolve: [intermediate, wildcard]
+
+- name: Wildcards | Generate each wildcard private key (passphrase-encrypted PKCS#8)
+  community.crypto.openssl_privatekey:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.key"
+    type: RSA
+    size: 2048
+    format: pkcs8
+    cipher: auto
+    passphrase: "{{ _ca_wildcard_key_passphrase }}"
+    mode: "0600"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Wildcards | Build each wildcard CSR (leaf, serverAuth)
+  community.crypto.openssl_csr:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.csr"
+    privatekey_path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.key"
+    privatekey_passphrase: "{{ _ca_wildcard_key_passphrase }}"
+    common_name: "{{ item.common_name }}"
+    subject_alt_name: "{{ ([item.common_name] + (item.sans | default([]))) | map('regex_replace', '^', 'DNS:') | list }}"
+    basic_constraints:
+      - "CA:FALSE"
+    basic_constraints_critical: true
+    key_usage:
+      - digitalSignature
+      - keyEncipherment
+    key_usage_critical: true
+    extended_key_usage:
+      - serverAuth
+    mode: "0644"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+# Read remaining validity of any EXISTING wildcard cert so we only force a re-issue
+# inside the renewal window. Missing/expired reads report valid_at=false → renew.
+- name: Wildcards | Inspect existing wildcard certificates (renewal window)
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.crt"
+    valid_at:
+      renew_horizon: "+{{ certificate_authority_renew_within_days }}d"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_wc_existing
+  failed_when: false
+
+- name: Wildcards | Issue/renew each wildcard leaf (intermediate-signed, ownca)
+  community.crypto.x509_certificate:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.crt"
+    csr_path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.csr"
+    provider: ownca
+    ownca_path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.issuer }}.crt"
+    ownca_privatekey_path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.issuer }}.key"
+    ownca_privatekey_passphrase: "{{ _ca_intermediate_key_passphrase }}"
+    ownca_not_after: "+{{ item.days | default(397) }}d"
+    force: "{{ not (_ca_wc_existing.results[idx].valid_at.renew_horizon | default(false)) }}"
+    mode: "0644"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: idx
+  no_log: true
+
+- name: Wildcards | Read each issued wildcard (serial, not_before, not_after)
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.crt"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_wc_info
+
+# Stable line (cert not_before as issuance date) → lineinfile de-dupes; a renewal has
+# a fresh not_before/serial and appends a new line, an unchanged re-run appends none.
+- name: Wildcards | Append each issuance to pki/issued.log
+  ansible.builtin.lineinfile:
+    path: "{{ certificate_authority_pki_dir }}/issued.log"
+    create: true
+    mode: "0644"
+    line: >-
+      {{ _ca_wc_info.results[idx].not_before }}|{{ item.issuer }}|{{ item.common_name
+      }}|{{ _ca_wc_info.results[idx].serial_number }}|{{ _ca_wc_info.results[idx].not_after }}
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: idx

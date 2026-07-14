@@ -1,0 +1,74 @@
+---
+# Input contract — every public certificate_authority_* variable. All are optional
+# at the spec level; the role fails fast with actionable messages when a phase's
+# genuinely-required inputs (a passphrase source, an IPA CSR path) are missing.
+# Item SHAPES + worked examples live in defaults/main.yml. Estate values (real
+# common names, domains, name constraints) belong in inventory group_vars, never here.
+argument_specs:
+  main:
+    short_description: File-based internal CA (root, intermediates, wildcards, FreeIPA CSR signing, CRLs, trust distribution).
+    options:
+      certificate_authority_pki_dir:
+        type: str
+        description: On-disk PKI tree root. Defaults to the repo-root pki/ relative to the playbook. Override with an absolute path for a scratch/throwaway run.
+      certificate_authority_root:
+        type: dict
+        description: "Root CA definition: { common_name, days }. common_name is estate data; days is the validity horizon (~20 yr)."
+      certificate_authority_intermediates:
+        type: list
+        elements: dict
+        description: >-
+          TLS issuing intermediates, one per environment. Shape:
+          { name, common_name, name_constraints: [<dns-suffix>...], days }. Each is a
+          pathlen:0 name-constrained CA signed directly by the root.
+      certificate_authority_wildcards:
+        type: list
+        elements: dict
+        description: "Wildcard leaf certs, one per environment. Shape: { name, common_name, issuer (an intermediate name), days, sans: [] (optional) }."
+      certificate_authority_renew_within_days:
+        type: int
+        description: Re-issue any wildcard leaf whose remaining validity falls inside this window (days).
+      certificate_authority_ipa_csr_path:
+        type: str
+        description: Control-node path of a FreeIPA external-ca CSR to sign (--tags sign_ipa).
+      certificate_authority_ipa_name:
+        type: str
+        description: Output stem for the signed IPA CA cert (pki/ipa/<name>-ipa-ca.crt + <name>-chain.crt).
+      certificate_authority_ipa_days:
+        type: int
+        description: Validity horizon (days) for the signed FreeIPA CA certificate (~10 yr).
+      certificate_authority_crl_days:
+        type: int
+        description: CRL nextUpdate horizon (days) for the root and intermediate CRLs.
+      certificate_authority_root_key_passphrase:
+        type: str
+        description: >-
+          Root private-key passphrase (declared-var-first). Set from an
+          Ansible-Vault group_var, or leave empty to use the HashiCorp Vault fallback.
+      certificate_authority_intermediate_key_passphrase:
+        type: str
+        description: Intermediate private-key passphrase (declared-var-first).
+      certificate_authority_wildcard_key_passphrase:
+        type: str
+        description: Wildcard private-key passphrase (declared-var-first).
+      certificate_authority_vault_secret:
+        type: str
+        description: HashiCorp Vault KV path holding the passphrases (empty = no fallback; the declared vars must then be set).
+      certificate_authority_root_key_passphrase_field:
+        type: str
+        description: Field name of the root passphrase at certificate_authority_vault_secret.
+      certificate_authority_intermediate_key_passphrase_field:
+        type: str
+        description: Field name of the intermediate passphrase at certificate_authority_vault_secret.
+      certificate_authority_wildcard_key_passphrase_field:
+        type: str
+        description: Field name of the wildcard passphrase at certificate_authority_vault_secret.
+      certificate_authority_trust_anchor_dir:
+        type: str
+        description: Target-host directory the root anchor is dropped into on distribute (EL default /etc/pki/ca-trust/source/anchors).
+      certificate_authority_trust_update_command:
+        type: str
+        description: Command run on the target host to refresh the OS trust store after distribute (EL default update-ca-trust).
+      certificate_authority_trust_anchor_name:
+        type: str
+        description: Basename (without extension) of the installed root anchor file in the target trust store.

@@ -1,0 +1,32 @@
+---
+galaxy_info:
+  role_name: certificate_authority
+  author: example
+  description: >-
+    File-based internal Certificate Authority built on community.crypto (no CA
+    daemon, no Vault PKI). Generates a self-signed root, pathlen:0 name-constrained
+    TLS issuing intermediates, wildcard leaves, signs FreeIPA external-ca CSRs off
+    the root, maintains CRLs, and distributes the root anchor to a host trust store.
+    System of record is a plain PEM tree under pki/; every operation has a bare
+    openssl break-glass equivalent.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+    - name: Fedora
+      versions: [all]
+  galaxy_tags:
+    - pki
+    - certificate
+    - ca
+    - openssl
+    - tls
+
+# Collections this role needs installed (roles cannot hard-depend on collections —
+# declare them in your requirements.yml):
+#   community.crypto        — all openssl_*/x509_* generation + signing (always)
+#   community.hashi_vault   — ONLY if you use the Vault passphrase fallback
+# freeipa.ansible_freeipa is NOT used by this role directly (a signed-install
+# playbook composes it at the playbook level). No role dependencies (no nested roles).
+dependencies: []

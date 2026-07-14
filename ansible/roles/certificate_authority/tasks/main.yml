@@ -1,0 +1,61 @@
+---
+# roles/certificate_authority/tasks/main.yml
+#
+# File-based internal CA (community.crypto only). Composition is FLAT: this file
+# does nothing but import the phase task files — no include_role/import_role
+# anywhere in the role (playbook-level composition only), internal decomposition
+# via import_tasks. See the README's task-file table.
+#
+# Phase order (a no-tag run generates the whole hierarchy on the control node):
+#   root         → self-signed root key + cert (generate-if-absent)
+#   intermediate → per-env pathlen:0, name-constrained TLS issuing CA (root-signed)
+#   wildcard     → per-env wildcard leaf (issue/renew inside its window)
+#   crl          → root + intermediate CRL files
+# Opt-in (`never`, only with explicit --tags):
+#   sign_ipa     → sign a fetched FreeIPA CSR as a CA cert off the ROOT
+#   distribute   → push the root anchor into a target host's OS trust store
+#
+# Generation/signing phases run delegate_to: localhost, become: false,
+# run_once: true so the same role composes into a localhost play AND a remote-host
+# play (distribution) without change. distribute runs ON the target host and
+# self-escalates become: true per task. Each signing phase resolves its own
+# passphrases via include of resolve_credentials.yml.
+
+- name: Generate the root CA (self-signed, generate-if-absent)
+  ansible.builtin.import_tasks: root.yml
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [root]
+
+- name: Generate the TLS issuing intermediates (root-signed, pathlen:0, name-constrained)
+  ansible.builtin.import_tasks: intermediates.yml
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [intermediate]
+
+- name: Issue/renew the wildcard leaf certificates
+  ansible.builtin.import_tasks: wildcards.yml
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [wildcard]
+
+- name: Sign a fetched FreeIPA CSR as a CA cert off the root (opt-in)
+  ansible.builtin.import_tasks: sign_ipa.yml
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [never, sign_ipa]
+
+- name: Maintain CRL files for the root and intermediates
+  ansible.builtin.import_tasks: crl.yml
+  delegate_to: localhost
+  become: false
+  run_once: true
+  tags: [crl]
+
+- name: Distribute the root anchor into the target host trust store (opt-in)
+  ansible.builtin.import_tasks: distribute.yml
+  tags: [never, distribute]

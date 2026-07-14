@@ -1,0 +1,9 @@
+---
+# roles/certificate_authority/handlers/main.yml
+# Refresh the target host's OS trust store after a new root anchor is installed
+# (distribute phase). Self-escalates become: true like the task that notifies it.
+
+- name: Refresh the OS trust store
+  ansible.builtin.command: "{{ certificate_authority_trust_update_command }}"
+  become: true
+  changed_when: true

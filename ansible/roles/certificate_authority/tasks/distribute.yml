@@ -1,0 +1,34 @@
+---
+# roles/certificate_authority/tasks/distribute.yml
+# Push the root CA anchor into a target host's OS trust store. Unlike the generation
+# phases this runs ON the target host (NOT delegated) and self-escalates become: true
+# per task (freeipa_server-style least privilege). EL-family trust store: drop the
+# root PEM into the anchors dir + run update-ca-trust. `src` is read from the control
+# node's pki tree. Opt-in (--tags distribute).
+
+- name: Distribute | Assert the root certificate exists on the control node
+  ansible.builtin.stat:
+    path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: _ca_root_crt_stat
+
+- name: Distribute | Fail early if the root certificate has not been generated
+  ansible.builtin.assert:
+    that:
+      - _ca_root_crt_stat.stat.exists
+    fail_msg: >-
+      No root certificate at {{ certificate_authority_pki_dir }}/root/root.crt on the
+      control node. Run the CA playbook (--tags root) first.
+    quiet: true
+
+- name: Distribute | Install the root CA anchor into the OS trust store
+  ansible.builtin.copy:
+    src: "{{ certificate_authority_pki_dir }}/root/root.crt"
+    dest: "{{ certificate_authority_trust_anchor_dir }}/{{ certificate_authority_trust_anchor_name }}.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Refresh the OS trust store

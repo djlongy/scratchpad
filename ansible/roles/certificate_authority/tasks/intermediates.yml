@@ -1,0 +1,86 @@
+---
+# roles/certificate_authority/tasks/intermediates.yml
+# Per-environment TLS issuing CA: key + CSR + root-signed cert. Each intermediate is
+# a pathlen:0, name-constrained CA signed DIRECTLY by the root. Idempotent.
+# Runs on the control node (directives set on the import in main.yml).
+
+- name: Intermediates | Resolve the root + intermediate key passphrases
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _ca_resolve: [root, intermediate]
+
+- name: Intermediates | Generate each intermediate private key (passphrase-encrypted PKCS#8)
+  community.crypto.openssl_privatekey:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.key"
+    type: RSA
+    size: 4096
+    format: pkcs8
+    cipher: auto
+    passphrase: "{{ _ca_intermediate_key_passphrase }}"
+    mode: "0600"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Intermediates | Build each intermediate CSR (CA:TRUE, pathlen:0, name-constrained)
+  community.crypto.openssl_csr:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.csr"
+    privatekey_path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.key"
+    privatekey_passphrase: "{{ _ca_intermediate_key_passphrase }}"
+    common_name: "{{ item.common_name }}"
+    use_common_name_for_san: false
+    basic_constraints:
+      - "CA:TRUE"
+      - "pathlen:0"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+    name_constraints_permitted: "{{ item.name_constraints | default([]) | map('regex_replace', '^', 'DNS:') | list }}"
+    name_constraints_critical: "{{ (item.name_constraints | default([]) | length) > 0 }}"
+    mode: "0644"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Intermediates | Sign each intermediate with the root (ownca)
+  community.crypto.x509_certificate:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.crt"
+    csr_path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.csr"
+    provider: ownca
+    ownca_path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+    ownca_privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
+    ownca_privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
+    ownca_not_after: "+{{ item.days | default(1826) }}d"
+    mode: "0644"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Intermediates | Read each issued intermediate (serial, not_before, not_after)
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.crt"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_int_info
+
+# Stable line (cert not_before as issuance date) → lineinfile de-dupes; one line per
+# intermediate, changed=0 on re-run.
+- name: Intermediates | Append each issuance to pki/issued.log
+  ansible.builtin.lineinfile:
+    path: "{{ certificate_authority_pki_dir }}/issued.log"
+    create: true
+    mode: "0644"
+    line: >-
+      {{ _ca_int_info.results[idx].not_before }}|{{ certificate_authority_root.common_name
+      }}|{{ item.common_name }}|{{ _ca_int_info.results[idx].serial_number
+      }}|{{ _ca_int_info.results[idx].not_after }}
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: idx
