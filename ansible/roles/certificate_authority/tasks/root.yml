@@ -3,11 +3,10 @@
 # Generate-if-absent root CA: passphrase-encrypted PKCS#8 private key + self-signed
 # CA certificate. Idempotent — community.crypto leaves matching material untouched.
 # Runs on the control node (delegate_to/become/run_once set on the import in main.yml).
-
-- name: Root | Resolve the root key passphrase
-  ansible.builtin.include_tasks: resolve_credentials.yml
-  vars:
-    _ca_resolve: [root]
+#
+# BRING-YOUR-OWN root: when certificate_authority_root_key_content is set, generation
+# is SKIPPED entirely — the role signs with that material in memory (see sign_ipa.yml).
+# Only the public root cert is materialised so file-mode chain/distribute still work.
 
 - name: Root | Ensure the PKI directory tree exists
   ansible.builtin.file:
@@ -21,59 +20,90 @@
     - ipa
     - crl
 
-- name: Root | Generate the root private key (passphrase-encrypted PKCS#8)
-  community.crypto.openssl_privatekey:
-    path: "{{ certificate_authority_pki_dir }}/root/root.key"
-    type: RSA
-    size: 4096
-    format: pkcs8
-    cipher: auto
-    passphrase: "{{ _ca_root_key_passphrase }}"
-    mode: "0600"
-  no_log: true
+# ── Bring-your-own root (external key content): skip generation ───────────────
+- name: Root | External key mode — materialise the public root cert + guard scope
+  when: certificate_authority_root_key_content | default('') | length > 0
+  block:
+    - name: Root | Guard — external root key mode covers root-signing only
+      ansible.builtin.assert:
+        that:
+          - (certificate_authority_intermediates | default([]) | length == 0)
+          - (certificate_authority_wildcards | default([]) | length == 0)
+        fail_msg: >-
+          certificate_authority_root_key_content (external in-memory root) currently
+          supports signing off the root (sign_ipa / distribute). Declaring
+          intermediates or wildcards needs file mode (unset root_key_content), or the
+          same *_content mechanism extended to those tiers.
+        quiet: true
 
-- name: Root | Build the root certificate signing request (CA:TRUE, keyCertSign, cRLSign)
-  community.crypto.openssl_csr:
-    path: "{{ certificate_authority_pki_dir }}/root/root.csr"
-    privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
-    privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
-    common_name: "{{ certificate_authority_root.common_name }}"
-    use_common_name_for_san: false
-    basic_constraints:
-      - "CA:TRUE"
-    basic_constraints_critical: true
-    key_usage:
-      - keyCertSign
-      - cRLSign
-    key_usage_critical: true
-    mode: "0644"
-  no_log: true
+    - name: Root | Materialise the provided public root certificate (no private key on disk)
+      ansible.builtin.copy:
+        dest: "{{ certificate_authority_pki_dir }}/root/root.crt"
+        content: "{{ certificate_authority_root_cert_content }}"
+        mode: "0644"
 
-- name: Root | Self-sign the root certificate
-  community.crypto.x509_certificate:
-    path: "{{ certificate_authority_pki_dir }}/root/root.crt"
-    privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
-    privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
-    csr_path: "{{ certificate_authority_pki_dir }}/root/root.csr"
-    provider: selfsigned
-    selfsigned_not_after: "+{{ certificate_authority_root.days }}d"
-    mode: "0644"
-  no_log: true
+# ── Generate the root (file mode) — only when no external key is provided ──────
+- name: Root | Generate + self-sign the root CA (file mode)
+  when: not (certificate_authority_root_key_content | default('') | length > 0)
+  block:
+    - name: Root | Resolve the root key passphrase
+      ansible.builtin.include_tasks: resolve_credentials.yml
+      vars:
+        _ca_resolve: [root]
 
-- name: Root | Read the issued root certificate (serial, not_after)
-  community.crypto.x509_certificate_info:
-    path: "{{ certificate_authority_pki_dir }}/root/root.crt"
-  register: _ca_root_info
+    - name: Root | Generate the root private key (passphrase-encrypted PKCS#8)
+      community.crypto.openssl_privatekey:
+        path: "{{ certificate_authority_pki_dir }}/root/root.key"
+        type: RSA
+        size: 4096
+        format: pkcs8
+        cipher: auto
+        passphrase: "{{ _ca_root_key_passphrase }}"
+        mode: "0600"
+      no_log: true
 
-# The logged line is derived entirely from the cert (not_before as the issuance
-# date), so it is stable across runs — lineinfile de-dupes on the exact line, giving
-# one line per issued cert and changed=0 on a re-run (no `when: is changed` needed).
-- name: Root | Append the issuance to pki/issued.log
-  ansible.builtin.lineinfile:
-    path: "{{ certificate_authority_pki_dir }}/issued.log"
-    create: true
-    mode: "0644"
-    line: >-
-      {{ _ca_root_info.not_before }}|{{ certificate_authority_root.common_name }}|{{
-      certificate_authority_root.common_name }}|{{ _ca_root_info.serial_number }}|{{
-      _ca_root_info.not_after }}
+    - name: Root | Build the root certificate signing request (CA:TRUE, keyCertSign, cRLSign)
+      community.crypto.openssl_csr:
+        path: "{{ certificate_authority_pki_dir }}/root/root.csr"
+        privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
+        privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
+        common_name: "{{ certificate_authority_root.common_name }}"
+        use_common_name_for_san: false
+        basic_constraints:
+          - "CA:TRUE"
+        basic_constraints_critical: true
+        key_usage:
+          - keyCertSign
+          - cRLSign
+        key_usage_critical: true
+        mode: "0644"
+      no_log: true
+
+    - name: Root | Self-sign the root certificate
+      community.crypto.x509_certificate:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+        privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
+        privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
+        csr_path: "{{ certificate_authority_pki_dir }}/root/root.csr"
+        provider: selfsigned
+        selfsigned_not_after: "+{{ certificate_authority_root.days }}d"
+        mode: "0644"
+      no_log: true
+
+    - name: Root | Read the issued root certificate (serial, not_after)
+      community.crypto.x509_certificate_info:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+      register: _ca_root_info
+
+    # The logged line is derived entirely from the cert (not_before as the issuance
+    # date), so it is stable across runs — lineinfile de-dupes on the exact line,
+    # giving one line per issued cert and changed=0 on a re-run.
+    - name: Root | Append the issuance to pki/issued.log
+      ansible.builtin.lineinfile:
+        path: "{{ certificate_authority_pki_dir }}/issued.log"
+        create: true
+        mode: "0644"
+        line: >-
+          {{ _ca_root_info.not_before }}|{{ certificate_authority_root.common_name }}|{{
+          certificate_authority_root.common_name }}|{{ _ca_root_info.serial_number }}|{{
+          _ca_root_info.not_after }}

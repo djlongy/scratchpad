@@ -46,6 +46,36 @@ else a HashiCorp Vault fallback (`certificate_authority_vault_secret`), else a
 fail-fast assert. Every task touching a passphrase or key content is `no_log: true`.
 This is encrypted-at-rest, not air-gapped: anyone who can run the playbook can sign.
 
+## Bring-your-own CA key (in-memory)
+
+For the "key lives in a secret store, used at runtime in memory, nothing persisted to
+disk" model, provide the CA key + cert as PEM **content** instead of letting the role
+generate a `pki/` tree:
+
+```yaml
+certificate_authority_root_key_content:  "{{ vault_ca_root_key }}"   # from a vaulted var
+certificate_authority_root_cert_content: "{{ vault_ca_root_cert }}"
+# certificate_authority_root_key_passphrase: only if YOUR key is itself encrypted
+```
+
+When `_root_key_content` is set, root generation is **skipped** and `sign_ipa` signs
+off that key **in memory** (`ownca_privatekey_content`) — the private key is never
+written to disk; only the public signed cert + chain are. The key may be
+**passwordless**, so the secret store (e.g. Ansible Vault) is the single at-rest layer
+with no redundant double encryption. Generate + store it yourself, then wire the vars:
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout root.key -out root.crt -days 7300 -nodes \
+  -subj "/CN=Org Root CA"
+# store root.key + root.crt in your secret store; wire the two _content vars from them
+ansible-playbook ca.yml --tags sign_ipa \
+  -e certificate_authority_ipa_csr_path=/path/to/ipa.csr \
+  -e certificate_authority_ipa_name=zonea
+```
+
+This mode currently covers signing off the root (`sign_ipa`) + `distribute`; declaring
+intermediates/wildcards uses file mode (a fail-fast guard enforces this).
+
 ## Variables
 
 Full contract in `meta/argument_specs.yml`; defaults and item shapes in

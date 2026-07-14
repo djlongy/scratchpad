@@ -6,10 +6,21 @@
 # extensions, so the emitted cert is a CA cert. Emits the cert + a chain file
 # (signed IPA CA cert + root.crt). Opt-in (--tags sign_ipa). Control node only.
 
-- name: Sign IPA | Resolve the root key passphrase
+- name: Sign IPA | Detect the signer source (external key content vs pki/ files)
+  ansible.builtin.set_fact:
+    _ca_ipa_from_content: "{{ certificate_authority_root_key_content | default('') | length > 0 }}"
+
+- name: Sign IPA | Resolve the root key passphrase (pki/ file mode)
   ansible.builtin.include_tasks: resolve_credentials.yml
   vars:
     _ca_resolve: [root]
+  when: not _ca_ipa_from_content
+
+- name: Sign IPA | Use the supplied (optional) key passphrase (external content mode)
+  ansible.builtin.set_fact:
+    _ca_root_key_passphrase: "{{ certificate_authority_root_key_passphrase | default('') }}"
+  when: _ca_ipa_from_content
+  no_log: true
 
 - name: Sign IPA | Assert a CSR path and output name are configured
   ansible.builtin.assert:
@@ -44,14 +55,20 @@
       leaf CSR here would silently produce a non-CA cert IPA rejects.
     quiet: true
 
-- name: Sign IPA | Sign the FreeIPA CA certificate off the root (ownca)
+# In external content mode the root key/cert are passed as CONTENT (from a vaulted
+# var) so the private key stays in memory; in file mode the pki/ paths are used.
+# ownca_path/ownca_content (and the privatekey pair) are mutually exclusive — the
+# unused side is `omit`-ted.
+- name: Sign IPA | Sign the FreeIPA CA certificate off the root (ownca; in-memory in content mode)
   community.crypto.x509_certificate:
     path: "{{ certificate_authority_pki_dir }}/ipa/{{ certificate_authority_ipa_name }}-ipa-ca.crt"
     csr_path: "{{ certificate_authority_ipa_csr_path }}"
     provider: ownca
-    ownca_path: "{{ certificate_authority_pki_dir }}/root/root.crt"
-    ownca_privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
-    ownca_privatekey_passphrase: "{{ _ca_root_key_passphrase }}"
+    ownca_path: "{{ omit if _ca_ipa_from_content else certificate_authority_pki_dir + '/root/root.crt' }}"
+    ownca_content: "{{ certificate_authority_root_cert_content if _ca_ipa_from_content else omit }}"
+    ownca_privatekey_path: "{{ omit if _ca_ipa_from_content else certificate_authority_pki_dir + '/root/root.key' }}"
+    ownca_privatekey_content: "{{ certificate_authority_root_key_content if _ca_ipa_from_content else omit }}"
+    ownca_privatekey_passphrase: "{{ _ca_root_key_passphrase | default('') or omit }}"
     ownca_not_after: "+{{ certificate_authority_ipa_days }}d"
     mode: "0644"
   no_log: true
@@ -61,19 +78,21 @@
     path: "{{ certificate_authority_pki_dir }}/ipa/{{ certificate_authority_ipa_name }}-ipa-ca.crt"
   register: _ca_ipa_info
 
-- name: Sign IPA | Slurp the signed IPA CA cert and the root cert (build the chain)
+- name: Sign IPA | Read the signed IPA CA cert PEM (for the chain)
   ansible.builtin.slurp:
-    src: "{{ item }}"
-  loop:
-    - "{{ certificate_authority_pki_dir }}/ipa/{{ certificate_authority_ipa_name }}-ipa-ca.crt"
-    - "{{ certificate_authority_pki_dir }}/root/root.crt"
-  register: _ca_ipa_chain_parts
+    src: "{{ certificate_authority_pki_dir }}/ipa/{{ certificate_authority_ipa_name }}-ipa-ca.crt"
+  register: _ca_ipa_cert_slurp
 
+# Chain = signed IPA CA cert + root cert. The root cert PEM comes from the supplied
+# content var (external mode) or the on-disk root.crt (file mode) — no private key.
 - name: Sign IPA | Write the chain file (signed IPA CA cert + root)
   ansible.builtin.copy:
     dest: "{{ certificate_authority_pki_dir }}/ipa/{{ certificate_authority_ipa_name }}-chain.crt"
     content: >-
-      {{ (_ca_ipa_chain_parts.results | map(attribute='content') | map('b64decode') | map('trim') | join('\n')) + '\n' }}
+      {{ (_ca_ipa_cert_slurp.content | b64decode | trim) + '\n'
+         + ((certificate_authority_root_cert_content
+             if _ca_ipa_from_content
+             else lookup('file', certificate_authority_pki_dir + '/root/root.crt')) | trim) + '\n' }}
     mode: "0644"
 
 - name: Sign IPA | Append the issuance to pki/issued.log

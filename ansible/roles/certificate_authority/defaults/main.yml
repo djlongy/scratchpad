@@ -61,6 +61,16 @@ certificate_authority_root_key_passphrase_field: "root_key_passphrase"
 certificate_authority_intermediate_key_passphrase_field: "intermediate_key_passphrase"
 certificate_authority_wildcard_key_passphrase_field: "wildcard_key_passphrase"
 
+# ── Bring-your-own CA key from an external store (in-memory signer) ──────────
+# Provide the CA (root) private key + certificate as PEM CONTENT — typically wired
+# from an Ansible-Vault / secret-store variable. When _root_key_content is set the
+# role SKIPS root generation and signs with this material IN MEMORY (the private key
+# is never written to disk); only public certs are written. The root passphrase above
+# is used only if the provided key is itself encrypted (leave empty for a passwordless
+# key — the external store, e.g. Ansible Vault, is then the single at-rest layer).
+certificate_authority_root_key_content: ""
+certificate_authority_root_cert_content: ""
+
 # Trust-store distribution (--tags distribute) — where the root anchor lands on an
 # EL-family target and how the OS trust store is refreshed. Generic EL defaults.
 certificate_authority_trust_anchor_dir: "/etc/pki/ca-trust/source/anchors"

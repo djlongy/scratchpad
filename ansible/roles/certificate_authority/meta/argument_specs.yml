@@ -51,6 +51,17 @@ argument_specs:
       certificate_authority_wildcard_key_passphrase:
         type: str
         description: Wildcard private-key passphrase (declared-var-first).
+      certificate_authority_root_key_content:
+        type: str
+        description: >-
+          CA (root) private key as PEM CONTENT — typically wired from a vaulted
+          variable. When set, root generation is skipped and signing uses this key
+          IN MEMORY (never written to disk). Passphrase optional (only if encrypted).
+      certificate_authority_root_cert_content:
+        type: str
+        description: >-
+          CA (root) certificate as PEM CONTENT (public), paired with
+          certificate_authority_root_key_content for in-memory signing.
       certificate_authority_vault_secret:
         type: str
         description: HashiCorp Vault KV path holding the passphrases (empty = no fallback; the declared vars must then be set).
