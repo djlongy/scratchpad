@@ -8,3 +8,25 @@ domain: "example.com"
 # environment. For example:
 #   export VAULT_ADDR=https://vault.example.com:8200
 #   export VAULT_TOKEN=...        # or a valid ~/.vault-token
+
+# ── Primary NIC, derived per-host from facts (NOT a hardcoded NIC name) ──
+# The NIC-naming scheme varies across distros on a hypervisor (eth0 / ens192 /
+# ens160 / enp0s3…), so never hardcode `interface: ens192` in firewalld
+# bindings — point them at `{{ primary_interface }}` and let each host resolve
+# its own name.
+#
+# Resolution order (each host, at loop time — lazy Jinja, not set_fact):
+#   1. the NIC carrying THIS host's management IP (ansible_host) — correct even
+#      on multi-homed / no-default-route boxes (storage, cluster nodes);
+#   2. else the NIC owning the default route;
+#   3. else `omit` — the firewalld bind is skipped rather than failing on a
+#      host that gathered no facts.
+# A host that genuinely needs a different NIC can override in its host_vars.
+# Requires gather_facts (the default) — do not run firewalld plays with facts off.
+primary_interface: >-
+  {{ (ansible_facts.interfaces
+      | map('extract', ansible_facts)
+      | selectattr('ipv4.address', 'defined')
+      | selectattr('ipv4.address', 'eq', ansible_host)
+      | map(attribute='device') | first)
+      | default(ansible_default_ipv4.interface | default(omit), true) }}

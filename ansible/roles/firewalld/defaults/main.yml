@@ -94,6 +94,10 @@ firewalld_source_zone_bindings: []
 # have a real reason: dedicated storage NIC, PCI passthrough, etc.).
 # Schema:
 #   - { zone: storage, interface: ens224 }
+# For the PRIMARY NIC, do NOT hardcode the name (it varies by distro:
+# eth0 / ens192 / ens160…). Use the fleet-wide derived var instead:
+#   - { zone: internal, interface: "{{ primary_interface }}" }
+# (primary_interface is defined in inventories/<env>/group_vars/all.yml.)
 firewalld_interface_zone_bindings: []
 
 # ── Back-compat: legacy firewall_rules variable ──────────────────────────────

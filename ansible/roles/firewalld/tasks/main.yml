@@ -13,6 +13,17 @@
   when: firewalld_enabled
   block:
 
+    # Self-heal network facts so `{{ primary_interface }}` (and any other
+    # ansible_default_ipv4 / interface fact this role reads) resolves even under
+    # a `gather_facts: false` play or a tag-isolated `--tags firewalld` run.
+    # No-op on a normal facts-on run (the `when` guard). See the CoP idiom:
+    # "Self-Heal Missing Facts with One always-Tagged setup Task".
+    - name: Ensure network facts are present (gather_facts:false / tag-isolated runs)
+      ansible.builtin.setup:
+        gather_subset: ['!all', '!min', 'network']
+      when: ansible_default_ipv4 is not defined
+      tags: [always]
+
     - name: Install firewalld and start the service
       ansible.builtin.include_tasks: install.yml
       tags: [install, firewalld]
