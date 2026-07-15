@@ -8,6 +8,7 @@
 # baseline_allow_reboot is true.
 
 - name: Crypto | Ensure crypto-policies tooling is present
+  become: true  # root: package install
   ansible.builtin.dnf:
     name:
       - crypto-policies
@@ -16,6 +17,7 @@
 
 # ── System-wide crypto policy (skipped under FIPS — FIPS sets its own) ────────
 - name: Crypto | Read the current crypto policy
+  become: true  # root: queries the system crypto-policy state
   ansible.builtin.command: update-crypto-policies --show
   register: _baseline_crypto_show
   changed_when: false
@@ -24,6 +26,7 @@
     - not (fips_enabled | bool)
 
 - name: Crypto | Set the system-wide crypto policy
+  become: true  # root: sets the system-wide crypto-policy
   ansible.builtin.command: "update-crypto-policies --set {{ baseline_crypto_policy }}"
   register: _baseline_crypto_set
   changed_when: _baseline_crypto_set.rc == 0
@@ -34,12 +37,14 @@
 
 # ── FIPS mode ────────────────────────────────────────────────────────────────
 - name: Crypto | Check current FIPS mode
+  become: true  # root: queries FIPS mode state
   ansible.builtin.command: fips-mode-setup --check
   register: _baseline_fips_check
   changed_when: false
   failed_when: false
 
 - name: Crypto | Enable FIPS mode
+  become: true  # root: enables kernel FIPS mode
   ansible.builtin.command: fips-mode-setup --enable
   register: _baseline_fips_enable
   changed_when: _baseline_fips_enable.rc == 0
@@ -49,6 +54,7 @@
   notify: Reboot to apply baseline changes
 
 - name: Crypto | Disable FIPS mode
+  become: true  # root: disables kernel FIPS mode
   ansible.builtin.command: fips-mode-setup --disable
   register: _baseline_fips_disable
   changed_when: _baseline_fips_disable.rc == 0
@@ -64,12 +70,14 @@
 # makes the phase safe under --tags cis / a re-run. Idempotent: only sets when
 # the policy is not already FIPS.
 - name: Crypto | Read the current crypto policy (FIPS reconcile)
+  become: true  # root: queries the system crypto-policy state
   ansible.builtin.command: update-crypto-policies --show
   register: _baseline_crypto_now
   changed_when: false
   when: fips_enabled | bool
 
 - name: Crypto | Re-assert the FIPS crypto policy (reconcile over CIS/OpenSCAP)
+  become: true  # root: sets the system-wide crypto-policy
   ansible.builtin.command: update-crypto-policies --set FIPS
   register: _baseline_fips_reassert
   changed_when: _baseline_fips_reassert.rc == 0

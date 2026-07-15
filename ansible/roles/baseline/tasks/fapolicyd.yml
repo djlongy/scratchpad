@@ -7,11 +7,13 @@
 # in permissive (audit) mode.
 
 - name: fapolicyd | Install
+  become: true  # root: package install
   ansible.builtin.package:
     name: fapolicyd
     state: present
 
 - name: fapolicyd | Deploy fapolicyd.conf
+  become: true  # root: writes /etc/fapolicyd/fapolicyd.conf
   ansible.builtin.template:
     src: fapolicyd.conf.j2
     dest: /etc/fapolicyd/fapolicyd.conf
@@ -21,6 +23,7 @@
   notify: Restart fapolicyd
 
 - name: fapolicyd | Deploy custom allow rules
+  become: true  # root: writes /etc/fapolicyd/rules.d/
   ansible.builtin.template:
     src: fapolicyd-custom.rules.j2
     dest: "/etc/fapolicyd/rules.d/{{ baseline_fapolicyd_rules_priority }}-baseline-custom.rules"
@@ -34,6 +37,7 @@
   # Stronger than an allow-rule — fapolicyd records each file's hash, so trusted
   # binaries (VS Code, downloaded agents) execute even under enforcing. Adding a
   # directory trusts its files recursively.
+  become: true  # root: updates the fapolicyd trust database
   ansible.builtin.command: "fapolicyd-cli --file add {{ item }}"
   loop: "{{ baseline_fapolicyd_trust_paths }}"
   register: _baseline_fapolicyd_trust
@@ -43,6 +47,7 @@
   notify: Restart fapolicyd
 
 - name: fapolicyd | Enable and start
+  become: true  # root: manages the fapolicyd service
   ansible.builtin.service:
     name: fapolicyd
     state: started

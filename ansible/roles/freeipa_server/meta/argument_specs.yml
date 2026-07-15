@@ -19,10 +19,6 @@ argument_specs:
       freeipa_server_fqdn:
         type: str
         description: This host's FQDN. Defaults to inventory_hostname + domain (never ansible_fqdn).
-      freeipa_server_deployment:
-        type: str
-        choices: [package, container]
-        description: Substrate. package (default) = host RPMs; container = IPA runs in a container (config phases must run INSIDE it via the docker connection).
       freeipa_server_state:
         type: str
         choices: [present, absent]
@@ -116,9 +112,9 @@ argument_specs:
       freeipa_server_external_ca_allow_csr_phase:
         type: bool
         description: >-
-          Opt-in escape hatch: when true and external_cert_files is empty and ca_mode
-          is external-ca, the preflight assert is skipped so phase 1 runs and stops
-          after emitting /root/ipa.csr. Default false preserves fail-fast behaviour.
+          Opt-in to skip the preflight assert and let external-ca phase 1 run
+          (stops after emitting /root/ipa.csr) with external_cert_files still
+          empty. Default false keeps the fail-fast assert.
       freeipa_server_trusted_external_cas:
         type: list
         elements: dict

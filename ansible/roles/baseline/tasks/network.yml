@@ -17,6 +17,7 @@
          | default(connection_name | default(ansible_default_ipv4.interface, true), true) }}
 
 - name: Network | Configure IPv4 address, gateway, DNS via NetworkManager
+  become: true  # root: nmcli reconfigures NetworkManager connections
   community.general.nmcli:
     type: ethernet
     conn_name: "{{ _baseline_net_iface }}"
@@ -29,6 +30,7 @@
   register: _baseline_nmcli
 
 - name: Network | Reload NetworkManager connections
+  become: true  # root: reloads NetworkManager
   ansible.builtin.command: nmcli general reload
   changed_when: false
   when: _baseline_nmcli is changed

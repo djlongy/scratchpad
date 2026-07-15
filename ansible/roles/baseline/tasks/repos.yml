@@ -9,6 +9,7 @@
 
 # ── 1. RHSM registration (RHEL only; AlmaLinux/Rocky skip) ───────────────────
 - name: Repos | Register with Red Hat Subscription Management
+  become: true  # root: registers the host with RHSM
   community.general.redhat_subscription:
     state: present
     activationkey: "{{ rhsm_activationkey }}"
@@ -19,6 +20,7 @@
     - rhsm_activationkey is defined
 
 - name: Repos | Enable the CodeReady Builder repository (RHEL)
+  become: true  # root: enables a subscription-manager repo
   ansible.builtin.command: >-
     subscription-manager repos
     --enable codeready-builder-for-rhel-{{ ansible_distribution_major_version }}-x86_64-rpms
@@ -32,6 +34,7 @@
 
 # ── 2. EPEL + CRB on AlmaLinux/Rocky (no subscription) ───────────────────────
 - name: Repos | Check whether crb is already enabled (AlmaLinux/Rocky)
+  become: true  # root: dnf reads repo metadata/cache
   ansible.builtin.command: dnf repolist --enabled
   register: _baseline_repolist
   changed_when: false
@@ -43,6 +46,7 @@
 - name: Repos | Enable the crb repository (AlmaLinux/Rocky)
   # config-manager ships in dnf-plugins-core (present on EL9) and is portable
   # across minimal GenericCloud images, unlike the `crb` helper.
+  become: true  # root: enables a dnf repository
   ansible.builtin.command: dnf config-manager --set-enabled crb
   register: _baseline_crb_alma
   changed_when: _baseline_crb_alma.rc == 0
@@ -53,6 +57,7 @@
     - "'crb' not in (_baseline_repolist.stdout | default(''))"
 
 - name: Repos | Import the EPEL GPG key (EL)
+  become: true  # root: imports an RPM GPG key
   ansible.builtin.rpm_key:
     key: "https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}"
     state: present
@@ -61,6 +66,7 @@
     - baseline_epel_enabled | bool
 
 - name: Repos | Install the EPEL release package (EL)
+  become: true  # root: package install
   ansible.builtin.dnf:
     name: "https://dl.fedoraproject.org/pub/epel/epel-release-latest-{{ ansible_distribution_major_version }}.noarch.rpm"
     state: present
@@ -70,6 +76,7 @@
 
 # ── 3. Custom internal mirrors (air-gap → Artifactory / Nexus) ───────────────
 - name: Repos | Configure DNF repositories (EL)
+  become: true  # root: writes /etc/yum.repos.d/
   ansible.builtin.yum_repository:
     name: "{{ item.name }}"
     description: "{{ item.description | default(item.name) }}"
@@ -86,6 +93,7 @@
   when: ansible_os_family == "RedHat"
 
 - name: Repos | Disable named stock DNF repos (air-gap)
+  become: true  # root: disables a dnf repository
   ansible.builtin.command: "dnf config-manager --set-disabled {{ item }}"
   loop: "{{ baseline_dnf_repos_disable }}"
   register: _baseline_repo_disable
@@ -95,6 +103,7 @@
     - baseline_dnf_repos_disable | length > 0
 
 - name: Repos | Configure APT repositories (Debian)
+  become: true  # root: writes APT repo config
   ansible.builtin.apt_repository:
     repo: "{{ item.repo }}"
     filename: "{{ item.filename | default(omit) }}"

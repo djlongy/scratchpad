@@ -5,13 +5,8 @@ consistent, hardened foundation before app roles run. Everything beyond the core
 OS setup is **opt-in via override host/group vars**, so enabling a capability
 never surprises an existing fleet.
 
-## TL;DR
-
-**Most common: re-converge the baseline (idempotent).** A no-tags run applies everything; opt-in capabilities are enabled via host/group vars. Narrow to one area with a tag, e.g. `--tags agents`.
-
-```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags baseline
-```
+> **openclaw moved out** — the bot account now lives in the dedicated
+> [`openclaw`](../openclaw/) role. Apply `openclaw` alongside `baseline` where needed.
 
 ## Execution order
 
@@ -68,6 +63,7 @@ Opt-in (distro-agnostic — enabling a capability never surprises an existing fl
 - hosts: linux_hosts
   roles:
     - baseline
+    - openclaw   # the openclaw bot account
 ```
 
 ## Network
@@ -177,7 +173,7 @@ Dynamic `sshd_config.d` drop-in (keepalive + forwarding policy) plus an optional
 baseline_ssh_allow_tcp_forwarding: true    # bastions set true
 baseline_ssh_allow_agent_forwarding: false
 baseline_ssh_permit_root_login: "prohibit-password"
-baseline_ssh_bastion_host: "bastion.mgt.example.com"
+baseline_ssh_bastion_host: "bastion.example.com"
 baseline_ssh_bastion_match_hosts: "192.0.2.*"
 ```
 
@@ -233,8 +229,8 @@ internet egress (configured **before** repos/packages). Internal mirrors
 (Artifactory) and the estate domain bypass via `no_proxy`:
 
 ```yaml
-baseline_proxy_url: "http://squid.mgt.example.com:3128"
-baseline_proxy_no_proxy: "localhost,127.0.0.1,::1,artifactory.mgt.example.com,.example.com"
+baseline_proxy_url: "http://squid.example.com:3128"
+baseline_proxy_no_proxy: "localhost,127.0.0.1,::1,artifactory.example.com,.example.com"
 ```
 
 The Squid **server** itself is the separate [`squid`](../squid/) role.
@@ -265,7 +261,7 @@ baseline_bastion_ip_forward: true
 baseline_bastion_monitoring_ips: ["192.0.2.74"]   # Prometheus source IP(s)
 baseline_bastion_exporter_ports: ["9100/tcp"]
 baseline_bastion_masquerade: true           # SNAT so backends can reply
-baseline_bastion_backend_subnets: ["198.51.100.0/24 198.51.100.1"]   # optional routes
+baseline_bastion_backend_subnets: ["198.51.100.0/24 10.0.0.1"]   # optional routes
 baseline_bastion_route_conn: "ens192"
 ```
 

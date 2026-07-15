@@ -5,6 +5,7 @@
 # original with an already-managed state.
 
 - name: Snapshot the original repository directory (first run only)
+  become: true  # root: copies /etc/yum.repos.d preserving ownership
   ansible.builtin.command:
     cmd: "cp -a {{ yum_repos_dir }} {{ yum_repos_backup_dir }}"
     creates: "{{ yum_repos_backup_dir }}"

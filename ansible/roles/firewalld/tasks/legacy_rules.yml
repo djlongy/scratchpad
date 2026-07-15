@@ -11,6 +11,7 @@
 # New code should prefer firewalld_services + firewalld_zones instead.
 
 - name: Open legacy firewall_rules ports in default zone
+  become: true  # root: firewalld module reconfigures the firewall
   ansible.posix.firewalld:
     zone: "{{ firewalld_default_zone if firewalld_default_zone | length > 0 else 'public' }}"
     port: >-

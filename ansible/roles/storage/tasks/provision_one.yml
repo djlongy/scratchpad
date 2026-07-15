@@ -8,6 +8,7 @@
 
 # ── FRESH preflight — refuse any disk that is not empty ───────────────────
 - name: "{{ vol.name }} | probe {{ vol._disk }} for an existing signature"
+  become: true  # root: blkid -p opens the raw device
   ansible.builtin.command: "blkid -p -o value -s TYPE {{ vol._disk }}"
   register: _p_sig
   changed_when: false
@@ -15,6 +16,7 @@
   check_mode: false
 
 - name: "{{ vol.name }} | count existing partitions on {{ vol._disk }}"
+  become: true  # root: inspects the raw device
   ansible.builtin.shell:
     cmd: "set -o pipefail; lsblk -no NAME {{ vol._disk }} | tail -n +2 | wc -l"
     executable: /bin/bash
@@ -36,6 +38,7 @@
 
 # ── Build the stack ──────────────────────────────────────────────────────
 - name: "{{ vol.name }} | partition {{ vol._disk }} (GPT)"
+  become: true  # root: writes the partition table
   community.general.parted:
     device: "{{ vol._disk }}"
     number: "{{ vol.partition_number }}"
@@ -46,12 +49,14 @@
   when: _p_do_partition | bool
 
 - name: "{{ vol.name }} | create volume group {{ vol.vg }}"
+  become: true  # root: LVM vgcreate
   community.general.lvg:
     vg: "{{ vol.vg }}"
     pvs: "{{ vol._pv }}"
   when: vol.lvm | bool
 
 - name: "{{ vol.name }} | create logical volume {{ vol.lv }} ({{ vol.size }})"
+  become: true  # root: LVM lvcreate
   community.general.lvol:
     vg: "{{ vol.vg }}"
     lv: "{{ vol.lv }}"
@@ -60,6 +65,7 @@
   when: vol.lvm | bool
 
 - name: "{{ vol.name }} | create {{ vol.fstype }} filesystem"
+  become: true  # root: mkfs on the device
   community.general.filesystem:
     fstype: "{{ vol.fstype }}"
     dev: "{{ vol._dm_dev if vol.lvm | bool else vol._part_dev }}"

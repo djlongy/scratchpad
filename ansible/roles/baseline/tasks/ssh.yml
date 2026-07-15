@@ -6,11 +6,13 @@
 # copy and the monolithic sshd template.
 
 - name: SSH | Remove the legacy keepalive drop-in
+  become: true  # root: removes a file under /etc/ssh/
   ansible.builtin.file:
     path: /etc/ssh/sshd_config.d/99-keepalive.conf
     state: absent
 
 - name: SSH | Deploy the managed sshd drop-in
+  become: true  # root: writes /etc/ssh/sshd_config.d/
   ansible.builtin.template:
     src: sshd-baseline.conf.j2
     dest: /etc/ssh/sshd_config.d/60-baseline.conf
@@ -22,6 +24,7 @@
 
 # ── Bastion / jump-host client config (opt-in) ───────────────────────────────
 - name: SSH | Ensure ssh_config.d exists
+  become: true  # root: creates /etc/ssh/ssh_config.d
   ansible.builtin.file:
     path: /etc/ssh/ssh_config.d
     state: directory
@@ -31,6 +34,7 @@
   when: baseline_ssh_bastion_host | length > 0
 
 - name: SSH | Deploy the bastion ProxyJump drop-in
+  become: true  # root: writes /etc/ssh/ssh_config.d/
   ansible.builtin.template:
     src: ssh-bastion.conf.j2
     dest: /etc/ssh/ssh_config.d/60-bastion.conf
@@ -40,6 +44,7 @@
   when: baseline_ssh_bastion_host | length > 0
 
 - name: SSH | Remove the bastion drop-in when disabled
+  become: true  # root: removes a file under /etc/ssh/
   ansible.builtin.file:
     path: /etc/ssh/ssh_config.d/60-bastion.conf
     state: absent

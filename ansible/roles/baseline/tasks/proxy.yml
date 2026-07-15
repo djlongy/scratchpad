@@ -9,6 +9,7 @@
 # concern (see the `squid` role).
 
 - name: Proxy | Configure the system-wide proxy environment
+  become: true  # root: edits /etc/environment
   ansible.builtin.blockinfile:
     path: /etc/environment
     marker: "# {mark} ANSIBLE MANAGED BASELINE PROXY"
@@ -25,6 +26,7 @@
       NO_PROXY={{ baseline_proxy_no_proxy }}
 
 - name: Proxy | Configure the dnf proxy (EL)
+  become: true  # root: edits /etc/dnf/dnf.conf
   community.general.ini_file:
     path: /etc/dnf/dnf.conf
     section: main
@@ -37,6 +39,7 @@
   when: ansible_os_family == "RedHat"
 
 - name: Proxy | Configure the APT proxy (Debian)
+  become: true  # root: writes /etc/apt/apt.conf.d/
   ansible.builtin.copy:
     content: |
       Acquire::http::Proxy "{{ baseline_proxy_url }}";

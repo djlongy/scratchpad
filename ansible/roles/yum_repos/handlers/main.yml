@@ -3,6 +3,7 @@
 # reachability check: an unreachable/misconfigured managed repo fails here,
 # loudly, instead of silently breaking the next `dnf install`.
 - name: Refresh dnf metadata cache
+  become: true  # root: dnf makecache writes the system metadata cache
   ansible.builtin.command:
     cmd: dnf -y makecache
   changed_when: false

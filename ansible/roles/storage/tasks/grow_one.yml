@@ -9,6 +9,7 @@
     _g_has_part: "{{ (not vol.lvm | bool) or (vol.lvm | bool and vol.partition | bool) }}"
 
 - name: "{{ vol.name }} | find parent disk of {{ _g_dev }}"
+  become: true  # root: inspects block device
   ansible.builtin.command: "lsblk -ndo PKNAME {{ _g_dev }}"
   register: _g_pk
   changed_when: false
@@ -20,11 +21,13 @@
     _g_disk_name: "{{ _g_pk.stdout | trim if (_g_pk.stdout | trim | length > 0) else (_g_dev | basename) }}"
 
 - name: "{{ vol.name }} | rescan disk for size change"
+  become: true  # root: writes /sys/class/block rescan trigger
   ansible.builtin.shell: "echo 1 > /sys/class/block/{{ _g_disk_name }}/device/rescan"
   changed_when: false
   failed_when: false
 
 - name: "{{ vol.name }} | grow partition {{ vol.partition_number }}"
+  become: true  # root: growpart rewrites the partition table
   ansible.builtin.command: "growpart /dev/{{ _g_disk_name }} {{ vol.partition_number }}"
   register: _g_growpart
   changed_when: "'CHANGED' in _g_growpart.stdout"
@@ -36,6 +39,7 @@
 - name: "{{ vol.name }} | resize physical volume"
   # pvresize always reports "resized or updated" even on a no-op, so it is
   # not a reliable change signal; actual growth surfaces via lvextend below.
+  become: true  # root: LVM pvresize
   ansible.builtin.command: "pvresize {{ vol._pv }}"
   register: _g_pvresize
   changed_when: false
@@ -47,6 +51,7 @@
 #   absolute (40G, 500M)      → absolute target with `-L <size>`
 # All only grow (lvextend refuses to shrink → rc 3/5 = no-op).
 - name: "{{ vol.name }} | extend logical volume (free-relative +{{ vol.size }})"
+  become: true  # root: LVM lvextend
   ansible.builtin.command: "lvextend -l +{{ vol.size }} {{ vol.vg }}/{{ vol.lv }}"
   register: _g_lvextend_free
   changed_when: _g_lvextend_free.rc == 0
@@ -57,6 +62,7 @@
     - vol.size | upper is search('FREE$')
 
 - name: "{{ vol.name }} | extend logical volume to {{ vol.size }}"
+  become: true  # root: LVM lvextend
   ansible.builtin.command: "lvextend -l {{ vol.size }} {{ vol.vg }}/{{ vol.lv }}"
   register: _g_lvextend_vg
   changed_when: _g_lvextend_vg.rc == 0
@@ -67,6 +73,7 @@
     - not (vol.size | upper is search('FREE$'))
 
 - name: "{{ vol.name }} | extend logical volume to {{ vol.size }}"
+  become: true  # root: LVM lvextend
   ansible.builtin.command: "lvextend -L {{ vol.size }} {{ vol.vg }}/{{ vol.lv }}"
   register: _g_lvextend_abs
   changed_when: _g_lvextend_abs.rc == 0
@@ -76,6 +83,7 @@
     - "'%' not in vol.size"
 
 - name: "{{ vol.name }} | grow xfs filesystem"
+  become: true  # root: xfs_growfs
   ansible.builtin.command: "xfs_growfs {{ vol.mount }}"
   register: _g_xfs
   changed_when: "'data blocks changed' in (_g_xfs.stdout | default(''))"
@@ -84,6 +92,7 @@
     - vol.mount | length > 0
 
 - name: "{{ vol.name }} | grow ext4 filesystem"
+  become: true  # root: resize2fs
   ansible.builtin.command: "resize2fs {{ vol._dm_dev }}"
   register: _g_ext4
   changed_when: "'Nothing to do' not in (_g_ext4.stdout + _g_ext4.stderr)"

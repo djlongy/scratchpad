@@ -5,6 +5,7 @@
 # oscap against the CIS profile (remediating by default). EL only.
 
 - name: CIS openscap | Install OpenSCAP scanner and SCAP Security Guide
+  become: true  # root: package install
   ansible.builtin.dnf:
     name:
       - openscap-scanner
@@ -33,6 +34,7 @@
   when: not _baseline_ssg_stat.stat.exists
 
 - name: CIS openscap | Ensure the report directory exists
+  become: true  # root: creates the system report directory
   ansible.builtin.file:
     path: "{{ baseline_cis_openscap_report_dir }}"
     state: directory
@@ -43,6 +45,7 @@
 # oscap exit codes: 0 = all rules pass, 1 = error, 2 = one or more rules failed
 # (expected even after remediation for non-remediable rules). Treat 0/2 as ok.
 - name: CIS openscap | Evaluate and remediate against the CIS profile
+  become: true  # root: oscap remediation rewrites system config
   ansible.builtin.command:
     cmd: >-
       oscap xccdf eval

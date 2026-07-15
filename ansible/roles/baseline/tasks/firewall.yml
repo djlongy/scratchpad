@@ -5,11 +5,13 @@
 # opens the declared services and ports. Opt-in via baseline_firewall_manage.
 
 - name: Firewall | Ensure firewalld is installed
+  become: true  # root: package install
   ansible.builtin.package:
     name: firewalld
     state: present
 
 - name: Firewall | Ensure firewalld is running and enabled
+  become: true  # root: manages the firewalld service
   ansible.builtin.service:
     name: firewalld
     state: started
@@ -19,6 +21,7 @@
 # templates (reused here). Schema matches roles/firewalld firewalld_services /
 # firewalld_zones. Changes notify a firewalld reload (flushed before bindings).
 - name: Firewall | Render custom firewalld service definitions
+  become: true  # root: writes /etc/firewalld/services/
   ansible.builtin.template:
     src: firewalld-service.xml.j2
     dest: "/etc/firewalld/services/{{ item.name }}.xml"
@@ -31,6 +34,7 @@
   notify: Reload firewalld
 
 - name: Firewall | Render custom firewalld zone definitions
+  become: true  # root: writes /etc/firewalld/zones/
   ansible.builtin.template:
     src: firewalld-zone.xml.j2
     dest: "/etc/firewalld/zones/{{ item.name }}.xml"
@@ -50,6 +54,7 @@
     _baseline_fw_iface: "{{ baseline_firewall_interface | default(ansible_default_ipv4.interface, true) }}"
 
 - name: Firewall | Assign the primary interface to its zone
+  become: true  # root: firewalld module reconfigures the firewall
   ansible.posix.firewalld:
     zone: "{{ baseline_firewall_zone }}"
     interface: "{{ _baseline_fw_iface }}"
@@ -59,6 +64,7 @@
   when: baseline_firewall_interface | default('') | length > 0 or baseline_firewall_bind_interface | bool
 
 - name: Firewall | Allow services in the zone
+  become: true  # root: firewalld module reconfigures the firewall
   ansible.posix.firewalld:
     zone: "{{ baseline_firewall_zone }}"
     service: "{{ item }}"
@@ -68,6 +74,7 @@
   loop: "{{ baseline_firewall_services }}"
 
 - name: Firewall | Allow ports in the zone
+  become: true  # root: firewalld module reconfigures the firewall
   ansible.posix.firewalld:
     zone: "{{ baseline_firewall_zone }}"
     port: "{{ item }}"

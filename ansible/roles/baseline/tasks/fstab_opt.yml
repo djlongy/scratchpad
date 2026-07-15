@@ -5,6 +5,7 @@
   changed_when: false
 
 - name: Find non-root data disk candidate
+  become: true  # root: inspects block-device topology
   ansible.builtin.shell: |
     set -o pipefail
     root_parent="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -1)"
@@ -16,6 +17,7 @@
   failed_when: false
 
 - name: Resolve UUID for data disk candidate
+  become: true  # root: blkid reads the raw device
   ansible.builtin.shell: "blkid -s UUID -o value {{ opt_data_disk.stdout | trim }} || true"
   register: opt_uuid_disk
   changed_when: false
@@ -43,6 +45,7 @@
 # NOTE: [[:space:]] is a POSIX class unsupported by Python's re module (used by
 # lineinfile and Jinja2 match/search). Always use \s in these contexts.
 - name: Remove device-name based /opt fstab entries
+  become: true  # root: edits /etc/fstab
   ansible.builtin.lineinfile:
     path: /etc/fstab
     regexp: "^/dev/\\S+\\s+/opt\\s+"
@@ -54,6 +57,7 @@
 # Use ^\S+\s+/opt\s+ so this replaces any remaining /opt entry in-place
 # (idempotent: if the line is already canonical lineinfile reports no change).
 - name: Fix fstab to use UUID + nofail
+  become: true  # root: edits /etc/fstab
   ansible.builtin.lineinfile:
     path: /etc/fstab
     regexp: "^\\S+\\s+/opt\\s+"
@@ -64,12 +68,14 @@
     - opt_uuid_final | length > 0
 
 - name: Reload systemd daemon
+  become: true  # root: reloads the systemd manager configuration
   ansible.builtin.systemd:
     daemon_reload: true
   changed_when: false
   when: opt_fstab_fix is defined and opt_fstab_fix.changed
 
 - name: Mount all filesystems  # noqa: command-instead-of-module
+  become: true  # root: mounts filesystems
   ansible.builtin.command: mount -a
   changed_when: false
   when: opt_fstab_fix is defined and opt_fstab_fix.changed

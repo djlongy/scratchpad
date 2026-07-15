@@ -8,6 +8,7 @@
 # here — before hardening — keeps automation able to log back in afterwards.
 
 - name: Authorized keys | Ensure SSH authorized keys are present
+  become: true  # root: writes another user's ~/.ssh/authorized_keys
   ansible.posix.authorized_key:
     user: "{{ item.user }}"
     key: "{{ item.key }}"

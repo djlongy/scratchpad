@@ -39,6 +39,7 @@
   tags: [baseline, storage]
 
 - name: Ensure /opt is traversable
+  become: true  # root: sets ownership/mode on /opt
   # 0755 (root:root) is the distro default and CIS-compliant — CIS only flags
   # world-WRITABLE dirs (group/other +w), which this is not. Override via
   # baseline_opt_mode if your benchmark mandates something tighter.
@@ -262,6 +263,7 @@
 
 # ── Explicit reboot (opt-in only) ────────────────────────────────────────────
 - name: Reboot system
+  become: true  # root: reboots the host
   ansible.builtin.reboot:
     msg: "Rebooting the system to apply changes."
     reboot_timeout: 300

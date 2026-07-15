@@ -11,7 +11,8 @@
 #   * every ipa call on the survivor is `&&`-chained (rc reflects the REAL command, not the
 #     trailing kdestroy) and the admin password is fed on STDIN (never on the argv/cmdline)
 #   * survivors are filtered to the SAME realm (freeipa_server_domain) — never a foreign realm
-# Topology queries + server-del run on a SURVIVING master (package or container, mode-aware).
+# Topology queries + server-del run on a SURVIVING (package) master. The containerized path
+# (a container survivor / docker exec) lives in freeipa_server_docker/tasks/decommission.yml.
 
 - name: Decommission | Resolve admin credentials (shared resolver)
   ansible.builtin.include_tasks: resolve_credentials.yml
@@ -49,13 +50,9 @@
       '{{ freeipa_server_domain }}' found in inventory. Removing the last server would destroy the
       realm. Keep at least one same-realm host with freeipa_server_state != absent.
 
-- name: Decommission | Set the surviving master + its mode-aware ipa exec prefix
+- name: Decommission | Set the surviving master
   ansible.builtin.set_fact:
     _freeipa_decom_target: "{{ _freeipa_decom_survivors | first }}"
-    _freeipa_decom_exec: >-
-      {{ ('docker exec -i ' + (hostvars[(_freeipa_decom_survivors | first)].freeipa_server_docker_container_name | default('freeipa')) + ' ')
-         if (hostvars[(_freeipa_decom_survivors | first)].freeipa_server_deployment | default('package') == 'container')
-         else '' }}
 
 # Read the CA renewal master from the survivor. `&&`-chained (a failed kinit/config-show FAILS the
 # task, not silently returns empty) and parsed from the human-readable field (the --raw attribute
@@ -64,8 +61,8 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail; IFS= read -r _pw;
-      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
-      && {{ _freeipa_decom_exec }}ipa config-show 2>/dev/null | awk -F': ' '/IPA CA renewal master:/{print $2}'
+      printf '%s\n' "$_pw" | kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
+      && ipa config-show 2>/dev/null | awk -F': ' '/IPA CA renewal master:/{print $2}'
     executable: /bin/bash
   args:
     stdin: "{{ _freeipa_admin_password }}"
@@ -92,10 +89,10 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail; IFS= read -r _pw;
-      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
-      && {{ _freeipa_decom_exec }}ipa config-mod --ca-renewal-master-server={{ _freeipa_decom_target }}.{{ freeipa_server_domain }}
-      && {{ _freeipa_decom_exec }}ipa-crlgen-manage enable
-      && {{ _freeipa_decom_exec }}kdestroy >/dev/null 2>&1
+      printf '%s\n' "$_pw" | kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
+      && ipa config-mod --ca-renewal-master-server={{ _freeipa_decom_target }}.{{ freeipa_server_domain }}
+      && ipa-crlgen-manage enable
+      && kdestroy >/dev/null 2>&1
     executable: /bin/bash
   args:
     stdin: "{{ _freeipa_admin_password }}"
@@ -125,9 +122,9 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail; IFS= read -r _pw;
-      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
-      && {{ _freeipa_decom_exec }}ipa server-del {{ freeipa_server_fqdn }} --ignore-topology-disconnect --force
-      && {{ _freeipa_decom_exec }}kdestroy >/dev/null 2>&1
+      printf '%s\n' "$_pw" | kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
+      && ipa server-del {{ freeipa_server_fqdn }} --ignore-topology-disconnect --force
+      && kdestroy >/dev/null 2>&1
     executable: /bin/bash
   args:
     stdin: "{{ _freeipa_admin_password }}"

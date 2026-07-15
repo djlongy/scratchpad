@@ -141,3 +141,15 @@ freeipa_client_packages:
 # SSSD caches credentials (offline auth) and serves SSH keys via sss_ssh_authorizedkeys
 # (not ~/.ssh), so login never depends on a network home.
 freeipa_client_offline_resilient: true
+
+# ── FreeIPA-issued service certs via certmonger (--tags certs; optional) ──────
+# Empty = phase skipped. Each entry requests an auto-renewing cert chained to the
+# IPA CA, using THIS host's own principal (no server-side admin needed):
+#   - cert_path: /etc/pki/tls/vault/vault.crt   # where certmonger writes the cert
+#     key_path:  /etc/pki/tls/vault/vault.key
+#     dnsname:   vault.example.com              # SAN + CN (default: the host FQDN)
+#     principal: host/<fqdn>@REALM              # optional (default: host principal)
+#     postsave:  "systemctl reload foo"         # optional post-issue/renew command
+freeipa_client_service_certs: []
+# ipa-getcert ships with ipa-client (installed at enrol); certmonger is the daemon.
+freeipa_client_cert_packages: [certmonger, ipa-client]

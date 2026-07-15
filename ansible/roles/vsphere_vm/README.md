@@ -11,15 +11,6 @@ Hosts build in parallel for free.
 > Ansible-native, inventory-driven create/destroy (e.g. spinning up SOE desktops
 > to then hand to `baseline`).
 
-## TL;DR
-
-**Most common: provision a VM.** Add the host to inventory (with its `vsphere_vm_*` vars) and run scoped to it — a no-tag run creates/ensures; recreate-from-scratch is the guarded `--tags redeploy` variant.
-
-```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --limit <newhost>
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true --limit <newhost>
-```
-
 ## Minimum required variables
 
 The role's `meta/argument_specs.yml` marks only **two** vars `required: true` —
@@ -43,7 +34,7 @@ Tiny copy-pasteable minimal example (DRS cluster, Vault-backed credentials):
 # group_vars/vmware_vms.yml — the shared minimum
 vsphere_vm_server: "vcenter.example.com"
 vsphere_vm_datacenter: "Datacenter"
-vsphere_vm_vault_secret: "secret/vsphere/vcenter"   # KV path holding the vCenter password
+vsphere_vm_vault_secret: "secret/vcenter"   # holds the vCenter password
 # vsphere_vm_username / vsphere_vm_password_field default to administrator@vsphere.local / password
 vsphere_vm_cluster: "Cluster"          # or: vsphere_vm_esxi_host + vsphere_vm_resource_pool
 vsphere_vm_datastore: "datastore1"
@@ -136,7 +127,7 @@ phase handles this automatically:
 ```yaml
 # group_vars / play vars
 vsphere_vm_server: "vcenter.example.com"
-vsphere_vm_vault_secret: "kv/data/platform/vsphere/vcenter/runtime"
+vsphere_vm_vault_secret: "secret/vcenter"
 vsphere_vm_datacenter: "Datacenter"
 vsphere_vm_esxi_host: "192.0.2.11"
 vsphere_vm_resource_pool: "/Datacenter/host/192.0.2.11/Resources"
@@ -159,18 +150,17 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
 ## Chaining on-guest roles in the same play (`vsphere_vm_wait_for_ssh`)
 
 Every phase above runs on the control node (`delegate_to: localhost`) and never
-touches the guest — so a plain `roles: [vsphere_vm, storage]` would have the
-second role try to SSH a VM that is still booting. Set
-**`vsphere_vm_wait_for_ssh: true`** and the role appends a final handoff step: it
-waits until the fresh guest answers SSH (a poll — it returns the instant SSH is
-up, not a fixed sleep) and gathers the guest's facts. Now an on-guest role can
-follow in the **same play**:
+touches the guest — so a plain `roles: [vsphere_vm, storage]` would have `storage`
+try to SSH a VM that is still booting. Set **`vsphere_vm_wait_for_ssh: true`** and
+the role appends a final handoff step: it waits until the fresh guest answers SSH
+(a poll — it returns the instant SSH is up, not a fixed sleep) and gathers the
+guest's facts. Now an on-guest role can follow in the **same play**:
 
 ```yaml
 # provision + prepare in one play, one run
 - hosts: vmware_vms
   gather_facts: false            # REQUIRED — the VM doesn't exist at play start
-  become: true                   # for the on-guest role; vsphere_vm forces become:false on its own tasks
+  become: true                   # for storage; vsphere_vm forces become:false on its own tasks
   roles:
     - role: vsphere_vm
       vars:
@@ -178,8 +168,6 @@ follow in the **same play**:
     - role: storage              # runs ON the guest, as root, once SSH is up
       vars:
         storage_provision: true
-        storage_volumes:
-          - {name: opt, disk: auto, vg: vg_data, lv: lv_opt, size: "100%FREE", fstype: xfs, mount: /opt}
 ```
 
 ```bash
@@ -194,10 +182,10 @@ Requirements for the handoff to succeed (else `wait_for_connection` just times o
 - **host-key checking is off** for the brand-new host (`ANSIBLE_HOST_KEY_CHECKING=False`).
 
 Pair an extra `vsphere_vm_disk` entry with a `storage_volumes` entry pinned
-`by-size:<same-size>` + `size: 100%FREE` (or `disk: auto` for a single extra
-disk) and the data disk is provisioned and mounted in the same run. Tune the wait
-with `vsphere_vm_ssh_timeout` (default 300s). Left unset/false, the role stays
-localhost-only (original behaviour).
+`by-size:<same-size>` + `size: 100%FREE` and the data disk is provisioned and
+mounted in the same run — see the swarm-lab group_vars for a worked example.
+Tune the wait with `vsphere_vm_ssh_timeout` (default 300s). Left unset/false, the
+role stays localhost-only (original behaviour).
 
 ## Host-centric (the only model)
 
@@ -225,9 +213,9 @@ the common spec + minimal host_vars for the uniques** (usually just the IP).
 ```yaml
 # group_vars/vmware_vms.yml — the common spec
 vsphere_vm_template: linux-almalinux-9-main
-vsphere_vm_hardware:            # native vmware_guest dict (replaces the role default)
-  num_cpus: 2
-  memory_mb: 4096
+vsphere_vm_cpu: 2               # → hardware.num_cpus
+vsphere_vm_memory: 4096         # MB → hardware.memory_mb
+# vsphere_vm_hardware: {boot_firmware: efi}   # extra native vmware_guest hardware keys
 vsphere_vm_network: "VLAN10-SVC"
 vsphere_vm_dns: [192.0.2.53]
 domain: example.com
@@ -251,9 +239,8 @@ the role is a drop-in replacement (no per-host edits):
 # group_vars/<vm_group>.yml — marry the exports to the role
 vsphere_vm_template: "{{ template }}"
 vsphere_vm_folder: "{{ folder }}"
-vsphere_vm_hardware:
-  num_cpus: "{{ cpus }}"
-  memory_mb: "{{ memory }}"
+vsphere_vm_cpu: "{{ cpus }}"
+vsphere_vm_memory: "{{ memory }}"
 vsphere_vm_disk: "{{ disks }}"
 vsphere_vm_networks: "{{ networks }}"
 vsphere_vm_customization:
@@ -363,39 +350,6 @@ The role never silently guesses a gateway: an unset gateway means "unrouted" unl
 opt into `vsphere_vm_gateway_auto`. Set the flag per host/group for routable fleets that
 don't want to spell out every gateway.
 
-## Growing disks
-
-`community.vmware.vmware_guest` creates disks on clone but does **not** resize them on a
-reconfigure — so the role ensures each disk's size with a dedicated
-`community.vmware.vmware_guest_disk` step (maps `vsphere_vm_disk` 1:1 onto SCSI controller
-0, units 0,1,2,…). It **grows** a disk whose `size_gb` you bumped, is a no-op when sizes
-match, and never shrinks (vSphere forbids it). Set `vsphere_vm_scsi_type` (default
-`paravirtual`) to match your template's controller.
-
-To grow a data disk end-to-end: bump its `vsphere_vm_disk` size (and its `by-size:` storage
-selector), then re-run — `--tags create,grow` reconfigures the vmdk (online) and the
-`storage` role's grow phase extends the partition → PV → LV → filesystem. Non-destructive;
-existing data is preserved.
-
-## Pre-build report
-
-Before any VM is created, the role prints a **consolidated plan** (once per run) of
-everything about to be built across the play: per host the vCenter VM name, guest OS
-hostname, each NIC (interface · portgroup · ip/mask · routed gateway vs unrouted), the
-template, placement, hardware, disks and provisioning mode. Hosts build concurrently
-(bounded by `forks`), so it is the one chance to eyeball the plan before it fans out.
-
-## Examples
-
-Two complete, self-contained examples under [`examples/`](examples/):
-
-- [`provision-and-storage/`](examples/provision-and-storage/) — the minimal composition:
-  one host, two data disks provisioned by a `storage` profile, a commented 3-NIC
-  alternative, and the build / grow / redeploy / destroy commands.
-- [`full-deployment/`](examples/full-deployment/) — a bare template taken **end to end**:
-  unlock the ansible SSH key into ssh-agent → build the VM → `storage` → `baseline` →
-  `firewalld` → `docker`, from one inventory in one run.
-
 ## Known vSphere quirk (handled — but see the permanent fix)
 
 Clone **with a vSphere Guest OS Customization (GOSC) spec** (`customization:`) toggles the new
@@ -405,7 +359,8 @@ but **not sufficient** — GOSC reverts it after the clone returns. That is why 
 bounded **multi-pass** reconnect over all managed VMs (the pass that lands just after customization
 finishes makes it stick). If you still see a disconnected NIC: `govc device.connect -vm <name> ethernet-0`.
 
-**Root cause references:** Broadcom KB 425280, terraform-provider-vsphere#388, cloud-init VMware datasource docs.
+**Root cause + permanent fix (documented once, cross-environment):** see the
+"Provisioning mode: cloud-init GuestInfo" section below.
 The durable cure — **now implemented** as `vsphere_vm_provision_via_guestinfo` (see next section) —
 is to stop using GOSC and drive first-boot config via the cloud-init VMware GuestInfo datasource.
 
@@ -438,7 +393,7 @@ the static hostname + network. Verified end-to-end (NIC `Connected: true` throug
   reconfigure. Requires the `vmware.vmware` collection (already in requirements.yml).
 - **Standalone-host gotcha** — `deploy_folder_template` resolves `vsphere_vm_resource_pool` by name
   OR MOID; if the host has an ambiguous pool name (nested "Resources"), set the host ROOT pool MOID
-  (e.g. `resgroup-123`, via `govc object.collect -s /DC/host/<h> resourcePool`). The GOSC path
+  (e.g. `resgroup-362`, via `govc object.collect -s /DC/host/<h> resourcePool`). The GOSC path
   (`vmware_guest`) wants the NAME — keep both notes in mind when mixing modes.
 - **Per-NIC DHCP fallback** — a `networks:` entry with `type: dhcp` (or no `ip`) renders
   `dhcp4: true` for that NIC only; static and DHCP NICs can mix in one guest.
@@ -459,7 +414,7 @@ The first NIC with a gateway (else NIC 0) carries the resolvers.
 ```yaml
 # host_vars/monster-01.yml — a (deliberately gnarly) 3-NIC guest
 vsphere_vm_networks:
-  - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.60, netmask: 255.255.255.0, gateway: 192.0.2.1}
+  - {name: "VLAN10",     interface: ens192, ip: 192.0.2.60, netmask: 255.255.255.0, gateway: 192.0.2.1}
   - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.60,    netmask: 255.255.255.0}   # data plane, no gateway
   - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.60,    netmask: 255.255.255.0}   # ingress plane
 ```
@@ -470,24 +425,6 @@ vsphere_vm_networks:
 Optional: set a guest's `guestinfo_userdata` to a raw `#cloud-config` string to also inject
 `guestinfo.userdata` (packages, users, an authoritative resolv.conf, …).
 
-## vCenter tags & nested folders
-
-Created VMs can be **placed in a nested folder tree** and **tagged** in the same run
-(both provisioning modes):
-
-- **Folders** — `vsphere_vm_folder` (host/group scope) may be a nested path, e.g.
-  `/Datacenter/vm/prod/app`. The role creates the whole tree in one call
-  (`vmware.vmware.folder`) before placing the VM, so intermediate folders need not
-  pre-exist.
-- **Tags** — set `vsphere_vm_tags` (host/group scope) as a
-  `{Category: Tag}` map, e.g. `{Tenant: prod, Environment: alma}`. The role ensures each
-  category (single-cardinality) and tag exists, then associates them with the VM.
-
-```yaml
-vsphere_vm_folder: "/Datacenter/vm/prod/app"
-vsphere_vm_tags: {Tenant: prod, Environment: alma}
-```
-
 ## Variables
 
 See `defaults/main.yml` for the full surface. Everything is a per-host/group
@@ -497,69 +434,3 @@ precedence, so a host/group value replaces the role default wholesale. The
 hardware/disk/networks/customization values are **native
 `community.vmware.vmware_guest` dicts passed through 1:1** — anything the module
 accepts is valid; hardware keys you omit inherit from the source template.
-
----
-
-## Dual-mode usage guide
-
-The role provisions each guest through ONE of two engines. Both consume the **same
-per-host spec** — the flag picks the engine.
-
-| | Mode 1: GOSC (default) | Mode 2: cloud-init GuestInfo |
-|---|---|---|
-| Mechanism | clone + vSphere customization spec | GOSC-free clone + `guestinfo.metadata` |
-| NIC behaviour | disconnects, auto-reconnects (~30 s) | never disconnects |
-| Template needs | correct guestId (`rhel9_64Guest`, never `other*`), open-vm-tools + perl | + cloud-init, `datasource_list: [VMware, OVF, None]`, `allow_raw_data: true`, `disable_vmware_customization: true` |
-| `resource_pool` | pool **name** | name or **MOID** (MOID required if ambiguous, e.g. nested "Resources") |
-| Flag | (unset / `false`) | `provision_via_guestinfo: true` per guest, or `vsphere_vm_provision_via_guestinfo: true` role-wide |
-
-Resolution order: **per-host flag → role-wide (group) flag → `false` (GOSC)**.
-One run can mix both modes; the guest list is split internally.
-
-### The per-host spec (identical for both modes)
-
-Host_vars shown; every key is also settable group-wide in group_vars:
-
-```yaml
-vsphere_vm_name: web-01                        # vCenter VM name  (default: inventory_hostname)
-vsphere_vm_template: linux-almalinux-9-main    # source template  (required)
-vsphere_vm_provision_via_guestinfo: true       # engine override  (optional)
-vsphere_vm_hardware:                # native vmware_guest dict   (optional; replaces role default)
-  num_cpus: 2
-  memory_mb: 4096
-vsphere_vm_disk:                    # native vmware_guest list   (optional; replaces role default)
-  - {size_gb: 60, type: thin}       #   primary disk first (>= template size)
-  - {size_gb: 50, type: thin}       #   extra data disks follow
-vsphere_vm_networks:                # one entry per vNIC, in slot order (ens192/ens224/ens256)
-  - name: "VLAN10-SVC"              #   portgroup                (required)
-    type: static                    #   static | dhcp            (dhcp / missing ip → dhcp4)
-    ip: 192.0.2.50                  #   required for static
-    netmask: 255.255.255.0
-    gateway: 192.0.2.1              #   ONLY on the primary NIC (default route + DNS)
-    interface: ens192               #   override guest device name (optional)
-vsphere_vm_customization:           # consumed as GOSC spec (mode 1) OR cloud-init metadata (mode 2)
-  hostname: web-01
-  domain: example.com               #   mode 1 FQDN suffix; harmless in mode 2
-  dns_servers: [192.0.2.53]
-vsphere_vm_guestinfo_userdata: |    # mode 2 only (optional raw #cloud-config)
-  #cloud-config
-  packages: [chrony]
-vsphere_vm_state: poweredon
-```
-
-**Mode-specific field notes**
-- *GOSC:* `customization.domain` is used; `guestinfo_userdata`/`interface:` are ignored.
-- *GuestInfo:* `customization.hostname` + `dns_servers` feed the metadata (`domain` unused);
-  every NIC needs `type: static` **and** `ip`, or that NIC intentionally renders `dhcp4: true` —
-  a missing/typo'd `ip` silently becomes DHCP, so verify statics after first boot.
-
-### Verifying a GuestInfo provision (acceptance checks)
-
-```bash
-# 1. metadata actually injected (BEFORE power-on):
-govc object.collect -s /DC/vm/<vm> 'config.extraConfig["guestinfo.metadata"]' | base64 -d
-# 2. no GOSC fired:
-govc events -n 20 /DC/vm/<vm> | grep -ciE 'customiz|deployPkg'    # want 0
-# 3. in-guest datasource:
-cloud-init query platform                                          # want: vmware
-```

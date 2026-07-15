@@ -11,6 +11,7 @@
   become: false
 
 - name: Ensure breakglass local admin account exists
+  become: true  # root: creates a local admin account
   ansible.builtin.user:
     name: breakglass
     comment: "Breakglass emergency local admin"
@@ -24,6 +25,7 @@
   no_log: true
 
 - name: Ensure breakglass sudoers file is present
+  become: true  # root: writes /etc/sudoers.d/
   ansible.builtin.copy:
     content: "breakglass ALL=(ALL) NOPASSWD: ALL\n"
     dest: /etc/sudoers.d/breakglass

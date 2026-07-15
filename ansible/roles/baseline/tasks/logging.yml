@@ -6,6 +6,7 @@
   when: ansible_os_family is not defined or ansible_service_mgr is not defined
 
 - name: Install log management packages
+  become: true  # root: package install
   ansible.builtin.package:
     name:
       - logrotate
@@ -14,6 +15,7 @@
   when: ansible_os_family == "RedHat"
 
 - name: Ensure logrotate timer override directory exists
+  become: true  # root: creates a dir under /etc/systemd/system/
   ansible.builtin.file:
     path: /etc/systemd/system/logrotate.timer.d
     state: directory
@@ -23,6 +25,7 @@
   when: ansible_service_mgr == "systemd"
 
 - name: Run logrotate hourly
+  become: true  # root: writes a systemd timer override
   ansible.builtin.template:
     src: logrotate.timer.override.conf.j2
     dest: /etc/systemd/system/logrotate.timer.d/override.conf
@@ -35,6 +38,7 @@
     - Restart logrotate timer
 
 - name: Ensure journald drop-in directory exists
+  become: true  # root: creates /etc/systemd/journald.conf.d
   ansible.builtin.file:
     path: /etc/systemd/journald.conf.d
     state: directory
@@ -44,6 +48,7 @@
   when: ansible_service_mgr == "systemd"
 
 - name: Cap persistent journald usage
+  become: true  # root: writes /etc/systemd/journald.conf.d/
   ansible.builtin.template:
     src: journald-baseline.conf.j2
     dest: /etc/systemd/journald.conf.d/99-baseline-logging.conf
@@ -54,6 +59,7 @@
   notify: Restart systemd-journald
 
 - name: Reduce noisy kernel messages on console
+  become: true  # root: writes a kernel sysctl
   ansible.builtin.sysctl:
     name: kernel.printk
     value: "{{ baseline_kernel_console_loglevel }} 4 1 7"
@@ -62,6 +68,7 @@
   when: ansible_os_family == "RedHat"
 
 - name: Enable global logrotate compression
+  become: true  # root: edits /etc/logrotate.conf
   ansible.builtin.lineinfile:
     path: /etc/logrotate.conf
     regexp: "^#?compress"
@@ -73,6 +80,7 @@
   tags: [logging]
 
 - name: Manage syslog logrotate policy
+  become: true  # root: writes /etc/logrotate.d/
   ansible.builtin.template:
     src: logrotate-syslog.j2
     dest: /etc/logrotate.d/syslog
@@ -82,6 +90,7 @@
   when: ansible_os_family == "RedHat"
 
 - name: Manage audit logrotate policy
+  become: true  # root: writes /etc/logrotate.d/
   ansible.builtin.template:
     src: logrotate-audit.j2
     dest: /etc/logrotate.d/audit
@@ -91,6 +100,7 @@
   when: ansible_os_family == "RedHat"
 
 - name: Set auditd max log file size
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^max_log_file\\s*="
@@ -100,6 +110,7 @@
   notify: Restart auditd
 
 - name: Set auditd max log file action
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^max_log_file_action\\s*="
@@ -109,6 +120,7 @@
   notify: Restart auditd
 
 - name: Set auditd retained rotation count
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^num_logs\\s*="
@@ -118,6 +130,7 @@
   notify: Restart auditd
 
 - name: Set auditd low space warning threshold
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^space_left\\s*="
@@ -127,6 +140,7 @@
   notify: Restart auditd
 
 - name: Set auditd low space action
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^space_left_action\\s*="
@@ -136,6 +150,7 @@
   notify: Restart auditd
 
 - name: Set auditd critical space threshold
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^admin_space_left\\s*="
@@ -145,6 +160,7 @@
   notify: Restart auditd
 
 - name: Set auditd critical space action
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^admin_space_left_action\\s*="
@@ -154,6 +170,7 @@
   notify: Restart auditd
 
 - name: Set auditd full disk action
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^disk_full_action\\s*="
@@ -163,6 +180,7 @@
   notify: Restart auditd
 
 - name: Set auditd disk error action
+  become: true  # root: edits /etc/audit/auditd.conf
   ansible.builtin.lineinfile:
     path: /etc/audit/auditd.conf
     regexp: "^disk_error_action\\s*="

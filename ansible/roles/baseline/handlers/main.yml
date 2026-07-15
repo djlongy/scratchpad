@@ -1,5 +1,6 @@
 ---
 - name: Restart Fail2Ban
+  become: true  # root: manages the fail2ban service
   ansible.builtin.service:
     name: fail2ban
     state: restarted
@@ -11,35 +12,42 @@
   become: true
 
 - name: Reboot System
+  become: true  # root: reboots the host
   ansible.builtin.reboot:
     msg: "Rebooting the system to apply changes."
     reboot_timeout: 300
 
 - name: Reload systemd
+  become: true  # root: reloads the systemd manager configuration
   ansible.builtin.systemd:
     daemon_reload: true
 
 - name: Restart logrotate timer
+  become: true  # root: manages the logrotate systemd timer
   ansible.builtin.systemd:
     name: logrotate.timer
     state: restarted
     enabled: true
 
 - name: Restart systemd-journald
+  become: true  # root: manages the systemd-journald service
   ansible.builtin.systemd:
     name: systemd-journald
     state: restarted
 
 - name: Restart auditd  # noqa: command-instead-of-module
+  become: true  # root: restarts the auditd service
   ansible.builtin.command: /sbin/service auditd restart
   changed_when: true
 
 - name: Reload sshd
+  become: true  # root: manages the sshd service
   ansible.builtin.service:
     name: sshd
     state: reloaded
 
 - name: Restart chrony
+  become: true  # root: manages the chrony service
   ansible.builtin.service:
     name: "{{ _baseline_chrony_service }}"
     state: restarted
@@ -52,6 +60,7 @@
 # single reboot. Gated by baseline_allow_reboot; otherwise the phases log that a
 # reboot is pending and leave it to the operator.
 - name: Reboot to apply baseline changes
+  become: true  # root: reboots the host
   ansible.builtin.reboot:
     msg: "Rebooting once to apply FIPS and/or the SELinux state change + relabel."
     # autorelabel of a freshly-enabled (was-disabled) host can take minutes, and
@@ -75,16 +84,20 @@
   when: baseline_allow_reboot | bool
 
 - name: Update CA trust EL  # noqa: no-changed-when
+  become: true  # root: rebuilds the system CA trust store
   ansible.builtin.command: update-ca-trust extract
 
 - name: Update CA trust Debian  # noqa: no-changed-when
+  become: true  # root: rebuilds the system CA trust store
   ansible.builtin.command: update-ca-certificates
 
 - name: Recompile fapolicyd rules  # noqa: no-changed-when
+  become: true  # root: recompiles the fapolicyd ruleset
   ansible.builtin.command: fagenrules --load
   notify: Restart fapolicyd
 
 - name: Restart fapolicyd
+  become: true  # root: manages the fapolicyd service
   ansible.builtin.service:
     name: fapolicyd
     state: restarted

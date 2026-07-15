@@ -1,5 +1,6 @@
 ---
 - name: Bind interfaces to zones
+  become: true  # root: firewalld module reconfigures the firewall
   ansible.posix.firewalld:
     zone: "{{ item.zone }}"
     interface: "{{ item.interface }}"

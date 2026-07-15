@@ -2,7 +2,7 @@
 # roles/freeipa_server/tasks/migrate.yml
 # IPA-to-IPA realm migration via ipa-migrate, run ON the new-realm primary.
 # Pulls users/groups/hosts/HBAC/sudo/etc. from a source (old) realm, rewriting
-# realm strings into this realm. Invoke via playbooks/L2_identity/freeipa_migrate.yml.
+# realm strings into this realm. Invoke via playbooks/20_idm_freeipa_migrate.yml.
 #
 # Defaults to DRY-RUN — pass -e freeipa_migrate_dryrun=false to actually write.
 # Passwords are NOT migrated (Kerberos keys are realm-salted); after a real run,

@@ -5,11 +5,13 @@
 # set; packages install through whatever index is configured.
 
 - name: pip | Ensure pip is installed
+  become: true  # root: package install
   ansible.builtin.package:
     name: python3-pip
     state: present
 
 - name: pip | Configure the global pip index (/etc/pip.conf)
+  become: true  # root: writes /etc/pip.conf
   ansible.builtin.template:
     src: pip.conf.j2
     dest: /etc/pip.conf
@@ -19,6 +21,7 @@
   when: baseline_pip_index_url | default('') | length > 0
 
 - name: pip | Install pip packages
+  become: true  # root: installs Python packages system-wide
   ansible.builtin.pip:
     name: "{{ baseline_pip_packages }}"
     extra_args: "{{ ('--index-url ' ~ baseline_pip_index_url) if (baseline_pip_index_url | default('') | length > 0) else omit }}"

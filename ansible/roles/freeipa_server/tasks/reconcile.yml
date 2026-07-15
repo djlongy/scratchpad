@@ -107,6 +107,22 @@
   loop_control:
     label: "{{ item.item }}"
 
+# Shield externally-managed objects (EleGrant pam_* groups + per-tenant PIM hbac/sudo
+# rules) from orphan deletion: any FOUND name matching ANY freeipa_iam_reconcile_protect_regexes
+# entry joins the protection set, so neither a name-colliding scoped reconcile NOR reconcile_all
+# can delete it. Empty/whitespace patterns are dropped; an empty effective list degrades to a
+# never-matching regex so nothing extra is shielded. See defaults for the rationale.
+- name: Reconcile | Shield externally-managed objects (protect regexes)
+  ansible.builtin.set_fact:
+    _reconcile_protected: >-
+      {{ _reconcile_protected + (_reconcile_found.values() | list | flatten
+         | select('search', _freeipa_iam_protect_re) | list) }}
+  vars:
+    _freeipa_iam_protect_re: >-
+      {{ ('(' + (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | join(')|(')) + ')')
+         if (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | list | length > 0)
+         else '(?!)' }}
+
 - name: Reconcile | Compute orphans (managed-but-undeclared, protected-safe)
   ansible.builtin.set_fact:
     _reconcile_orphans: >-

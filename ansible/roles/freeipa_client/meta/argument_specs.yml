@@ -99,6 +99,21 @@ argument_specs:
         type: bool
         default: true
         description: Ensure SSSD offline credential caching and home-independent SSH key login.
+      freeipa_client_service_certs:
+        type: list
+        elements: dict
+        required: false
+        default: []
+        description: >-
+          FreeIPA-issued certs to request via certmonger (--tags certs). Each:
+          {cert_path, key_path, dnsname?, principal?, postsave?}. Uses the host
+          principal by default (no server-side admin needed). Empty = skipped.
+      freeipa_client_cert_packages:
+        type: list
+        elements: str
+        required: false
+        default: [certmonger, ipa-client]
+        description: Packages providing certmonger + ipa-getcert.
       freeipa_client_no_sudo:
         type: bool
         required: false

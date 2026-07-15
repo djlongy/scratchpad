@@ -1,10 +1,12 @@
 ---
 - name: Install firewalld packages
+  become: true  # root: package install
   ansible.builtin.package:
     name: "{{ firewalld_packages }}"
     state: present
 
 - name: Ensure firewalld service state
+  become: true  # root: manages the firewalld systemd unit
   ansible.builtin.systemd:
     name: firewalld
     state: "{{ firewalld_service_state }}"
@@ -12,6 +14,7 @@
     daemon_reload: true
 
 - name: Probe firewalld is responsive
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
   ansible.builtin.command: firewall-cmd --state
   register: _firewalld_state
   changed_when: false

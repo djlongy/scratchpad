@@ -1,5 +1,6 @@
 ---
 - name: Remove orphaned firewalld service XML files
+  become: true  # root: removes files under /etc/firewalld/services/
   ansible.builtin.file:
     path: "/etc/firewalld/services/{{ item }}.xml"
     state: absent
@@ -9,6 +10,7 @@
   notify: Reload firewalld
 
 - name: Remove orphaned firewalld zone XML files
+  become: true  # root: removes files under /etc/firewalld/zones/
   ansible.builtin.file:
     path: "/etc/firewalld/zones/{{ item }}.xml"
     state: absent

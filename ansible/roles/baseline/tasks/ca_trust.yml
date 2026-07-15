@@ -6,6 +6,7 @@
 # Idempotent; notifies the distro-appropriate trust-update handler.
 
 - name: CA trust | Install CA certificates (EL)
+  become: true  # root: writes /etc/pki/ca-trust/source/anchors/
   ansible.builtin.copy:
     src: "{{ item.src | default(omit) }}"
     content: "{{ item.content | default(omit) }}"
@@ -20,6 +21,7 @@
   notify: Update CA trust EL
 
 - name: CA trust | Install CA certificates (Debian)
+  become: true  # root: writes /usr/local/share/ca-certificates/
   ansible.builtin.copy:
     src: "{{ item.src | default(omit) }}"
     content: "{{ item.content | default(omit) }}"
@@ -37,6 +39,7 @@
 # don't have to be committed to the repo. Each entry: {name, url} (+ optional
 # checksum, validate_certs).
 - name: CA trust | Download CA certificates from URLs (EL)
+  become: true  # root: writes /etc/pki/ca-trust/source/anchors/
   ansible.builtin.get_url:
     url: "{{ item.url }}"
     dest: "/etc/pki/ca-trust/source/anchors/{{ item.name }}.crt"
@@ -52,6 +55,7 @@
   notify: Update CA trust EL
 
 - name: CA trust | Download CA certificates from URLs (Debian)
+  become: true  # root: writes /usr/local/share/ca-certificates/
   ansible.builtin.get_url:
     url: "{{ item.url }}"
     dest: "/usr/local/share/ca-certificates/{{ item.name }}.crt"

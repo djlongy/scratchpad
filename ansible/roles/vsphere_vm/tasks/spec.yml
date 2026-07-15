@@ -22,11 +22,13 @@
     _vsphere_guest:
       name: "{{ vsphere_vm_name | default(canonical_hostname | default(inventory_hostname)) }}"
       template: "{{ vsphere_vm_template }}"
-      # Native vmware_guest dicts — normal Ansible precedence: a host/group-level
-      # vsphere_vm_hardware / vsphere_vm_disk replaces the role default wholesale.
-      # Keys omitted from hardware (e.g. boot_firmware, scsi) inherit from the
-      # source template, which is what you want for clones.
-      hardware: "{{ vsphere_vm_hardware }}"
+      # Flat cpu/memory scalars build the native vmware_guest hardware dict;
+      # vsphere_vm_hardware merges extra native keys (boot_firmware, scsi, …)
+      # over the pair. Keys never set inherit from the source template, which
+      # is what you want for clones. Disk stays a native list, passed 1:1.
+      hardware: >-
+        {{ {'num_cpus': vsphere_vm_cpu | int, 'memory_mb': vsphere_vm_memory | int}
+           | combine(vsphere_vm_hardware) }}
       disk: "{{ vsphere_vm_disk }}"
       folder: "{{ vsphere_vm_folder }}"
       datastore: "{{ vsphere_vm_datastore }}"

@@ -5,6 +5,7 @@
 # then restorecon only where the fcontext actually changed.
 
 - name: Set SELinux fcontext for mounted volumes
+  become: true  # root: manages SELinux file-context policy
   community.general.sefcontext:
     target: "{{ vol.mount }}(/.*)?"
     setype: "{{ vol.sefcontext }}"
@@ -16,6 +17,7 @@
   register: _se_fcontext
 
 - name: Restore SELinux context where the fcontext changed
+  become: true  # root: restorecon relabels files on disk
   ansible.builtin.command:
     cmd: "restorecon -Rv {{ item.vol.mount }}"
   loop: "{{ _se_fcontext.results }}"

@@ -21,17 +21,10 @@ freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
 freeipa_server_realm_systemd_instance: "{{ freeipa_server_realm | replace('.', '-') }}"
 freeipa_server_dirsrv_service_name: "dirsrv@{{ freeipa_server_realm_systemd_instance }}.service"
 
-# Deployment substrate. "package" (default) = FreeIPA as host RPMs (this role installs it via
-# upstream ipaserver/ipareplica). "container" = FreeIPA already runs in a container (stood up by
-# the freeipa_server_docker role); this role then runs INSIDE that container for declarative
-# config only — the host-package install phase is skipped (the container image owns install).
-freeipa_server_deployment: "package"
-
 # Declarative membership state (like freeipa_server_is_primary, but for removal). "present"
 # (default) = this server is part of the realm. "absent" = DECOMMISSION it: set on the host
 # (host_vars) and run the play across the group — the server is removed from topology and its
-# FreeIPA install torn down. Works for package AND container deployments (the container path
-# lives in freeipa_server_docker). SAFETY: refuses to remove the last server or the CA renewal
+# FreeIPA install torn down. SAFETY: refuses to remove the last server or the CA renewal
 # master (transfer that first: `ipa config-mod --ca-renewal-master-server=<other>`).
 freeipa_server_state: "present"
 # Also wipe the data dir / preserved backups on decommission (default: leave them for forensics).
@@ -103,6 +96,10 @@ freeipa_server_subject_base: ""          # "" → upstream derives O=<REALM>
 # "CN=Certificate Authority,O=EXAMPLE.COM". "" → upstream default (CN=Certificate
 # Authority + the subject_base). Distinct from subject_base (the LEAF cert base).
 freeipa_server_ca_subject: ""            # "" → upstream default
+# CA signature algorithm for the IPA CA cert + every cert it issues (upstream
+# ipaserver_ca_signing_algorithm). "" → upstream default (SHA256withRSA). Set e.g.
+# "SHA512withRSA" to strengthen. Mapped only when non-empty (see primary.yml).
+freeipa_server_ca_signing_algorithm: ""
 freeipa_server_random_serial_numbers: false
 # external_cert_files — ONLY for ca_mode: external-ca. external-ca is TWO-PHASE:
 #   phase 1  (files empty)  → install emits /root/ipa.csr; sign it with your org root.
@@ -110,10 +107,11 @@ freeipa_server_random_serial_numbers: false
 # Preflight asserts the files exist on phase 2. Ignored in self-signed / ca-less.
 freeipa_server_external_cert_files: []
 # external_ca_allow_csr_phase — opt-in escape hatch for phase 1 of external-ca.
-# Preflight normally FAILS fast if ca_mode is external-ca and external_cert_files is
-# empty. Set true to allow that combination through deliberately, so phase 1 runs and
-# stops after emitting /root/ipa.csr (e.g. an automated CSR-sign-then-rerun pipeline
-# instead of a human). Default false preserves the fail-fast behaviour untouched.
+# Preflight normally FAILS fast if ca_mode is external-ca and external_cert_files
+# is empty (a phase-2-only var left unset by mistake). Set this true to allow that
+# combination through deliberately, so phase 1 runs and stops after emitting
+# /root/ipa.csr (e.g. driven by an automated CSR-sign-then-rerun pipeline instead
+# of a human). Default false preserves the fail-fast behaviour untouched.
 freeipa_server_external_ca_allow_csr_phase: false
 # ca-less: provide HTTP/LDAP cert files via upstream vars (see README); not defaulted.
 
@@ -182,6 +180,19 @@ freeipa_server_auto_reverse: true
 freeipa_server_reverse_zones: []
 freeipa_server_no_dnssec_validation: true
 freeipa_server_allow_zone_overlap: true
+
+# ── DNS hardening (integrated DNS only) ──────────────────────────────────────
+# Own the two BIND include files FreeIPA creates empty for admin customisation:
+#   /etc/named/ipa-ext.conf         — top-level: defines the `trusted_network` ACL
+#   /etc/named/ipa-options-ext.conf — inside options{}: recursion/query-cache scope + dnssec
+# Applied ONLY when freeipa_server_dns_trusted_networks is non-empty (else skipped, files
+# left untouched). named-checkconf validates before a `rndc reconfig` reload. Primary only.
+freeipa_server_dns_trusted_networks: []   # ENV-SPECIFIC: e.g. ["192.0.2.0/24", "127.0.0.1", "::1"]
+# Restrict recursion + query-cache to the trusted_network ACL (the reason for the ACL).
+freeipa_server_dns_restrict_recursion: true
+# dnssec-validation stanza written into the options include. "" → omit the line (leave the
+# installer default). "no" mirrors freeipa_server_no_dnssec_validation for internal resolvers.
+freeipa_server_dns_options_dnssec_validation: "no"
 
 # Declarative DNS (primary only; needs integrated DNS) via upstream ipadns* modules; idempotent.
 # MINIMAL AUTHORING — the reverse path is derived, never hand-written:
@@ -361,6 +372,24 @@ freeipa_iam_reconcile_memberships_only: false
 # End-of-run IAM summary (managed users/groups, what changed / archived / deleted / pruned).
 freeipa_iam_report: true
 
+# ── Inactive-account report (READ-ONLY; end of run) ─────────────────────────
+# Lists users whose last successful Kerberos auth (krbLastSuccessfulAuth) predates
+# freeipa_iam_stale_days — the operator then decides to disable them
+# (freeipa_iam_disabled_accounts) or drop them from the desired list (archived under
+# freeipa_server_authoritative). REPORT ONLY: it never disables, archives, or deletes.
+# On by default; set false to silence. (Note: krbLastSuccessfulAuth tracking can be
+# suppressed by a password policy's KDC disable_last_success — then a user reads as
+# "never" even if active; that is why the sweep only reports.)
+freeipa_iam_stale_report: true
+freeipa_iam_stale_days: 45
+# Also flag accounts that have NEVER successfully authenticated and were created more
+# than freeipa_iam_stale_days ago (catches provisioned-but-unused logins).
+freeipa_iam_stale_include_never: true
+# Logins shielded from the report (regex over uid, re.match/anchored) — service accounts
+# legitimately never interactively authenticate. protected_users + unmodifiable_users are
+# ALWAYS shielded on top of this. "" → shield nothing extra.
+freeipa_iam_stale_ignore_regex: "^svc-"
+
 # Apply mode for the bulk object types (users, groups, memberships, sudo rules).
 # false (default) = ONE module call per type — fastest (each server-side invocation
 # costs a full Python+ipalib bootstrap) but silent while a large payload applies.
@@ -384,6 +413,21 @@ freeipa_iam_reconcile_all_confirm: false
 # Built-ins never pruned by reconcile (whole-realm mode).
 freeipa_iam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
 freeipa_iam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
+
+# ── EleGrant / externally-managed object protection (reconcile shield) ────────
+# Objects another system creates at runtime (EleGrant PIM: pam_* groups, per-tenant
+# PIM hbac/sudo rules, and its svc accounts) are NOT in the declarative model, so a
+# scoped reconcile whose scope substring collides with their names — or reconcile_all —
+# would delete/archive them. Protection is by NAME PATTERN, not a single prefix: these are
+# LISTS of regexes, and a found object/user is shielded if its name matches ANY entry
+# (re.search — matches anywhere in the name, so a bare slug like "acme" also works). Add a
+# tenant's slug(s) here if EleGrant names its groups per-tenant instead of with a common
+# prefix; multiple slugs per tenant is fine — one list entry each. The shield applies to
+# BOTH scoped reconcile AND reconcile_all, and to user archival. [] → shield nothing extra.
+freeipa_iam_reconcile_protect_regexes:
+  - "^pam_"           # EleGrant shadow groups (default naming); add tenant slugs as needed
+freeipa_iam_reconcile_protect_users_regexes:
+  - "^svc-elegrant"   # EleGrant service accounts (svc-elegrant, -toggler-*, -dex-bind)
 
 # Container-marker group for GROUP-EXISTENCE reconcile: every declared group is nested here during
 # apply; under authoritative any container member no longer in freeipa_iam_usergroups (and not
@@ -517,7 +561,7 @@ freeipa_server_export_stock_hbacsvcs:
   - systemd-user
   - vsftpd
 
-# ── IPA-to-IPA realm migration (opt-in; via playbooks/L2_identity/freeipa_migrate.yml) ──
+# ── IPA-to-IPA realm migration (opt-in; via playbooks/20_idm_freeipa_migrate.yml) ──
 # Runs ipa-migrate on this (new-realm) primary, pulling identities from a source (old) realm.
 # Passwords are NOT migrated (Kerberos keys are realm-salted).
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write

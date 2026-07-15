@@ -1,0 +1,8 @@
+// Managed by Ansible (freeipa_server role) — do not edit by hand.
+// Top-level BIND include (named.conf `include "/etc/named/ipa-ext.conf";`).
+// Defines the trusted_network ACL referenced by ipa-options-ext.conf.
+acl "trusted_network" {
+{% for net in freeipa_server_dns_trusted_networks %}
+	{{ net }};
+{% endfor %}
+};

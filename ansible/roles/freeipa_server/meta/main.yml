@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: freeipa_server
-  author: longy
+  author: user
   description: >-
     Install and configure a FreeIPA server cluster (primary + replicas) on
     EL-family or Debian/Ubuntu by wrapping freeipa.ansible_freeipa, with

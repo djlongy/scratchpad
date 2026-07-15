@@ -1,5 +1,6 @@
 ---
 - name: Reload firewalld
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
   ansible.builtin.command: firewall-cmd --reload
   changed_when: true
   when: firewalld_reload | default(true)

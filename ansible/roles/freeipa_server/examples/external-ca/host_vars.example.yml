@@ -15,10 +15,10 @@
 # Capture prod's exact CA settings first with the read-only probe, then mirror them
 # here (mode, subject, KRA/DNS/PKINIT):
 #     ansible-playbook -i inventories/<prodenv>/hosts.yml \
-#         playbooks/freeipa_iam.yml --tags ca_report
+#         playbooks/20_idm_freeipa_iam.yml --tags ca_report
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Scenario host in these comments: freeipa.central-qa.core.domain.lan
+# Scenario host in these comments: freeipa.central-qa.example.com
 # (a test realm to be signed by your existing org root CA).
 
 # ── PHASE 1 — emit the CSR ───────────────────────────────────────────────────
@@ -27,14 +27,14 @@
 # /root/ipa.csr on the primary, leaving the server partially configured.
 #
 #   ansible-playbook -i inventories/<testenv>/hosts.yml \
-#       playbooks/freeipa_iam.yml --tags install --limit freeipa-central-qa
+#       playbooks/20_idm_freeipa_iam.yml --tags install --limit freeipa-central-qa
 #
 freeipa_server_ca_mode: external-ca
 freeipa_server_external_cert_files: []          # empty on phase 1 → CSR is emitted
 
 # Match these to what --tags ca_report reported for prod (example values shown):
-freeipa_server_subject_base: "O=CENTRAL-QA.CORE.DOMAIN.LAN"
-freeipa_server_ca_subject: "CN=Certificate Authority,O=CENTRAL-QA.CORE.DOMAIN.LAN"
+freeipa_server_subject_base: "O=CENTRAL-QA.EXAMPLE.COM"
+freeipa_server_ca_subject: "CN=Certificate Authority,O=CENTRAL-QA.EXAMPLE.COM"
 freeipa_server_setup_kra: false
 freeipa_server_setup_dns: true
 freeipa_server_no_pkinit: false
@@ -57,7 +57,7 @@ freeipa_server_no_pkinit: false
 # your org root, and every cert IPA issues chains to it.
 #
 #   ansible-playbook -i inventories/<testenv>/hosts.yml \
-#       playbooks/freeipa_iam.yml --tags install --limit freeipa-central-qa
+#       playbooks/20_idm_freeipa_iam.yml --tags install --limit freeipa-central-qa
 #
 # Uncomment for phase 2 (paths relative to the inventory, resolved by the installer
 # on the primary — stage them there, or use absolute control-node paths):

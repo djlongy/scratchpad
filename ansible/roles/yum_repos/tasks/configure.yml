@@ -3,6 +3,7 @@
 # it writes (default <name>.repo, or a shared <file>.repo when `file` is set).
 
 - name: Configure the managed YUM/DNF repositories
+  become: true  # root: writes .repo files under /etc/yum.repos.d
   ansible.builtin.yum_repository:
     name: "{{ item.name }}"
     file: "{{ item.file | default(item.name) }}"

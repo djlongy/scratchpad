@@ -94,7 +94,7 @@
     # without customization:, which re-disconnects the NIC). Field-verified.
     # NOTE: vmware.vmware modules are outside the community.vmware module_defaults
     # group → explicit connection args. On a standalone host, resource_pool must be
-    # the host's ROOT pool MOID (e.g. resgroup-123) if the name is ambiguous.
+    # the host's ROOT pool MOID (e.g. resgroup-362) if the name is ambiguous.
     - name: Create | Clone powered-off — GuestInfo
       vmware.vmware.deploy_folder_template:
         hostname: "{{ vsphere_vm_server }}"

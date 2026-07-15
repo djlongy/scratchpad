@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: yum_repos
-  author: homelab
+  author: user
   description: >-
     Declaratively own /etc/yum.repos.d on EL-family hosts: write a managed set
     of repositories (e.g. internal Artifactory/Nexus mirrors) and optionally

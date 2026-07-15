@@ -10,11 +10,13 @@
     _baseline_chrony_conf: "{{ '/etc/chrony.conf' if ansible_os_family == 'RedHat' else '/etc/chrony/chrony.conf' }}"
 
 - name: Chrony | Install chrony
+  become: true  # root: package install
   ansible.builtin.package:
     name: chrony
     state: present
 
 - name: Chrony | Deploy the managed chrony.conf
+  become: true  # root: writes the system chrony.conf
   ansible.builtin.template:
     src: chrony.conf.j2
     dest: "{{ _baseline_chrony_conf }}"
@@ -25,6 +27,7 @@
   notify: Restart chrony
 
 - name: Chrony | Ensure chrony is enabled and started
+  become: true  # root: manages the chrony service
   ansible.builtin.service:
     name: "{{ _baseline_chrony_service }}"
     state: started

@@ -26,3 +26,9 @@
     enabled: true
     state: restarted
     daemon_reload: true
+
+# rndc reconfig re-reads named.conf + its includes and loads new zones WITHOUT
+# flushing the resolver cache — the light-touch reload for ACL/options changes.
+- name: Reload BIND
+  ansible.builtin.command: rndc reconfig
+  changed_when: true

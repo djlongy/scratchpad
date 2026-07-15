@@ -11,6 +11,7 @@
     label: "{{ item.name | default('(missing name)') }}"
 
 - name: Render firewalld zone XML files
+  become: true  # root: writes /etc/firewalld/zones/
   ansible.builtin.template:
     src: zone.xml.j2
     dest: "/etc/firewalld/zones/{{ item.name }}.xml"

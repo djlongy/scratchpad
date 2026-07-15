@@ -14,6 +14,7 @@
 # inventory group). EL/firewalld-focused.
 
 - name: Bastion | Enable IPv4 forwarding (router role)
+  become: true  # root: writes a sysctl and /etc/sysctl.d/
   ansible.posix.sysctl:
     name: net.ipv4.ip_forward
     value: "1"
@@ -23,6 +24,7 @@
   when: baseline_bastion_ip_forward | bool
 
 - name: Bastion | Masquerade forwarded traffic out the backend interface
+  become: true  # root: firewalld module reconfigures the firewall
   # SNAT so backend nodes can route replies back without a static route to the
   # monitoring VLAN. Optional — skip if you run symmetric static routes instead.
   ansible.posix.firewalld:
@@ -34,6 +36,7 @@
   when: baseline_bastion_masquerade | bool
 
 - name: Bastion | Allow the monitoring source IPs to the exporter ports
+  become: true  # root: firewalld module reconfigures the firewall
   # One rich rule per (monitoring IP × exporter port). Permits Prometheus to
   # reach exporters via the bastion; nothing else is opened.
   ansible.posix.firewalld:
@@ -54,9 +57,10 @@
     - baseline_bastion_exporter_ports | length > 0
 
 - name: Bastion | Set static routes to the backend subnets
+  become: true  # root: nmcli reconfigures NetworkManager connections
   # Optional: only needed when the bastion isn't already on-link to the backend
   # subnets. Declarative + idempotent via NetworkManager. Each entry is a
-  # "<dest/prefix> <gateway>" string, e.g. "198.51.100.0/24 198.51.100.1".
+  # "<dest/prefix> <gateway>" string, e.g. "198.51.100.0/24 10.0.0.1".
   community.general.nmcli:
     conn_name: "{{ baseline_bastion_route_conn }}"
     type: ethernet

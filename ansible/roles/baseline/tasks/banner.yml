@@ -6,6 +6,7 @@
 # resolve at login); /etc/issue covers the pre-auth console/SSH banner.
 
 - name: Banner | Deploy the interactive login banner
+  become: true  # root: writes /etc/profile.d/
   ansible.builtin.template:
     src: login-banner.sh.j2
     dest: /etc/profile.d/00-baseline-banner.sh
@@ -14,6 +15,7 @@
     mode: "0644"
 
 - name: Banner | Set the pre-auth issue banner
+  become: true  # root: writes /etc/issue and /etc/issue.net
   ansible.builtin.template:
     src: issue-banner.j2
     dest: "{{ item }}"

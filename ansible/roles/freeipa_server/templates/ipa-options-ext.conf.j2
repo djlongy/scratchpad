@@ -1,0 +1,10 @@
+// Managed by Ansible (freeipa_server role) — do not edit by hand.
+// Included INSIDE the named.conf options{} block
+// (`include "/etc/named/ipa-options-ext.conf";`) — statements only, no wrapper.
+{% if freeipa_server_dns_restrict_recursion %}
+	allow-recursion { trusted_network; };
+	allow-query-cache { trusted_network; };
+{% endif %}
+{% if freeipa_server_dns_options_dnssec_validation | length > 0 %}
+	dnssec-validation {{ freeipa_server_dns_options_dnssec_validation }};
+{% endif %}

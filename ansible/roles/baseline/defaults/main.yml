@@ -63,7 +63,7 @@ baseline_crb_enabled: true             # enable CodeReady Builder / crb on EL
 # Point the host's package managers + environment at a Squid proxy for general
 # internet egress. Internal mirrors (Artifactory) + the estate domain should be
 # in no_proxy so they bypass it. Empty url = proxy step skipped.
-baseline_proxy_url: ""                  # e.g. "http://squid.mgt.example.com:3128"
+baseline_proxy_url: ""                  # e.g. "http://squid.example.com:3128"
 baseline_proxy_no_proxy: "localhost,127.0.0.1,::1"   # add Artifactory host + ".{{ domain }}"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -137,7 +137,7 @@ baseline_ssh_x11_forwarding: false
 baseline_ssh_extra_options: []         # raw "Keyword value" sshd lines appended verbatim
 # Bastion/jump-host: when set, writes an ssh_config.d ProxyJump drop-in so this
 # host reaches matched targets through the bastion.
-baseline_ssh_bastion_host: ""          # e.g. "bastion.mgt.example.com"
+baseline_ssh_bastion_host: ""          # e.g. "bastion.example.com"
 baseline_ssh_bastion_user: ""          # default: current user
 baseline_ssh_bastion_match_hosts: "*"  # host glob the ProxyJump applies to
 
@@ -163,7 +163,7 @@ baseline_bastion_monitoring_ips: []    # Prometheus/monitoring source IPs allowe
 #  - 192.0.2.74
 baseline_bastion_exporter_ports: ["9100/tcp"]   # exporter ports the monitoring plane scrapes
 baseline_bastion_backend_subnets: []   # optional "<dest/prefix> <gateway>" static routes
-#  - "198.51.100.0/24 198.51.100.1"
+#  - "198.51.100.0/24 10.0.0.1"
 baseline_bastion_route_conn: ""        # NetworkManager connection to attach routes to
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -220,7 +220,7 @@ baseline_fail2ban_destemail: "root@localhost"
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
-# Off by default; the default RedHat path (tasks/redhat.yml) still handles
+# Off by default; the RedHat path (tasks/redhat.yml) still handles
 # network where used. Enable for the portable, distro-agnostic path.
 baseline_network_manage: false
 # baseline_network_interface: "ens192"      # default: host's primary interface

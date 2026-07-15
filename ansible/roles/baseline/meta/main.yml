@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: baseline
-  author: longy
+  author: user
   description: >-
     Distro-agnostic SOE Linux baseline, ordered for speed and idempotence:
     identity, storage (via the storage role), CA trust, outbound proxy (Squid
@@ -15,6 +15,7 @@ galaxy_info:
     breakglass local-admin, and optional observability/security agents
     (node_exporter, velociraptor, splunk_forwarder, stroom_agent, clamav) each
     gated by an enable_* toggle. Distro-aware (AlmaLinux / RHEL / Ubuntu).
+    openclaw lives in the `openclaw` role.
   license: MIT
   min_ansible_version: "2.14"
   platforms:

@@ -918,6 +918,10 @@
     - freeipa_server_authoritative | bool
     - freeipa_iam_current_managed_users | default([]) | length > 0
 
+# The protect-users regexes shield EleGrant svc accounts (and any externally-managed
+# login) from archival even if once declared then undeclared (belt-and-suspenders atop
+# the marker gate). ANY-match via re.search; an empty effective list degrades to a
+# never-matching regex so normal archival is unaffected.
 - name: Build declarative user delete list
   ansible.builtin.set_fact:
     freeipa_iam_users_to_remove: >-
@@ -925,7 +929,13 @@
         freeipa_iam_current_managed_users
         | difference(freeipa_iam_desired_usernames)
         | difference(freeipa_iam_protected_users)
+        | reject('search', _freeipa_iam_protect_users_re) | list
       }}
+  vars:
+    _freeipa_iam_protect_users_re: >-
+      {{ ('(' + (freeipa_iam_reconcile_protect_users_regexes | reject('equalto', '') | join(')|(')) + ')')
+         if (freeipa_iam_reconcile_protect_users_regexes | reject('equalto', '') | list | length > 0)
+         else '(?!)' }}
   when: not (freeipa_iam_reconcile_memberships_only | bool)   # membership-only mode never archives users
 
 # Archive (don't destroy) users removed from declarative config: bulk ipauser with

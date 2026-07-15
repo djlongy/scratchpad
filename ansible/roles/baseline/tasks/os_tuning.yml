@@ -4,6 +4,7 @@
 # per-distro task files so it runs once, in one place, on every distro.
 
 - name: Tuning | Set vm.max_map_count
+  become: true  # root: writes a kernel sysctl and /etc/sysctl.d/
   ansible.posix.sysctl:
     name: vm.max_map_count
     value: "{{ baseline_vm_max_map_count | default('262144') }}"
@@ -15,6 +16,7 @@
 # SSH sessions through a stateful firewall freeze when the idle state is dropped
 # before a keepalive. Lower it (Ubuntu already defaults sanely).
 - name: Tuning | Lower TCP keepalive time (EL)
+  become: true  # root: writes a kernel sysctl and /etc/sysctl.d/
   ansible.posix.sysctl:
     name: net.ipv4.tcp_keepalive_time
     value: "300"
@@ -26,6 +28,7 @@
 # Manage IPv6 in either direction. Per-host opt-in via baseline_disable_ipv6.
 # Some services (e.g. FreeIPA) require ::1 on loopback — keep it false there.
 - name: Tuning | Set IPv6 disable_ipv6 sysctls
+  become: true  # root: writes kernel sysctls and /etc/sysctl.d/
   ansible.posix.sysctl:
     name: "{{ item }}"
     value: "{{ '1' if (baseline_disable_ipv6 | bool) else '0' }}"

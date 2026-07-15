@@ -41,7 +41,7 @@ Per-repo keys: `name`, `baseurl` (required); `file`, `description`, `enabled`,
 Put env-specific URLs in inventory `group_vars`, not the role:
 
 ```yaml
-# inventories/<env>/group_vars/some_group.yml
+# inventories/example/group_vars/some_group.yml
 yum_repos_keep: [epel]          # keep EPEL, replace everything else
 
 yum_repos_repos:

@@ -14,6 +14,7 @@
     label: "{{ item.name | default('(missing name)') }}"
 
 - name: Render firewalld service XML files
+  become: true  # root: writes /etc/firewalld/services/
   ansible.builtin.template:
     src: service.xml.j2
     dest: "/etc/firewalld/services/{{ item.name }}.xml"

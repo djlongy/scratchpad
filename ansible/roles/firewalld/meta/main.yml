@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: firewalld
-  author: longy
+  author: user
   description: >-
     Manages firewalld via XML templates for services and zones, plus runtime
     source/interface-to-zone bindings. Multi-distro (EL + Debian families).

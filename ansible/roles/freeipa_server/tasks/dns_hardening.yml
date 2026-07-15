@@ -1,0 +1,32 @@
+---
+# roles/freeipa_server/tasks/dns_hardening.yml
+# Own the two BIND include files FreeIPA leaves empty for admin customisation:
+#   /etc/named/ipa-ext.conf         — top-level: the trusted_network ACL
+#   /etc/named/ipa-options-ext.conf — inside options{}: recursion/query-cache scope + dnssec
+# Applied only when freeipa_server_dns_trusted_networks is declared. Config is validated
+# with named-checkconf BEFORE the handler runs `rndc reconfig`, so a broken ACL can never
+# reach a live reload. Read-only when nothing changes; idempotent.
+
+- name: DNS hardening | Write the trusted_network ACL (ipa-ext.conf)
+  ansible.builtin.template:
+    src: ipa-ext.conf.j2
+    dest: /etc/named/ipa-ext.conf
+    owner: root
+    group: named
+    mode: "0640"
+  notify: Reload BIND
+
+- name: DNS hardening | Write recursion/query-cache options (ipa-options-ext.conf)
+  ansible.builtin.template:
+    src: ipa-options-ext.conf.j2
+    dest: /etc/named/ipa-options-ext.conf
+    owner: root
+    group: named
+    mode: "0640"
+  notify: Reload BIND
+
+# Fail loudly on a bad include BEFORE the notified reload flushes at play end — a
+# syntax error here would otherwise take named down on its next restart.
+- name: DNS hardening | Validate BIND configuration
+  ansible.builtin.command: named-checkconf
+  changed_when: false

@@ -23,6 +23,7 @@
 
 # ── Root disk(s) — always excluded from auto-selection / provisioning ────
 - name: Identify the physical disk(s) backing /
+  become: true  # root: inspects block-device topology
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
@@ -40,6 +41,7 @@
 
 # ── Block-device inventory (JSON, sizes in bytes) ────────────────────────
 - name: Gather block-device inventory
+  become: true  # root: lsblk needs root to read SERIAL/WWN
   ansible.builtin.command: lsblk -pbJ -o NAME,TYPE,SIZE,SERIAL,WWN,FSTYPE,MOUNTPOINT
   register: _storage_lsblk_raw
   changed_when: false
@@ -97,6 +99,7 @@
 # candidate directly so `auto` never selects a disk that would later fail the
 # FRESH guard — a disk counts as blank only if blkid -p reports nothing (rc 2).
 - name: Probe candidate disks for hidden signatures
+  become: true  # root: blkid -p opens the raw device
   ansible.builtin.command: "blkid -p -o value -s TYPE {{ item }}"
   loop: "{{ _storage_blank_candidates }}"
   register: _storage_blank_probe
@@ -140,12 +143,14 @@
 # this, vgs/lvs would miss it, the volume would look absent, and an `auto`
 # selector could grab a different blank disk instead of adopting the old one.
 - name: Activate any inactive volume groups (reattached-disk safety)
+  become: true  # root: LVM vgchange
   ansible.builtin.command: vgchange -ay
   changed_when: false
   failed_when: false
   check_mode: false
 
 - name: Get existing volume groups
+  become: true  # root: LVM vgs
   ansible.builtin.command: vgs --noheadings -o vg_name
   register: _storage_vgs_raw
   changed_when: false
@@ -153,6 +158,7 @@
   check_mode: false
 
 - name: Get existing logical volumes
+  become: true  # root: LVM lvs
   ansible.builtin.command: lvs --noheadings -o vg_name,lv_name
   register: _storage_lvs_raw
   changed_when: false
@@ -160,6 +166,7 @@
   check_mode: false
 
 - name: Get physical-volume to volume-group mapping
+  become: true  # root: LVM pvs
   ansible.builtin.command: pvs --noheadings -o pv_name,vg_name
   register: _storage_pvs_raw
   changed_when: false

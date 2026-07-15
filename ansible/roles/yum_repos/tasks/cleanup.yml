@@ -20,6 +20,7 @@
   register: _yum_repos_present
 
 - name: Remove unmanaged .repo files (keep managed set + yum_repos_keep)
+  become: true  # root: removes files under /etc/yum.repos.d
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent

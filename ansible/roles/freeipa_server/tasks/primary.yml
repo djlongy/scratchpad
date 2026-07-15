@@ -21,10 +21,12 @@
     ipaserver_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
     ipaserver_setup_ca: "{{ freeipa_server_ca_mode != 'ca-less' }}"
     ipaserver_setup_adtrust: "{{ freeipa_server_setup_adtrust }}"
-    # external_ca is asserted ONLY in phase 1 (no signed cert files yet → emit the
-    # CSR). In phase 2 the signed cert files ARE supplied and external_ca MUST be
-    # false, so the installer resumes external-ca step two instead of regenerating
-    # the CSR. (Re-asserting external_ca in phase 2 makes ipaserver re-enter step one.)
+    # external_ca is asserted ONLY in phase 1 (no signed cert files yet → emit the CSR).
+    # In phase 2 the signed cert files ARE supplied and external_ca MUST be false: re-
+    # asserting it makes ansible_freeipa 1.16.0 re-enter external-ca STEP ONE and regenerate
+    # the CSR, so /etc/ipa/ca.crt is never created. Upstream's supported recipe feeds
+    # external_cert_files WITHOUT external_ca — which resumes step two to completion. This
+    # also fixes the role's pre-existing manual two-run external-ca flow.
     ipaserver_external_ca: "{{ freeipa_server_ca_mode == 'external-ca'
                                and (freeipa_server_external_cert_files | length == 0) }}"
     ipaserver_external_cert_files: "{{ freeipa_server_external_cert_files }}"
@@ -62,6 +64,7 @@
     {{ ({'ipaserver_firewalld_zone': freeipa_server_firewalld_zone,
          'ipaserver_subject_base': freeipa_server_subject_base,
          'ipaserver_ca_subject': freeipa_server_ca_subject,
+         'ipaserver_ca_signing_algorithm': freeipa_server_ca_signing_algorithm,
          'ipaclient_ntp_pool': freeipa_server_ntp_pool}
         | dict2items | rejectattr('value', 'equalto', '') | list)
        + ({'ipaserver_idstart': freeipa_server_idstart | int,
@@ -75,9 +78,10 @@
     name: freeipa.ansible_freeipa.ipaserver
 
 # Skip the service start during an external-ca PHASE 1 (CSR-emitting) run: the
-# installer stops after writing /root/ipa.csr and ipa.service is not yet configured,
-# so starting it would fail. Phase 2 (signed cert files supplied) and every normal
-# install run this task unchanged.
+# installer stops after writing /root/ipa.csr and ipa.service is not yet
+# configured, so starting it would fail. Phase 2 (signed cert files supplied)
+# and every normal install run this task unchanged. Mirrors the preflight
+# escape-hatch condition (freeipa_server_external_ca_allow_csr_phase).
 - name: Ensure IPA service is enabled and started
   ansible.builtin.service:
     name: ipa

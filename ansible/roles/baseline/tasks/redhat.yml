@@ -4,10 +4,11 @@
 # phases. Repos (RHSM/EPEL/CRB), the package baseline, crypto/FIPS, SSH and the
 # tuning sysctls now live in their own phase files — keep them out of here.
 
-# ── Default network (NetworkManager nmcli) — default network path ─────────
+# ── Default network (NetworkManager nmcli) — default convention path ─────────
 # Opt-in by defining connection_name + dns_nameserver + search_domain. The
 # portable, distro-agnostic path is network.yml (baseline_network_manage).
 - name: Configure DNS via NetworkManager
+  become: true  # root: nmcli/systemd reconfigure networking
   when:
     - connection_name is defined
     - dns_nameserver is defined
@@ -46,6 +47,7 @@
   # template ships: firewalld (started below) and initscripts (provides
   # /sbin/service, which the auditd restart handler requires — systemctl
   # refuses manual auditd restart on EL9).
+  become: true  # root: package install
   ansible.builtin.dnf:
     name:
       - firewalld
@@ -53,6 +55,7 @@
     state: present
 
 - name: Ensure firewalld is started and enabled
+  become: true  # root: manages the firewalld service
   ansible.builtin.systemd:
     name: firewalld
     state: started
@@ -60,6 +63,7 @@
 
 # ── AlmaLinux pip baseline (legacy pip_packages list) ────────────────────────
 - name: Install Python3 and pip packages on AlmaLinux hosts
+  become: true  # root: package + system-wide pip install
   when: ansible_distribution == 'AlmaLinux'
   block:
     - name: Ensure Python3 and pip3 are installed on AlmaLinux

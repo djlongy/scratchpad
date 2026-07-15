@@ -94,10 +94,10 @@ firewalld_source_zone_bindings: []
 # have a real reason: dedicated storage NIC, PCI passthrough, etc.).
 # Schema:
 #   - { zone: storage, interface: ens224 }
-# For the PRIMARY NIC, do NOT hardcode the name (it varies by distro:
+# For the PRIMARY NIC, do NOT hardcode the name (it varies by distro on ESXi:
 # eth0 / ens192 / ens160…). Use the fleet-wide derived var instead:
 #   - { zone: internal, interface: "{{ primary_interface }}" }
-# (primary_interface is defined in inventories/<env>/group_vars/all.yml.)
+# (primary_interface is defined in inventories/global/group_vars/all/main.yml.)
 firewalld_interface_zone_bindings: []
 
 # ── Back-compat: legacy firewall_rules variable ──────────────────────────────
@@ -113,9 +113,8 @@ firewalld_interface_zone_bindings: []
 #
 # Rules are opened in `firewalld_default_zone` (falls back to "public" if the
 # default is unset). This path is kept ONLY for compatibility — new code should
-# prefer firewalld_services + firewalld_zones. The non-role-prefixed name is
-# deliberate (it IS the legacy alias), so the var-naming idiom is suppressed.
-firewall_rules: []  # noqa: var-naming[no-role-prefix]
+# prefer firewalld_services + firewalld_zones.
+firewall_rules: []
 
 # ── Package management ───────────────────────────────────────────────────────
 

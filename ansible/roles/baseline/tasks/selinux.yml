@@ -21,6 +21,7 @@
 # fcontexts written below are part of that same relabel.
 
 - name: SELinux | Manage SELinux state
+  become: true  # root: sets the SELinux state/policy
   ansible.posix.selinux:
     policy: "{{ baseline_selinux_policy }}"
     state: "{{ baseline_selinux_state }}"
@@ -37,6 +38,7 @@
   # Touch /.autorelabel so the next (single, deferred) boot relabels everything
   # from the policy — including the custom fcontexts written below — before any
   # service starts under enforcing.
+  become: true  # root: writes /.autorelabel on the root filesystem
   ansible.builtin.file:
     path: /.autorelabel
     state: touch
@@ -69,6 +71,7 @@
 #   baseline_selinux_fcontexts:
 #     - {path: "/opt/containers(/.*)?", setype: container_file_t, restore: /opt/containers}
 - name: SELinux | Apply SELinux file contexts (policy store)
+  become: true  # root: writes the SELinux policy store
   community.general.sefcontext:
     target: "{{ item.path }}"
     setype: "{{ item.setype }}"
@@ -95,6 +98,7 @@
   # so an inline restorecon here would be a no-op — skip it.
   # -i ignores paths that don't exist yet (e.g. labelling /opt/docker before the
   # docker role creates it — new files still inherit the recorded fcontext).
+  become: true  # root: relabels files on the filesystem
   ansible.builtin.command: "restorecon -R -i {{ item.item.restore | default(item.item.path) }}"
   loop: "{{ _baseline_fcontext.results | default([]) }}"
   loop_control:
@@ -110,6 +114,7 @@
 # from the owning service role (which runs once SELinux is active), or re-run
 # this phase after the host comes up enforcing.
 - name: SELinux | Set SELinux booleans (when active)
+  become: true  # root: sets persistent SELinux booleans
   ansible.posix.seboolean:
     name: "{{ item.name }}"
     state: "{{ item.state }}"

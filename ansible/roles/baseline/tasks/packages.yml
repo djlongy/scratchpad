@@ -15,12 +15,14 @@
 
 # ── Cache + optional full upgrade ────────────────────────────────────────────
 - name: Packages | Update the APT cache (Debian)
+  become: true  # root: apt cache update
   ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
   when: ansible_os_family == "Debian"
 
 - name: Packages | Upgrade all OS packages (EL)
+  become: true  # root: package upgrade
   ansible.builtin.dnf:
     name: "*"
     state: latest      # noqa: package-latest  (deliberate, gated by a flag)
@@ -29,6 +31,7 @@
     - ansible_os_family == "RedHat"
 
 - name: Packages | Upgrade all OS packages (Debian)
+  become: true  # root: package upgrade
   ansible.builtin.apt:
     upgrade: dist
   when:
@@ -37,6 +40,7 @@
 
 # ── Required + optional packages (one transaction) ───────────────────────────
 - name: Packages | Install the required and optional packages
+  become: true  # root: package install
   ansible.builtin.package:
     name: "{{ _baseline_install_set }}"
     state: present
@@ -44,12 +48,14 @@
 
 # ── Version-locked packages: install, then pin ───────────────────────────────
 - name: Packages | Install packages that will be version-locked
+  become: true  # root: package install
   ansible.builtin.package:
     name: "{{ baseline_packages_version_locked }}"
     state: present
   when: baseline_packages_version_locked | length > 0
 
 - name: Packages | Ensure the dnf versionlock plugin is present (EL)
+  become: true  # root: package install
   ansible.builtin.dnf:
     name: python3-dnf-plugin-versionlock
     state: present
@@ -58,6 +64,7 @@
     - baseline_packages_version_locked | length > 0
 
 - name: Packages | Apply dnf version locks (EL)
+  become: true  # root: writes the dnf versionlock database
   community.general.dnf_versionlock:
     name: "{{ baseline_packages_version_locked }}"
     state: present
@@ -66,6 +73,7 @@
     - baseline_packages_version_locked | length > 0
 
 - name: Packages | Apply apt holds (Debian)
+  become: true  # root: sets dpkg package holds
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
@@ -76,6 +84,7 @@
 
 # ── Troubleshooting tools (lean by default; install on demand) ───────────────
 - name: Packages | Install troubleshooting tools (on demand)
+  become: true  # root: package install
   ansible.builtin.package:
     name: "{{ baseline_troubleshooting_packages[ansible_os_family] | default([]) }}"
     state: present
@@ -85,6 +94,7 @@
 
 # ── Enforce absent packages (e.g. setroubleshoot — SOE policy no-go) ─────────
 - name: Packages | Ensure policy-prohibited packages are absent
+  become: true  # root: package removal
   ansible.builtin.package:
     name: "{{ baseline_packages_absent }}"
     state: absent

@@ -2,6 +2,7 @@
 # roles/baseline/tasks/ubuntu.yml
 # Debian/Ubuntu distro specifics not covered by the generic baseline phases.
 - name: Ubuntu distro specifics
+  become: true  # root: package install + service/firewall/config management
   when: ansible_os_family == "Debian"
   block:
     - name: Install CIFS utils on Debian
