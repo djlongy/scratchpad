@@ -22,11 +22,18 @@ domain: "example.com"
 #   3. else `omit` — the firewalld bind is skipped rather than failing on a
 #      host that gathered no facts.
 # A host that genuinely needs a different NIC can override in its host_vars.
-# Requires gather_facts (the default) — do not run firewalld plays with facts off.
+#
+# The `| default([])` / `| default('')` guards matter: the firewalld role's
+# argument-spec validation runs at role ENTRY, BEFORE the role's own network-fact
+# self-heal task. Under a cold `gather_facts: false` run those facts are absent,
+# so without the guards this expression would raise "'dict object' has no
+# attribute 'interfaces'" at arg-spec time. With them it resolves to `omit`,
+# arg-spec passes, the self-heal gathers facts, and the lazy re-eval at bind time
+# fills in the real NIC.
 primary_interface: >-
-  {{ (ansible_facts.interfaces
+  {{ ((ansible_facts.interfaces | default([]))
       | map('extract', ansible_facts)
       | selectattr('ipv4.address', 'defined')
-      | selectattr('ipv4.address', 'eq', ansible_host)
+      | selectattr('ipv4.address', 'eq', ansible_host | default(''))
       | map(attribute='device') | first)
       | default(ansible_default_ipv4.interface | default(omit), true) }}
