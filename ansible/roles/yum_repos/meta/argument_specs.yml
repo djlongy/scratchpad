@@ -1,0 +1,85 @@
+---
+argument_specs:
+  main:
+    short_description: "Own /etc/yum.repos.d — managed repo set + optional sweep"
+    description:
+      - "Writes a declared set of YUM/DNF repositories and, when enabled, removes"
+      - "every other .repo file except a configurable allowlist. EL-family only."
+    options:
+      yum_repos_enabled:
+        description: "Master toggle. Set false to skip the role entirely."
+        type: bool
+        default: true
+      yum_repos_dir:
+        description: "Repository directory this role owns."
+        type: str
+        default: /etc/yum.repos.d
+      yum_repos_repos:
+        description: "Managed repositories. Maps onto ansible.builtin.yum_repository."
+        type: list
+        elements: dict
+        default: []
+        options:
+          name:
+            description: "Repository id (and default .repo filename)."
+            type: str
+            required: true
+          baseurl:
+            description: "Repository base URL."
+            type: str
+            required: true
+          file:
+            description: "Group into this .repo filename (without suffix). Defaults to name."
+            type: str
+          description:
+            description: "Human-readable repo description. Defaults to name."
+            type: str
+          enabled:
+            description: "Whether the repo is enabled."
+            type: bool
+            default: true
+          gpgcheck:
+            description: "Verify package signatures."
+            type: bool
+            default: true
+          gpgkey:
+            description: "GPG key URL(s) for signature verification."
+            type: raw
+          sslverify:
+            description: "Verify the repo's TLS certificate."
+            type: bool
+          priority:
+            description: "dnf priority-plugin weight (lower = preferred)."
+            type: int
+          module_hotfixes:
+            description: "Allow non-modular RPMs to override modular content."
+            type: bool
+          metadata_expire:
+            description: "Metadata cache lifetime, e.g. '6h' or '86400'."
+            type: str
+          state:
+            description: "present or absent."
+            type: str
+            choices: [present, absent]
+            default: present
+      yum_repos_remove_unmanaged:
+        description: "Sweep away .repo files that are neither managed nor in the allowlist."
+        type: bool
+        default: true
+      yum_repos_keep:
+        description: "Basenames (no .repo suffix) to preserve during the sweep."
+        type: list
+        elements: str
+        default: []
+      yum_repos_backup:
+        description: "Snapshot the pristine directory once before the first sweep."
+        type: bool
+        default: true
+      yum_repos_backup_dir:
+        description: "Where the one-time original-directory snapshot is written."
+        type: str
+        default: /etc/yum.repos.d.orig
+      yum_repos_makecache:
+        description: "Run `dnf makecache` after changes (also a reachability check)."
+        type: bool
+        default: true

@@ -1,0 +1,27 @@
+---
+# Fail fast on a mis-declared repo set, and refuse the footgun of wiping every
+# repository (which would break dnf on the target).
+
+- name: Assert every managed repo has a name and a baseurl
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | string | length > 0
+      - item.baseurl is defined
+      - item.baseurl | string | length > 0
+    fail_msg: "Each yum_repos_repos entry needs a non-empty 'name' and 'baseurl' (offending entry: {{ item }})."
+    quiet: true
+  loop: "{{ yum_repos_repos }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+
+- name: Assert the sweep will not delete every repository
+  ansible.builtin.assert:
+    that:
+      - (yum_repos_repos | length > 0) or (yum_repos_keep | length > 0)
+    fail_msg: >-
+      Refusing to run: yum_repos_remove_unmanaged is true but both
+      yum_repos_repos and yum_repos_keep are empty — this would delete every
+      .repo file and break package management on the host.
+    success_msg: "Sweep safety check passed — at least one repo will remain."
+  when: yum_repos_remove_unmanaged | bool

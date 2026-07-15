@@ -1,0 +1,64 @@
+---
+# yum_repos — declaratively own /etc/yum.repos.d on EL-family hosts.
+# Writes a managed set of repositories (typically internal Artifactory/Nexus
+# mirrors) and, optionally, sweeps away every other .repo file so the directory
+# ends up containing exactly the repos you declare (plus an allowlist).
+#
+# EL-family only (RHEL / AlmaLinux / Rocky). Non-EL hosts skip the role.
+
+# Master toggle. Set false to skip the role entirely.
+yum_repos_enabled: true
+
+# The repository directory this role owns.
+yum_repos_dir: /etc/yum.repos.d
+
+# ── The managed repositories ─────────────────────────────────────────────────
+# Each entry maps onto ansible.builtin.yum_repository. `name` is the repo id and
+# `baseurl` are the only required keys; everything else has a sensible default.
+# Multiple entries can share a `file` to group them into one .repo file.
+# Env-specific values (real Artifactory URLs) belong in inventory group_vars,
+# NOT here — keep this default empty. Example shape:
+#
+# yum_repos_repos:
+#   - name: baseos
+#     description: "AlmaLinux BaseOS (Artifactory mirror)"
+#     baseurl: "https://artifactory.example.com/artifactory/almalinux-baseos/$releasever/BaseOS/$basearch/os/"
+#     gpgcheck: true
+#     gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-9"
+#   - name: appstream
+#     description: "AlmaLinux AppStream (Artifactory mirror)"
+#     baseurl: "https://artifactory.example.com/artifactory/almalinux-appstream/$releasever/AppStream/$basearch/os/"
+#     gpgcheck: true
+#     gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-9"
+#   - name: extras
+#     file: almalinux-extras          # groups into almalinux-extras.repo
+#     baseurl: "https://artifactory.example.com/artifactory/almalinux-extras/$releasever/extras/$basearch/os/"
+#     gpgcheck: false
+#
+# Supported per-entry keys (all optional except name + baseurl):
+#   name, baseurl, file, description, enabled, gpgcheck, gpgkey, sslverify,
+#   priority, module_hotfixes, metadata_expire, state
+yum_repos_repos: []
+
+# ── The sweep — remove .repo files that aren't ours ──────────────────────────
+# true  → after writing the managed repos, delete every *.repo file that is
+#         neither managed nor in yum_repos_keep. End state = exactly your repos
+#         (+ allowlist). This is the "replace all" behaviour.
+# false → additive: leave existing repos in place, only add/update the managed
+#         set.
+yum_repos_remove_unmanaged: true
+
+# Basenames (WITHOUT the .repo suffix) to preserve during the sweep, e.g.
+# ['epel', 'epel-modular']. The managed repos above are always preserved.
+yum_repos_keep: []
+
+# ── Safety: snapshot the pristine directory before the first sweep ───────────
+# Copies yum_repos_dir to yum_repos_backup_dir once (guarded so re-runs never
+# overwrite the original snapshot). Restore with: cp -a <backup>/. <dir>/
+yum_repos_backup: true
+yum_repos_backup_dir: /etc/yum.repos.d.orig
+
+# ── Validation: refresh the dnf metadata cache after changes ─────────────────
+# true → run `dnf makecache` when repos change; a broken/unreachable managed
+#        repo then fails the run loudly instead of surfacing on the next install.
+yum_repos_makecache: true

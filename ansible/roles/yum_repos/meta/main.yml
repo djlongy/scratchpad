@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: yum_repos
+  author: homelab
+  description: >-
+    Declaratively own /etc/yum.repos.d on EL-family hosts: write a managed set
+    of repositories (e.g. internal Artifactory/Nexus mirrors) and optionally
+    sweep away every other .repo file, keeping a configurable allowlist.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["8", "9", "10"]
+  galaxy_tags:
+    - yum
+    - dnf
+    - repository
+    - artifactory
+    - rhel
+
+dependencies: []

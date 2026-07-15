@@ -1,0 +1,34 @@
+---
+# The sweep: remove every .repo file that is neither one we manage nor in the
+# yum_repos_keep allowlist, leaving the directory holding exactly the desired
+# set. Runs after configure.yml so the managed files already exist on disk.
+
+# Managed basenames (no .repo suffix) that must survive: every repo's name, plus
+# any explicit `file` override. Single-expression set_fact (recomputed each run,
+# never accumulated) so it can't leak stale entries across plays.
+- name: Compute the managed repo basenames (these survive the sweep)
+  ansible.builtin.set_fact:
+    _yum_repos_managed: >-
+      {{ (yum_repos_repos | map(attribute='name') | list)
+         + (yum_repos_repos | selectattr('file', 'defined') | map(attribute='file') | list) }}
+
+- name: Find every .repo file currently on disk
+  ansible.builtin.find:
+    paths: "{{ yum_repos_dir }}"
+    patterns: "*.repo"
+    file_type: file
+  register: _yum_repos_present
+
+- name: Remove unmanaged .repo files (keep managed set + yum_repos_keep)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ _yum_repos_present.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  vars:
+    _basename: "{{ item.path | basename | regex_replace('\\.repo$', '') }}"
+  when:
+    - _basename not in _yum_repos_managed
+    - _basename not in yum_repos_keep
+  notify: Refresh dnf metadata cache

@@ -1,0 +1,9 @@
+---
+# Rebuild the dnf metadata cache once after any repo change. This doubles as a
+# reachability check: an unreachable/misconfigured managed repo fails here,
+# loudly, instead of silently breaking the next `dnf install`.
+- name: Refresh dnf metadata cache
+  ansible.builtin.command:
+    cmd: dnf -y makecache
+  changed_when: false
+  when: yum_repos_makecache | bool

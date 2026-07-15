@@ -1,0 +1,10 @@
+---
+# Preserve the pristine, pre-role repository directory once so a bad managed set
+# can be rolled back with:  cp -a {{ yum_repos_backup_dir }}/. {{ yum_repos_dir }}/
+# The `creates` guard makes this a one-time snapshot — re-runs never clobber the
+# original with an already-managed state.
+
+- name: Snapshot the original repository directory (first run only)
+  ansible.builtin.command:
+    cmd: "cp -a {{ yum_repos_dir }} {{ yum_repos_backup_dir }}"
+    creates: "{{ yum_repos_backup_dir }}"

@@ -1,0 +1,45 @@
+---
+# yum_repos — own /etc/yum.repos.d: write a managed repo set and optionally
+# sweep away everything else. EL-family only.
+
+# Self-heal platform facts so the os_family gate and the role body work even
+# under a `gather_facts: false` play or a tag-isolated run. No-op when facts are
+# already present. Kept OUTSIDE the block because the block's `when` reads
+# ansible_os_family, which must be defined before it is evaluated.
+- name: Ensure platform facts are present (gather_facts:false / tag-isolated runs)
+  ansible.builtin.setup:
+    gather_subset: ['!all', 'min']
+  when: ansible_os_family is not defined
+  tags: [always]
+
+- name: Skip yum_repos (disabled or non-EL host)
+  ansible.builtin.debug:
+    msg: >-
+      yum_repos skipped
+      (enabled={{ yum_repos_enabled }}, os_family={{ ansible_os_family | default('unknown') }})
+  when: not (yum_repos_enabled | bool) or ansible_os_family != "RedHat"
+  tags: [always]
+
+- name: Manage /etc/yum.repos.d
+  when:
+    - yum_repos_enabled | bool
+    - ansible_os_family == "RedHat"
+  block:
+
+    - name: Validate the managed repo set and sweep safety
+      ansible.builtin.import_tasks: assert.yml
+      tags: [assert, yum_repos]
+
+    - name: Snapshot the original repositories (first run only)
+      ansible.builtin.import_tasks: backup.yml
+      when: yum_repos_backup | bool
+      tags: [backup, yum_repos]
+
+    - name: Write the managed repositories
+      ansible.builtin.import_tasks: configure.yml
+      tags: [configure, yum_repos]
+
+    - name: Remove unmanaged repositories (keep managed set + allowlist)
+      ansible.builtin.import_tasks: cleanup.yml
+      when: yum_repos_remove_unmanaged | bool
+      tags: [cleanup, yum_repos]
