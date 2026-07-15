@@ -20,42 +20,42 @@ freeipa_server_rbac_roles:
     # in global.yml (shared slice), not in this file
     members: [acme.erin, acme.dave, ops.editor]
 
-freeipa_idam_usergroups:
+freeipa_iam_usergroups:
   - { name: acme-admins, description: Acme admins }
   - { name: acme-viewers, description: Acme read-only }
   # granular ug-* policy group — HBAC/sudo target this; the RBAC overlay below nests into it
   - { name: ug-acme-dev-docker-operators, description: 'Operators on Docker hosts [acme/dev]' }
 
-freeipa_idam_users:
+freeipa_iam_users:
   - { name: acme.dave, givenname: Dave, sn: Dunn, email: [acme.dave@example.com], groups: [acme-admins, admins] }   # also a built-in admin
   - { name: acme.erin, givenname: Erin, sn: Ellis, email: [acme.erin@example.com], groups: [acme-viewers] }
 
-freeipa_idam_hostgroups:
+freeipa_iam_hostgroups:
   - { name: hg-acme, description: Acme hosts }
 
 # Delegation building blocks: permission (atomic right) -> privilege (bundle) -> iparole
 # (bundle of privileges + members). Delegates IPA-management powers, not host access.
-freeipa_idam_iparoles:
+freeipa_iam_iparoles:
   - { name: acme-hostgroup-reader, privilege: [acme Hostgroup Ops], usergroup: [acme-admins] }
 
-freeipa_idam_privileges:
+freeipa_iam_privileges:
   - { name: acme Hostgroup Ops, description: Manage acme hostgroups, permission: [acme Read Hostgroups] }
 
-freeipa_idam_permissions:
+freeipa_iam_permissions:
   - { name: acme Read Hostgroups, right: [read, search], attrs: [cn, member], object_type: hostgroup }
 
-freeipa_idam_hbac_rules:
+freeipa_iam_hbac_rules:
   - { name: hbac-acme-ssh, usergroup: [acme-admins], hostgroup: [hg-acme], service: [sshd] }
   - { name: hbac-acme-docker, usergroup: [ug-acme-dev-docker-operators], hostgroup: [hg-acme], service: [docker] }
 
 # Bundle the SHARED sudo commands (declared once realm-wide via globex.yml's group_vars
 # pull) — cross-file references resolve on the realm-wide merged lists.
-freeipa_idam_sudocmdgroups:
+freeipa_iam_sudocmdgroups:
   - { name: acme-ops-cmds, description: Acme operational command bundle, sudocmd: [/usr/bin/systemctl, /usr/bin/journalctl] }
 
-freeipa_idam_sudo_rules:
+freeipa_iam_sudo_rules:
   - { name: sudo-acme-admin, description: Full sudo for acme admins, cmdcategory: all, runasusercategory: all, runasgroupcategory: all, usergroup: [acme-admins], hostgroup: [hg-acme] }
   - { name: sudo-acme-ops, description: Acme operational sudo, usergroup: [ug-acme-dev-docker-operators], hostgroup: [hg-acme], cmdgroup: [acme-ops-cmds] }
 
-freeipa_idam_pwpolicies:
+freeipa_iam_pwpolicies:
   - { name: acme-admins, maxlife: 60, minlife: 1, history: 10, minclasses: 4, minlength: 14, priority: 141 }

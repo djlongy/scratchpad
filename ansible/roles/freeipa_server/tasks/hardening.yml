@@ -17,7 +17,7 @@
     or (freeipa_server_disable_allow_all | bool)
 
 - name: Acquire Kerberos ticket for hardening operations
-  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
   args:
     stdin: "{{ _freeipa_admin_password }}\n"
   changed_when: false
@@ -88,7 +88,7 @@
          | list | length) > 0
     fail_msg: >-
       Refusing to disable allow_all: no other enabled HBAC rule found. Create
-      and test replacement HBAC rules (freeipa_idam_hbac_rules) first, or you
+      and test replacement HBAC rules (freeipa_iam_hbac_rules) first, or you
       will lock out all host access.
   when: freeipa_server_disable_allow_all | bool
 

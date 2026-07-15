@@ -62,7 +62,7 @@
       - item.rc == 0
     fail_msg: >-
       User '{{ item.item.name }}' does not resolve on this host — create it in
-      FreeIPA first (e.g. freeipa_server IDAM) so its per-user storage dir can be
+      FreeIPA first (e.g. freeipa_server IAM) so its per-user storage dir can be
       owned correctly.
   loop: "{{ _nfs_user_check.results }}"
   loop_control:

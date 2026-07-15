@@ -15,4 +15,4 @@ all:
         #
         # Pruning is OFF by default (additive-safe). To make removals authoritative:
         # freeipa_server_authoritative: true
-        # freeipa_idam_reconcile_scope: "<tenant>-<environment>"      # scopes object pruning
+        # freeipa_iam_reconcile_scope: "<tenant>-<environment>"      # scopes object pruning

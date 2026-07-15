@@ -1,11 +1,11 @@
 ---
 # Declarative OBJECT reconcile — DELETE managed objects that are no longer declared (orphans).
 # Imported from main.yml only when freeipa_server_authoritative is true. DESTRUCTIVE. Two modes:
-#   * SCOPED (default): only objects whose NAME contains freeipa_idam_reconcile_scope (e.g.
+#   * SCOPED (default): only objects whose NAME contains freeipa_iam_reconcile_scope (e.g.
 #     "acme-") are eligible — other tenants/environments are never touched.
-#   * ALL-UNDECLARED (freeipa_idam_reconcile_all: true, double-gated): EVERY managed object not
+#   * ALL-UNDECLARED (freeipa_iam_reconcile_all: true, double-gated): EVERY managed object not
 #     declared this run is eligible — the whole-realm prune. The effective match becomes "*".
-# In BOTH modes an object is deleted only if it is NOT in this run's freeipa_idam_* lists AND
+# In BOTH modes an object is deleted only if it is NOT in this run's freeipa_iam_* lists AND
 # NOT in the protected set. Protection is built ENTIRELY from the role's own declared lists
 # (builtin_groups/hostgroups, protected_groups/users, unmodifiable_users, markers,
 # builtin_hbac_rules, stock hbacsvcs) — it NEVER assumes a tenant file (e.g. global.yml) is
@@ -22,41 +22,41 @@
 - name: Reconcile | Refuse to run without a scope marker OR explicit all-undeclared mode
   ansible.builtin.assert:
     that:
-      - ((freeipa_idam_reconcile_scope | default('')) | length > 0)
-        or (freeipa_idam_reconcile_all | default(false) | bool)
+      - ((freeipa_iam_reconcile_scope | default('')) | length > 0)
+        or (freeipa_iam_reconcile_all | default(false) | bool)
     fail_msg: >-
       Object reconcile is active (freeipa_server_authoritative) but neither
-      freeipa_idam_reconcile_scope is set NOR freeipa_idam_reconcile_all is true — refusing to
+      freeipa_iam_reconcile_scope is set NOR freeipa_iam_reconcile_all is true — refusing to
       reconcile without a scope (would consider the WHOLE realm). Set a scope marker
       (e.g. '<tenant>-<env>'), or opt into whole-realm pruning with
-      freeipa_idam_reconcile_all: true + freeipa_idam_reconcile_all_confirm: true.
+      freeipa_iam_reconcile_all: true + freeipa_iam_reconcile_all_confirm: true.
 
-# INTERLOCK — the desired-state assembly phase (idam_desired.yml) MUST have run this play. It
-# builds the freeipa_idam_* lists that define what is DECLARED; without it every object looks
+# INTERLOCK — the desired-state assembly phase (iam_desired.yml) MUST have run this play. It
+# builds the freeipa_iam_* lists that define what is DECLARED; without it every object looks
 # undeclared and the orphan pass would delete everything eligible. Sentinel set at the end of
-# idam_desired.yml.
+# iam_desired.yml.
 - name: Reconcile | Refuse to prune unless the desired state was assembled this play (interlock)
   ansible.builtin.assert:
     that:
-      - _freeipa_idam_desired_assembled | default(false) | bool
+      - _freeipa_iam_desired_assembled | default(false) | bool
     fail_msg: >-
-      Reconcile requires the IDAM desired-state assembly phase (idam_desired.yml) to have run
-      first in THIS play — the sentinel _freeipa_idam_desired_assembled is unset, so the
-      freeipa_idam_* desired lists were NOT built. Computing orphans now would treat every
-      object as undeclared and DELETE it. Run with -t reconcile or -t idam (both include the
+      Reconcile requires the IAM desired-state assembly phase (iam_desired.yml) to have run
+      first in THIS play — the sentinel _freeipa_iam_desired_assembled is unset, so the
+      freeipa_iam_* desired lists were NOT built. Computing orphans now would treat every
+      object as undeclared and DELETE it. Run with -t reconcile or -t iam (both include the
       assembly phase), never a selection that skips it.
 
 # ALL-UNDECLARED is the whole-realm nuke — double-gated so it can't fire by accident. Both
-# freeipa_idam_reconcile_all AND freeipa_idam_reconcile_all_confirm must be true.
+# freeipa_iam_reconcile_all AND freeipa_iam_reconcile_all_confirm must be true.
 - name: Reconcile | Require explicit confirmation for all-undeclared mode (nuke gate)
   ansible.builtin.assert:
     that:
-      - freeipa_idam_reconcile_all_confirm | default(false) | bool
+      - freeipa_iam_reconcile_all_confirm | default(false) | bool
     fail_msg: >-
-      freeipa_idam_reconcile_all is true (delete EVERY undeclared managed object realm-wide)
-      but freeipa_idam_reconcile_all_confirm is not set. Set
-      freeipa_idam_reconcile_all_confirm: true (ideally via -e on the command line) to proceed.
-  when: freeipa_idam_reconcile_all | default(false) | bool
+      freeipa_iam_reconcile_all is true (delete EVERY undeclared managed object realm-wide)
+      but freeipa_iam_reconcile_all_confirm is not set. Set
+      freeipa_iam_reconcile_all_confirm: true (ideally via -e on the command line) to proceed.
+  when: freeipa_iam_reconcile_all | default(false) | bool
 
 # Effective match: '*' (every found object eligible) in all-undeclared mode, else the scope
 # substring. Protection is built ENTIRELY from the role's own declared lists (so it holds with
@@ -64,17 +64,17 @@
 # unmodifiable users, and the role's own marker containers.
 - name: Reconcile | Resolve effective match + protection set
   ansible.builtin.set_fact:
-    _reconcile_match: "{{ '*' if (freeipa_idam_reconcile_all | default(false) | bool) else freeipa_idam_reconcile_scope }}"
+    _reconcile_match: "{{ '*' if (freeipa_iam_reconcile_all | default(false) | bool) else freeipa_iam_reconcile_scope }}"
     _reconcile_protected: >-
-      {{ (freeipa_idam_protected_groups | default([]))
-         + (freeipa_idam_builtin_groups | default([]))
-         + (freeipa_idam_builtin_hostgroups | default([]))
-         + (freeipa_idam_builtin_hbac_rules | default([]))
+      {{ (freeipa_iam_protected_groups | default([]))
+         + (freeipa_iam_builtin_groups | default([]))
+         + (freeipa_iam_builtin_hostgroups | default([]))
+         + (freeipa_iam_builtin_hbac_rules | default([]))
          + (freeipa_server_export_stock_hbacsvcs | default([]))
-         + (freeipa_idam_builtin_hbacsvcgroups | default([]))
-         + (freeipa_idam_protected_users | default([]))
-         + (freeipa_idam_unmodifiable_users | default([]))
-         + [freeipa_idam_managed_group, freeipa_idam_managed_groups_group] }}
+         + (freeipa_iam_builtin_hbacsvcgroups | default([]))
+         + (freeipa_iam_protected_users | default([]))
+         + (freeipa_iam_unmodifiable_users | default([]))
+         + [freeipa_iam_managed_group, freeipa_iam_managed_groups_group] }}
 
 - name: Reconcile | Resolve admin password (shared resolver)
   ansible.builtin.include_tasks: resolve_credentials.yml
@@ -82,7 +82,7 @@
     _freeipa_resolve: [admin]
 
 - name: Reconcile | Acquire Kerberos ticket
-  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
   args:
     stdin: "{{ _freeipa_admin_password }}"
   changed_when: false
@@ -111,17 +111,17 @@
   ansible.builtin.set_fact:
     _reconcile_orphans: >-
       {{ _reconcile_found
-         | freeipa_idam_orphans(_reconcile_desired, _reconcile_match, _reconcile_protected) }}
+         | freeipa_iam_orphans(_reconcile_desired, _reconcile_match, _reconcile_protected) }}
   vars:
     _reconcile_desired:
-      sudorule:     "{{ freeipa_idam_sudo_rules    | default([]) | map(attribute='name') | list }}"
-      hbacrule:     "{{ freeipa_idam_hbac_rules    | default([]) | map(attribute='name') | list }}"
-      hbacsvcgroup: "{{ freeipa_idam_hbacsvcgroups | default([]) | map(attribute='name') | list }}"
-      sudocmdgroup: "{{ freeipa_idam_sudocmdgroups | default([]) | map(attribute='name') | list }}"
-      hbacsvc:      "{{ freeipa_idam_hbacsvcs      | default([]) | map(attribute='name') | list }}"
-      sudocmd:      "{{ freeipa_idam_sudo_commands | default([]) | map(attribute='name') | list }}"
-      hostgroup:    "{{ freeipa_idam_hostgroups    | default([]) | map(attribute='name') | list }}"
-      group:        "{{ freeipa_idam_usergroups    | default([]) | map(attribute='name') | list }}"
+      sudorule:     "{{ freeipa_iam_sudo_rules    | default([]) | map(attribute='name') | list }}"
+      hbacrule:     "{{ freeipa_iam_hbac_rules    | default([]) | map(attribute='name') | list }}"
+      hbacsvcgroup: "{{ freeipa_iam_hbacsvcgroups | default([]) | map(attribute='name') | list }}"
+      sudocmdgroup: "{{ freeipa_iam_sudocmdgroups | default([]) | map(attribute='name') | list }}"
+      hbacsvc:      "{{ freeipa_iam_hbacsvcs      | default([]) | map(attribute='name') | list }}"
+      sudocmd:      "{{ freeipa_iam_sudo_commands | default([]) | map(attribute='name') | list }}"
+      hostgroup:    "{{ freeipa_iam_hostgroups    | default([]) | map(attribute='name') | list }}"
+      group:        "{{ freeipa_iam_usergroups    | default([]) | map(attribute='name') | list }}"
 
 - name: Reconcile | Report what will be deleted
   ansible.builtin.debug:
@@ -160,7 +160,7 @@
   ansible.builtin.set_fact:
     _reconcile_am_orphans: >-
       {{ _reconcile_am_found
-         | freeipa_idam_orphans(_reconcile_am_desired, _reconcile_match, _reconcile_protected) }}
+         | freeipa_iam_orphans(_reconcile_am_desired, _reconcile_match, _reconcile_protected) }}
   vars:
     _reconcile_am_desired:
       group:     "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'group')     | map(attribute='name') | list }}"

@@ -8,7 +8,7 @@
 #   certs      → import trusted external CAs (primary only; opt-in)
 #   hardening  → opt-in post-install hardening
 #   backup     → scheduled ipa-backup timer + opt-in controller offload (primary)
-#   idam       → declarative IDAM reconciliation (primary only)
+#   iam       → declarative IAM reconciliation (primary only)
 #   dns        → declarative DNS zones/forward-zones/records (primary; opt-in)
 #   automember → auto group/hostgroup membership rules (primary; opt-in)
 #   adtrust    → Active Directory trust(s) (primary; opt-in)
@@ -24,7 +24,7 @@
   tags: [always]
 
 # Guard: container-deployment config MUST run inside the container (docker/podman connection), not
-# on the VM host. Stops a host-targeted entrypoint (e.g. playbooks/freeipa_idam.yml) from running
+# on the VM host. Stops a host-targeted entrypoint (e.g. playbooks/freeipa_iam.yml) from running
 # the config phases against a host whose IPA lives in a container. The canonical entrypoint for
 # container hosts is playbooks/freeipa_container.yml (runs this role via the connection).
 - name: Assert container-deployment config runs INSIDE the container, not on the host
@@ -35,7 +35,7 @@
       freeipa_server_deployment=container but this play is on the HOST connection
       ({{ ansible_connection | default('ssh') }}), not inside the container. Configure container
       hosts via playbooks/freeipa_container.yml — do not target them with a host-based
-      entrypoint like playbooks/freeipa_idam.yml.
+      entrypoint like playbooks/freeipa_iam.yml.
   when:
     - freeipa_server_deployment == "container"
     - freeipa_server_state | default('present') != "absent"
@@ -123,30 +123,30 @@
   when: freeipa_server_is_primary | bool
   tags: [never, backup_now]
 
-# IDAM pipeline — three phases: 1. desired (assemble + validate), 2. apply,
+# IAM pipeline — three phases: 1. desired (assemble + validate), 2. apply,
 # 3. prune (reconcile.yml). Desired-assembly carries every consumer's tag — apply,
 # reconcile AND the hard-delete ops all need the assembled lists first (delete.yml
 # reads them; prune_preserved needs the break-glass → protected_users augmentation);
 # reconcile.yml interlocks on the sentinel it sets, so a prune can never run unassembled.
-- name: Assemble + validate declarative IDAM desired state (primary only)
-  ansible.builtin.import_tasks: idam_desired.yml
+- name: Assemble + validate declarative IAM desired state (primary only)
+  ansible.builtin.import_tasks: iam_desired.yml
   become: true
   when: freeipa_server_is_primary | bool
-  tags: [idam, reconcile, delete, prune_preserved, users, groups, hbac, sudo]
+  tags: [iam, reconcile, delete, prune_preserved, users, groups, hbac, sudo]
 
 # APPLY (server-side ipalib — runs on the IPA host, works before DNS, bulks
 # groups/users in one call, and covers the full object set). NOT tagged `reconcile`
 # — a prune-only run skips apply. Consumes the desired state assembled above.
-- name: Apply declarative IDAM data (primary only)
-  ansible.builtin.import_tasks: idam.yml
+- name: Apply declarative IAM data (primary only)
+  ansible.builtin.import_tasks: iam.yml
   become: true
   when: freeipa_server_is_primary | bool
-  tags: [idam, users, groups, hbac, sudo]
+  tags: [iam, users, groups, hbac, sudo]
   module_defaults: *freeipa_admin_defaults
 
 # OBJECT reconcile — delete in-scope objects (groups/hostgroups/HBAC/sudo/automember)
 # no longer declared. Driven by the ONE authoritative switch; only names containing
-# freeipa_idam_reconcile_scope are eligible (blank scope = skipped, fail-safe), and the
+# freeipa_iam_reconcile_scope are eligible (blank scope = skipped, fail-safe), and the
 # interlock in reconcile.yml aborts if the desired phase above didn't run.
 - name: Reconcile orphaned matrix-managed objects (primary only; authoritative + scoped)
   ansible.builtin.import_tasks: reconcile.yml
@@ -154,20 +154,20 @@
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_authoritative | bool
-    - not (freeipa_idam_reconcile_memberships_only | default(false) | bool)
-    - ((freeipa_idam_reconcile_scope | default('')) | length > 0)
-      or (freeipa_idam_reconcile_all | default(false) | bool)
-  tags: [idam, reconcile]
+    - not (freeipa_iam_reconcile_memberships_only | default(false) | bool)
+    - ((freeipa_iam_reconcile_scope | default('')) | length > 0)
+      or (freeipa_iam_reconcile_all | default(false) | bool)
+  tags: [iam, reconcile]
 
-# End-of-run IDAM summary (after idam + reconcile so prunes are included).
-# On by default; freeipa_idam_report: false to silence.
-- name: Report IDAM run summary (primary only)
-  ansible.builtin.import_tasks: idam_report.yml
+# End-of-run IAM summary (after iam + reconcile so prunes are included).
+# On by default; freeipa_iam_report: false to silence.
+- name: Report IAM run summary (primary only)
+  ansible.builtin.import_tasks: iam_report.yml
   become: true
   when:
     - freeipa_server_is_primary | bool
-    - freeipa_idam_report | default(true) | bool
-  tags: [idam, report]
+    - freeipa_iam_report | default(true) | bool
+  tags: [iam, report]
 
 - name: Manage declarative DNS zones/records (primary only; needs integrated DNS)
   ansible.builtin.import_tasks: dns_records.yml
@@ -187,7 +187,7 @@
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_automember_rules | length > 0
-  tags: [idam, automember]
+  tags: [iam, automember]
   module_defaults: *freeipa_admin_defaults
 
 - name: Establish Active Directory trust(s) (primary only)
@@ -223,25 +223,25 @@
   when: freeipa_server_is_primary | bool
   tags: [never, ca_report]
 
-# HARD-DELETE every DECLARED freeipa_idam_* object (mock/test cleanup). Double-gated:
-# `never` tag (only --tags delete) AND freeipa_idam_delete: true (mock inventories only).
-- name: Delete (HARD-DELETE) declared IDAM objects — mock/test cleanup only
+# HARD-DELETE every DECLARED freeipa_iam_* object (mock/test cleanup). Double-gated:
+# `never` tag (only --tags delete) AND freeipa_iam_delete: true (mock inventories only).
+- name: Delete (HARD-DELETE) declared IAM objects — mock/test cleanup only
   ansible.builtin.import_tasks: delete.yml
   become: true
   when:
     - freeipa_server_is_primary | bool
-    - freeipa_idam_delete | default(false) | bool
+    - freeipa_iam_delete | default(false) | bool
   tags: [never, delete]
   module_defaults: *freeipa_admin_defaults
 
 # HARD-DELETE ORPHANED preserved (archived) users — no longer declared anywhere, so
-# --tags delete can't reach them; discovered live. Same single gate (freeipa_idam_delete);
+# --tags delete can't reach them; discovered live. Same single gate (freeipa_iam_delete);
 # the `never` tag picks this op, --check = dry-run.
 - name: Prune (HARD-DELETE) orphaned preserved users
   ansible.builtin.import_tasks: prune_preserved.yml
   become: true
   when:
     - freeipa_server_is_primary | bool
-    - freeipa_idam_delete | default(false) | bool
+    - freeipa_iam_delete | default(false) | bool
   tags: [never, prune_preserved]
   module_defaults: *freeipa_admin_defaults

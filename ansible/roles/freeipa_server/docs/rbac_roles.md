@@ -2,7 +2,7 @@
 
 Ansible-module-style documentation for the **thin RBAC overlay** input of the
 `freeipa_server` role. Declare abstract ROLES; the role compiles them into its native
-`freeipa_idam_*` lists at apply time. Nothing else is generated — sudo rules, hostgroups,
+`freeipa_iam_*` lists at apply time. Nothing else is generated — sudo rules, hostgroups,
 DNS, automember and IPA delegation roles stay plain native entries.
 
 ## Synopsis
@@ -15,7 +15,7 @@ DNS, automember and IPA delegation roles stay plain native entries.
   user's own `groups:` list is never touched.
 - Optionally, a role may carry its own **role-scoped HBAC rules** (`hbac_rules`): the
   compiler injects `usergroup: [<the role group>]` into each and merges them onto
-  `freeipa_idam_hbac_rules`.
+  `freeipa_iam_hbac_rules`.
 - **WYSIWYG**: every name is used verbatim. There are no naming templates — scope
   (tenant/environment/service) lives in the names you declare.
 - Validated **fail-fast before any apply**: unknown keys, missing target groups, unknown
@@ -25,9 +25,9 @@ DNS, automember and IPA delegation roles stay plain native entries.
 ## Requirements
 
 - The `member_of` target groups must already exist natively (declared in
-  `freeipa_idam_usergroups` or already present in the realm export) — the overlay nests
+  `freeipa_iam_usergroups` or already present in the realm export) — the overlay nests
   into them, it does not invent them.
-- Users listed in `members` must exist natively (`freeipa_idam_users` or the realm).
+- Users listed in `members` must exist natively (`freeipa_iam_users` or the realm).
 
 ## Parameters
 
@@ -62,7 +62,7 @@ DNS, automember and IPA delegation roles stay plain native entries.
   binding the rule to the role is the point.
 - `usercategory` — incompatible with a role-scoped rule: IPA refuses member users/groups
   alongside `usercategory: all`, and every role-scoped rule carries the injected role
-  usergroup. Declare an all-users rule in the baseline `freeipa_idam_hbac_rules` instead
+  usergroup. Declare an all-users rule in the baseline `freeipa_iam_hbac_rules` instead
   (the baseline dicts support `usercategory`/`hostcategory`/`servicecategory` natively).
 
 ## Notes
@@ -147,7 +147,7 @@ freeipa_server_rbac_roles:
 
 - Role `README.md` → *Thin RBAC overlay* — the narrative walkthrough and design rationale.
 - `examples/rbac-overlay/` — a runnable example (inventory + group_vars + site.yml).
-- Baseline dicts: `freeipa_idam_usergroups`, `freeipa_idam_users`,
-  `freeipa_idam_hbac_rules` (supports all three categories), `freeipa_idam_sudo_rules`
+- Baseline dicts: `freeipa_iam_usergroups`, `freeipa_iam_users`,
+  `freeipa_iam_hbac_rules` (supports all three categories), `freeipa_iam_sudo_rules`
   (supports `usercategory`/`hostcategory`/`cmdcategory`/`runasusercategory`/
   `runasgroupcategory`).

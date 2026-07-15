@@ -6,7 +6,7 @@
 # policy groups from 00_native.yml, and user→role-group membership (from members:).
 # It generates NOTHING else.
 #
-# WYSIWYG: one flat list, same visual shape as freeipa_idam_usergroups. Every name is
+# WYSIWYG: one flat list, same visual shape as freeipa_iam_usergroups. Every name is
 # used VERBATIM — no naming templates. Paste policy group names straight from the
 # --tags export snapshot / 00_native.yml, zero renaming. Scope (tenant/environment)
 # lives in the names you declare — role-<tenant>-<env>-<name> is the recommended

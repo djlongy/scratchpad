@@ -1,36 +1,36 @@
 ---
-# roles/freeipa_server/tasks/idam_report.yml
+# roles/freeipa_server/tasks/iam_report.yml
 #
-# End-of-run IDAM summary: what this run MANAGED (declared users/groups), whether each
+# End-of-run IAM summary: what this run MANAGED (declared users/groups), whether each
 # phase CHANGED anything, and the EXACT set it REMOVED/PRUNED. Reads facts set earlier in
-# idam.yml (always, on the primary) and reconcile.yml (only when authoritative object
+# iam.yml (always, on the primary) and reconcile.yml (only when authoritative object
 # reconcile ran) — every reference is defaulted so it is safe whether or not reconcile ran.
 #
 # Granularity note: the bulk freeipa.ansible_freeipa group/user calls report an AGGREGATE
 # `changed` (not a per-item created/modified diff), so "changed" is a yes/no per phase. The
 # REMOVED/PRUNED lists, by contrast, are computed exactly by the role and are itemised.
 
-- name: IDAM report | Assemble run summary
+- name: IAM report | Assemble run summary
   ansible.builtin.set_fact:
-    _freeipa_idam_summary:
+    _freeipa_iam_summary:
       realm: "{{ freeipa_server_realm | default((freeipa_server_domain | default('')) | upper) }}"
       authoritative: "{{ freeipa_server_authoritative | default(false) | bool }}"
       # MANAGED this run (the declared desired set the role is responsible for)
-      users_managed: "{{ freeipa_idam_desired_usernames | default([]) }}"
-      groups_managed: "{{ freeipa_idam_group_names | default([]) }}"
+      users_managed: "{{ freeipa_iam_desired_usernames | default([]) }}"
+      groups_managed: "{{ freeipa_iam_group_names | default([]) }}"
       # CHANGED this run (aggregate per phase — was anything created/updated?
       # each phase has a bulk register and a per_item_apply register; either counts)
-      users_changed: "{{ ((_freeipa_idam_changed_users | default({})) is changed)
-                         or ((_freeipa_idam_changed_users_items | default({})) is changed) }}"
-      groups_changed: "{{ ((_freeipa_idam_changed_groups | default({})) is changed)
-                          or ((_freeipa_idam_changed_groups_items | default({})) is changed) }}"
-      members_changed: "{{ ((_freeipa_idam_changed_members_add | default({})) is changed)
-                           or ((_freeipa_idam_changed_members_add_items | default({})) is changed)
-                           or ((_freeipa_idam_changed_members_decl | default({})) is changed)
-                           or ((_freeipa_idam_changed_members_decl_items | default({})) is changed) }}"
+      users_changed: "{{ ((_freeipa_iam_changed_users | default({})) is changed)
+                         or ((_freeipa_iam_changed_users_items | default({})) is changed) }}"
+      groups_changed: "{{ ((_freeipa_iam_changed_groups | default({})) is changed)
+                          or ((_freeipa_iam_changed_groups_items | default({})) is changed) }}"
+      members_changed: "{{ ((_freeipa_iam_changed_members_add | default({})) is changed)
+                           or ((_freeipa_iam_changed_members_add_items | default({})) is changed)
+                           or ((_freeipa_iam_changed_members_decl | default({})) is changed)
+                           or ((_freeipa_iam_changed_members_decl_items | default({})) is changed) }}"
       # REMOVED / PRUNED this run (itemised, exact)
-      users_archived: "{{ freeipa_idam_users_to_remove | default([]) }}"
-      groups_deleted: "{{ _freeipa_idam_groups_to_remove | default([]) }}"
+      users_archived: "{{ freeipa_iam_users_to_remove | default([]) }}"
+      groups_deleted: "{{ _freeipa_iam_groups_to_remove | default([]) }}"
       pruned_hbac: "{{ (_reconcile_orphans | default({})).hbacrule | default([]) }}"
       pruned_sudo: "{{ (_reconcile_orphans | default({})).sudorule | default([]) }}"
       pruned_hostgroups: "{{ (_reconcile_orphans | default({})).hostgroup | default([]) }}"
@@ -38,13 +38,13 @@
       pruned_automember: "{{ ((_reconcile_am_orphans | default({})).group | default([]))
                              + ((_reconcile_am_orphans | default({})).hostgroup | default([])) }}"
 
-- name: IDAM report | Print run summary
+- name: IAM report | Print run summary
   ansible.builtin.debug:
     # Join into ONE multi-line string so the callback prints a clean `msg: |-`
     # block instead of a hyphenated YAML list.
     msg: "{{ _lines | join('\n') }}"
   vars:
-    _s: "{{ _freeipa_idam_summary }}"
+    _s: "{{ _freeipa_iam_summary }}"
     # Groups deleted across BOTH mechanisms (group-existence container + object reconcile).
     _groups_removed: "{{ (_s.groups_deleted + _s.pruned_groups_obj) | unique }}"
     # Total removed/pruned this run (so the footer reflects deletions, not just creates).
@@ -61,7 +61,7 @@
     _deleted_lines: "{{ (_groups_removed | sort | map('regex_replace', '^', _bul) | list) if (_groups_removed | length > 0) else [] }}"
     _lines: >-
       {{
-        ['════════ FreeIPA IDAM run summary — ' ~ _s.realm ~ ' (' ~ ('AUTHORITATIVE' if _s.authoritative else 'additive') ~ ') ════════']
+        ['════════ FreeIPA IAM run summary — ' ~ _s.realm ~ ' (' ~ ('AUTHORITATIVE' if _s.authoritative else 'additive') ~ ') ════════']
         + ['USERS   managed: ' ~ (_s.users_managed | length)] + _users_lines
         + ['        created/updated:   ' ~ ('yes' if _s.users_changed else 'no')]
         + ['        archived (removed): ' ~ (_s.users_archived | length)] + _archived_lines

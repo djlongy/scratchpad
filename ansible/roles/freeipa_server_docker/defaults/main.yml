@@ -4,7 +4,7 @@
 # Containerized FreeIPA server (the <noun>_<purpose> sibling of freeipa_server, mirroring
 # hashicorp_vault + hashicorp_vault_docker). This role owns only the CONTAINER LIFECYCLE on
 # the VM host — install Docker, run the official FreeIPA server image with a /data volume,
-# and register the running container as an Ansible host. All DECLARATIVE config (IDAM, DNS,
+# and register the running container as an Ansible host. All DECLARATIVE config (IAM, DNS,
 # hardening, backup) is delegated to the existing `freeipa_server` role, run INSIDE the
 # container via the community.docker.docker connection plugin — the container is a full IPA
 # server, so every native freeipa.ansible_freeipa module works there in server context.

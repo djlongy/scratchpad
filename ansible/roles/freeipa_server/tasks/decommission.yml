@@ -64,7 +64,7 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail; IFS= read -r _pw;
-      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }} >/dev/null 2>&1
+      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
       && {{ _freeipa_decom_exec }}ipa config-show 2>/dev/null | awk -F': ' '/IPA CA renewal master:/{print $2}'
     executable: /bin/bash
   args:
@@ -92,7 +92,7 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail; IFS= read -r _pw;
-      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }} >/dev/null 2>&1
+      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
       && {{ _freeipa_decom_exec }}ipa config-mod --ca-renewal-master-server={{ _freeipa_decom_target }}.{{ freeipa_server_domain }}
       && {{ _freeipa_decom_exec }}ipa-crlgen-manage enable
       && {{ _freeipa_decom_exec }}kdestroy >/dev/null 2>&1
@@ -125,7 +125,7 @@
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail; IFS= read -r _pw;
-      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }} >/dev/null 2>&1
+      printf '%s\n' "$_pw" | {{ _freeipa_decom_exec }}kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }} >/dev/null 2>&1
       && {{ _freeipa_decom_exec }}ipa server-del {{ freeipa_server_fqdn }} --ignore-topology-disconnect --force
       && {{ _freeipa_decom_exec }}kdestroy >/dev/null 2>&1
     executable: /bin/bash

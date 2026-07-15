@@ -3,7 +3,7 @@
 A minimal, self-contained walkthrough of the `freeipa_server_docker` role: one Docker-capable
 VM host, FreeIPA running in the official `quay.io/freeipa/freeipa-server` container with a
 persistent `/data` volume, then the `freeipa_server` declarative engine run **inside** the
-container for IDAM/DNS config.
+container for IAM/DNS config.
 
 ```
 container-deploy/

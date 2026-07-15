@@ -54,7 +54,7 @@ nfs_server_shares:
 
 > **Per-user owners must exist in FreeIPA.** Each `nfs_server_users` entry is
 > chowned to that user, so the user must resolve on this host (created via
-> `freeipa_server` IDAM). The role asserts this with a clear message.
+> `freeipa_server` IAM). The role asserts this with a clear message.
 
 Generic `nfs_server_exports` always use their own `options` string, so a single
 server can serve `sec=sys` app data **and** `sec=krb5p` user storage at once.

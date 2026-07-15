@@ -6,11 +6,11 @@
 # enrol. This phase confirms the result and surfaces what must be done elsewhere.
 #
 # SERVER-SIDE (NOT here — a client cannot self-assign these; need admin):
-#   - Host-group membership  -> freeipa_server IDAM `freeipa_idam_hostgroups`
+#   - Host-group membership  -> freeipa_server IAM `freeipa_iam_hostgroups`
 #                               (host lists) or a host-management play
-#   - HBAC rules             -> freeipa_server IDAM `freeipa_idam_hbac_rules`
+#   - HBAC rules             -> freeipa_server IAM `freeipa_iam_hbac_rules`
 #                               (SSSD on this client enforces them automatically)
-#   - sudo rules             -> freeipa_server IDAM `freeipa_idam_sudo_rules`
+#   - sudo rules             -> freeipa_server IAM `freeipa_iam_sudo_rules`
 #                               (this client runs them via the SSSD sudo provider)
 #   - DNS zones/records beyond this host's own auto-registered A/SSHFP records
 

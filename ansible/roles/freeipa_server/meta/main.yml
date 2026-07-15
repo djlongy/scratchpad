@@ -5,7 +5,7 @@ galaxy_info:
   description: >-
     Install and configure a FreeIPA server cluster (primary + replicas) on
     EL-family or Debian/Ubuntu by wrapping freeipa.ansible_freeipa, with
-    cold-start resilience, scheduled backups, declarative IDAM
+    cold-start resilience, scheduled backups, declarative IAM
     reconciliation, and an opt-in post-install hardening baseline.
   license: MIT
   min_ansible_version: "2.14"
@@ -21,7 +21,7 @@ galaxy_info:
   galaxy_tags:
     - freeipa
     - identity
-    - idam
+    - iam
     - kerberos
     - ldap
 

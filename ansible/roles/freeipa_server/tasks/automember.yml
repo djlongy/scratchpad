@@ -3,7 +3,7 @@
 # Declarative automember rules: auto-assign users/hosts to a group or hostgroup
 # by attribute regex, via the upstream ipaautomember module. Primary only
 # (replicates). Idempotent. The target group/hostgroup must already exist (manage
-# it via IDAM). Admin password from Vault.
+# it via IAM). Admin password from Vault.
 
 - name: Automember | Resolve admin password (shared resolver)
   ansible.builtin.include_tasks: resolve_credentials.yml
@@ -18,7 +18,7 @@
   when: freeipa_server_automember_rules | length > 0
   block:
     - name: Automember | Acquire Kerberos ticket
-      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
       args:
         stdin: "{{ _freeipa_admin_password }}"
       changed_when: false
@@ -62,7 +62,7 @@
               freeipa_server_automember_rules
               | selectattr('automember_type', 'equalto', find.item)
               | list
-              | freeipa_idam_changed_subset(find.stdout | default(''), 'automember')) -%}
+              | freeipa_iam_changed_subset(find.stdout | default(''), 'automember')) -%}
       {%- endfor -%}
       {{ changed }}
   register: _freeipa_automember_result

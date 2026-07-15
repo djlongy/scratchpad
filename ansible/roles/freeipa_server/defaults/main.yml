@@ -3,14 +3,14 @@
 #
 # Portable FreeIPA server role. Behavioural defaults live here; env-specific values
 # (IPs, vault paths) are commented out for discoverability and set in inventory
-# group_vars. All inputs are prefixed freeipa_server_* / freeipa_idam_*. Install and
+# group_vars. All inputs are prefixed freeipa_server_* / freeipa_iam_*. Install and
 # replica options map 1:1 to upstream freeipa.ansible_freeipa (ipaserver_* / ipareplica_*)
 # at the include_role calls in tasks/primary.yml and tasks/replica.yml.
 
 # ── Identity (derived; override in inventory only to break convention) ───────
 # `domain` is the repo-convention inventory var (group_vars/all) this defaults
 # from; portable inventories may instead set freeipa_server_domain directly and
-# never define a bare `domain` (asserted with a clear message in idam_desired).
+# never define a bare `domain` (asserted with a clear message in iam_desired).
 freeipa_server_domain: "{{ domain | default('') }}"
 freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
 # This host's FQDN — replaces the ansible_fqdn anti-pattern (repo convention).
@@ -65,7 +65,7 @@ freeipa_server_replica_connection: "{{ connection_name | default('') }}"
 # For every secret: use the declared var below if non-empty, else look it up at
 # freeipa_server_vault_secret : *_field. The Vault lookup is lazy, so supplying the
 # password directly means no Vault is needed (e.g. `--tags export`). These vars are the
-# SINGLE credential source for the WHOLE role — there are no separate freeipa_idam_* ones.
+# SINGLE credential source for the WHOLE role — there are no separate freeipa_iam_* ones.
 freeipa_server_admin_principal: "admin"  # IPA admin principal for kinit + ipaadmin ops
 freeipa_server_admin_password: ""        # IPA admin password
 freeipa_server_dm_password: ""           # Directory Manager password
@@ -247,12 +247,12 @@ freeipa_server_require_otp_groups: []               # admin groups to force OTP 
 freeipa_server_disable_allow_all: false             # true → tear down allow_all (guarded)
 freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "FIPS", "DEFAULT"
 
-# ── Declarative IDAM data contract ────────────────────────────────────────────
+# ── Declarative IAM data contract ────────────────────────────────────────────
 # Two role-like inputs, both optional conveniences over the group baseline:
-#   freeipa_idam_roles    — GROUP-BUNDLE matrix: a role is a named set of groups; a user's
+#   freeipa_iam_roles    — GROUP-BUNDLE matrix: a role is a named set of groups; a user's
 #                           `roles: [...]` expands to the union of those groups. Ansible-side
 #                           only, creates NO IPA object.
-#   freeipa_idam_iparoles — NATIVE IPA delegation role objects (`ipa role`): bundle PRIVILEGES
+#   freeipa_iam_iparoles — NATIVE IPA delegation role objects (`ipa role`): bundle PRIVILEGES
 #                           and assign to members. Delegates IPA-management powers (helpdesk).
 #
 # OPTIONAL thin RBAC overlay ("assign a user to an abstract role, not many groups") is compiled
@@ -262,40 +262,40 @@ freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "
 # Tenants (optional): a directory of per-tenant .yml files, each {tenant, shared?, <object lists>}.
 # The role reads + flattens ALL of them in one run so a single reconcile sees every tenant. A file
 # can carry its whole config (short keys like users/groups/hbac_rules/dns_records, or full
-# freeipa_idam_*/freeipa_server_* straight from an export). Lists concatenate across files by target
+# freeipa_iam_*/freeipa_server_* straight from an export). Lists concatenate across files by target
 # var; users/groups are stamped _owner (tenant) + _shared. Loaded via a single include_vars, so a
 # file behaves like any inventory YAML: a value can reference ANY other var the file defines
 # (native self-reference, e.g. name: "{{ hg_prefix }}-all") plus group_vars, and can pull a whole
 # list from a group_var. {{ env }} = inventory env; define your own scalar for a per-file variant.
 # Empty = legacy mode (set the lists directly in group_vars). Inventory sets "{{ inventory_dir }}/tenants".
 # See tasks/load_tenants.yml + load_one_tenant.yml.
-freeipa_idam_tenants_dir: ""
-freeipa_idam_managed_group: "idam-managed-users"
-freeipa_idam_usergroups: []
+freeipa_iam_tenants_dir: ""
+freeipa_iam_managed_group: "iam-managed-users"
+freeipa_iam_usergroups: []
 # Group-bundle roles matrix (see above). Each user's roles expand to the union of their groups.
-freeipa_idam_roles: []
+freeipa_iam_roles: []
 #  - { name: platform-admin, groups: [app-gitlab-admin, app-harbor-admin] }
-freeipa_idam_users: []
-freeipa_idam_hostgroups: []
-freeipa_idam_hbacsvcs: []                  # custom HBAC services (e.g. docker, xrdp-sesman)
-freeipa_idam_hbacsvcgroups: []             # bundle services → grant via servicegroup on a rule
+freeipa_iam_users: []
+freeipa_iam_hostgroups: []
+freeipa_iam_hbacsvcs: []                  # custom HBAC services (e.g. docker, xrdp-sesman)
+freeipa_iam_hbacsvcgroups: []             # bundle services → grant via servicegroup on a rule
 #  - { name: remote-access, description: "Interactive remote login", hbacsvc: [sshd, xrdp-sesman] }
-freeipa_idam_hbac_rules: []
-freeipa_idam_sudo_commands: []
-freeipa_idam_sudocmdgroups: []             # bundle sudo cmds → grant via cmdgroup on a rule
+freeipa_iam_hbac_rules: []
+freeipa_iam_sudo_commands: []
+freeipa_iam_sudocmdgroups: []             # bundle sudo cmds → grant via cmdgroup on a rule
 #  - { name: pkg-mgmt, description: "Package management", sudocmd: ["/usr/bin/dnf", "/usr/bin/yum"] }
-freeipa_idam_sudo_rules: []
-freeipa_idam_pwpolicies: []
+freeipa_iam_sudo_rules: []
+freeipa_iam_pwpolicies: []
 
 # ── Thin RBAC overlay (OPTIONAL; compiled inside the desired phase when declared) ──
 # Assign a user an abstract ROLE instead of many granular target groups. The overlay
 # generates ONLY: the role group, its nesting into the EXISTING groups it is member_of,
 # and user→role-group membership — merged onto the native lists (baseline wins).
-# WYSIWYG flat list, same shape as freeipa_idam_usergroups: every name is used
+# WYSIWYG flat list, same shape as freeipa_iam_usergroups: every name is used
 # VERBATIM (no naming templates) — paste policy group names straight from the export.
 # Scope lives in the names you declare; role-<tenant>-<env>-<name> is convention, not
 # code. Empty = pure baseline, zero behaviour change. Compiled AFTER the tenant load,
-# so it composes with freeipa_idam_tenants_dir — tenant files may carry their own
+# so it composes with freeipa_iam_tenants_dir — tenant files may carry their own
 # freeipa_server_rbac_roles slice (lists concatenate across files). Declare the overlay
 # in ONE place: tenant files OR group_vars — a tenant-declared var REPLACES the
 # group_vars value. See tasks/rbac.yml.
@@ -306,41 +306,41 @@ freeipa_server_rbac_roles: []
 #      - ug-acme-prod-gitlab-admins
 #      - ug-acme-prod-docker-operators
 #    members: [alice, bob]                      # users granted the role
-freeipa_server_rbac_allow_unknown_users: false           # permit assigning users not in freeipa_idam_users
+freeipa_server_rbac_allow_unknown_users: false           # permit assigning users not in freeipa_iam_users
 freeipa_server_rbac_allow_missing_member_of: false       # permit member_of targets not declared natively
 
 # Custom RBAC building blocks for delegation roles: permission (atomic right) → privilege
 # (bundle of permissions) → iparole (bundle of privileges, below). Built-ins are never declared.
 # Field names = ipapermission / ipaprivilege params.
-freeipa_idam_permissions: []
+freeipa_iam_permissions: []
 #  - { name: "Read Docker Hostgroups", right: [read, search], object_type: hostgroup, attrs: [cn, member] }
-freeipa_idam_privileges: []
+freeipa_iam_privileges: []
 #  - { name: "Docker Fleet Operators", description: "Manage docker hostgroups", permission: ["Read Docker Hostgroups"] }
 
 # Native FreeIPA RBAC DELEGATION roles (`ipa role`) — bundle PRIVILEGES and assign to members, to
 # delegate IPA-management powers (helpdesk/operators), NOT app/host access (that's groups + HBAC).
 # Applied via iparole AFTER users + groups exist. Each item: { name, privilege: [...], user/group/
 # host/hostgroup/service: [...], state: present }.
-freeipa_idam_iparoles: []
+freeipa_iam_iparoles: []
 #  - { name: helpdesk-l1, privilege: ["Modify Users and Reset passwords", "Unlock user accounts"], group: [it-helpdesk] }
-freeipa_idam_password_expiration_floors: []
+freeipa_iam_password_expiration_floors: []
 
 # Email = <name>@<email_domain> when a user has no explicit `email:` (the mail domain is often
 # not the realm domain, hence its own var). A per-user email always overrides this.
-freeipa_idam_email_domain: "{{ domain | default(freeipa_server_domain) }}"
+freeipa_iam_email_domain: "{{ domain | default(freeipa_server_domain) }}"
 
 # Initial password on user CREATE only (update_password: on_create — existing users never reset).
 # Empty = create with no password. Set from Vault in inventory. A per-user `password:` overrides.
-freeipa_idam_default_user_password: ""
+freeipa_iam_default_user_password: ""
 
 # Deterministic group GIDs (name → gidnumber) so POSIX perms stay consistent across environments +
 # DR rebuilds. Precedence: a group's own `gidnumber:` > this map > IPA auto-assign. UIDs stay auto.
-freeipa_idam_group_gids: {}
+freeipa_iam_group_gids: {}
 #  docker: 89600115
 
 # Archive (preserve) removed users instead of hard-deleting: user-del --preserve deactivates +
 # retains the account (recoverable) rather than destroying it.
-freeipa_idam_preserve_archived: true
+freeipa_iam_preserve_archived: true
 
 # ── Pruning control ───────────────────────────────────────────────────────────
 # THE authoritative switch (spec §8) — the sole pruning control (no legacy per-mechanism flags).
@@ -356,76 +356,76 @@ freeipa_server_authoritative: false
 # (like authoritative) but SUPPRESSES all object/user deletion (no group delete, no user archival,
 # no object reconcile). Safe per-tenant against a partial file. Enables the membership strip on its
 # own (no need for authoritative); if both are set, this wins and deletions stay suppressed.
-freeipa_idam_reconcile_memberships_only: false
+freeipa_iam_reconcile_memberships_only: false
 
-# End-of-run IDAM summary (managed users/groups, what changed / archived / deleted / pruned).
-freeipa_idam_report: true
+# End-of-run IAM summary (managed users/groups, what changed / archived / deleted / pruned).
+freeipa_iam_report: true
 
 # Apply mode for the bulk object types (users, groups, memberships, sudo rules).
 # false (default) = ONE module call per type — fastest (each server-side invocation
 # costs a full Python+ipalib bootstrap) but silent while a large payload applies.
 # true = one call PER ITEM: real-time per-item task feedback, identical payloads and
 # end state, at per-invocation cost. Use to watch/compare; keep bulk for speed.
-freeipa_idam_per_item_apply: false
+freeipa_iam_per_item_apply: false
 
 # Scope marker for object pruning under authoritative — only objects whose NAME contains this
 # substring are deletion-eligible (the matrix sets '<tenant>-<environment>'). Blank = object pruning
 # deletes NOTHING and is skipped (fail-safe — never considers the whole realm).
-freeipa_idam_reconcile_scope: ""
+freeipa_iam_reconcile_scope: ""
 
 # WHOLE-REALM prune — the match-everything override of reconcile_scope (delete ALL undeclared managed
 # objects). DOUBLE-GATED: needs BOTH reconcile_all AND reconcile_all_confirm true (set confirm via -e).
 # The role's own declared lists always protect built-ins (builtin_groups/hostgroups, protected/
 # unmodifiable users, builtin_hbac_rules, stock hbacsvcs, markers). iparoles/privileges/permissions
 # are NOT pruned here (huge IPA built-in sets) — use --tags delete for those.
-freeipa_idam_reconcile_all: false
-freeipa_idam_reconcile_all_confirm: false
+freeipa_iam_reconcile_all: false
+freeipa_iam_reconcile_all_confirm: false
 
 # Built-ins never pruned by reconcile (whole-realm mode).
-freeipa_idam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
-freeipa_idam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
+freeipa_iam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
+freeipa_iam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
 
 # Container-marker group for GROUP-EXISTENCE reconcile: every declared group is nested here during
-# apply; under authoritative any container member no longer in freeipa_idam_usergroups (and not
+# apply; under authoritative any container member no longer in freeipa_iam_usergroups (and not
 # protected) is DELETED — so removing a group from the dict deletes it from IPA. Only touches groups
 # WE enrolled; unmanaged/out-of-band groups and protected built-ins are never considered.
-freeipa_idam_managed_groups_group: "idam-managed-groups"
+freeipa_iam_managed_groups_group: "iam-managed-groups"
 
-# ── Hard-delete: ONE gate (freeipa_idam_delete), the operation chosen by tag ──
-# freeipa_idam_delete is THE single hard-delete (ipa *-del, irrecoverable) permission gate — set it
+# ── Hard-delete: ONE gate (freeipa_iam_delete), the operation chosen by tag ──
+# freeipa_iam_delete is THE single hard-delete (ipa *-del, irrecoverable) permission gate — set it
 # ONCE. Default OFF; MOCK/lab realms only (never a production realm). With it true, pick the operation
 # by `never`-tag; --check turns any into a read-only dry-run:
-#   --tags delete          — hard-delete every object DECLARED in this run's freeipa_idam_* lists
+#   --tags delete          — hard-delete every object DECLARED in this run's freeipa_iam_* lists
 #                            (protected users/groups excluded). Cleanup for a mock/demo run.
 #   --tags prune_preserved — hard-delete ORPHANED preserved (archived) users the reconcile left behind
-#                            (no longer in any freeipa_idam_* list, so --tags delete can't reach them).
+#                            (no longer in any freeipa_iam_* list, so --tags delete can't reach them).
 # The SOFT, recoverable counterpart (archive users + reconcile undeclared objects) is the "prune"
 # case — gated by freeipa_server_authoritative above, not here.
-freeipa_idam_delete: false
+freeipa_iam_delete: false
 # Scope selectors for --tags prune_preserved — which preserved logins to SHIELD (not gates):
-freeipa_idam_prune_preserved_keep: []                 # explicit extra keeps, on top of protected_users
-freeipa_idam_prune_preserved_keep_regex: "^svc-"      # regex shield (default protects svc-* accounts); "" = none
+freeipa_iam_prune_preserved_keep: []                 # explicit extra keeps, on top of protected_users
+freeipa_iam_prune_preserved_keep_regex: "^svc-"      # regex shield (default protects svc-* accounts); "" = none
 
 # Users the reconcile must never DELETE/archive (break-glass accounts auto-added). Still
 # created/updated — cf. unmodifiable_users, the opposite.
-freeipa_idam_protected_users:
+freeipa_iam_protected_users:
   - admin
 
 # Users the role must never CREATE or user-mod (attributes can't be set — e.g. `admin` lacks
 # inetOrgPerson so givenName/sn are rejected). Skipped in the create payload; group membership
 # still applied. Distinct from protected_users (never removed).
-freeipa_idam_unmodifiable_users:
+freeipa_iam_unmodifiable_users:
   - admin
 
 # FreeIPA BUILT-IN groups the role must never delete (state: absent is refused, so an accidental
 # absent can't tear down core schema). Membership can still be managed; only deletion is blocked.
-freeipa_idam_protected_groups:
+freeipa_iam_protected_groups:
   - admins
   - editors
   - ipausers
   - trust admins
 
-# ── IDAM reference-integrity validation ──────────────────────────────────────
+# ── IAM reference-integrity validation ──────────────────────────────────────
 # References (role→group, user→group/role, hbac→service, sudo→command) are checked so a typo fails
 # loudly. Shape/typo checks (missing name, no groups/roles, duplicate user) ALWAYS hard-fail; this
 # governs only cross-object REFERENCE checks (so a scoped tenant slice can reference a global object
@@ -434,24 +434,24 @@ freeipa_idam_protected_groups:
 #   warn             — report unknown references, continue
 #   off              — skip reference checks
 #   live             — also accept any reference already on the realm (ipa *-find queries; not under --check)
-freeipa_idam_reference_validation: strict
+freeipa_iam_reference_validation: strict
 # Built-ins that always exist → always-valid reference targets (so a scoped slice needn't declare them):
-freeipa_idam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
-freeipa_idam_builtin_hostgroups: ["ipaservers"]   # for hbac/sudo/nested/automember hostgroup: refs
+freeipa_iam_builtin_groups: ["admins", "editors", "ipausers", "trust admins"]
+freeipa_iam_builtin_hostgroups: ["ipaservers"]   # for hbac/sudo/nested/automember hostgroup: refs
 
 # ── Account types beyond human users ────────────────────────────────────────
 # SERVICE ACCOUNTS — non-human, no interactive login. Same item shape as a user, but the role forces
-# shell = nologin. Kept a SEPARATE list (not in freeipa_idam_users) so intent is explicit; otherwise
+# shell = nologin. Kept a SEPARATE list (not in freeipa_iam_users) so intent is explicit; otherwise
 # flows through the same create/group/marker/archive pipeline.
-freeipa_idam_service_accounts: []
-freeipa_idam_nologin_shell: "/sbin/nologin"
+freeipa_iam_service_accounts: []
+freeipa_iam_nologin_shell: "/sbin/nologin"
 
 # BREAK-GLASS — real named emergency accounts (NOT built-in admin). Login STAYS enabled (the point);
 # each is auto-added to breakglass_group and auto-PROTECTED from delete/archive. Pair with
 # nologin/disabled controls below: day-to-day admin via named accounts, emergency via these.
-freeipa_idam_breakglass_accounts: []
+freeipa_iam_breakglass_accounts: []
 #  - { name: bg-breakglass, givenname: Break, sn: Glass, groups: [admins] }
-freeipa_idam_breakglass_group: "admins"
+freeipa_iam_breakglass_group: "admins"
 
 # ── Account login / enabled state for EXISTING accounts (default empty → no change) ──
 #   nologin_accounts  — force to the nologin shell. Login OFF, account stays ACTIVE (API/kinit still
@@ -459,19 +459,19 @@ freeipa_idam_breakglass_group: "admins"
 #   disabled_accounts — `ipa user-disable`. Account fully OFF, cannot authenticate at all.
 #                       ('admin' is refused — you'd lose API admin.)
 # Lockout guard: setting 'admin' to nologin requires at least one break-glass account.
-freeipa_idam_nologin_accounts: []
-freeipa_idam_disabled_accounts: []
+freeipa_iam_nologin_accounts: []
+freeipa_iam_disabled_accounts: []
 
 # Reactivate (undel) a DECLARED user that exists only as a PRESERVED/archived entry, so re-adding a
 # removed user RESTORES them instead of failing (preserved name is in cn=deleted → create no-ops and
 # membership add would fail "no such entry"). Bounded to declared names; default on.
-freeipa_idam_reactivate_preserved: true
+freeipa_iam_reactivate_preserved: true
 
 # Existing HBAC rules to DISABLE (state: disabled — reversible, not deleted), e.g. the stock
 # allow-all rules: [allow_all, allow_all_hosts]. Applied AFTER declarative rules so required access
-# exists first. Lockout guard: refuses if freeipa_idam_hbac_rules is empty. To EMPTY a rule's members
+# exists first. Lockout guard: refuses if freeipa_iam_hbac_rules is empty. To EMPTY a rule's members
 # instead, declare it with `user: []` (members reconcile declaratively).
-freeipa_idam_hbac_rules_disable: []
+freeipa_iam_hbac_rules_disable: []
 
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
 # Snapshot a LIVE FreeIPA into this role's declarative contract (read-only) to adopt an existing

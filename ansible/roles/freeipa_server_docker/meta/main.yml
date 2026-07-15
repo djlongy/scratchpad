@@ -7,7 +7,7 @@ galaxy_info:
     on a Docker/Podman host, with a persistent /data volume. Thin lifecycle sibling of
     the freeipa_server role: install runtime, run the container (fresh / replica /
     existing-data), register it as an Ansible host, and delegate all declarative config
-    (IDAM/DNS/hardening/backup) to freeipa_server run INSIDE the container.
+    (IAM/DNS/hardening/backup) to freeipa_server run INSIDE the container.
   license: MIT
   min_ansible_version: "2.14"
   platforms:
@@ -16,7 +16,7 @@ galaxy_info:
   galaxy_tags:
     - freeipa
     - identity
-    - idam
+    - iam
     - docker
     - container
 

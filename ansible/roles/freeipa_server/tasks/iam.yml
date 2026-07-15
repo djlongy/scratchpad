@@ -1,11 +1,11 @@
 ---
-# roles/freeipa_server/tasks/idam.yml
+# roles/freeipa_server/tasks/iam.yml
 #
-# PHASE 2 (native) of the declarative IDAM pipeline: APPLY. Creates/updates the declared
+# PHASE 2 (native) of the declarative IAM pipeline: APPLY. Creates/updates the declared
 # FreeIPA objects (usergroups, users, hostgroups, HBAC, sudo, roles, privileges,
 # permissions, ...) via server-side ansible_freeipa modules (local ipalib + kinit).
 #
-# CONSUMES the desired state assembled + validated by idam_desired.yml (imported
+# CONSUMES the desired state assembled + validated by iam_desired.yml (imported
 # immediately before this file by main.yml) — never run it standalone.
 # (Prune variant: reconcile.yml.)
 
@@ -19,43 +19,43 @@
                + (item.roles | default([]) | map('extract', _freeipa_role_groups) | flatten)
              ) | unique })
          ] }}
-  loop: "{{ _freeipa_idam_users_base | default([]) }}"
+  loop: "{{ _freeipa_iam_users_base | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_roles | length > 0
+  when: freeipa_iam_roles | length > 0
   no_log: true
 
-# Internal fact (not the public freeipa_idam_users) so role expansion holds even under
-# extra-vars, which outrank set_fact. NB: gate on freeipa_idam_roles LENGTH, not on
+# Internal fact (not the public freeipa_iam_users) so role expansion holds even under
+# extra-vars, which outrank set_fact. NB: gate on freeipa_iam_roles LENGTH, not on
 # `_freeipa_users_roled | default(...)` — the re-entry guard defines it as [], and
 # default() only fires on UNDEFINED, so the default() form silently drops every user
 # whenever no roles are declared.
 - name: Resolve effective users (role-expanded when roles are used)
   ansible.builtin.set_fact:
-    _freeipa_idam_users: "{{ _freeipa_users_roled if (freeipa_idam_roles | length > 0) else _freeipa_idam_users_base }}"
+    _freeipa_iam_users: "{{ _freeipa_users_roled if (freeipa_iam_roles | length > 0) else _freeipa_iam_users_base }}"
 
 - name: Build desired FreeIPA username list
   ansible.builtin.set_fact:
-    freeipa_idam_desired_usernames: "{{ _freeipa_idam_users | map(attribute='name') | list | unique }}"
+    freeipa_iam_desired_usernames: "{{ _freeipa_iam_users | map(attribute='name') | list | unique }}"
 
 - name: Build declarative FreeIPA group name list
   ansible.builtin.set_fact:
-    freeipa_idam_group_names: "{{ freeipa_idam_usergroups | map(attribute='name') | list | unique }}"
+    freeipa_iam_group_names: "{{ freeipa_iam_usergroups | map(attribute='name') | list | unique }}"
 
 - name: Build requested user->group memberships from user entries
   ansible.builtin.set_fact:
-    freeipa_idam_user_group_pairs: "{{ (freeipa_idam_user_group_pairs | default([])) + [ {'user': item.0.name, 'group': item.1} ] }}"
+    freeipa_iam_user_group_pairs: "{{ (freeipa_iam_user_group_pairs | default([])) + [ {'user': item.0.name, 'group': item.1} ] }}"
   # default([]) matters: Ansible templates a task's loop even when the phase is
   # skipped by `when` (this role running on a REPLICA in a cluster play — the
-  # primary-only desired phase never set _freeipa_idam_users there).
-  loop: "{{ _freeipa_idam_users | default([]) | subelements('groups', skip_missing=True) }}"
+  # primary-only desired phase never set _freeipa_iam_users there).
+  loop: "{{ _freeipa_iam_users | default([]) | subelements('groups', skip_missing=True) }}"
   loop_control:
     label: "{{ item.0.name }} -> {{ item.1 }}"
   # name pairs only (no secrets) — shown at -vv.
   no_log: "{{ ansible_verbosity < 2 }}"
 
 # TENANT-ISOLATION BOUNDARY: a user->group membership is only applied when the
-# GROUP is declared in THIS slice's freeipa_idam_usergroups (the effective-groups
+# GROUP is declared in THIS slice's freeipa_iam_usergroups (the effective-groups
 # build below attaches members to declared groups only). A reference to a built-in
 # or another slice's group passes validation but would NOT be reconciled here — so
 # surface it loudly instead of dropping it silently. To actually apply such a
@@ -69,27 +69,27 @@
         - {{ p.user }} -> {{ p.group }}
       {% endfor %}
   vars:
-    _unmanaged: "{{ freeipa_idam_user_group_pairs | default([]) | rejectattr('group', 'in', freeipa_idam_group_names) | list }}"
+    _unmanaged: "{{ freeipa_iam_user_group_pairs | default([]) | rejectattr('group', 'in', freeipa_iam_group_names) | list }}"
   when: _unmanaged | length > 0
 
 - name: Build effective FreeIPA groups with merged memberships
   ansible.builtin.set_fact:
-    freeipa_idam_usergroups_effective: "{{ (freeipa_idam_usergroups_effective | default([])) + [item | combine(_freeipa_idam_group_user_block, recursive=True)] }}"
+    freeipa_iam_usergroups_effective: "{{ (freeipa_iam_usergroups_effective | default([])) + [item | combine(_freeipa_iam_group_user_block, recursive=True)] }}"
   vars:
-    _freeipa_idam_users_from_group_entry: "{{ item.user | default([]) }}"
-    _freeipa_idam_users_from_user_entries: >-
+    _freeipa_iam_users_from_group_entry: "{{ item.user | default([]) }}"
+    _freeipa_iam_users_from_user_entries: >-
       {{
-        (freeipa_idam_user_group_pairs | default([]))
+        (freeipa_iam_user_group_pairs | default([]))
         | selectattr('group', 'equalto', item.name)
         | map(attribute='user')
         | list
       }}
-    _freeipa_idam_merged_users: "{{ (_freeipa_idam_users_from_group_entry + _freeipa_idam_users_from_user_entries) | unique }}"
-    _freeipa_idam_group_user_block: "{{ {'user': _freeipa_idam_merged_users} if (_freeipa_idam_merged_users | length > 0) else {} }}"
-  loop: "{{ freeipa_idam_usergroups }}"
+    _freeipa_iam_merged_users: "{{ (_freeipa_iam_users_from_group_entry + _freeipa_iam_users_from_user_entries) | unique }}"
+    _freeipa_iam_group_user_block: "{{ {'user': _freeipa_iam_merged_users} if (_freeipa_iam_merged_users | length > 0) else {} }}"
+  loop: "{{ freeipa_iam_usergroups }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_usergroups | length > 0
+  when: freeipa_iam_usergroups | length > 0
   # group dicts with member NAMES (no secrets) — shown at -vv.
   no_log: "{{ ansible_verbosity < 2 }}"
 
@@ -98,22 +98,22 @@
 # membermanager). Splitting create from member keeps the dependency order intact
 # (groups must exist before HBAC rules reference them; membership needs users to
 # exist) while collapsing two per-group LOOPS into two single module calls — the
-# speedup. gidnumber: a group's own value wins, else the freeipa_idam_group_gids
+# speedup. gidnumber: a group's own value wins, else the freeipa_iam_group_gids
 # map (deterministic GIDs), else IPA auto-assigns.
 - name: Build bulk ipagroup create + membership payloads
   ansible.builtin.set_fact:
-    _freeipa_idam_usergroups_create: "{{ (_fc_yaml | from_yaml) or [] }}"
-    _freeipa_idam_usergroups_members: "{{ (_fm_yaml | from_yaml) or [] }}"
+    _freeipa_iam_usergroups_create: "{{ (_fc_yaml | from_yaml) or [] }}"
+    _freeipa_iam_usergroups_members: "{{ (_fm_yaml | from_yaml) or [] }}"
   vars:
     _fc_yaml: |-
-      {% for g in (freeipa_idam_usergroups_effective | default([])) %}
+      {% for g in (freeipa_iam_usergroups_effective | default([])) %}
       {% if (g.state | default('present')) != 'absent' %}
-      {% set _gid = g.gidnumber | default(freeipa_idam_group_gids[g.name] | default('')) %}
+      {% set _gid = g.gidnumber | default(freeipa_iam_group_gids[g.name] | default('')) %}
       - {name: "{{ g.name }}"{% if g.description is defined %}, description: "{{ g.description }}"{% endif %}{% if _gid | string | length > 0 %}, gidnumber: {{ _gid }}{% endif %}{% if g.posix is defined %}, posix: {{ g.posix | to_json }}{% endif %}{% if g.nonposix is defined %}, nonposix: {{ g.nonposix | to_json }}{% endif %}}
       {% endif %}
       {% endfor %}
     _fm_yaml: |-
-      {% for g in (freeipa_idam_usergroups_effective | default([])) %}
+      {% for g in (freeipa_iam_usergroups_effective | default([])) %}
       {% if (g.state | default('present')) != 'absent' and ((g.user | default([]) | length > 0) or (g.group | default([]) | length > 0) or (g.membermanager_user | default([]) | length > 0) or (g.membermanager_group | default([]) | length > 0)) %}
       - {name: "{{ g.name }}"{% if g.user | default([]) | length > 0 %}, user: {{ g.user | to_json }}{% endif %}{% if g.group | default([]) | length > 0 %}, group: {{ g.group | to_json }}{% endif %}{% if g.membermanager_user | default([]) | length > 0 %}, membermanager_user: {{ g.membermanager_user | to_json }}{% endif %}{% if g.membermanager_group | default([]) | length > 0 %}, membermanager_group: {{ g.membermanager_group | to_json }}{% endif %}}
       {% endif %}
@@ -129,26 +129,26 @@
 # admin to groups, you just never try to modify admin's identity attributes.
 - name: Build FreeIPA users payload without local-only keys (skip protected users)
   ansible.builtin.set_fact:
-    freeipa_idam_users_effective: >-
-      {{ (freeipa_idam_users_effective | default([]))
+    freeipa_iam_users_effective: >-
+      {{ (freeipa_iam_users_effective | default([]))
          + [ (item | dict2items | rejectattr('key', 'equalto', 'groups')
                    | rejectattr('key', 'equalto', 'roles') | items2dict)
-             | combine(_freeipa_idam_email_default) | combine(_freeipa_idam_pw_default) ] }}
+             | combine(_freeipa_iam_email_default) | combine(_freeipa_iam_pw_default) ] }}
   vars:
     # Default email = <name>@<email_domain> only when the user gave no explicit one.
-    _freeipa_idam_email_default: >-
+    _freeipa_iam_email_default: >-
       {{ {} if (item.email is defined)
-         else {'email': [item.name ~ '@' ~ freeipa_idam_email_domain]} }}
+         else {'email': [item.name ~ '@' ~ freeipa_iam_email_domain]} }}
     # Default create-time password (update_password: on_create never resets existing).
-    _freeipa_idam_pw_default: >-
-      {{ {} if (item.password is defined or (freeipa_idam_default_user_password | length == 0))
-         else {'password': freeipa_idam_default_user_password} }}
-  loop: "{{ _freeipa_idam_users | default([]) | rejectattr('name', 'in', freeipa_idam_unmodifiable_users) | list }}"
+    _freeipa_iam_pw_default: >-
+      {{ {} if (item.password is defined or (freeipa_iam_default_user_password | length == 0))
+         else {'password': freeipa_iam_default_user_password} }}
+  loop: "{{ _freeipa_iam_users | default([]) | rejectattr('name', 'in', freeipa_iam_unmodifiable_users) | list }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   no_log: true
 
-- name: IDAM | Resolve admin password (shared resolver)
+- name: IAM | Resolve admin password (shared resolver)
   ansible.builtin.include_tasks: resolve_credentials.yml
   vars:
     _freeipa_resolve: [admin]
@@ -160,11 +160,11 @@
 # users whose name is back in the desired set. Needs the IPA CLI, so a short kinit window.
 - name: Reactivate declared-but-preserved users (re-onboard safety)
   when:
-    - freeipa_idam_reactivate_preserved | bool
-    - freeipa_idam_desired_usernames | length > 0
+    - freeipa_iam_reactivate_preserved | bool
+    - freeipa_iam_desired_usernames | length > 0
   block:
     - name: Acquire Kerberos ticket to find preserved users
-      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
       args:
         stdin: "{{ _freeipa_admin_password }}"
       changed_when: false
@@ -173,22 +173,22 @@
 
     - name: Find currently-preserved (archived) users
       ansible.builtin.command: "ipa user-find --preserved=true --pkey-only --sizelimit=0"
-      register: _freeipa_idam_preserved_find
+      register: _freeipa_iam_preserved_find
       changed_when: false
       check_mode: false
       failed_when: false
 
     - name: Compute declared users that are currently preserved
       ansible.builtin.set_fact:
-        _freeipa_idam_to_reactivate: >-
-          {{ (_freeipa_idam_preserved_find.stdout_lines | default([]) | map('trim')
+        _freeipa_iam_to_reactivate: >-
+          {{ (_freeipa_iam_preserved_find.stdout_lines | default([]) | map('trim')
               | select('match', '^User login:')
               | map('regex_replace', '^User login: ', '') | list)
-             | intersect(freeipa_idam_desired_usernames) }}
+             | intersect(freeipa_iam_desired_usernames) }}
 
     - name: Reactivate (undel) preserved users that are re-declared
       ansible.builtin.command: "ipa user-undel {{ item | quote }}"
-      loop: "{{ _freeipa_idam_to_reactivate | default([]) }}"
+      loop: "{{ _freeipa_iam_to_reactivate | default([]) }}"
       loop_control:
         label: "{{ item }}"
       changed_when: true
@@ -200,7 +200,7 @@
       failed_when: false
 
 # ── Precheck: ONE find per remaining per-item object type; those loops then run
-# ONLY for entries that differ from the realm (freeipa_idam_changed_subset — every
+# ONLY for entries that differ from the realm (freeipa_iam_changed_subset — every
 # skipped iteration saves a full Python + ipalib bootstrap on the server). Fail
 # open: a failed/empty find yields raw "", the filter sees nothing current, and
 # the full declared list runs exactly as before this optimisation. sudocmd is
@@ -209,24 +209,24 @@
 - name: Precheck | Read current realm objects (one find per object type)
   vars:
     _freeipa_precheck_specs:
-      - {find: hostgroup, run: "{{ freeipa_idam_hostgroups | length > 0 }}"}
-      - {find: hbacrule, run: "{{ (freeipa_idam_hbac_rules | length > 0) or (freeipa_idam_hbac_rules_disable | length > 0) }}"}
-      - {find: hbacsvc, run: "{{ freeipa_idam_hbacsvcs | length > 0 }}"}
-      - {find: hbacsvcgroup, run: "{{ freeipa_idam_hbacsvcgroups | length > 0 }}"}
-      - {find: sudocmd, run: "{{ (freeipa_idam_sudo_commands | length > 0) or (freeipa_idam_sudocmdgroups | length > 0) }}"}
-      - {find: sudocmdgroup, run: "{{ freeipa_idam_sudocmdgroups | length > 0 }}"}
-      - {find: pwpolicy, run: "{{ freeipa_idam_pwpolicies | length > 0 }}"}
-      - {find: permission, run: "{{ freeipa_idam_permissions | length > 0 }}"}
-      - {find: privilege, run: "{{ freeipa_idam_privileges | length > 0 }}"}
-      - {find: role, run: "{{ freeipa_idam_iparoles | length > 0 }}"}
+      - {find: hostgroup, run: "{{ freeipa_iam_hostgroups | length > 0 }}"}
+      - {find: hbacrule, run: "{{ (freeipa_iam_hbac_rules | length > 0) or (freeipa_iam_hbac_rules_disable | length > 0) }}"}
+      - {find: hbacsvc, run: "{{ freeipa_iam_hbacsvcs | length > 0 }}"}
+      - {find: hbacsvcgroup, run: "{{ freeipa_iam_hbacsvcgroups | length > 0 }}"}
+      - {find: sudocmd, run: "{{ (freeipa_iam_sudo_commands | length > 0) or (freeipa_iam_sudocmdgroups | length > 0) }}"}
+      - {find: sudocmdgroup, run: "{{ freeipa_iam_sudocmdgroups | length > 0 }}"}
+      - {find: pwpolicy, run: "{{ freeipa_iam_pwpolicies | length > 0 }}"}
+      - {find: permission, run: "{{ freeipa_iam_permissions | length > 0 }}"}
+      - {find: privilege, run: "{{ freeipa_iam_privileges | length > 0 }}"}
+      - {find: role, run: "{{ freeipa_iam_iparoles | length > 0 }}"}
   when: >-
-    (freeipa_idam_hostgroups + freeipa_idam_hbac_rules + freeipa_idam_hbac_rules_disable
-     + freeipa_idam_hbacsvcs + freeipa_idam_hbacsvcgroups + freeipa_idam_sudo_commands
-     + freeipa_idam_sudocmdgroups + freeipa_idam_pwpolicies + freeipa_idam_permissions
-     + freeipa_idam_privileges + freeipa_idam_iparoles) | length > 0
+    (freeipa_iam_hostgroups + freeipa_iam_hbac_rules + freeipa_iam_hbac_rules_disable
+     + freeipa_iam_hbacsvcs + freeipa_iam_hbacsvcgroups + freeipa_iam_sudo_commands
+     + freeipa_iam_sudocmdgroups + freeipa_iam_pwpolicies + freeipa_iam_permissions
+     + freeipa_iam_privileges + freeipa_iam_iparoles) | length > 0
   block:
     - name: Precheck | Acquire Kerberos ticket
-      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
       args:
         stdin: "{{ _freeipa_admin_password }}"
       changed_when: false
@@ -257,26 +257,26 @@
       failed_when: false
 
 # BULK create — one ipagroup call for ALL groups (name/description/gidnumber/posix).
-# Runs before HBAC/sudo so rules can reference groups. freeipa_idam_per_item_apply
+# Runs before HBAC/sudo so rules can reference groups. freeipa_iam_per_item_apply
 # switches to one call per item (real-time feedback, per-invocation cost).
 - name: Ensure declarative FreeIPA groups are present (bulk create)
   freeipa.ansible_freeipa.ipagroup:
-    groups: "{{ _freeipa_idam_usergroups_create }}"
+    groups: "{{ _freeipa_iam_usergroups_create }}"
     state: present
   when:
-    - not freeipa_idam_per_item_apply | bool
-    - (_freeipa_idam_usergroups_create | default([])) | length > 0
-  register: _freeipa_idam_changed_groups
+    - not freeipa_iam_per_item_apply | bool
+    - (_freeipa_iam_usergroups_create | default([])) | length > 0
+  register: _freeipa_iam_changed_groups
 
 - name: Ensure declarative FreeIPA groups are present (per item)
   freeipa.ansible_freeipa.ipagroup:
     groups: ["{{ item }}"]
     state: present
-  loop: "{{ _freeipa_idam_usergroups_create | default([]) }}"
+  loop: "{{ _freeipa_iam_usergroups_create | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
-  register: _freeipa_idam_changed_groups_items
+  when: freeipa_iam_per_item_apply | bool
+  register: _freeipa_iam_changed_groups_items
 
 # Users are created HERE — before any HBAC/sudo rule-membership task that
 # references them. On a fresh server they would otherwise not exist yet and the
@@ -284,24 +284,24 @@
 # still applied later (once both users and groups exist).
 - name: Ensure declarative users are present
   freeipa.ansible_freeipa.ipauser:
-    users: "{{ freeipa_idam_users_effective | default([]) }}"
+    users: "{{ freeipa_iam_users_effective | default([]) }}"
     update_password: on_create
     state: present
   when:
-    - not freeipa_idam_per_item_apply | bool
-    - (freeipa_idam_users_effective | default([])) | length > 0
-  register: _freeipa_idam_changed_users
+    - not freeipa_iam_per_item_apply | bool
+    - (freeipa_iam_users_effective | default([])) | length > 0
+  register: _freeipa_iam_changed_users
 
 - name: Ensure declarative users are present (per item)
   freeipa.ansible_freeipa.ipauser:
     users: ["{{ item }}"]
     update_password: on_create
     state: present
-  loop: "{{ freeipa_idam_users_effective | default([]) }}"
+  loop: "{{ freeipa_iam_users_effective | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
-  register: _freeipa_idam_changed_users_items
+  when: freeipa_iam_per_item_apply | bool
+  register: _freeipa_iam_changed_users_items
 
 - name: Ensure declarative FreeIPA password policies are present
   freeipa.ansible_freeipa.ipapwpolicy:
@@ -318,14 +318,14 @@
     gracelimit: "{{ item.gracelimit | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only policies that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_pwpolicies_changed }}"
+  loop: "{{ _freeipa_iam_pwpolicies_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_pwpolicies_changed: >-
-      {{ freeipa_idam_pwpolicies
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('pwpolicy', ''), 'pwpolicy') }}
-  when: freeipa_idam_pwpolicies | length > 0
+    _freeipa_iam_pwpolicies_changed: >-
+      {{ freeipa_iam_pwpolicies
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('pwpolicy', ''), 'pwpolicy') }}
+  when: freeipa_iam_pwpolicies | length > 0
 
 # TWO passes so a hostgroup that NESTS another (hostgroup: [child]) never races ahead of the
 # child's creation. Pass 1 creates every hostgroup (name/description/host) with NO nested member;
@@ -339,28 +339,28 @@
     host: "{{ item.host | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only hostgroups that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_hostgroups_changed }}"
+  loop: "{{ _freeipa_iam_hostgroups_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_hostgroups_changed: >-
-      {{ freeipa_idam_hostgroups
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hostgroup', ''), 'hostgroup') }}
-  when: freeipa_idam_hostgroups | length > 0
+    _freeipa_iam_hostgroups_changed: >-
+      {{ freeipa_iam_hostgroups
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('hostgroup', ''), 'hostgroup') }}
+  when: freeipa_iam_hostgroups | length > 0
 
 - name: Reconcile declarative FreeIPA hostgroup nesting (all hostgroups now exist)
   freeipa.ansible_freeipa.ipahostgroup:
     name: "{{ item.name }}"
     hostgroup: "{{ item.hostgroup }}"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ _freeipa_idam_hostgroups_nesting_changed }}"
+  loop: "{{ _freeipa_iam_hostgroups_nesting_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_hostgroups_nesting_changed: >-
-      {{ freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hostgroup', ''), 'hostgroup') }}
-  when: (freeipa_idam_hostgroups | selectattr('hostgroup', 'defined') | list | length) > 0
+    _freeipa_iam_hostgroups_nesting_changed: >-
+      {{ freeipa_iam_hostgroups | selectattr('hostgroup', 'defined') | list
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('hostgroup', ''), 'hostgroup') }}
+  when: (freeipa_iam_hostgroups | selectattr('hostgroup', 'defined') | list | length) > 0
 
 # Seed CUSTOM HBAC services before any rule membership references them. Stock
 # services (sshd, sudo, …) already exist on every server; custom ones do not, so
@@ -372,14 +372,14 @@
     description: "{{ item.description | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only services that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_hbacsvcs_changed }}"
+  loop: "{{ _freeipa_iam_hbacsvcs_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_hbacsvcs_changed: >-
-      {{ freeipa_idam_hbacsvcs
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacsvc', ''), 'hbacsvc') }}
-  when: freeipa_idam_hbacsvcs | length > 0
+    _freeipa_iam_hbacsvcs_changed: >-
+      {{ freeipa_iam_hbacsvcs
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacsvc', ''), 'hbacsvc') }}
+  when: freeipa_iam_hbacsvcs | length > 0
 
 # HBAC service GROUPS — bundle custom/stock services (e.g. docker + xrdp-sesman +
 # sshd → "remote-access") so an HBAC rule can grant a whole bundle via servicegroup
@@ -394,14 +394,14 @@
     hbacsvc: "{{ item.hbacsvc | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only groups that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_hbacsvcgroups_changed }}"
+  loop: "{{ _freeipa_iam_hbacsvcgroups_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_hbacsvcgroups_changed: >-
-      {{ freeipa_idam_hbacsvcgroups
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacsvcgroup', ''), 'hbacsvcgroup') }}
-  when: freeipa_idam_hbacsvcgroups | length > 0
+    _freeipa_iam_hbacsvcgroups_changed: >-
+      {{ freeipa_iam_hbacsvcgroups
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacsvcgroup', ''), 'hbacsvcgroup') }}
+  when: freeipa_iam_hbacsvcgroups | length > 0
 
 # ONE rich-dict call per rule: state:present creates AND declaratively reconciles
 # members (add+del lists). Category rules omit member lists; member principals were
@@ -426,15 +426,15 @@
   # precheck-gated: only rules that differ from the realm invoke the module.
   # NOTE: enabled/disabled entries compare on their OTHER keys here (state itself
   # is the op-state pass's job below, gated on the realm's ipaenabledflag).
-  loop: "{{ _freeipa_idam_hbac_changed }}"
+  loop: "{{ _freeipa_iam_hbac_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
     _hbac_absent: "{{ (item.state | default('present')) == 'absent' }}"
-    _freeipa_idam_hbac_changed: >-
-      {{ freeipa_idam_hbac_rules
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacrule', ''), 'hbacrule') }}
-  when: freeipa_idam_hbac_rules | length > 0
+    _freeipa_iam_hbac_changed: >-
+      {{ freeipa_iam_hbac_rules
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('hbacrule', ''), 'hbacrule') }}
+  when: freeipa_iam_hbac_rules | length > 0
 
 - name: Ensure declarative HBAC rule operational states
   freeipa.ansible_freeipa.ipahbacrule:
@@ -442,15 +442,15 @@
     state: "{{ item.state }}"
   # precheck-gated: only rules whose realm ipaenabledflag mismatches the declared
   # state (rules created THIS run are conservatively included — they start enabled)
-  loop: "{{ _freeipa_idam_hbac_state_mismatch }}"
+  loop: "{{ _freeipa_iam_hbac_state_mismatch }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_hbac_state_mismatch: >-
-      {{ freeipa_idam_hbac_rules
-         | freeipa_idam_hbac_state_mismatch((_freeipa_precheck_raw | default({})).get('hbacrule', '')) }}
+    _freeipa_iam_hbac_state_mismatch: >-
+      {{ freeipa_iam_hbac_rules
+         | freeipa_iam_hbac_state_mismatch((_freeipa_precheck_raw | default({})).get('hbacrule', '')) }}
   when:
-    - freeipa_idam_hbac_rules | length > 0
+    - freeipa_iam_hbac_rules | length > 0
     - item.state is defined
     - item.state in ['enabled', 'disabled']
 
@@ -460,15 +460,15 @@
 # policy is declared (disabling the default allow rules on an empty policy locks
 # everyone out). To EMPTY a rule's members instead, declare it with user: [] above.
 - name: Disable named HBAC rules (opt-in hardening)
-  when: freeipa_idam_hbac_rules_disable | length > 0
+  when: freeipa_iam_hbac_rules_disable | length > 0
   block:
     - name: Refuse to disable HBAC rules without a declared access policy
       ansible.builtin.assert:
         that:
-          - freeipa_idam_hbac_rules | length > 0
+          - freeipa_iam_hbac_rules | length > 0
         fail_msg: >-
-          Refusing to disable {{ freeipa_idam_hbac_rules_disable | join(', ') }}:
-          no HBAC rules are declared in freeipa_idam_hbac_rules, so disabling the
+          Refusing to disable {{ freeipa_iam_hbac_rules_disable | join(', ') }}:
+          no HBAC rules are declared in freeipa_iam_hbac_rules, so disabling the
           stock allow rules would lock everyone out. Declare your access policy first.
     - name: Disable each listed HBAC rule (reversible — state disabled)
       freeipa.ansible_freeipa.ipahbacrule:
@@ -476,15 +476,15 @@
         state: disabled
       # precheck-gated: an already-disabled rule (realm ipaenabledflag FALSE)
       # skips its module call; rules absent from the find are included
-      loop: "{{ _freeipa_idam_hbac_disable_pending }}"
+      loop: "{{ _freeipa_iam_hbac_disable_pending }}"
       loop_control:
         label: "{{ item.name }}"
       vars:
-        _freeipa_idam_hbac_disable_pending: >-
-          {{ freeipa_idam_hbac_rules_disable
+        _freeipa_iam_hbac_disable_pending: >-
+          {{ freeipa_iam_hbac_rules_disable
              | map('community.general.dict_kv', 'name')
              | map('combine', {'state': 'disabled'}) | list
-             | freeipa_idam_hbac_state_mismatch((_freeipa_precheck_raw | default({})).get('hbacrule', '')) }}
+             | freeipa_iam_hbac_state_mismatch((_freeipa_precheck_raw | default({})).get('hbacrule', '')) }}
 
 - name: Ensure declarative sudo commands are present
   freeipa.ansible_freeipa.ipasudocmd:
@@ -492,14 +492,14 @@
     description: "{{ item.description | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only commands that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_sudo_commands_changed }}"
+  loop: "{{ _freeipa_iam_sudo_commands_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_sudo_commands_changed: >-
-      {{ freeipa_idam_sudo_commands
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('sudocmd', ''), 'sudocmd') }}
-  when: freeipa_idam_sudo_commands | length > 0
+    _freeipa_iam_sudo_commands_changed: >-
+      {{ freeipa_iam_sudo_commands
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('sudocmd', ''), 'sudocmd') }}
+  when: freeipa_iam_sudo_commands | length > 0
 
 # Sudo command GROUPS — bundle commands so a sudo rule can grant a whole set via
 # cmdgroup/deny_cmdgroup instead of listing each. Created AFTER the commands above,
@@ -513,119 +513,119 @@
     state: "{{ item.state | default('present') }}"
   # precheck-gated: member ipaUniqueID leaves resolve through the sudocmd find
   # (aux_raw) — unresolvable members keep the group included (conservative)
-  loop: "{{ _freeipa_idam_sudocmdgroups_changed }}"
+  loop: "{{ _freeipa_iam_sudocmdgroups_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_sudocmdgroups_changed: >-
-      {{ freeipa_idam_sudocmdgroups
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('sudocmdgroup', ''),
+    _freeipa_iam_sudocmdgroups_changed: >-
+      {{ freeipa_iam_sudocmdgroups
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('sudocmdgroup', ''),
                                        'sudocmdgroup',
                                        (_freeipa_precheck_raw | default({})).get('sudocmd', '')) }}
-  when: freeipa_idam_sudocmdgroups | length > 0
+  when: freeipa_iam_sudocmdgroups | length > 0
 
 # BULK calls: the compiled `sudorules:` payload creates every rule AND reconciles
 # its members (hosts, users, allow/deny cmds, options, runas) in ONE module
 # invocation — each invocation on the server costs a full Python + ipalib
 # bootstrap, so N rules per call is what keeps the CPU down. cmds referenced via
 # allow/deny_sudocmd are created in the sudo-commands task above, so they resolve
-# here. Key renames + unknown-key fail-fast: freeipa_idam_sudorules_payload.
+# here. Key renames + unknown-key fail-fast: freeipa_iam_sudorules_payload.
 - name: Compile bulk sudo-rule payloads (present/absent/enabled/disabled)
   ansible.builtin.set_fact:
-    _freeipa_idam_sudorules: "{{ freeipa_idam_sudo_rules | freeipa_idam_sudorules_payload }}"
-  when: freeipa_idam_sudo_rules | length > 0
+    _freeipa_iam_sudorules: "{{ freeipa_iam_sudo_rules | freeipa_iam_sudorules_payload }}"
+  when: freeipa_iam_sudo_rules | length > 0
 
 - name: Ensure declarative sudo rules are present (rules + members, one bulk call)
   freeipa.ansible_freeipa.ipasudorule:
-    sudorules: "{{ _freeipa_idam_sudorules.present }}"
+    sudorules: "{{ _freeipa_iam_sudorules.present }}"
     state: present
   when:
-    - not freeipa_idam_per_item_apply | bool
-    - ((_freeipa_idam_sudorules | default({})).present | default([])) | length > 0
+    - not freeipa_iam_per_item_apply | bool
+    - ((_freeipa_iam_sudorules | default({})).present | default([])) | length > 0
 
 - name: Ensure declarative sudo rules are present (per item)
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: ["{{ item }}"]
     state: present
-  loop: "{{ (_freeipa_idam_sudorules | default({})).present | default([]) }}"
+  loop: "{{ (_freeipa_iam_sudorules | default({})).present | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
+  when: freeipa_iam_per_item_apply | bool
 
 - name: Remove sudo rules declared state absent (one bulk call)
   freeipa.ansible_freeipa.ipasudorule:
-    sudorules: "{{ _freeipa_idam_sudorules.absent }}"
+    sudorules: "{{ _freeipa_iam_sudorules.absent }}"
     state: absent
   when:
-    - not freeipa_idam_per_item_apply | bool
-    - ((_freeipa_idam_sudorules | default({})).absent | default([])) | length > 0
+    - not freeipa_iam_per_item_apply | bool
+    - ((_freeipa_iam_sudorules | default({})).absent | default([])) | length > 0
 
 - name: Remove sudo rules declared state absent (per item)
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: ["{{ item }}"]
     state: absent
-  loop: "{{ (_freeipa_idam_sudorules | default({})).absent | default([]) }}"
+  loop: "{{ (_freeipa_iam_sudorules | default({})).absent | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
+  when: freeipa_iam_per_item_apply | bool
 
 - name: Ensure declarative sudo rule operational states (one bulk call per state)
   freeipa.ansible_freeipa.ipasudorule:
-    sudorules: "{{ _freeipa_idam_sudorules[item] }}"
+    sudorules: "{{ _freeipa_iam_sudorules[item] }}"
     state: "{{ item }}"
   loop: [enabled, disabled]
   when:
-    - not freeipa_idam_per_item_apply | bool
-    - ((_freeipa_idam_sudorules | default({}))[item] | default([])) | length > 0
+    - not freeipa_iam_per_item_apply | bool
+    - ((_freeipa_iam_sudorules | default({}))[item] | default([])) | length > 0
 
 - name: Ensure enabled sudo rule operational states (per item)
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: ["{{ item }}"]
     state: enabled
-  loop: "{{ (_freeipa_idam_sudorules | default({})).enabled | default([]) }}"
+  loop: "{{ (_freeipa_iam_sudorules | default({})).enabled | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
+  when: freeipa_iam_per_item_apply | bool
 
 - name: Ensure disabled sudo rule operational states (per item)
   freeipa.ansible_freeipa.ipasudorule:
     sudorules: ["{{ item }}"]
     state: disabled
-  loop: "{{ (_freeipa_idam_sudorules | default({})).disabled | default([]) }}"
+  loop: "{{ (_freeipa_iam_sudorules | default({})).disabled | default([]) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
+  when: freeipa_iam_per_item_apply | bool
 
 - name: Ensure managed marker group exists
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_idam_managed_group }}"
+    name: "{{ freeipa_iam_managed_group }}"
     description: "Users managed declaratively from Git"
     state: present
 
 # DECLARATIVE GROUP-EXISTENCE reconcile (opt-in: freeipa_server_authoritative). The
 # additive `ipagroup state: present` create above never deletes a group you remove from
-# freeipa_idam_usergroups. To make group existence declarative we nest every declared
+# freeipa_iam_usergroups. To make group existence declarative we nest every declared
 # group into a CONTAINER marker group here; later (in the kinit window below) we read the
 # container's members and delete any that are no longer declared — exactly mirroring the
 # user-marker archival. Enrollment excludes protected built-ins (never tracked/deleted).
 - name: Ensure managed-groups container exists (group-existence reconcile marker)
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_idam_managed_groups_group }}"
+    name: "{{ freeipa_iam_managed_groups_group }}"
     description: "Container marker — groups managed declaratively from Git (group-existence reconcile)"
     state: present
   when: freeipa_server_authoritative | bool
 
 - name: Enroll declared groups into the managed-groups container (membership marker)
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_idam_managed_groups_group }}"
+    name: "{{ freeipa_iam_managed_groups_group }}"
     action: member
-    group: "{{ _freeipa_idam_enrollable_groups }}"
+    group: "{{ _freeipa_iam_enrollable_groups }}"
     state: present
   vars:
-    _freeipa_idam_enrollable_groups: "{{ freeipa_idam_group_names | difference(freeipa_idam_protected_groups) }}"
+    _freeipa_iam_enrollable_groups: "{{ freeipa_iam_group_names | difference(freeipa_iam_protected_groups) }}"
   when:
     - freeipa_server_authoritative | bool
-    - _freeipa_idam_enrollable_groups | length > 0
+    - _freeipa_iam_enrollable_groups | length > 0
 
 # Membership reconcile. Default = ADDITIVE (action: member — never strips, so
 # out-of-band/system memberships are safe). freeipa_server_authoritative: true (or
@@ -636,15 +636,15 @@
 - name: Build membership reconcile payloads (additive / declarative)
   ansible.builtin.set_fact:
     # Strip undeclared members when EITHER authoritative OR the membership-only mode is on.
-    _freeipa_idam_strip_memberships: "{{ (freeipa_server_authoritative | bool) or (freeipa_idam_reconcile_memberships_only | bool) }}"
+    _freeipa_iam_strip_memberships: "{{ (freeipa_server_authoritative | bool) or (freeipa_iam_reconcile_memberships_only | bool) }}"
     _freeipa_members_protected: >-
-      {{ _freeipa_idam_usergroups_members
-         | selectattr('name', 'in', freeipa_idam_protected_groups | default([])) | list }}
+      {{ _freeipa_iam_usergroups_members
+         | selectattr('name', 'in', freeipa_iam_protected_groups | default([])) | list }}
     _freeipa_members_declarative: "{{ (_mdecl_yaml | from_yaml) or [] }}"
   vars:
     _mdecl_yaml: |-
-      {% for g in (freeipa_idam_usergroups_effective | default([])) %}
-      {% if (g.state | default('present')) != 'absent' and g.name not in (freeipa_idam_protected_groups | default([])) %}
+      {% for g in (freeipa_iam_usergroups_effective | default([])) %}
+      {% if (g.state | default('present')) != 'absent' and g.name not in (freeipa_iam_protected_groups | default([])) %}
       - {name: "{{ g.name }}", user: {{ g.user | default([]) | to_json }}, group: {{ g.group | default([]) | to_json }}}
       {% endif %}
       {% endfor %}
@@ -657,22 +657,22 @@
     action: member
     state: present
   vars:
-    _members_additive: "{{ _freeipa_idam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+    _members_additive: "{{ _freeipa_iam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_iam_usergroups_members) }}"
   when:
-    - not freeipa_idam_per_item_apply | bool
+    - not freeipa_iam_per_item_apply | bool
     - _members_additive | length > 0
-  register: _freeipa_idam_changed_members_add
+  register: _freeipa_iam_changed_members_add
 
 - name: Ensure group memberships present — ADDITIVE (per item)
   freeipa.ansible_freeipa.ipagroup:
     groups: ["{{ item }}"]
     action: member
     state: present
-  loop: "{{ _freeipa_idam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_idam_usergroups_members) }}"
+  loop: "{{ _freeipa_iam_strip_memberships | ternary(_freeipa_members_protected, _freeipa_iam_usergroups_members) }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
-  when: freeipa_idam_per_item_apply | bool
-  register: _freeipa_idam_changed_members_add_items
+  when: freeipa_iam_per_item_apply | bool
+  register: _freeipa_iam_changed_members_add_items
 
 - name: Reconcile group memberships DECLARATIVELY — non-protected managed groups (removes undeclared)
   freeipa.ansible_freeipa.ipagroup:
@@ -680,10 +680,10 @@
     # default action (group) → gen_add_del_lists reconciles user + nested-group membership
     state: present
   when:
-    - not freeipa_idam_per_item_apply | bool
-    - _freeipa_idam_strip_memberships
+    - not freeipa_iam_per_item_apply | bool
+    - _freeipa_iam_strip_memberships
     - _freeipa_members_declarative | length > 0
-  register: _freeipa_idam_changed_members_decl
+  register: _freeipa_iam_changed_members_decl
 
 - name: Reconcile group memberships DECLARATIVELY (per item)
   freeipa.ansible_freeipa.ipagroup:
@@ -693,9 +693,9 @@
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   when:
-    - freeipa_idam_per_item_apply | bool
-    - _freeipa_idam_strip_memberships
-  register: _freeipa_idam_changed_members_decl_items
+    - freeipa_iam_per_item_apply | bool
+    - _freeipa_iam_strip_memberships
+  register: _freeipa_iam_changed_members_decl_items
 
 # RBAC daisychain bottom-up: permission → privilege → role. Custom PERMISSIONS
 # first (the atomic "can do X to Y" grants), then PRIVILEGES that bundle them, then
@@ -714,14 +714,14 @@
     memberof: "{{ item.memberof | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only permissions that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_permissions_changed }}"
+  loop: "{{ _freeipa_iam_permissions_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_permissions_changed: >-
-      {{ freeipa_idam_permissions
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('permission', ''), 'permission') }}
-  when: freeipa_idam_permissions | length > 0
+    _freeipa_iam_permissions_changed: >-
+      {{ freeipa_iam_permissions
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('permission', ''), 'permission') }}
+  when: freeipa_iam_permissions | length > 0
 
 - name: Ensure declarative IPA privileges are present (privilege + permissions in one pass)
   freeipa.ansible_freeipa.ipaprivilege:
@@ -730,17 +730,17 @@
     permission: "{{ item.permission | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only privileges that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_privileges_changed }}"
+  loop: "{{ _freeipa_iam_privileges_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_privileges_changed: >-
-      {{ freeipa_idam_privileges
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('privilege', ''), 'privilege') }}
-  when: freeipa_idam_privileges | length > 0
+    _freeipa_iam_privileges_changed: >-
+      {{ freeipa_iam_privileges
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('privilege', ''), 'privilege') }}
+  when: freeipa_iam_privileges | length > 0
 
 # Native IPA DELEGATION roles (privileges + members) — distinct from the group-
-# bundle freeipa_idam_roles. One iparole call per role (the module has no bulk
+# bundle freeipa_iam_roles. One iparole call per role (the module has no bulk
 # `roles:` list), but delegation roles are few so the loop is cheap. Runs AFTER
 # users + groups so user/group members resolve.
 - name: Ensure native IPA delegation roles are present
@@ -755,86 +755,86 @@
     service: "{{ item.service | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   # precheck-gated: only roles that differ from the realm invoke the module
-  loop: "{{ _freeipa_idam_iparoles_changed }}"
+  loop: "{{ _freeipa_iam_iparoles_changed }}"
   loop_control:
     label: "{{ item.name | default('missing-name') }}"
   vars:
-    _freeipa_idam_iparoles_changed: >-
-      {{ freeipa_idam_iparoles
-         | freeipa_idam_changed_subset((_freeipa_precheck_raw | default({})).get('role', ''), 'role') }}
-  when: freeipa_idam_iparoles | length > 0
+    _freeipa_iam_iparoles_changed: >-
+      {{ freeipa_iam_iparoles
+         | freeipa_iam_changed_subset((_freeipa_precheck_raw | default({})).get('role', ''), 'role') }}
+  when: freeipa_iam_iparoles | length > 0
 
 # Break-glass accounts join the break-glass group (default: admins) for full access.
-# Done as a direct membership add (the group is a built-in, not in freeipa_idam_usergroups)
+# Done as a direct membership add (the group is a built-in, not in freeipa_iam_usergroups)
 # so it bypasses the declared-group validation. They stay login-enabled + protected.
 - name: Add break-glass accounts to the break-glass group
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_idam_breakglass_group }}"
+    name: "{{ freeipa_iam_breakglass_group }}"
     action: member
-    user: "{{ freeipa_idam_breakglass_accounts | map(attribute='name') | list }}"
+    user: "{{ freeipa_iam_breakglass_accounts | map(attribute='name') | list }}"
     state: present
-  when: freeipa_idam_breakglass_accounts | length > 0
+  when: freeipa_iam_breakglass_accounts | length > 0
 
 # Account state controls: nologin_accounts (shell off, API/kinit stays) and
 # disabled_accounts (fully off). Lockout guards: admin can never be disabled, and
 # admin→nologin requires an existing break-glass account.
 - name: Manage account login / enabled state (opt-in, list-driven)
   vars:
-    _freeipa_idam_nologin_effective: "{{ freeipa_idam_nologin_accounts | default([]) | unique }}"
-  when: (_freeipa_idam_nologin_effective | length > 0)
-        or ((freeipa_idam_disabled_accounts | default([])) | length > 0)
+    _freeipa_iam_nologin_effective: "{{ freeipa_iam_nologin_accounts | default([]) | unique }}"
+  when: (_freeipa_iam_nologin_effective | length > 0)
+        or ((freeipa_iam_disabled_accounts | default([])) | length > 0)
   block:
     - name: Guard account-state changes against admin lockout
       ansible.builtin.assert:
         that:
-          - "'admin' not in (freeipa_idam_disabled_accounts | default([]))"
+          - "'admin' not in (freeipa_iam_disabled_accounts | default([]))"
           - >-
-            ('admin' not in _freeipa_idam_nologin_effective)
-            or ((freeipa_idam_breakglass_accounts | default([])) | length > 0)
+            ('admin' not in _freeipa_iam_nologin_effective)
+            or ((freeipa_iam_breakglass_accounts | default([])) | length > 0)
         fail_msg: >-
           Refusing account-state change — never fully DISABLE 'admin' (you'd lose API
           admin), and only set 'admin' to nologin once at least one
-          freeipa_idam_breakglass_account is declared (else interactive admin is locked
+          freeipa_iam_breakglass_account is declared (else interactive admin is locked
           out with no alternative).
         quiet: true
 
     - name: Force existing accounts to a nologin shell (login off, account active)
       freeipa.ansible_freeipa.ipauser:
         name: "{{ item }}"
-        shell: "{{ freeipa_idam_nologin_shell }}"
+        shell: "{{ freeipa_iam_nologin_shell }}"
         state: present
-      loop: "{{ _freeipa_idam_nologin_effective | default([]) }}"
+      loop: "{{ _freeipa_iam_nologin_effective | default([]) }}"
       loop_control:
         label: "{{ item }}"
-      when: _freeipa_idam_nologin_effective | length > 0
+      when: _freeipa_iam_nologin_effective | length > 0
 
     - name: Disable accounts entirely (cannot authenticate)
       freeipa.ansible_freeipa.ipauser:
         name: "{{ item }}"
         state: disabled
-      loop: "{{ freeipa_idam_disabled_accounts | default([]) }}"
+      loop: "{{ freeipa_iam_disabled_accounts | default([]) }}"
       loop_control:
         label: "{{ item }}"
-      when: (freeipa_idam_disabled_accounts | default([])) | length > 0
+      when: (freeipa_iam_disabled_accounts | default([])) | length > 0
 
 - name: Ensure managed users are members of marker group
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_idam_managed_group }}"
+    name: "{{ freeipa_iam_managed_group }}"
     action: member
-    user: "{{ freeipa_idam_desired_usernames }}"
+    user: "{{ freeipa_iam_desired_usernames }}"
     state: present
-  when: freeipa_idam_desired_usernames | length > 0
+  when: freeipa_iam_desired_usernames | length > 0
 
 - name: Acquire Kerberos ticket for current membership discovery
-  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
   args:
     stdin: "{{ _freeipa_admin_password }}\n"
   changed_when: false
   no_log: true
 
 - name: Read current members of marker group
-  ansible.builtin.command: "ipa group-show {{ freeipa_idam_managed_group }} --all --raw"
-  register: _freeipa_idam_managed_group
+  ansible.builtin.command: "ipa group-show {{ freeipa_iam_managed_group }} --all --raw"
+  register: _freeipa_iam_managed_group
   changed_when: false
 
 # `ipa group-show --all --raw` returns members as raw LDAP `member:` DN lines
@@ -845,23 +845,23 @@
 # the regex as a literal backslash; stick to literal text + `[^,]`.
 - name: Build current marker-group user list
   ansible.builtin.set_fact:
-    freeipa_idam_current_managed_users: >-
-      {{ _freeipa_idam_managed_group.stdout_lines | map('trim')
+    freeipa_iam_current_managed_users: >-
+      {{ _freeipa_iam_managed_group.stdout_lines | map('trim')
          | select('search', 'uid=')
          | map('regex_replace', '.*uid=([^,]+).*', '\1') | list }}
 
 # ── Managed-subset membership eviction (WYSIWYG snap-back) ────────────────────
 # Evict MANAGED users who are current members of a declared group but no longer
-# declare it (e.g. GUI self-add). freeipa_idam_evictions returns only
+# declare it (e.g. GUI self-add). freeipa_iam_evictions returns only
 # (current ∩ managed) − desired, so unmanaged/out-of-band members are never touched;
 # automember-target groups and the marker containers are excluded.
 - name: Eviction | Build candidate groups (declared, not automember-populated)
   ansible.builtin.set_fact:
-    _freeipa_idam_evict_candidates: >-
-      {{ _freeipa_idam_usergroups_members | default([])
+    _freeipa_iam_evict_candidates: >-
+      {{ _freeipa_iam_usergroups_members | default([])
          | rejectattr('name', 'in', (freeipa_server_automember_rules | default([]) | map(attribute='name') | list))
          | list }}
-    _freeipa_idam_evict_payload: []
+    _freeipa_iam_evict_payload: []
   no_log: "{{ ansible_verbosity < 2 }}"
 
 # ONE group-find covers every group's current members, and the payload compiles in
@@ -876,30 +876,30 @@
 # has the drill).
 - name: Eviction | Read current members of all groups (one query)
   ansible.builtin.command: "ipa group-find --all --raw --sizelimit=0"
-  register: _freeipa_idam_evict_current
+  register: _freeipa_iam_evict_current
   changed_when: false
   failed_when: >-
-    _freeipa_idam_evict_current.rc not in [0, 1]
-    or ('ipa: ERROR' in (_freeipa_idam_evict_current.stderr | default('')))
+    _freeipa_iam_evict_current.rc not in [0, 1]
+    or ('ipa: ERROR' in (_freeipa_iam_evict_current.stderr | default('')))
   no_log: true
-  when: (_freeipa_idam_evict_candidates | default([])) | length > 0
+  when: (_freeipa_iam_evict_candidates | default([])) | length > 0
 
 - name: Eviction | Compute managed-subset payload (evict managed droppers only)
   ansible.builtin.set_fact:
-    _freeipa_idam_evict_payload: >-
-      {{ (_freeipa_idam_evict_current.stdout | default(''))
-         | freeipa_idam_evict_payload(_freeipa_idam_evict_candidates | default([]),
-                                      freeipa_idam_current_managed_users) }}
-  when: (_freeipa_idam_evict_candidates | default([])) | length > 0
+    _freeipa_iam_evict_payload: >-
+      {{ (_freeipa_iam_evict_current.stdout | default(''))
+         | freeipa_iam_evict_payload(_freeipa_iam_evict_candidates | default([]),
+                                      freeipa_iam_current_managed_users) }}
+  when: (_freeipa_iam_evict_candidates | default([])) | length > 0
   no_log: "{{ ansible_verbosity < 2 }}"
 
 - name: Eviction | Remove managed users from groups they no longer declare
   freeipa.ansible_freeipa.ipagroup:
-    groups: "{{ _freeipa_idam_evict_payload }}"
+    groups: "{{ _freeipa_iam_evict_payload }}"
     action: member
     state: absent
-  when: (_freeipa_idam_evict_payload | default([])) | length > 0
-  register: _freeipa_idam_changed_members_evict
+  when: (_freeipa_iam_evict_payload | default([])) | length > 0
+  register: _freeipa_iam_changed_members_evict
 
 # EMPTY-DESIRED-STATE circuit breaker: with zero desired users, EVERY managed user
 # is "removed" — a wiped realm from a typo'd tenants dir or hollow group_vars, not a
@@ -907,7 +907,7 @@
 # route to an empty desired set on a destructive run.
 - name: Refuse destructive reconcile against an EMPTY desired user set
   ansible.builtin.assert:
-    that: freeipa_idam_desired_usernames | length > 0
+    that: freeipa_iam_desired_usernames | length > 0
     fail_msg: >-
       freeipa_server_authoritative is enabled but ZERO users are declared — the
       reconcile would archive every managed user and delete every managed object on
@@ -916,38 +916,38 @@
     quiet: true
   when:
     - freeipa_server_authoritative | bool
-    - freeipa_idam_current_managed_users | default([]) | length > 0
+    - freeipa_iam_current_managed_users | default([]) | length > 0
 
 - name: Build declarative user delete list
   ansible.builtin.set_fact:
-    freeipa_idam_users_to_remove: >-
+    freeipa_iam_users_to_remove: >-
       {{
-        freeipa_idam_current_managed_users
-        | difference(freeipa_idam_desired_usernames)
-        | difference(freeipa_idam_protected_users)
+        freeipa_iam_current_managed_users
+        | difference(freeipa_iam_desired_usernames)
+        | difference(freeipa_iam_protected_users)
       }}
-  when: not (freeipa_idam_reconcile_memberships_only | bool)   # membership-only mode never archives users
+  when: not (freeipa_iam_reconcile_memberships_only | bool)   # membership-only mode never archives users
 
 # Archive (don't destroy) users removed from declarative config: bulk ipauser with
 # preserve=true → user-del --preserve (deactivated + retained, recoverable). Set
-# freeipa_idam_preserve_archived=false to hard-delete instead. One bulk call.
+# freeipa_iam_preserve_archived=false to hard-delete instead. One bulk call.
 - name: Archive (preserve) users removed from declarative config
   freeipa.ansible_freeipa.ipauser:
-    name: "{{ freeipa_idam_users_to_remove }}"
+    name: "{{ freeipa_iam_users_to_remove }}"
     state: absent
-    preserve: "{{ freeipa_idam_preserve_archived | bool }}"
+    preserve: "{{ freeipa_iam_preserve_archived | bool }}"
   when:
-    - not (freeipa_idam_reconcile_memberships_only | bool)
-    - freeipa_idam_users_to_remove | default([]) | length > 0
+    - not (freeipa_iam_reconcile_memberships_only | bool)
+    - freeipa_iam_users_to_remove | default([]) | length > 0
 
 # ── Declarative GROUP-EXISTENCE reconcile (opt-in) ───────────────────────────
 # Same ticket as the user-marker discovery above. Read the container's nested-group
-# members, then DELETE any that are no longer declared in freeipa_idam_usergroups —
+# members, then DELETE any that are no longer declared in freeipa_iam_usergroups —
 # the group-level twin of the user archival. check_mode: false on the read so --check
 # still PREVIEWS (the delete below honours check mode → reports, deletes nothing).
 - name: Read current nested groups of the managed-groups container
-  ansible.builtin.command: "ipa group-show {{ freeipa_idam_managed_groups_group }} --all --raw"
-  register: _freeipa_idam_managed_groups_show
+  ansible.builtin.command: "ipa group-show {{ freeipa_iam_managed_groups_group }} --all --raw"
+  register: _freeipa_iam_managed_groups_show
   changed_when: false
   failed_when: false                     # container may not exist yet on a first --check
   check_mode: false
@@ -960,38 +960,38 @@
 # above (folded scalar: literal text + [^,], no \s/\d classes).
 - name: Build declarative group delete list (container orphans)
   ansible.builtin.set_fact:
-    _freeipa_idam_groups_to_remove: >-
-      {{ (_freeipa_idam_managed_groups_show.stdout_lines | default([]) | map('trim')
+    _freeipa_iam_groups_to_remove: >-
+      {{ (_freeipa_iam_managed_groups_show.stdout_lines | default([]) | map('trim')
           | select('match', '^member: cn=')
           | map('regex_replace', '^member: cn=([^,]+),.*', '\1') | list)
-         | difference(freeipa_idam_group_names)
-         | difference(freeipa_idam_protected_groups)
-         | difference([freeipa_idam_managed_groups_group, freeipa_idam_managed_group]) }}
+         | difference(freeipa_iam_group_names)
+         | difference(freeipa_iam_protected_groups)
+         | difference([freeipa_iam_managed_groups_group, freeipa_iam_managed_group]) }}
   when:
-    - not (freeipa_idam_reconcile_memberships_only | bool)
+    - not (freeipa_iam_reconcile_memberships_only | bool)
     - freeipa_server_authoritative | bool
 
 - name: Report groups to delete (declarative group-existence reconcile)
   ansible.builtin.debug:
     msg: >-
-      Group reconcile → deleting {{ _freeipa_idam_groups_to_remove | length }}
-      orphaned managed group(s): {{ _freeipa_idam_groups_to_remove }}
+      Group reconcile → deleting {{ _freeipa_iam_groups_to_remove | length }}
+      orphaned managed group(s): {{ _freeipa_iam_groups_to_remove }}
   when:
-    - not (freeipa_idam_reconcile_memberships_only | bool)
+    - not (freeipa_iam_reconcile_memberships_only | bool)
     - freeipa_server_authoritative | bool
-    - (_freeipa_idam_groups_to_remove | default([])) | length > 0
+    - (_freeipa_iam_groups_to_remove | default([])) | length > 0
 
 # Hard-delete (groups can't be preserve-archived). One bulk ipagroup call; state: absent
 # honours check mode so --check previews. Deleting a group auto-removes it from the
 # container, so the marker self-heals.
-- name: Delete groups removed from declarative config (no longer in freeipa_idam_usergroups)
+- name: Delete groups removed from declarative config (no longer in freeipa_iam_usergroups)
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ _freeipa_idam_groups_to_remove }}"
+    name: "{{ _freeipa_iam_groups_to_remove }}"
     state: absent
   when:
-    - not (freeipa_idam_reconcile_memberships_only | bool)
+    - not (freeipa_iam_reconcile_memberships_only | bool)
     - freeipa_server_authoritative | bool
-    - (_freeipa_idam_groups_to_remove | default([])) | length > 0
+    - (_freeipa_iam_groups_to_remove | default([])) | length > 0
 
 # Password-expiration FLOOR: no module implements the conditional (only bump when
 # fewer than min_days_remaining are left), but the read is ONE user-find and the
@@ -999,23 +999,23 @@
 # replaced a per-user shell read-compare-set loop (GNU-date dependent).
 - name: Read current password expirations (one query)
   ansible.builtin.command: "ipa user-find --all --raw --sizelimit=0"
-  register: _freeipa_idam_pwexp_find
+  register: _freeipa_iam_pwexp_find
   changed_when: false
   check_mode: false
   failed_when: false
   no_log: true
-  when: freeipa_idam_password_expiration_floors | length > 0
+  when: freeipa_iam_password_expiration_floors | length > 0
 
 - name: Enforce password-expiration floor for listed users (native bulk call)
   freeipa.ansible_freeipa.ipauser:
-    users: "{{ _freeipa_idam_pwexp_bumps }}"
+    users: "{{ _freeipa_iam_pwexp_bumps }}"
   vars:
-    _freeipa_idam_pwexp_bumps: >-
-      {{ freeipa_idam_password_expiration_floors
-         | freeipa_idam_pwexp_bumps(_freeipa_idam_pwexp_find.stdout | default('')) }}
+    _freeipa_iam_pwexp_bumps: >-
+      {{ freeipa_iam_password_expiration_floors
+         | freeipa_iam_pwexp_bumps(_freeipa_iam_pwexp_find.stdout | default('')) }}
   when:
-    - freeipa_idam_password_expiration_floors | length > 0
-    - _freeipa_idam_pwexp_bumps | length > 0
+    - freeipa_iam_password_expiration_floors | length > 0
+    - _freeipa_iam_pwexp_bumps | length > 0
 
 - name: Destroy temporary Kerberos ticket
   ansible.builtin.command: kdestroy

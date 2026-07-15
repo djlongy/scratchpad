@@ -1,4 +1,4 @@
-"""Unit tests for roles/freeipa_server/filter_plugins/freeipa_idam.py.
+"""Unit tests for roles/freeipa_server/filter_plugins/freeipa_iam.py.
 
 Covers all five filter groups (composition, deletion safety, bulk-payload compilers,
 raw-output prechecks, validation) — see the plugin's module docstring for the map.
@@ -19,12 +19,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 MODULE_PATH = (REPO_ROOT / "ansible" / "roles" / "freeipa_server"
-               / "filter_plugins" / "freeipa_idam.py")
+               / "filter_plugins" / "freeipa_iam.py")
 
 
 @pytest.fixture(scope="module")
 def fp():
-    spec = importlib.util.spec_from_file_location("freeipa_idam", MODULE_PATH)
+    spec = importlib.util.spec_from_file_location("freeipa_iam", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -35,14 +35,14 @@ def fp():
 def test_merge_appends_new_keeps_order(fp):
     base = [{"name": "baseline-grp", "description": "from snapshot"}]
     extra = [{"name": "role-x", "description": "generated"}]
-    out = fp.freeipa_idam_merge(base, extra)
+    out = fp.freeipa_iam_merge(base, extra)
     assert [g["name"] for g in out] == ["baseline-grp", "role-x"]
 
 
 def test_merge_baseline_wins_on_name_collision(fp):
     base = [{"name": "admins", "description": "BASELINE"}]
     extra = [{"name": "admins", "description": "GENERATED"}]
-    out = fp.freeipa_idam_merge(base, extra)
+    out = fp.freeipa_iam_merge(base, extra)
     assert len(out) == 1
     assert out[0]["description"] == "BASELINE"
 
@@ -51,7 +51,7 @@ def test_merge_unions_user_groups(fp):
     base = [{"name": "alice", "first": "A", "groups": ["snapshot-grp"]}]
     extra = [{"name": "alice", "groups": ["role-matrix-grp"]},
              {"name": "bob", "groups": ["role-bob"]}]
-    out = fp.freeipa_idam_merge(base, extra, union_fields=["groups"])
+    out = fp.freeipa_iam_merge(base, extra, union_fields=["groups"])
     by = {u["name"]: u for u in out}
     assert by["alice"]["groups"] == ["snapshot-grp", "role-matrix-grp"]
     assert by["alice"]["first"] == "A"
@@ -64,7 +64,7 @@ def test_merge_unions_group_and_user_fields(fp):
     base = [{"name": "ug-x", "description": "native", "group": ["existing-nested"]}]
     extra = [{"name": "ug-x", "group": ["role-new"]},
              {"name": "role-new", "user": ["alice"]}]
-    out = fp.freeipa_idam_merge(base, extra, union_fields=["group", "user"])
+    out = fp.freeipa_iam_merge(base, extra, union_fields=["group", "user"])
     by = {g["name"]: g for g in out}
     assert by["ug-x"]["group"] == ["existing-nested", "role-new"]
     assert by["ug-x"]["description"] == "native"            # baseline wins
@@ -73,8 +73,8 @@ def test_merge_unions_group_and_user_fields(fp):
 
 def test_merge_empty_base_is_just_extra(fp):
     extra = [{"name": "role-x"}]
-    assert fp.freeipa_idam_merge([], extra) == extra
-    assert fp.freeipa_idam_merge(None, extra) == extra
+    assert fp.freeipa_iam_merge([], extra) == extra
+    assert fp.freeipa_iam_merge(None, extra) == extra
 
 
 # ── orphan reconcile ─────────────────────────────────────────────────────────
@@ -91,56 +91,56 @@ def test_orphans_deletes_only_undeclared_scoped(fp):
         "hostgroup": ["hg-newen-mgt-gitlab-admins"],
         "group": ["role-newen-mgt-gitlab-admins"],
     }
-    out = fp.freeipa_idam_orphans(found, desired, "newen-mgt")
+    out = fp.freeipa_iam_orphans(found, desired, "newen-mgt")
     assert out["hostgroup"] == ["hg-newen-mgt-ztest-old"]
     assert out["group"] == ["ug-newen-mgt-stale"]
 
 
 def test_orphans_respects_protected(fp):
     found = {"group": ["role-newen-mgt-foo-admins", "admins"]}   # 'admins' lacks the marker anyway
-    out = fp.freeipa_idam_orphans(found, {"group": []}, "newen-mgt", protected=["role-newen-mgt-foo-admins"])
+    out = fp.freeipa_iam_orphans(found, {"group": []}, "newen-mgt", protected=["role-newen-mgt-foo-admins"])
     assert out["group"] == []        # protected excluded; 'admins' lacks marker → also excluded
 
 
 def test_orphans_blank_match_deletes_nothing(fp):
     found = {"group": ["anything", "everything"]}
-    assert fp.freeipa_idam_orphans(found, {}, "") == {"group": []}   # fail-safe: no match → no deletes
+    assert fp.freeipa_iam_orphans(found, {}, "") == {"group": []}   # fail-safe: no match → no deletes
 
 
 # ── regression: REG-002 (marker containers must never be pruned) ──────────────
 # A marker container whose name shares the scope substring (e.g. a "test-" scope vs the
-# "test-idam-managed-*" markers) was deleted as an orphan, wiping the role's own
+# "test-iam-managed-*" markers) was deleted as an orphan, wiping the role's own
 # bookkeeping. The fix passes the markers in `protected`. This pins that contract.
 def test_orphans_excludes_marker_containers_when_protected(fp):
-    found = {"group": ["test-idam-managed-users", "test-idam-managed-groups"]}
+    found = {"group": ["test-iam-managed-users", "test-iam-managed-groups"]}
     # Without protection the markers look like orphans (this is the bug being guarded):
-    assert fp.freeipa_idam_orphans(found, {"group": []}, "test-")["group"] == [
-        "test-idam-managed-users", "test-idam-managed-groups"]
+    assert fp.freeipa_iam_orphans(found, {"group": []}, "test-")["group"] == [
+        "test-iam-managed-users", "test-iam-managed-groups"]
     # With the markers protected (the fix, as reconcile.yml now wires them) → never deleted:
-    out = fp.freeipa_idam_orphans(
+    out = fp.freeipa_iam_orphans(
         found, {"group": []}, "test-",
-        protected=["test-idam-managed-users", "test-idam-managed-groups"])
+        protected=["test-iam-managed-users", "test-iam-managed-groups"])
     assert out["group"] == []
 
 
-# ── freeipa_idam_named: accept bare-string shorthand for name-only lists ───────
+# ── freeipa_iam_named: accept bare-string shorthand for name-only lists ───────
 def test_named_coerces_bare_strings_to_dicts(fp):
-    # e.g. freeipa_idam_hbacsvcs: [cockpit] → [{name: cockpit}], so the downstream
+    # e.g. freeipa_iam_hbacsvcs: [cockpit] → [{name: cockpit}], so the downstream
     # map(attribute='name') validation can't crash with "str has no attribute name".
-    assert fp.freeipa_idam_named(["cockpit", "docker"]) == [
+    assert fp.freeipa_iam_named(["cockpit", "docker"]) == [
         {"name": "cockpit"}, {"name": "docker"}]
 
 
 def test_named_passes_dicts_through_unchanged(fp):
     full = [{"name": "cockpit", "description": "Cockpit"}, {"name": "x", "state": "absent"}]
-    assert fp.freeipa_idam_named(full) == full
+    assert fp.freeipa_iam_named(full) == full
 
 
 def test_named_mixed_and_empty(fp):
-    assert fp.freeipa_idam_named(["cockpit", {"name": "docker"}]) == [
+    assert fp.freeipa_iam_named(["cockpit", {"name": "docker"}]) == [
         {"name": "cockpit"}, {"name": "docker"}]
-    assert fp.freeipa_idam_named([]) == []
-    assert fp.freeipa_idam_named(None) == []
+    assert fp.freeipa_iam_named([]) == []
+    assert fp.freeipa_iam_named(None) == []
 
 
 # ── freeipa_export_scope: carve a snapshot into per-tenant/env slices ──────────
@@ -149,15 +149,15 @@ def _sample_export():
         "meta": {"realm": "IPA.MGT.NEWEN.AU"},
         "freeipa_server_domain": "ipa.example.com",
         "freeipa_server_forwarders": ["10.0.0.1"],
-        "freeipa_idam_usergroups": [
+        "freeipa_iam_usergroups": [
             {"name": "ug-acme-prod-db"}, {"name": "ug-globex-dev-app"},
             {"name": "platform-admin-all"},
         ],
-        "freeipa_idam_users": [{"name": "alice.fox"}],
+        "freeipa_iam_users": [{"name": "alice.fox"}],
         "freeipa_server_dns_records": [
             {"zone_name": "ipa.example.com.", "records": [{"record_name": "a"}]},
         ],
-        "freeipa_idam_hostgroups": [],
+        "freeipa_iam_hostgroups": [],
     }
 
 
@@ -167,16 +167,16 @@ def _names(result, key):
 
 def test_export_scope_include_keeps_only_matching(fp):
     out = fp.freeipa_export_scope(_sample_export(), ["acme-prod-"], "include")
-    assert _names(out, "freeipa_idam_usergroups") == ["ug-acme-prod-db"]
-    assert out["freeipa_idam_users"] == []          # uid has no tenant-env → dropped
+    assert _names(out, "freeipa_iam_usergroups") == ["ug-acme-prod-db"]
+    assert out["freeipa_iam_users"] == []          # uid has no tenant-env → dropped
     assert out["freeipa_server_dns_records"] == []  # zone_name doesn't match
 
 
 def test_export_scope_exclude_catches_outliers(fp):
     out = fp.freeipa_export_scope(
         _sample_export(), ["acme-prod-", "globex-dev-"], "exclude")
-    assert _names(out, "freeipa_idam_usergroups") == ["platform-admin-all"]
-    assert _names(out, "freeipa_idam_users") == ["alice.fox"]
+    assert _names(out, "freeipa_iam_usergroups") == ["platform-admin-all"]
+    assert _names(out, "freeipa_iam_users") == ["alice.fox"]
     assert _names(out, "freeipa_server_dns_records") == ["ipa.example.com."]
 
 
@@ -191,7 +191,7 @@ def test_export_scope_passes_scalars_and_str_lists_through(fp):
     assert out["freeipa_server_domain"] == "ipa.example.com"
     assert out["freeipa_server_forwarders"] == ["10.0.0.1"]  # list[str] untouched
     assert out["meta"] == {"realm": "IPA.MGT.NEWEN.AU"}
-    assert out["freeipa_idam_hostgroups"] == []                  # empty list stays empty
+    assert out["freeipa_iam_hostgroups"] == []                  # empty list stays empty
 
 
 def test_export_scope_empty_returns_unchanged(fp):
@@ -211,13 +211,13 @@ def test_identity_merge_flattens_and_maps_ownership(fp):
          "users": [{"name": "ops.root", "groups": ["admins"]}],
          "groups": [{"name": "admins"}]},
     ]
-    out = fp.freeipa_idam_identity_merge(files)
+    out = fp.freeipa_iam_identity_merge(files)
     obj = out["objects"]
     # objects keyed by the role var, passed through UNCHANGED (no _owner stamp)
-    assert [u["name"] for u in obj["freeipa_idam_users"]] == ["acme.dave", "ops.root"]
-    assert "_owner" not in obj["freeipa_idam_users"][0]
-    assert [g["name"] for g in obj["freeipa_idam_usergroups"]] == ["acme-viewers", "admins"]
-    assert "_owner" not in obj["freeipa_idam_usergroups"][0]
+    assert [u["name"] for u in obj["freeipa_iam_users"]] == ["acme.dave", "ops.root"]
+    assert "_owner" not in obj["freeipa_iam_users"][0]
+    assert [g["name"] for g in obj["freeipa_iam_usergroups"]] == ["acme-viewers", "admins"]
+    assert "_owner" not in obj["freeipa_iam_usergroups"][0]
     # ownership lives in separate maps
     assert out["user_owner"] == {"acme.dave": "acme", "ops.root": "global"}
     assert out["group_owner"] == {"acme-viewers": "acme", "admins": "global"}
@@ -230,15 +230,15 @@ def test_identity_merge_carries_every_object_type(fp):
         {"tenant": "acme",
          "hbac_rules": [{"name": "acme-ssh"}],
          "sudo_rules": [{"name": "acme-sudo"}],
-         "freeipa_idam_hostgroups": [{"name": "acme-hosts"}]},   # full snapshot key passes through
+         "freeipa_iam_hostgroups": [{"name": "acme-hosts"}]},   # full snapshot key passes through
         {"tenant": "global", "shared": True,
          "hbac_rules": [{"name": "allow-all"}],
          "freeipa_server_dns_zones": [{"name": "example.com"}]},
     ]
-    obj = fp.freeipa_idam_identity_merge(files)["objects"]
-    assert [r["name"] for r in obj["freeipa_idam_hbac_rules"]] == ["acme-ssh", "allow-all"]
-    assert [r["name"] for r in obj["freeipa_idam_sudo_rules"]] == ["acme-sudo"]
-    assert [h["name"] for h in obj["freeipa_idam_hostgroups"]] == ["acme-hosts"]
+    obj = fp.freeipa_iam_identity_merge(files)["objects"]
+    assert [r["name"] for r in obj["freeipa_iam_hbac_rules"]] == ["acme-ssh", "allow-all"]
+    assert [r["name"] for r in obj["freeipa_iam_sudo_rules"]] == ["acme-sudo"]
+    assert [h["name"] for h in obj["freeipa_iam_hostgroups"]] == ["acme-hosts"]
     assert [z["name"] for z in obj["freeipa_server_dns_zones"]] == ["example.com"]
 
 
@@ -255,7 +255,7 @@ def test_identity_merge_concatenates_rbac_overlay_across_tenants(fp):
              {"name": "role-globex-prod-viewer", "policy_groups": ["ug-g"],
               "members": ["bob"]}]},
     ]
-    obj = fp.freeipa_idam_identity_merge(files)["objects"]
+    obj = fp.freeipa_iam_identity_merge(files)["objects"]
     assert [r["name"] for r in obj["freeipa_server_rbac_roles"]] == [
         "role-acme-prod-admin", "role-globex-prod-viewer"]
 
@@ -265,7 +265,7 @@ def test_evictions_only_managed_droppers(fp):
     managed = ["ops.root", "acme.dave", "acme.erin"]
     desired = ["ops.root"]
     # acme.dave + acme.erin are managed & no longer desired; admin/contractor.bob unmanaged
-    assert fp.freeipa_idam_evictions(current, managed, desired) == ["acme.dave", "acme.erin"]
+    assert fp.freeipa_iam_evictions(current, managed, desired) == ["acme.dave", "acme.erin"]
 
 
 # ── validate: shape + reference problems in one pass ───────────────────────────
@@ -297,7 +297,7 @@ def _valid_data(**over):
 
 
 def test_validate_clean_dataset_has_no_problems(fp):
-    out = fp.freeipa_idam_validate(_valid_data())
+    out = fp.freeipa_iam_validate(_valid_data())
     assert out == {"shape": [], "refs": []}
 
 
@@ -309,7 +309,7 @@ def test_validate_shape_catches_missing_fields_and_duplicates(fp):
         {"name": "carol", "givenname": "C", "sn": "C", "groups": ["devs"]},  # duplicate
         {"name": "admin"},                                              # unmodifiable: exempt f/l
     ]
-    out = fp.freeipa_idam_validate(_valid_data(users=users))
+    out = fp.freeipa_iam_validate(_valid_data(users=users))
     assert "a user entry is missing 'name'" in out["shape"]
     assert "user 'bob' is missing a first name (first/givenname)" in out["shape"]
     assert "user 'bob' is missing a surname (last/sn)" in out["shape"]
@@ -321,12 +321,12 @@ def test_validate_shape_catches_missing_fields_and_duplicates(fp):
 
 def test_validate_shape_refuses_protected_group_absent(fp):
     groups = [{"name": "admins", "state": "absent"}, {"name": "devs"}]
-    out = fp.freeipa_idam_validate(_valid_data(usergroups=groups))
+    out = fp.freeipa_iam_validate(_valid_data(usergroups=groups))
     assert any(p.startswith("group 'admins' is a protected FreeIPA built-in") for p in out["shape"])
 
 
 def test_validate_refs_catch_unknowns_across_object_types(fp):
-    out = fp.freeipa_idam_validate(_valid_data(
+    out = fp.freeipa_iam_validate(_valid_data(
         users=[{"name": "alice", "givenname": "A", "sn": "A",
                 "groups": ["ghost-group"], "roles": ["ghost-role"]}],
         hbac_rules=[{"name": "hbac-x", "usergroup": ["ghost-group"], "hostgroup": ["ghost-hg"],
@@ -357,7 +357,7 @@ def test_validate_refs_catch_unknowns_across_object_types(fp):
 
 
 def test_validate_live_names_satisfy_references(fp):
-    out = fp.freeipa_idam_validate(_valid_data(
+    out = fp.freeipa_iam_validate(_valid_data(
         users=[{"name": "alice", "givenname": "A", "sn": "A", "groups": ["realm-only-group"]}],
         live={"groups": ["realm-only-group"]},
     ))
@@ -373,7 +373,7 @@ def test_sudorules_payload_compiles_bulk_lists(fp):
         {"name": "sudo-c", "state": "absent"},
         {"name": "sudo-d", "state": "enabled", "cmd": ["/usr/bin/id"], "deny_cmd": ["/usr/bin/rm"]},
     ]
-    got = fp.freeipa_idam_sudorules_payload(rules)
+    got = fp.freeipa_iam_sudorules_payload(rules)
     a = got["present"][0]
     # inventory keys are renamed to the module's option names
     assert a == {"name": "sudo-a", "description": "d", "group": ["g1"],
@@ -390,12 +390,12 @@ def test_sudorules_payload_compiles_bulk_lists(fp):
 
 def test_sudorules_payload_rejects_unknown_key(fp):
     with pytest.raises(Exception, match="sudo rule 'sudo-x': unknown key"):
-        fp.freeipa_idam_sudorules_payload([{"name": "sudo-x", "usergroups": ["g"]}])
+        fp.freeipa_iam_sudorules_payload([{"name": "sudo-x", "usergroups": ["g"]}])
 
 
 def test_sudorules_payload_rejects_missing_name(fp):
     with pytest.raises(Exception, match="without a usable 'name'"):
-        fp.freeipa_idam_sudorules_payload([{"description": "no name"}])
+        fp.freeipa_iam_sudorules_payload([{"description": "no name"}])
 
 
 GROUP_FIND_RAW = """  dn: cn=devs,cn=groups,cn=accounts,dc=x
@@ -415,21 +415,21 @@ def test_evict_payload_from_single_group_find(fp):
                   {"name": "ops", "user": ["bob"]},             # nothing to evict
                   {"name": "not-created-yet", "user": ["x"]}]   # absent from output -> skipped
     managed = ["alice", "mallory", "bob"]
-    got = fp.freeipa_idam_evict_payload(GROUP_FIND_RAW, candidates, managed)
+    got = fp.freeipa_iam_evict_payload(GROUP_FIND_RAW, candidates, managed)
     assert got == [{"name": "devs", "user": ["mallory"]}]
 
 
 def test_evict_payload_never_touches_unmanaged(fp):
     candidates = [{"name": "devs", "user": []}]
     # mallory & alice current but NOT managed -> untouchable
-    got = fp.freeipa_idam_evict_payload(GROUP_FIND_RAW, candidates, ["bob"])
+    got = fp.freeipa_iam_evict_payload(GROUP_FIND_RAW, candidates, ["bob"])
     assert got == []
 
 
 def test_evict_payload_empty_raw_is_noop(fp):
     # --check mode skips the group-find command, so the filter receives '' via
     # default('') — that must stay a silent no-op, never trip the canary
-    assert fp.freeipa_idam_evict_payload("", [{"name": "devs", "user": []}], ["bob"]) == []
+    assert fp.freeipa_iam_evict_payload("", [{"name": "devs", "user": []}], ["bob"]) == []
 
 
 def test_evict_payload_canary_on_unparseable_output(fp):
@@ -437,7 +437,7 @@ def test_evict_payload_canary_on_unparseable_output(fp):
     # (FreeIPA upgrade). Eviction would silently stop enforcing — must fail LOUDLY.
     drifted = "Group name: devs\nMember users: alice, mallory\n"
     with pytest.raises(Exception, match="no group entries could be parsed"):
-        fp.freeipa_idam_evict_payload(drifted, [{"name": "devs", "user": []}], ["bob"])
+        fp.freeipa_iam_evict_payload(drifted, [{"name": "devs", "user": []}], ["bob"])
 
 
 # ── precheck: changed-subset gating (invocation saver) ─────────────────────────
@@ -482,30 +482,30 @@ class TestChangedSubset:
     def test_in_sync_entries_are_skipped(self, fp):
         declared = [{"name": "hg-all", "description": "all hosts", "hostgroup": ["hg-base"]},
                     {"name": "hg-base", "description": "base hosts"}]
-        assert fp.freeipa_idam_changed_subset(declared, HG_RAW, "hostgroup") == []
+        assert fp.freeipa_iam_changed_subset(declared, HG_RAW, "hostgroup") == []
 
     def test_description_and_nesting_drift_included(self, fp):
         declared = [{"name": "hg-all", "description": "CHANGED", "hostgroup": ["hg-base"]},
                     {"name": "hg-base", "description": "base hosts", "hostgroup": ["hg-new"]}]
-        got = fp.freeipa_idam_changed_subset(declared, HG_RAW, "hostgroup")
+        got = fp.freeipa_iam_changed_subset(declared, HG_RAW, "hostgroup")
         assert [e["name"] for e in got] == ["hg-all", "hg-base"]
 
     def test_missing_entry_and_empty_raw_fail_open(self, fp):
         declared = [{"name": "hg-new", "description": "brand new"}]
-        assert fp.freeipa_idam_changed_subset(declared, HG_RAW, "hostgroup") == declared
+        assert fp.freeipa_iam_changed_subset(declared, HG_RAW, "hostgroup") == declared
         # failed find -> raw "" -> everything runs (old behaviour)
         all_declared = [{"name": "hg-all", "description": "all hosts"}]
-        assert fp.freeipa_idam_changed_subset(all_declared, "", "hostgroup") == all_declared
+        assert fp.freeipa_iam_changed_subset(all_declared, "", "hostgroup") == all_declared
 
     def test_absent_entry_costs_nothing_once_gone(self, fp):
         declared = [{"name": "hg-gone", "state": "absent"},
                     {"name": "hg-base", "state": "absent"}]
-        got = fp.freeipa_idam_changed_subset(declared, HG_RAW, "hostgroup")
+        got = fp.freeipa_iam_changed_subset(declared, HG_RAW, "hostgroup")
         assert [e["name"] for e in got] == ["hg-base"]     # still exists -> delete runs
 
     def test_unmodeled_key_is_conservative(self, fp):
         declared = [{"name": "hg-all", "description": "all hosts", "mystery": 1}]
-        got = fp.freeipa_idam_changed_subset(declared, HG_RAW, "hostgroup")
+        got = fp.freeipa_iam_changed_subset(declared, HG_RAW, "hostgroup")
         assert got == declared                             # can't verify -> include
 
     def test_hbac_members_and_categories(self, fp):
@@ -514,28 +514,28 @@ class TestChangedSubset:
                     "service": ["sshd", "sudo"]},
                    {"name": "allow_all", "usercategory": "all", "hostcategory": "all",
                     "servicecategory": "all", "state": "disabled"}]
-        assert fp.freeipa_idam_changed_subset(in_sync, HBAC_RAW, "hbacrule") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, HBAC_RAW, "hbacrule") == []
         drift = [{"name": "hbac-admin", "usergroup": ["admins-g", "extra-g"]}]
-        assert fp.freeipa_idam_changed_subset(drift, HBAC_RAW, "hbacrule") == drift
+        assert fp.freeipa_iam_changed_subset(drift, HBAC_RAW, "hbacrule") == drift
 
     def test_hbac_servicegroup_not_confused_with_service(self, fp):
         # cn=hbacservices is a substring of cn=hbacservicegroups — must not cross-match
         declared = [{"name": "hbac-admin", "servicegroup": ["sshd"]}]
-        got = fp.freeipa_idam_changed_subset(declared, HBAC_RAW, "hbacrule")
+        got = fp.freeipa_iam_changed_subset(declared, HBAC_RAW, "hbacrule")
         assert got == declared     # sshd is a SERVICE member, not a servicegroup member
 
     def test_automember_regex_comparison(self, fp):
         in_sync = [{"name": "viewers", "automember_type": "group",
                     "description": "viewer auto-enrolment",
                     "inclusive": [{"key": "uid", "expression": "^beta-"}]}]
-        assert fp.freeipa_idam_changed_subset(in_sync, AM_RAW, "automember") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, AM_RAW, "automember") == []
         drift = [{"name": "viewers", "automember_type": "group",
                   "inclusive": [{"key": "uid", "expression": "^gamma-"}]}]
-        assert fp.freeipa_idam_changed_subset(drift, AM_RAW, "automember") == drift
+        assert fp.freeipa_iam_changed_subset(drift, AM_RAW, "automember") == drift
 
     def test_unknown_kind_fails_fast(self, fp):
         with pytest.raises(Exception, match="unknown kind"):
-            fp.freeipa_idam_changed_subset([], "", "sudoers")
+            fp.freeipa_iam_changed_subset([], "", "sudoers")
 
 
 # Raw fixtures below mirror live `ipa <type>-find --all --raw` output shapes
@@ -632,94 +632,94 @@ class TestChangedSubsetNewKinds:
     def test_sudocmd_keys_on_sudocmd_attr(self, fp):
         in_sync = [{"name": "/usr/bin/systemctl"},
                    {"name": "/usr/bin/journalctl", "description": "read logs"}]
-        assert fp.freeipa_idam_changed_subset(in_sync, SUDOCMD_RAW, "sudocmd") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, SUDOCMD_RAW, "sudocmd") == []
         drift = [{"name": "/usr/bin/journalctl", "description": "CHANGED"},
                  {"name": "/usr/bin/new-tool"}]
-        got = fp.freeipa_idam_changed_subset(drift, SUDOCMD_RAW, "sudocmd")
+        got = fp.freeipa_iam_changed_subset(drift, SUDOCMD_RAW, "sudocmd")
         assert [e["name"] for e in got] == ["/usr/bin/journalctl", "/usr/bin/new-tool"]
 
     def test_sudocmdgroup_members_resolve_through_aux(self, fp):
         in_sync = [{"name": "ops-cmds", "description": "ops bundle",
                     "sudocmd": ["/usr/bin/systemctl", "/usr/bin/journalctl"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             in_sync, SUDOCMDGROUP_RAW, "sudocmdgroup", SUDOCMD_RAW) == []
         drift = [{"name": "ops-cmds", "sudocmd": ["/usr/bin/systemctl"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             drift, SUDOCMDGROUP_RAW, "sudocmdgroup", SUDOCMD_RAW) == drift
 
     def test_sudocmdgroup_unresolvable_member_is_conservative(self, fp):
         # zzz-9 is not in the sudocmd output -> cannot verify -> include
         declared = [{"name": "ghost-cmds", "sudocmd": ["/usr/bin/mystery"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             declared, SUDOCMDGROUP_RAW, "sudocmdgroup", SUDOCMD_RAW) == declared
         # empty aux (sudocmd find failed) -> members unresolvable -> include
         in_sync = [{"name": "ops-cmds",
                     "sudocmd": ["/usr/bin/systemctl", "/usr/bin/journalctl"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             in_sync, SUDOCMDGROUP_RAW, "sudocmdgroup", "") == in_sync
 
     def test_hbacsvc_and_group(self, fp):
         in_sync = [{"name": "docker", "description": "Container services"}]
-        assert fp.freeipa_idam_changed_subset(in_sync, HBACSVC_RAW, "hbacsvc") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, HBACSVC_RAW, "hbacsvc") == []
         grp_sync = [{"name": "remote", "description": "Interactive remote login",
                      "hbacsvc": ["xrdp-sesman", "sshd"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             grp_sync, HBACSVCGROUP_RAW, "hbacsvcgroup") == []
         grp_drift = [{"name": "remote", "hbacsvc": ["sshd"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             grp_drift, HBACSVCGROUP_RAW, "hbacsvcgroup") == grp_drift
 
     def test_pwpolicy_unit_conversions(self, fp):
         # maxlife declared in DAYS (x86400), minlife in HOURS (x3600)
         in_sync = [{"name": "app-users", "maxlife": 90, "minlife": 1, "history": 5,
                     "minclasses": 3, "minlength": 12, "priority": 137}]
-        assert fp.freeipa_idam_changed_subset(in_sync, PWPOLICY_RAW, "pwpolicy") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, PWPOLICY_RAW, "pwpolicy") == []
         drift = [{"name": "app-users", "maxlife": 60}]
-        assert fp.freeipa_idam_changed_subset(drift, PWPOLICY_RAW, "pwpolicy") == drift
+        assert fp.freeipa_iam_changed_subset(drift, PWPOLICY_RAW, "pwpolicy") == drift
         junk = [{"name": "app-users", "maxlife": "not-a-number"}]
-        assert fp.freeipa_idam_changed_subset(junk, PWPOLICY_RAW, "pwpolicy") == junk
+        assert fp.freeipa_iam_changed_subset(junk, PWPOLICY_RAW, "pwpolicy") == junk
 
     def test_permission_rights_attrs_and_type(self, fp):
         in_sync = [{"name": "Read App Hostgroups", "right": ["read", "search"],
                     "attrs": ["cn", "member"], "object_type": "hostgroup"}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             in_sync, PERMISSION_RAW, "permission") == []
         drift = [{"name": "Read App Hostgroups", "right": ["read", "search", "write"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             drift, PERMISSION_RAW, "permission") == drift
 
     def test_permission_extra_target_filter_joint_with_type(self, fp):
         in_sync = [{"name": "Read Extended Groups", "right": ["read"],
                     "object_type": "group",
                     "extra_target_filter": ["(|(objectClass=egGroup)(cn=pam_*))"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             in_sync, PERMISSION_RAW, "permission") == []
         drift = [{"name": "Read Extended Groups", "object_type": "group",
                   "extra_target_filter": ["(objectClass=other)"]}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             drift, PERMISSION_RAW, "permission") == drift
         # unmapped object_type -> cannot verify -> include
         unmapped = [{"name": "Read App Hostgroups", "object_type": "sudorule"}]
-        assert fp.freeipa_idam_changed_subset(
+        assert fp.freeipa_iam_changed_subset(
             unmapped, PERMISSION_RAW, "permission") == unmapped
 
     def test_privilege_permission_links(self, fp):
         in_sync = [{"name": "App Ops", "description": "Manage app hostgroups",
                     "permission": ["Read App Hostgroups"]}]
-        assert fp.freeipa_idam_changed_subset(in_sync, PRIVILEGE_RAW, "privilege") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, PRIVILEGE_RAW, "privilege") == []
         drift = [{"name": "App Ops", "permission": ["Other Permission"]}]
-        assert fp.freeipa_idam_changed_subset(drift, PRIVILEGE_RAW, "privilege") == drift
+        assert fp.freeipa_iam_changed_subset(drift, PRIVILEGE_RAW, "privilege") == drift
 
     def test_role_privilege_and_member_links(self, fp):
         # memberof carries BOTH privilege and (nested) permission DNs — the
         # privilege comparator must only read the cn=privileges container
         in_sync = [{"name": "app-reader", "privilege": ["App Ops"],
                     "usergroup": ["app-admins"]}]
-        assert fp.freeipa_idam_changed_subset(in_sync, ROLE_RAW, "role") == []
+        assert fp.freeipa_iam_changed_subset(in_sync, ROLE_RAW, "role") == []
         drift = [{"name": "app-reader", "privilege": ["App Ops", "More Ops"]}]
-        assert fp.freeipa_idam_changed_subset(drift, ROLE_RAW, "role") == drift
+        assert fp.freeipa_iam_changed_subset(drift, ROLE_RAW, "role") == drift
         member_drift = [{"name": "app-reader", "usergroup": ["other-group"]}]
-        assert fp.freeipa_idam_changed_subset(member_drift, ROLE_RAW, "role") == member_drift
+        assert fp.freeipa_iam_changed_subset(member_drift, ROLE_RAW, "role") == member_drift
 
 
 class TestHbacStateMismatch:
@@ -729,13 +729,13 @@ class TestHbacStateMismatch:
             {"name": "allow_all", "state": "disabled"},     # realm FALSE -> in sync
             {"name": "hbac-new", "state": "disabled"},      # not in realm -> fresh rules start enabled
         ]
-        got = fp.freeipa_idam_hbac_state_mismatch(declared, HBAC_RAW)
+        got = fp.freeipa_iam_hbac_state_mismatch(declared, HBAC_RAW)
         assert [r["name"] for r in got] == ["hbac-new"]
 
     def test_flip_detected_and_stateless_ignored(self, fp):
         declared = [{"name": "allow_all", "state": "enabled"},
                     {"name": "hbac-admin"}]                 # no state key -> never in this pass
-        got = fp.freeipa_idam_hbac_state_mismatch(declared, HBAC_RAW)
+        got = fp.freeipa_iam_hbac_state_mismatch(declared, HBAC_RAW)
         assert [r["name"] for r in got] == ["allow_all"]
 
 
@@ -761,7 +761,7 @@ class TestPwexpBumps:
     def test_only_below_floor_users_bumped(self, fp):
         floors = [{"user": "old.pw", "min_days_remaining": 14, "bump_to_days": 90},
                   {"user": "fresh.pw", "min_days_remaining": 14, "bump_to_days": 90}]
-        got = fp.freeipa_idam_pwexp_bumps(floors, USER_FIND_RAW)
+        got = fp.freeipa_iam_pwexp_bumps(floors, USER_FIND_RAW)
         assert [b["name"] for b in got] == ["old.pw"]
         # target = now + bump_to_days, GeneralizedTime format
         from datetime import datetime, timezone
@@ -773,16 +773,16 @@ class TestPwexpBumps:
     def test_missing_user_and_missing_expiry_skipped(self, fp):
         floors = [{"user": "no.expiry", "min_days_remaining": 14, "bump_to_days": 90},
                   {"user": "not.a.user", "min_days_remaining": 14, "bump_to_days": 90}]
-        assert fp.freeipa_idam_pwexp_bumps(floors, USER_FIND_RAW) == []
+        assert fp.freeipa_iam_pwexp_bumps(floors, USER_FIND_RAW) == []
 
     def test_malformed_floor_fails_fast(self, fp):
         with pytest.raises(Exception, match="missing required key.*bump_to_days"):
-            fp.freeipa_idam_pwexp_bumps([{"user": "old.pw", "min_days_remaining": 1}], USER_FIND_RAW)
+            fp.freeipa_iam_pwexp_bumps([{"user": "old.pw", "min_days_remaining": 1}], USER_FIND_RAW)
 
     def test_unparseable_expiry_fails_fast(self, fp):
         raw = "  uid: bad.stamp\n  krbPasswordExpiration: NOT-A-TIME\n"
         with pytest.raises(Exception, match="cannot parse krbPasswordExpiration"):
-            fp.freeipa_idam_pwexp_bumps(
+            fp.freeipa_iam_pwexp_bumps(
                 [{"user": "bad.stamp", "min_days_remaining": 1, "bump_to_days": 9}], raw)
 
 
@@ -791,22 +791,22 @@ def test_validate_servicegroup_checks_builtin_hbacsvcgroups_not_groups(fp):
     # ftp is a BUILTIN service group (never a user group): must pass via
     # builtin_hbacsvcgroups, and must NOT leak in via builtin_groups.
     rule = [{"name": "hbac-x", "usergroup": ["devs"], "servicegroup": ["ftp"]}]
-    ok = fp.freeipa_idam_validate(_valid_data(
+    ok = fp.freeipa_iam_validate(_valid_data(
         hbac_rules=rule, builtin_hbacsvcgroups=["Sudo", "ftp"]))
     assert ok["refs"] == []
-    bad = fp.freeipa_idam_validate(_valid_data(
+    bad = fp.freeipa_iam_validate(_valid_data(
         hbac_rules=rule, builtin_hbacsvcgroups=[], builtin_groups=["ftp"]))
     assert any("service group 'ftp'" in p for p in bad["refs"])
 
 
 def test_validate_user_refs_on_hbac_sudo_iparole(fp):
     # declared user + unmodifiable (admin) pass; unknown users are flagged per type
-    ok = fp.freeipa_idam_validate(_valid_data(
+    ok = fp.freeipa_iam_validate(_valid_data(
         hbac_rules=[{"name": "hbac-x", "user": ["alice", "admin"], "service": ["sshd"]}],
         sudo_rules=[{"name": "sudo-x", "user": ["alice"]}],
         iparoles=[{"name": "role-x", "user": ["admin"]}]))
     assert ok["refs"] == []
-    bad = fp.freeipa_idam_validate(_valid_data(
+    bad = fp.freeipa_iam_validate(_valid_data(
         hbac_rules=[{"name": "hbac-x", "user": ["ghost"]}],
         sudo_rules=[{"name": "sudo-x", "user": ["ghost"]}],
         iparoles=[{"name": "role-x", "user": ["ghost"]}]))

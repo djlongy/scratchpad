@@ -1,32 +1,32 @@
 # -*- coding: utf-8 -*-
-"""FreeIPA IDAM helper filters (Ansible filter plugins).
+"""FreeIPA IAM helper filters (Ansible filter plugins).
 
-The data-shaping layer of the role's declarative IDAM reconcile — task files gather
+The data-shaping layer of the role's declarative IAM reconcile — task files gather
 state and call modules; these filters do the computation in between. Five groups:
 
-  composition      freeipa_idam_merge (layer the RBAC overlay onto the baseline,
-                   baseline wins), freeipa_idam_identity_merge (flatten per-tenant
-                   files, stamp ownership), freeipa_idam_named (bare-string
+  composition      freeipa_iam_merge (layer the RBAC overlay onto the baseline,
+                   baseline wins), freeipa_iam_identity_merge (flatten per-tenant
+                   files, stamp ownership), freeipa_iam_named (bare-string
                    shorthand), freeipa_export_scope (slice a snapshot per tenant)
-  deletion safety  freeipa_idam_orphans (in-scope + undeclared + unprotected; blank
-                   scope marker deletes NOTHING), freeipa_idam_evictions /
-                   freeipa_idam_evict_payload (strip only role-managed members)
-  bulk compilers   freeipa_idam_sudorules_payload, freeipa_idam_pwexp_bumps,
+  deletion safety  freeipa_iam_orphans (in-scope + undeclared + unprotected; blank
+                   scope marker deletes NOTHING), freeipa_iam_evictions /
+                   freeipa_iam_evict_payload (strip only role-managed members)
+  bulk compilers   freeipa_iam_sudorules_payload, freeipa_iam_pwexp_bumps,
                    freeipa_dns_reverse_defaulted — one module call per type,
                    because every ansible_freeipa invocation costs a full
                    Python + ipalib bootstrap on the server
-  prechecks        freeipa_idam_changed_subset, freeipa_idam_hbac_state_mismatch —
+  prechecks        freeipa_iam_changed_subset, freeipa_iam_hbac_state_mismatch —
                    parse one cheap `ipa <type>-find --all --raw` and gate the
                    per-item module loops on an actual diff (conservative: any
                    parse doubt re-includes the entry)
-  validation       freeipa_idam_validate — every shape + reference problem in one
+  validation       freeipa_iam_validate — every shape + reference problem in one
                    pass (a deliberate Python port of a formerly inline-Jinja engine)
 
 MAINTENANCE NOTE for new eyes: the precheck/eviction filters scrape `ipa *-find
 --all --raw` text. If a FreeIPA upgrade changes that format, prechecks degrade
 safely (extra module calls, correct end state) and the eviction path fails LOUDLY
 via its parsing canary — see 'Raw-output parsing drift' in the role README.
-Unit tests: ansible/tests/unit/roles/test_freeipa_idam_filters.py (CI-enforced).
+Unit tests: ansible/tests/unit/roles/test_freeipa_iam_filters.py (CI-enforced).
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def _union_into(target, item, fields):
         target[field] = combined
 
 
-def freeipa_idam_merge(base, extra, key="name", union_fields=None):
+def freeipa_iam_merge(base, extra, key="name", union_fields=None):
     """Append `extra` onto `base`, deduped by `key`.
 
     Order: every base item first (baseline is the base), then the genuinely-new extra
@@ -81,7 +81,7 @@ def _is_orphan(name, match, want, protected):
 
     In scope means: the scope marker is a substring of the name, OR match == "*"
     (the all-undeclared mode — every found name is eligible). A blank match is
-    handled by the caller (freeipa_idam_orphans) as a hard fail-safe (deletes
+    handled by the caller (freeipa_iam_orphans) as a hard fail-safe (deletes
     nothing), so it never reaches here as "".
     """
     if not name:
@@ -90,7 +90,7 @@ def _is_orphan(name, match, want, protected):
     return in_scope and name not in want and name not in protected
 
 
-def freeipa_idam_orphans(found, desired, match, protected=None):
+def freeipa_iam_orphans(found, desired, match, protected=None):
     """Compute the orphan object names to delete, per object type.
 
     `found`    : {type: [names currently in the realm]} (from `ipa <type>-find <match>`)
@@ -98,7 +98,7 @@ def freeipa_idam_orphans(found, desired, match, protected=None):
     `match`    : the scope marker that EVERY managed name contains (e.g. "acme-prod") —
                  a name is only ever eligible for deletion if it CONTAINS this, so other
                  tenants/environments and unrelated objects are never touched.
-    `protected`: names that must never be deleted (e.g. freeipa_idam_protected_groups).
+    `protected`: names that must never be deleted (e.g. freeipa_iam_protected_groups).
 
     Returns {type: [orphan names]}. An empty/blank `match` yields NOTHING (fail-safe:
     never delete the whole realm because the scope marker was unset).
@@ -114,10 +114,10 @@ def freeipa_idam_orphans(found, desired, match, protected=None):
 
 
 # ── normalize name-only object lists (accept bare-string shorthand) ───────────
-def freeipa_idam_named(items):
+def freeipa_iam_named(items):
     """Normalize a name-only object list to dicts: a bare string ``s`` becomes
     ``{'name': s}``; a mapping is passed through unchanged. Lets terse shorthand
-    (e.g. ``freeipa_idam_hbacsvcs: [cockpit]``) work alongside the full
+    (e.g. ``freeipa_iam_hbacsvcs: [cockpit]``) work alongside the full
     ``[{name: cockpit, description: ...}]`` form, instead of crashing the
     downstream ``map(attribute='name')`` with 'str object has no attribute name'."""
     out = []
@@ -179,40 +179,40 @@ def freeipa_export_scope(export, scopes, mode="include"):
 
 # ── unified per-realm membership model (declarative, user-centric) ────────────
 # Short, hand-friendly object keys a tenant file may use -> the role var they feed.
-# (Full freeipa_idam_* / freeipa_server_* keys, e.g. straight from a --tags export
+# (Full freeipa_iam_* / freeipa_server_* keys, e.g. straight from a --tags export
 # snapshot, pass through unchanged — so migrating an export is just adding a header.)
 _FREEIPA_IDENTITY_ALIASES = {
-    "users": "freeipa_idam_users",
-    "groups": "freeipa_idam_usergroups",
-    "roles": "freeipa_idam_roles",
-    "hostgroups": "freeipa_idam_hostgroups",
-    "hbacsvcs": "freeipa_idam_hbacsvcs",
-    "hbacsvcgroups": "freeipa_idam_hbacsvcgroups",
-    "hbac_rules": "freeipa_idam_hbac_rules",
-    "sudo_commands": "freeipa_idam_sudo_commands",
-    "sudocmdgroups": "freeipa_idam_sudocmdgroups",
-    "sudo_rules": "freeipa_idam_sudo_rules",
-    "permissions": "freeipa_idam_permissions",
-    "privileges": "freeipa_idam_privileges",
-    "iparoles": "freeipa_idam_iparoles",
-    "pwpolicies": "freeipa_idam_pwpolicies",
-    "service_accounts": "freeipa_idam_service_accounts",
+    "users": "freeipa_iam_users",
+    "groups": "freeipa_iam_usergroups",
+    "roles": "freeipa_iam_roles",
+    "hostgroups": "freeipa_iam_hostgroups",
+    "hbacsvcs": "freeipa_iam_hbacsvcs",
+    "hbacsvcgroups": "freeipa_iam_hbacsvcgroups",
+    "hbac_rules": "freeipa_iam_hbac_rules",
+    "sudo_commands": "freeipa_iam_sudo_commands",
+    "sudocmdgroups": "freeipa_iam_sudocmdgroups",
+    "sudo_rules": "freeipa_iam_sudo_rules",
+    "permissions": "freeipa_iam_permissions",
+    "privileges": "freeipa_iam_privileges",
+    "iparoles": "freeipa_iam_iparoles",
+    "pwpolicies": "freeipa_iam_pwpolicies",
+    "service_accounts": "freeipa_iam_service_accounts",
     "automember": "freeipa_server_automember_rules",
     "dns_zones": "freeipa_server_dns_zones",
     "dns_records": "freeipa_server_dns_records",
 }
 _FREEIPA_IDENTITY_META = {"tenant", "shared"}
-_FREEIPA_USERS_VAR = "freeipa_idam_users"
-_FREEIPA_GROUPS_VAR = "freeipa_idam_usergroups"
+_FREEIPA_USERS_VAR = "freeipa_iam_users"
+_FREEIPA_GROUPS_VAR = "freeipa_iam_usergroups"
 
 
-def freeipa_idam_identity_merge(files: list[dict]) -> dict:
+def freeipa_iam_identity_merge(files: list[dict]) -> dict:
     """Flatten per-tenant identity files into one realm-wide dataset — EVERY object
     type, not just users/groups.
 
     Each file is ``{tenant, shared?, <object lists>}`` where an object list is either
     a hand-friendly short key (``users``, ``groups``, ``hbac_rules``, ``sudo_rules``,
-    ``roles`` …) or the full role var (``freeipa_idam_*`` / ``freeipa_server_*``, e.g.
+    ``roles`` …) or the full role var (``freeipa_iam_*`` / ``freeipa_server_*``, e.g.
     straight from an export snapshot). Returns:
 
       ``objects``       {role_var: concatenated list across all files} — the lists are
@@ -261,7 +261,7 @@ def _stamp_group_owner(groups: list, tenant: str, file_shared: bool, result: dic
             result["group_shared"][name] = bool(obj.get("shared", file_shared))
 
 
-def freeipa_idam_evictions(current: list[str], managed: list[str], desired: list[str]) -> list[str]:
+def freeipa_iam_evictions(current: list[str], managed: list[str], desired: list[str]) -> list[str]:
     """Managed members of a group no longer desired -> eviction list.
 
     ``(current ∩ managed) − desired``. Members not in ``managed`` (the built-in
@@ -289,7 +289,7 @@ _SUDORULE_KEYMAP = {
 }
 
 
-def freeipa_idam_sudorules_payload(rules: list[dict]) -> dict:
+def freeipa_iam_sudorules_payload(rules: list[dict]) -> dict:
     """Compile the sudo-rule list into bulk ``ipasudorule`` payloads.
 
     Returns ``{present: [entry, ...], absent: [{name}, ...], enabled: [...],
@@ -360,7 +360,7 @@ def _evict_current_members(group_find_raw: str) -> dict[str, list[str]]:
     return current_by_group
 
 
-def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
+def freeipa_iam_evict_payload(group_find_raw: str, candidates: list[dict],
                                managed: list[str]) -> list[dict]:
     """Compile the managed-subset eviction payload from ONE ``ipa group-find
     --all --raw`` output (replaces a per-group ``group-show`` command loop plus
@@ -368,7 +368,7 @@ def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
 
     For each candidate group (declared, not automember-populated), current user
     members are read from its raw entry block (``member: uid=<login>,...``) and
-    ``freeipa_idam_evictions`` keeps only managed-and-no-longer-desired logins.
+    ``freeipa_iam_evictions`` keeps only managed-and-no-longer-desired logins.
     Returns ``[{name, user: [login, ...]}, ...]`` for groups needing eviction;
     a candidate group absent from the output (not created yet) contributes
     nothing — exactly like the old per-group query's failed_when: false.
@@ -383,19 +383,19 @@ def freeipa_idam_evict_payload(group_find_raw: str, candidates: list[dict],
     current_by_group = _evict_current_members(group_find_raw)
     if (group_find_raw or "").strip() and not current_by_group:
         raise AnsibleFilterError(
-            "freeipa_idam_evict_payload: 'ipa group-find --all --raw' returned "
+            "freeipa_iam_evict_payload: 'ipa group-find --all --raw' returned "
             f"{len(group_find_raw)} chars of output but no group entries could be "
             "parsed ('cn: <name>' blocks). The raw output format has likely changed "
             "(FreeIPA upgrade?) — refusing to continue, because membership eviction "
             "would otherwise silently stop enforcing. Compare the live output with "
-            "the regexes in freeipa_idam_evict_payload() and see 'Raw-output "
+            "the regexes in freeipa_iam_evict_payload() and see 'Raw-output "
             "parsing drift' in roles/freeipa_server/README.md.")
     payload = []
     for group in candidates or []:
         name = (group or {}).get("name")
         if not name or name not in current_by_group:
             continue
-        evict = freeipa_idam_evictions(
+        evict = freeipa_iam_evictions(
             current_by_group[name], managed, group.get("user") or [])
         if evict:
             payload.append({"name": name, "user": evict})
@@ -650,7 +650,7 @@ def _entry_differs(declared: dict, current: dict, compare: dict) -> bool:
     return False
 
 
-def freeipa_idam_changed_subset(declared: list[dict], find_raw: str, kind: str,
+def freeipa_iam_changed_subset(declared: list[dict], find_raw: str, kind: str,
                                 aux_raw: str = "") -> list[dict]:
     """Declared entries that DIFFER from the realm per ``ipa <kind>-find --all
     --raw`` output — feed this to the per-item module loop instead of the full
@@ -661,7 +661,7 @@ def freeipa_idam_changed_subset(declared: list[dict], find_raw: str, kind: str,
     spec = _PRECHECK_KINDS.get(kind)
     if spec is None:
         raise AnsibleFilterError(
-            f"freeipa_idam_changed_subset: unknown kind '{kind}' "
+            f"freeipa_iam_changed_subset: unknown kind '{kind}' "
             f"(expected one of {sorted(_PRECHECK_KINDS)})")
     compare = spec["compare"]
     if callable(compare):
@@ -680,7 +680,7 @@ def freeipa_idam_changed_subset(declared: list[dict], find_raw: str, kind: str,
     return subset
 
 
-def freeipa_idam_hbac_state_mismatch(declared: list[dict], find_raw: str) -> list[dict]:
+def freeipa_iam_hbac_state_mismatch(declared: list[dict], find_raw: str) -> list[dict]:
     """HBAC rules whose declared enabled/disabled state differs from the realm
     (``ipaenabledflag``) — gates the operational-state pass. A rule absent from
     the output (created this run) is included: fresh rules start enabled."""
@@ -700,7 +700,7 @@ def freeipa_idam_hbac_state_mismatch(declared: list[dict], find_raw: str) -> lis
     return mismatched
 
 
-def freeipa_idam_pwexp_bumps(floors: list[dict], user_find_raw: str) -> list[dict]:
+def freeipa_iam_pwexp_bumps(floors: list[dict], user_find_raw: str) -> list[dict]:
     """Bulk ``ipauser`` payload enforcing password-expiration FLOORS: for each
     ``{user, min_days_remaining, bump_to_days}`` whose current
     ``krbPasswordExpiration`` (from ONE ``ipa user-find --all --raw``) leaves
@@ -739,7 +739,7 @@ def freeipa_idam_pwexp_bumps(floors: list[dict], user_find_raw: str) -> list[dic
 
 
 # ── desired-state validation (shape + references) ─────────────────────────────
-# Python port of the (formerly inline-Jinja) validation engine in idam_desired.yml:
+# Python port of the (formerly inline-Jinja) validation engine in iam_desired.yml:
 # collect EVERY structural + referential problem in one pass so the operator gets a
 # complete bullet list, not one assert at a time. Messages are kept identical to the
 # original engine; within a check block, problems are grouped per check rather than
@@ -870,8 +870,8 @@ def _pwpolicy_target_problems(pwpolicies: list, gnames: set[str]) -> list[str]:
             for p in pwpolicies if p.get("name") not in gnames]
 
 
-def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
-    """All shape + reference problems for an assembled IDAM desired state.
+def freeipa_iam_validate(data: dict) -> dict[str, list[str]]:
+    """All shape + reference problems for an assembled IAM desired state.
 
     `data` carries the assembled object lists plus the allow-lists:
       users, usergroups, roles, hostgroups, hbacsvcs, hbacsvcgroups, hbac_rules,
@@ -881,7 +881,7 @@ def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
       live ({type: [names]} from live mode).
 
     Returns {"shape": [...], "refs": [...]}: shape problems always hard-fail in the
-    role; reference problems obey freeipa_idam_reference_validation.
+    role; reference problems obey freeipa_iam_reference_validation.
     """
     known = _known_name_sets(data)
     users = _lst(data, "users")
@@ -941,17 +941,17 @@ def freeipa_idam_validate(data: dict) -> dict[str, list[str]]:
 class FilterModule:
     def filters(self):
         return {
-            "freeipa_idam_merge": freeipa_idam_merge,
-            "freeipa_idam_orphans": freeipa_idam_orphans,
-            "freeipa_idam_named": freeipa_idam_named,
+            "freeipa_iam_merge": freeipa_iam_merge,
+            "freeipa_iam_orphans": freeipa_iam_orphans,
+            "freeipa_iam_named": freeipa_iam_named,
             "freeipa_export_scope": freeipa_export_scope,
-            "freeipa_idam_identity_merge": freeipa_idam_identity_merge,
-            "freeipa_idam_evictions": freeipa_idam_evictions,
-            "freeipa_idam_sudorules_payload": freeipa_idam_sudorules_payload,
+            "freeipa_iam_identity_merge": freeipa_iam_identity_merge,
+            "freeipa_iam_evictions": freeipa_iam_evictions,
+            "freeipa_iam_sudorules_payload": freeipa_iam_sudorules_payload,
             "freeipa_dns_reverse_defaulted": freeipa_dns_reverse_defaulted,
-            "freeipa_idam_evict_payload": freeipa_idam_evict_payload,
-            "freeipa_idam_changed_subset": freeipa_idam_changed_subset,
-            "freeipa_idam_hbac_state_mismatch": freeipa_idam_hbac_state_mismatch,
-            "freeipa_idam_pwexp_bumps": freeipa_idam_pwexp_bumps,
-            "freeipa_idam_validate": freeipa_idam_validate,
+            "freeipa_iam_evict_payload": freeipa_iam_evict_payload,
+            "freeipa_iam_changed_subset": freeipa_iam_changed_subset,
+            "freeipa_iam_hbac_state_mismatch": freeipa_iam_hbac_state_mismatch,
+            "freeipa_iam_pwexp_bumps": freeipa_iam_pwexp_bumps,
+            "freeipa_iam_validate": freeipa_iam_validate,
         }

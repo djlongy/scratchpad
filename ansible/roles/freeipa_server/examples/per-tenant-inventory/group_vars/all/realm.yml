@@ -10,14 +10,14 @@ domain: example.com
 # ── Connection to the shared IPA primary ──
 freeipa_server_domain: ipa.example.com
 freeipa_server_realm: IPA.EXAMPLE.COM
-freeipa_server_primary_group: freeipa_idam
+freeipa_server_primary_group: freeipa_iam
 # Supply ONE admin credential source (declared var wins; HashiCorp Vault is the fallback):
 # freeipa_server_admin_password: "<ADMIN_PASSWORD>"          # best via -e @secrets.yml
 # freeipa_server_vault_secret: "kv-<env>/data/platform/freeipa/runtime"
 
 # ── Unified per-realm identity model ──
 # Load every tenants/*.yml in this inventory in one run; flatten + stamp ownership.
-freeipa_idam_tenants_dir: "{{ inventory_dir }}/tenants"
+freeipa_iam_tenants_dir: "{{ inventory_dir }}/tenants"
 
 # A shared baseline a tenant file can pull in WHOLE with normal Jinja (see tenants/globex.yml).
 # It stays a native list — the tenant file is just a vars YAML.
@@ -27,4 +27,4 @@ shared_sudo_commands:
 
 # ── Pruning is OFF by default (additive-safe). To make removals authoritative: ──
 # freeipa_server_authoritative: true
-# freeipa_idam_reconcile_scope: "<tenant>-<env>"      # scopes object pruning by name substring
+# freeipa_iam_reconcile_scope: "<tenant>-<env>"      # scopes object pruning by name substring

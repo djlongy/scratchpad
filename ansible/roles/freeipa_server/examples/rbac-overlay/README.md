@@ -4,12 +4,12 @@ A runnable, sanitised template for a **3-tenant** estate (acme / globex / initec
 policy group per tenant — small on purpose; the model scales by adding entries, not code.
 
 **The overlay is a purely optional add-on, compiled by the role itself** (`tasks/rbac.yml`,
-inside the desired phase). The role consumes only the native `freeipa_idam_*` dicts; when
+inside the desired phase). The role consumes only the native `freeipa_iam_*` dicts; when
 `freeipa_server_rbac_roles` is declared it validates + compiles + merges the overlay onto them
 (generating **only** role groups, their nesting into the existing `ug-*` groups, and
 user→role-group membership — nothing else). No playbook `pre_tasks` are needed, and with no
 overlay vars declared — or empty/null ones — every overlay task no-ops: a pure-baseline realm
-runs untouched. It also composes with the per-tenant `freeipa_idam_tenants_dir` mode (the
+runs untouched. It also composes with the per-tenant `freeipa_iam_tenants_dir` mode (the
 overlay compiles after the tenant load). You author one file: `group_vars/all/10_rbac.yml`.
 
 The native dicts in `group_vars/all/00_native.yml` (policy groups `ug-*`, their HBAC + sudo
@@ -44,7 +44,7 @@ Add/remove a person ⇒ one role assignment, not edits across many groups.
 **Policy groups must already exist natively** (that is where the HBAC/sudo point). The overlay
 only nests onto them — it never invents `ug-*` groups. `freeipa_rbac_validate` fails the run
 (naming the culprit) on a policy group not declared in `00_native.yml` (the typo trap for pasted
-names), a member not in `freeipa_idam_users`, a duplicate/protected name, an unknown key
+names), a member not in `freeipa_iam_users`, a duplicate/protected name, an unknown key
 (`member` vs `members`), or a role name that is also a policy group.
 
 ## Roles in this example
@@ -65,8 +65,8 @@ explicitly. Granting a role is a one-line diff on that entry's `members:`.
 ```bash
 # supply ONE admin credential source first (see inventory.yml):
 #   -e freeipa_server_admin_password='...'   (best from -e @secrets.yml)   OR a Vault path
-ansible-playbook -i inventory.yml site.yml --tags idam              # add --check --diff to preview
-ansible-playbook -i inventory.yml site.yml --tags idam              # re-run → changed=0 (idempotent)
+ansible-playbook -i inventory.yml site.yml --tags iam              # add --check --diff to preview
+ansible-playbook -i inventory.yml site.yml --tags iam              # re-run → changed=0 (idempotent)
 ```
 
 Verify on the primary:
@@ -81,7 +81,7 @@ ipa group-show role-acme-prod-platform-admin     # Member users: alice.smith
 
 By default the role is **additive** — it never deletes. To make removals authoritative (a user
 dropped from a role loses it; a `ug-*` dropped from `00_native.yml` is deleted), set
-`freeipa_server_authoritative: true` and a `freeipa_idam_reconcile_scope`. Authoritative is
+`freeipa_server_authoritative: true` and a `freeipa_iam_reconcile_scope`. Authoritative is
 **realm-scoped** — only run it against the *complete* assembled desired state for the realm,
 never a partial file. See the role README for the full pruning model.
 

@@ -3,12 +3,12 @@
 # state on the realm. This is the counterpart to delete.yml: where delete.yml removes
 # objects DECLARED in the current run, this removes ORPHANED preserved users — accounts
 # the normal reconcile archived (user-del --preserve) because they are no longer
-# declared, and which therefore never appear in any freeipa_idam_* list. delete.yml
+# declared, and which therefore never appear in any freeipa_iam_* list. delete.yml
 # structurally cannot reach them; this task discovers them LIVE instead.
 #
 # ── SAFETY — destructive + irreversible ──────────────────────────────────────
 # Shares the ONE hard-delete gate with delete.yml — no per-task permission boolean:
-#   1. gate  freeipa_idam_delete: true      (the single hard-delete switch; default false)
+#   1. gate  freeipa_iam_delete: true      (the single hard-delete switch; default false)
 #   2. tag   --tags prune_preserved         (`never`-tagged; selects THIS op vs --tags delete)
 # For a DRY-RUN add `--check`: discovery is read-only (check_mode: false) and the ipauser
 # delete runs in check mode, reporting what it WOULD remove without deleting. Protected
@@ -18,10 +18,10 @@
 - name: Prune-preserved | Refuse to run unless the hard-delete gate is set
   ansible.builtin.assert:
     that:
-      - freeipa_idam_delete | default(false) | bool
+      - freeipa_iam_delete | default(false) | bool
     fail_msg: >-
-      prune_preserved.yml ran without freeipa_idam_delete=true. This is a hard-delete of preserved
-      (archived) users — arm the single hard-delete gate (freeipa_idam_delete=true) AND invoke with
+      prune_preserved.yml ran without freeipa_iam_delete=true. This is a hard-delete of preserved
+      (archived) users — arm the single hard-delete gate (freeipa_iam_delete=true) AND invoke with
       --tags prune_preserved. Add --check for a dry-run.
     quiet: true
 
@@ -33,7 +33,7 @@
 # A valid admin Kerberos ticket is required for `ipa user-find`. Password on stdin, no_log.
 - name: Prune-preserved | Obtain admin Kerberos ticket
   ansible.builtin.shell:
-    cmd: "set -o pipefail; echo {{ _freeipa_admin_password | quote }} | kinit {{ freeipa_server_admin_principal | quote }}"
+    cmd: "set -o pipefail; echo {{ _freeipa_admin_password | quote }} | kinit {{ (freeipa_server_admin_principal ~ '@' ~ freeipa_server_realm) | quote }}"
     executable: /bin/bash
   no_log: true
   changed_when: false
@@ -56,14 +56,14 @@
 - name: Prune-preserved | Compute prune candidates (protected + keep-list + keep-regex excluded)
   ansible.builtin.set_fact:
     _prune_candidates: >-
-      {{ (_base | reject('match', freeipa_idam_prune_preserved_keep_regex) | list)
-         if (freeipa_idam_prune_preserved_keep_regex | default('') | length > 0)
+      {{ (_base | reject('match', freeipa_iam_prune_preserved_keep_regex) | list)
+         if (freeipa_iam_prune_preserved_keep_regex | default('') | length > 0)
          else _base }}
   vars:
     _base: >-
       {{ _preserved_logins
-         | difference(freeipa_idam_protected_users | default([]))
-         | difference(freeipa_idam_prune_preserved_keep | default([])) }}
+         | difference(freeipa_iam_protected_users | default([]))
+         | difference(freeipa_iam_prune_preserved_keep | default([])) }}
 
 - name: Prune-preserved | Show prune plan
   ansible.builtin.debug:

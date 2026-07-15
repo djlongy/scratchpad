@@ -1,11 +1,11 @@
 ---
-# tasks/delete.yml — HARD-DELETE every object DECLARED in this run's freeipa_idam_*
+# tasks/delete.yml — HARD-DELETE every object DECLARED in this run's freeipa_iam_*
 # lists. This is REMOVAL (ipa *-del), NOT the archive/preserve that the normal
 # reconcile uses. It exists so a MOCK run can create real objects, show them, then
 # clean up — leaving real tenancies untouched.
 #
 # ── SAFETY — this is destructive, so it is DOUBLE-GATED ──────────────────────
-#   1. boolean  freeipa_idam_delete: true   (default false; set ONLY in a mock inventory)
+#   1. boolean  freeipa_iam_delete: true   (default false; set ONLY in a mock inventory)
 #   2. tag      --tags delete                (this file is tagged `never` in main.yml)
 # Neither alone does anything; you need BOTH. It only ever deletes the objects that
 # are DECLARED in the CURRENT run (so with a scoped matrix it removes just that
@@ -14,11 +14,11 @@
 - name: Delete | Refuse to run unless explicitly gated
   ansible.builtin.assert:
     that:
-      - freeipa_idam_delete | default(false) | bool
+      - freeipa_iam_delete | default(false) | bool
     fail_msg: >-
-      delete.yml ran without freeipa_idam_delete=true. This is a hard-delete of every
-      declared freeipa_idam_* object — it must be explicitly enabled (set
-      freeipa_idam_delete: true in the mock inventory) AND invoked with --tags delete.
+      delete.yml ran without freeipa_iam_delete=true. This is a hard-delete of every
+      declared freeipa_iam_* object — it must be explicitly enabled (set
+      freeipa_iam_delete: true in the mock inventory) AND invoked with --tags delete.
     quiet: true
 
 - name: Delete | Resolve admin password (shared resolver)
@@ -31,99 +31,99 @@
 - name: Delete | Build delete name lists (protected entries excluded)
   ansible.builtin.set_fact:
     _delete_users: >-
-      {{ ((freeipa_idam_users | default([]) | map(attribute='name') | list)
-          + (freeipa_idam_service_accounts | default([]) | map(attribute='name') | list)
-          + (freeipa_idam_breakglass_accounts | default([]) | map(attribute='name') | list))
-         | unique | difference(freeipa_idam_protected_users | default([])) }}
+      {{ ((freeipa_iam_users | default([]) | map(attribute='name') | list)
+          + (freeipa_iam_service_accounts | default([]) | map(attribute='name') | list)
+          + (freeipa_iam_breakglass_accounts | default([]) | map(attribute='name') | list))
+         | unique | difference(freeipa_iam_protected_users | default([])) }}
     _delete_groups: >-
-      {{ (freeipa_idam_usergroups | default([]) | map(attribute='name') | list)
-         | difference(freeipa_idam_protected_groups | default([]))
-         | difference(freeipa_idam_builtin_groups | default([])) }}
+      {{ (freeipa_iam_usergroups | default([]) | map(attribute='name') | list)
+         | difference(freeipa_iam_protected_groups | default([]))
+         | difference(freeipa_iam_builtin_groups | default([])) }}
 
 - name: Delete | Announce what will be removed
   ansible.builtin.debug:
     msg: >-
       DELETE (hard-delete): {{ _delete_users | length }} users, {{ _delete_groups | length }} groups,
-      {{ freeipa_idam_hostgroups | default([]) | length }} hostgroups,
-      {{ freeipa_idam_hbac_rules | default([]) | length }} HBAC,
-      {{ freeipa_idam_sudo_rules | default([]) | length }} sudo,
-      {{ freeipa_idam_hbacsvcs | default([]) | length }} hbacsvcs,
-      {{ freeipa_idam_sudo_commands | default([]) | length }} sudocmds + marker {{ freeipa_idam_managed_group }}.
+      {{ freeipa_iam_hostgroups | default([]) | length }} hostgroups,
+      {{ freeipa_iam_hbac_rules | default([]) | length }} HBAC,
+      {{ freeipa_iam_sudo_rules | default([]) | length }} sudo,
+      {{ freeipa_iam_hbacsvcs | default([]) | length }} hbacsvcs,
+      {{ freeipa_iam_sudo_commands | default([]) | length }} sudocmds + marker {{ freeipa_iam_managed_group }}.
 
 # Delete in reverse-dependency order: things that REFERENCE others go first.
 - name: Delete | Remove native IPA delegation roles
   freeipa.ansible_freeipa.iparole:
-    name: "{{ freeipa_idam_iparoles | map(attribute='name') | list }}"
+    name: "{{ freeipa_iam_iparoles | map(attribute='name') | list }}"
     state: absent
-  when: (freeipa_idam_iparoles | default([])) | length > 0
+  when: (freeipa_iam_iparoles | default([])) | length > 0
 
 - name: Delete | Remove privileges
   freeipa.ansible_freeipa.ipaprivilege:
-    name: "{{ freeipa_idam_privileges | map(attribute='name') | list }}"
+    name: "{{ freeipa_iam_privileges | map(attribute='name') | list }}"
     state: absent
-  when: (freeipa_idam_privileges | default([])) | length > 0
+  when: (freeipa_iam_privileges | default([])) | length > 0
 
 - name: Delete | Remove permissions
   freeipa.ansible_freeipa.ipapermission:
-    name: "{{ freeipa_idam_permissions | map(attribute='name') | list }}"
+    name: "{{ freeipa_iam_permissions | map(attribute='name') | list }}"
     state: absent
-  when: (freeipa_idam_permissions | default([])) | length > 0
+  when: (freeipa_iam_permissions | default([])) | length > 0
 
 - name: Delete | Remove sudo rules
   freeipa.ansible_freeipa.ipasudorule:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_sudo_rules | default([]) }}"
+  loop: "{{ freeipa_iam_sudo_rules | default([]) }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_sudo_rules | default([])) | length > 0
+  when: (freeipa_iam_sudo_rules | default([])) | length > 0
 
 - name: Delete | Remove HBAC rules
   freeipa.ansible_freeipa.ipahbacrule:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_hbac_rules | default([]) | rejectattr('name', 'in', freeipa_idam_builtin_hbac_rules | default([])) | list }}"
+  loop: "{{ freeipa_iam_hbac_rules | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hbac_rules | default([])) | list }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_hbac_rules | default([])) | length > 0
+  when: (freeipa_iam_hbac_rules | default([])) | length > 0
 
 - name: Delete | Remove sudo command groups
   freeipa.ansible_freeipa.ipasudocmdgroup:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_sudocmdgroups | default([]) }}"
+  loop: "{{ freeipa_iam_sudocmdgroups | default([]) }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_sudocmdgroups | default([])) | length > 0
+  when: (freeipa_iam_sudocmdgroups | default([])) | length > 0
 
 - name: Delete | Remove HBAC service groups
   freeipa.ansible_freeipa.ipahbacsvcgroup:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_hbacsvcgroups | default([]) | rejectattr('name', 'in', freeipa_idam_builtin_hbacsvcgroups | default([])) | list }}"
+  loop: "{{ freeipa_iam_hbacsvcgroups | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hbacsvcgroups | default([])) | list }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_hbacsvcgroups | default([])) | length > 0
+  when: (freeipa_iam_hbacsvcgroups | default([])) | length > 0
 
 - name: Delete | Remove sudo commands
   freeipa.ansible_freeipa.ipasudocmd:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_sudo_commands | default([]) }}"
+  loop: "{{ freeipa_iam_sudo_commands | default([]) }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_sudo_commands | default([])) | length > 0
+  when: (freeipa_iam_sudo_commands | default([])) | length > 0
 
 - name: Delete | Remove custom HBAC services
   freeipa.ansible_freeipa.ipahbacsvc:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_hbacsvcs | default([]) | rejectattr('name', 'in', freeipa_server_export_stock_hbacsvcs | default([])) | list }}"
+  loop: "{{ freeipa_iam_hbacsvcs | default([]) | rejectattr('name', 'in', freeipa_server_export_stock_hbacsvcs | default([])) | list }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_hbacsvcs | default([])) | length > 0
+  when: (freeipa_iam_hbacsvcs | default([])) | length > 0
 
 - name: Delete | Remove password policies
   freeipa.ansible_freeipa.ipapwpolicy:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_pwpolicies | default([]) }}"
+  loop: "{{ freeipa_iam_pwpolicies | default([]) }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_pwpolicies | default([])) | length > 0
+  when: (freeipa_iam_pwpolicies | default([])) | length > 0
 
 # HARD delete the users (preserve: false → user-del, NOT user-del --preserve).
 - name: Delete | Hard-delete declared users (not protected)
@@ -143,14 +143,14 @@
   freeipa.ansible_freeipa.ipahostgroup:
     name: "{{ item.name }}"
     state: absent
-  loop: "{{ freeipa_idam_hostgroups | default([]) | rejectattr('name', 'in', freeipa_idam_builtin_hostgroups | default([])) | list }}"
+  loop: "{{ freeipa_iam_hostgroups | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hostgroups | default([])) | list }}"
   loop_control: { label: "{{ item.name | default('?') }}" }
-  when: (freeipa_idam_hostgroups | default([])) | length > 0
+  when: (freeipa_iam_hostgroups | default([])) | length > 0
 
 # The marker group last (it has no members left once users are gone). Skipped if it
 # is a protected/built-in name.
 - name: Delete | Remove the marker group
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_idam_managed_group }}"
+    name: "{{ freeipa_iam_managed_group }}"
     state: absent
-  when: freeipa_idam_managed_group not in (freeipa_idam_protected_groups | default([]))
+  when: freeipa_iam_managed_group not in (freeipa_iam_protected_groups | default([]))

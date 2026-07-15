@@ -1,6 +1,6 @@
 ---
 # ═════════════════════════════════════════════════════════════════════════════
-# NATIVE BASELINE — the role's raw freeipa_idam_* dicts (an exported snapshot, or
+# NATIVE BASELINE — the role's raw freeipa_iam_* dicts (an exported snapshot, or
 # hand-written). This is the SOURCE OF TRUTH: policy groups (ug-*), their HBAC + sudo
 # rules, hostgroups, and users. The thin RBAC overlay (10_rbac.yml) does NOT generate any
 # of this — it only nests role groups onto the ug-* policy groups below and joins users to
@@ -11,33 +11,33 @@
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ── POLICY groups (HBAC/sudo target these). The overlay nests role groups onto them. ──
-freeipa_idam_usergroups:
+freeipa_iam_usergroups:
   - { name: ug-acme-prod-gitlab-admins, description: "acme/prod gitlab admins" }
   - { name: ug-globex-prod-grafana-readers, description: "globex/prod grafana readers" }
   - { name: ug-initech-prod-postgres-admins, description: "initech/prod postgres admins" }
 
 # ── Hostgroups the rules are scoped to (populated by enrolment + automember). ──
-freeipa_idam_hostgroups:
+freeipa_iam_hostgroups:
   - { name: hg-acme-prod, description: "acme prod hosts" }
   - { name: hg-globex-prod, description: "globex prod hosts" }
   - { name: hg-initech-prod, description: "initech prod hosts" }
 
 # ── HBAC rules — who may log in where (target the ug-* + hostgroup). ──
-freeipa_idam_hbac_rules:
+freeipa_iam_hbac_rules:
   - { name: hbac-acme-prod-gitlab-admins, usergroup: [ug-acme-prod-gitlab-admins], hostgroup: [hg-acme-prod], service: [sshd] }
   - { name: hbac-globex-prod-grafana-readers, usergroup: [ug-globex-prod-grafana-readers], hostgroup: [hg-globex-prod], service: [sshd] }
   - { name: hbac-initech-prod-postgres-admins, usergroup: [ug-initech-prod-postgres-admins], hostgroup: [hg-initech-prod], service: [sshd] }
 
 # ── Sudo commands + rules. ──
-freeipa_idam_sudo_commands:
+freeipa_iam_sudo_commands:
   - { name: "/usr/bin/systemctl" }
   - { name: "/usr/bin/journalctl" }
-freeipa_idam_sudo_rules:
+freeipa_iam_sudo_rules:
   - { name: sudo-acme-prod-gitlab-admins, usergroup: [ug-acme-prod-gitlab-admins], hostgroup: [hg-acme-prod], cmd: ["/usr/bin/systemctl", "/usr/bin/journalctl"] }
   - { name: sudo-initech-prod-postgres-admins, usergroup: [ug-initech-prod-postgres-admins], hostgroup: [hg-initech-prod], cmd: ["/usr/bin/journalctl"] }
 
 # ── Users (identity only — their role-group membership is added by the overlay). ──
-freeipa_idam_users:
+freeipa_iam_users:
   - { name: alice.smith, givenname: Alice, sn: Smith, email: ["alice.smith@example.com"] }
   - { name: bob.ng, givenname: Bob, sn: Ng, email: ["bob.ng@example.com"] }
   - { name: carol.fox, givenname: Carol, sn: Fox, email: ["carol.fox@example.com"] }

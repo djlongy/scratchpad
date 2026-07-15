@@ -3,7 +3,7 @@
 # Topology, realm, and options come from inventory (see inventories/example/).
 #
 #   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml
-#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags idam
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa.yml --tags iam
 #
 # Single host in the `freeipa` group → single-server. Two+ → primary + replicas.
 

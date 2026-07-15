@@ -141,11 +141,11 @@ DNS resolver, kinit attempts, `freeipa_client_packages`, …).
 ## Server-side config (NOT in this role)
 
 A client cannot self-assign these — they need admin and live in `freeipa_server`
-IDAM (or a host-management play):
+IAM (or a host-management play):
 
-- **Host-group membership** → `freeipa_idam_hostgroups` (with host lists)
-- **HBAC rules** → `freeipa_idam_hbac_rules` (this client enforces them via SSSD)
-- **sudo rules** → `freeipa_idam_sudo_rules` (this client runs them via SSSD)
+- **Host-group membership** → `freeipa_iam_hostgroups` (with host lists)
+- **HBAC rules** → `freeipa_iam_hbac_rules` (this client enforces them via SSSD)
+- **sudo rules** → `freeipa_iam_sudo_rules` (this client runs them via SSSD)
 - **DNS zones/records** beyond the host's own auto-registered A/SSHFP
 
 ## Usage

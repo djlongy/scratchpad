@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """Export live FreeIPA configuration into the freeipa_server role's flat
-declarative contract (freeipa_idam_* / freeipa_server_*), emitted as JSON on
+declarative contract (freeipa_iam_* / freeipa_server_*), emitted as JSON on
 stdout.
 
 Runs ON a FreeIPA server (uses the local ipalib + an existing admin Kerberos
@@ -32,10 +32,10 @@ from ipalib import api, errors
 # to re-declare — so they are skipped on export. This is NOT "protection": protected
 # objects (admin, admins, ipausers, trust admins) ARE exported (state stays complete
 # + auditable); protection is purely an APPLY-time delete/modify guard. Skipped here:
-#   * the role's own marker/container groups — idam-managed-*, *-idam-managed-*
+#   * the role's own marker/container groups — iam-managed-*, *-iam-managed-*
 #     (see _is_marker; re-created + auto-populated by the role; circular to capture)
 #   * User Private Groups (one per user, mepManagedEntry — handled by _is_upg below)
-GROUP_EXPORT_SKIP = {"idam-managed-users"}
+GROUP_EXPORT_SKIP = {"iam-managed-users"}
 # Built-in FreeIPA delegation roles (ipa role) — recreated on every install, so only
 # CUSTOM roles are exported. Extend if a newer FreeIPA ships more built-ins.
 ROLE_DENYLIST = {
@@ -161,14 +161,14 @@ def _safe(label, fn, default):
 
 
 def _is_marker(name):
-    """Auto-managed marker / container groups (idam-managed-users, idam-managed-groups,
-    <tenant>-idam-managed-*, idam-*-managed) — created and populated by the role's own
+    """Auto-managed marker / container groups (iam-managed-users, iam-managed-groups,
+    <tenant>-iam-managed-*, iam-*-managed) — created and populated by the role's own
     enrolment tasks, NOT declarative config. Re-declaring them (and the auto-enrolled
     members they hold) would fight the role on every run, so they are skipped on export.
     Because export_users() filters each user's groups to the EXPORTED group set, skipping
     markers here also strips them from every user's `groups` and from group nesting."""
     n = (name or "").lower()
-    return "idam" in n and "managed" in n
+    return "iam" in n and "managed" in n
 
 
 def export_groups(skip=frozenset(), include_gids=True):
@@ -203,8 +203,8 @@ def export_groups(skip=frozenset(), include_gids=True):
 def export_users(group_names, include_sshkeys):
     """Split active accounts into human users vs SERVICE accounts (login disabled).
     A user whose loginshell is a nologin shell is emitted under
-    freeipa_idam_service_accounts (so a re-apply forces shell=nologin), everyone
-    else under freeipa_idam_users. Returns (users, service_accounts, used_fallback)."""
+    freeipa_iam_service_accounts (so a re-apply forces shell=nologin), everyone
+    else under freeipa_iam_users. Returns (users, service_accounts, used_fallback)."""
     used_fallback = False
     users, service_accounts = [], []
     for e in _find("user_find"):
@@ -482,7 +482,7 @@ def export_privileges(wanted_names, system_perms):
     built-in (SYSTEM) permissions is itself built-in (e.g. 'Group Administrators')
     and is skipped — the role still references it by name, but we never recreate it.
     A kept privilege keeps its FULL permission list (system perms exist built-in;
-    only custom ones are emitted under freeipa_idam_permissions). Returns
+    only custom ones are emitted under freeipa_iam_permissions). Returns
     (privileges, set_of_member_permission_names)."""
     out, perm_names = [], set()
     for e in _find("privilege_find"):
@@ -628,7 +628,7 @@ def main():
     ap.add_argument("--skip-groups", default=None, metavar="JSON",
                     help="JSON array of EXTRA group names to skip on export — the role "
                          "passes its configured marker/container groups "
-                         "(freeipa_idam_managed_group + freeipa_idam_managed_groups_group) "
+                         "(freeipa_iam_managed_group + freeipa_iam_managed_groups_group) "
                          "so a custom marker name is honoured, not just the built-in default")
     args = ap.parse_args()
 
@@ -696,29 +696,29 @@ def main():
         "freeipa_server_dns_zones": _safe("dns_zones", export_dns_zones, []),
         "freeipa_server_dns_forward_zones": _safe("dns_forward_zones", export_dns_forward_zones, []),
         "freeipa_server_dns_records": _safe("dns_records", export_dns_records, []),
-        "freeipa_idam_usergroups": groups,
+        "freeipa_iam_usergroups": groups,
         # Users are exported VERBATIM — each with its real, literal `groups` list
         # exactly as held in FreeIPA. No roles matrix is synthesised (the snapshot is
         # a faithful mirror of the directory, not an inferred refactor).
-        "freeipa_idam_users": users,
+        "freeipa_iam_users": users,
         # Accounts with a nologin shell — re-applied as service accounts (shell forced).
-        "freeipa_idam_service_accounts": service_accounts,
-        "freeipa_idam_hostgroups": _safe(
+        "freeipa_iam_service_accounts": service_accounts,
+        "freeipa_iam_hostgroups": _safe(
             "hostgroups", lambda: export_hostgroups(args.include_host_membership), []),
-        "freeipa_idam_hbacsvcs": _safe("hbacsvcs", lambda: export_hbacsvcs(stock_hbacsvc), []),
-        "freeipa_idam_hbacsvcgroups": _safe(
+        "freeipa_iam_hbacsvcs": _safe("hbacsvcs", lambda: export_hbacsvcs(stock_hbacsvc), []),
+        "freeipa_iam_hbacsvcgroups": _safe(
             "hbacsvcgroups",
             lambda: export_hbacsvcgroups(args.include_stock_hbacsvcgroups), []),
-        "freeipa_idam_hbac_rules": _safe("hbac_rules", export_hbac_rules, []),
-        "freeipa_idam_sudo_commands": _safe("sudo_commands", export_sudo_commands, []),
-        "freeipa_idam_sudocmdgroups": _safe("sudocmdgroups", export_sudocmdgroups, []),
-        "freeipa_idam_sudo_rules": _safe("sudo_rules", export_sudo_rules, []),
-        "freeipa_idam_pwpolicies": _safe("pwpolicies", export_pwpolicies, []),
+        "freeipa_iam_hbac_rules": _safe("hbac_rules", export_hbac_rules, []),
+        "freeipa_iam_sudo_commands": _safe("sudo_commands", export_sudo_commands, []),
+        "freeipa_iam_sudocmdgroups": _safe("sudocmdgroups", export_sudocmdgroups, []),
+        "freeipa_iam_sudo_rules": _safe("sudo_rules", export_sudo_rules, []),
+        "freeipa_iam_pwpolicies": _safe("pwpolicies", export_pwpolicies, []),
         # CUSTOM native delegation roles (built-ins skipped) for DR.
-        "freeipa_idam_iparoles": iparoles,
+        "freeipa_iam_iparoles": iparoles,
         # Privileges referenced by those roles + the permissions they hold.
-        "freeipa_idam_privileges": privs,
-        "freeipa_idam_permissions": perms,
+        "freeipa_iam_privileges": privs,
+        "freeipa_iam_permissions": perms,
         "freeipa_server_automember_rules": _safe("automember_rules", export_automember_rules, []),
     }
     # Record which sections were skipped (empty list = a complete capture).

@@ -2,14 +2,14 @@
 # roles/freeipa_server/tasks/export_config.yml
 #
 # Snapshot the LIVE FreeIPA configuration into this role's flat declarative
-# contract (freeipa_idam_* / freeipa_server_*), written as a YAML group_vars
+# contract (freeipa_iam_* / freeipa_server_*), written as a YAML group_vars
 # file on the control node. Lets you adopt an existing instance — capture it
 # once, then reapply idempotently with this role instead of rebuilding from
 # scratch.
 #
 # Read-only against FreeIPA (only *_find/*_show via the on-server ipalib). Opt-in:
 # gated behind the `export` tag (main.yml tags it [never, export]), primary only.
-# Auth reuses the IDAM admin credential from Vault, same as idam.yml.
+# Auth reuses the IAM admin credential from Vault, same as iam.yml.
 
 - name: Export | Assert this is the primary
   ansible.builtin.assert:
@@ -33,7 +33,7 @@
     _freeipa_resolve: [admin]
 
 - name: Export | Acquire Kerberos ticket
-  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}"
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
   args:
     stdin: "{{ _freeipa_admin_password }}\n"
   changed_when: false
@@ -47,7 +47,7 @@
     {{ '--exclude-gids' if not (freeipa_server_export_include_gids | bool) else '' }}
     {{ '--include-stock-hbacsvcgroups' if freeipa_server_export_stock_hbacsvcgroups | bool else '' }}
     --stock-hbacsvc {{ freeipa_server_export_stock_hbacsvcs | to_json | quote }}
-    --skip-groups {{ [freeipa_idam_managed_group, freeipa_idam_managed_groups_group] | to_json | quote }}
+    --skip-groups {{ [freeipa_iam_managed_group, freeipa_iam_managed_groups_group] | to_json | quote }}
   args:
     executable: /usr/bin/python3
   register: _freeipa_export_raw

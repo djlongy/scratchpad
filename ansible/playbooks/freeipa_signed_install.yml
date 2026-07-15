@@ -50,7 +50,7 @@
 # single invocation only ever executes ONE phase's plays.
 #
 # ── WHY tasks_from: (playbook-level include_role with a task file) ────────────
-# 1. INSTALL-SCOPING. A full freeipa_server role run also executes idam/dns/
+# 1. INSTALL-SCOPING. A full freeipa_server role run also executes iam/dns/
 #    hardening/backup phases AFTER install. Those are intentionally OUT OF SCOPE of
 #    a signed install; `tasks_from: install` runs ONLY the install path
 #    (resolve_credentials + primary/replica). Reconcile users/groups/DNS separately

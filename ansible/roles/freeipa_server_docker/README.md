@@ -5,7 +5,7 @@ a Docker/Podman host, with a persistent `/data` volume. The `<noun>_<purpose>` s
 [`freeipa_server`](../freeipa_server/) — mirroring `hashicorp_vault` + `hashicorp_vault_docker`.
 
 This role is **thin**: it owns only the container lifecycle. All declarative configuration
-(IDAM, DNS, hardening, backup) is delegated to the existing `freeipa_server` role, run
+(IAM, DNS, hardening, backup) is delegated to the existing `freeipa_server` role, run
 **inside** the container via the `community.docker.docker` connection plugin — the container
 is a full IPA server, so every native `freeipa.ansible_freeipa` module works there in server
 context. **Validated E2E** against a live realm (AlmaLinux 9, `ipa-server-4.13.1`).

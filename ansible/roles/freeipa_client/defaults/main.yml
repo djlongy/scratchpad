@@ -63,18 +63,18 @@ freeipa_client_automount_location: ""
 
 # ── sudo (SSSD sudo provider) ────────────────────────────────────────────────
 # false = sudo via SSSD enabled (client enforces server-defined sudo rules).
-# Sudo RULES themselves are SERVER-SIDE — define them in freeipa_server IDAM
-# (freeipa_idam_sudo_rules), not here.
+# Sudo RULES themselves are SERVER-SIDE — define them in freeipa_server IAM
+# (freeipa_iam_sudo_rules), not here.
 freeipa_client_no_sudo: false
 
 # ── HBAC ─────────────────────────────────────────────────────────────────────
 # HBAC is enforced automatically by SSSD (access_provider=ipa) once enrolled —
-# there is no client-side toggle. HBAC RULES are SERVER-SIDE (freeipa_server IDAM
-# freeipa_idam_hbac_rules). See README.
+# there is no client-side toggle. HBAC RULES are SERVER-SIDE (freeipa_server IAM
+# freeipa_iam_hbac_rules). See README.
 
 # ── Host groups ──────────────────────────────────────────────────────────────
 # Host-group MEMBERSHIP is a SERVER-SIDE operation (needs admin; a client cannot
-# add itself). Manage it in freeipa_server IDAM (freeipa_idam_hostgroups with a
+# add itself). Manage it in freeipa_server IAM (freeipa_iam_hostgroups with a
 # host list) or a dedicated host-management play. See README.
 
 # ── DNS record propagation ───────────────────────────────────────────────────

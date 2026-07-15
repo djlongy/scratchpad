@@ -1,17 +1,17 @@
 ---
 # Unified per-realm tenant load: read every tenants/*.yml in ONE run and flatten into
-# the freeipa_idam_* / freeipa_server_* object lists (users/groups stamped _owner +
+# the freeipa_iam_* / freeipa_server_* object lists (users/groups stamped _owner +
 # _shared) — the precondition for a single declarative reconcile that sees every
 # tenant. A tenant file may carry its WHOLE config (users, groups, hbac, sudo, dns,
 # automember, ...) and templates exactly like any inventory vars file (see
 # load_one_tenant.yml). fileglob runs on the control node; the caller gates on a
-# non-empty freeipa_idam_tenants_dir.
+# non-empty freeipa_iam_tenants_dir.
 
 - name: tenants | Discover per-tenant files
   ansible.builtin.set_fact:
-    _freeipa_tenant_files: "{{ query('ansible.builtin.fileglob', freeipa_idam_tenants_dir ~ '/*.yml') | sort }}"
+    _freeipa_tenant_files: "{{ query('ansible.builtin.fileglob', freeipa_iam_tenants_dir ~ '/*.yml') | sort }}"
 
-# HARD FAIL on an empty glob. freeipa_idam_tenants_dir is DECLARED, so finding no
+# HARD FAIL on an empty glob. freeipa_iam_tenants_dir is DECLARED, so finding no
 # tenant files is always a misconfiguration (typo'd path, wrong inventory_dir) — and
 # proceeding would assemble an EMPTY desired state, which under authoritative would
 # archive every user and delete every managed object on the realm.
@@ -19,11 +19,11 @@
   ansible.builtin.assert:
     that: _freeipa_tenant_files | length > 0
     fail_msg: >-
-      freeipa_idam_tenants_dir is set to '{{ freeipa_idam_tenants_dir }}' but NO
+      freeipa_iam_tenants_dir is set to '{{ freeipa_iam_tenants_dir }}' but NO
       *.yml tenant files were found there (resolved on the control node). Refusing
       to continue — an empty desired state under freeipa_server_authoritative would
       archive every user and delete every managed object. Fix the path (typo?) or
-      unset freeipa_idam_tenants_dir for group_vars mode.
+      unset freeipa_iam_tenants_dir for group_vars mode.
     quiet: true
 
 # One include per file: each file's vars are injected, resolved, and snapshotted before the next
@@ -37,14 +37,14 @@
 
 - name: tenants | Flatten tenants (object lists + ownership maps)
   ansible.builtin.set_fact:
-    _freeipa_tenants: "{{ _freeipa_tenants_raw | default([]) | freeipa_idam_identity_merge }}"
+    _freeipa_tenants: "{{ _freeipa_tenants_raw | default([]) | freeipa_iam_identity_merge }}"
   no_log: true  # tenant files may carry inline user passwords
 
-# Dynamically set every object var the merge produced (freeipa_idam_users,
-# freeipa_idam_usergroups, freeipa_idam_hbac_rules, freeipa_server_dns_zones, ...) —
+# Dynamically set every object var the merge produced (freeipa_iam_users,
+# freeipa_iam_usergroups, freeipa_iam_hbac_rules, freeipa_server_dns_zones, ...) —
 # so a tenant file carries its WHOLE config (HBAC, sudo, roles, DNS, automember, ...),
 # not just users/groups.
-- name: tenants | Populate IDAM/server object lists from merged tenants
+- name: tenants | Populate IAM/server object lists from merged tenants
   ansible.builtin.set_fact:
     "{{ item.key }}": "{{ item.value }}"
   loop: "{{ _freeipa_tenants.objects | dict2items }}"
@@ -57,11 +57,11 @@
 # means the load was hollow, and authoritative would archive the whole realm.
 - name: tenants | Refuse a tenant load that assembled zero users
   ansible.builtin.assert:
-    that: (freeipa_idam_users | default([])) | length > 0
+    that: (freeipa_iam_users | default([])) | length > 0
     fail_msg: >-
       {{ _freeipa_tenant_files | length }} tenant file(s) loaded from
-      '{{ freeipa_idam_tenants_dir }}' ({{ _freeipa_tenant_files | map('basename') | join(', ') }})
+      '{{ freeipa_iam_tenants_dir }}' ({{ _freeipa_tenant_files | map('basename') | join(', ') }})
       but ZERO users were assembled. Refusing to continue — an empty user set under
       freeipa_server_authoritative would archive every user on the realm. Check the
-      files carry freeipa_idam_users / users lists (not empty, not commented out).
+      files carry freeipa_iam_users / users lists (not empty, not commented out).
     quiet: true

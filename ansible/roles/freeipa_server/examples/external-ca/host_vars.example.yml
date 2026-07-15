@@ -15,7 +15,7 @@
 # Capture prod's exact CA settings first with the read-only probe, then mirror them
 # here (mode, subject, KRA/DNS/PKINIT):
 #     ansible-playbook -i inventories/<prodenv>/hosts.yml \
-#         playbooks/freeipa_idam.yml --tags ca_report
+#         playbooks/freeipa_iam.yml --tags ca_report
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Scenario host in these comments: freeipa.central-qa.core.domain.lan
@@ -27,7 +27,7 @@
 # /root/ipa.csr on the primary, leaving the server partially configured.
 #
 #   ansible-playbook -i inventories/<testenv>/hosts.yml \
-#       playbooks/freeipa_idam.yml --tags install --limit freeipa-central-qa
+#       playbooks/freeipa_iam.yml --tags install --limit freeipa-central-qa
 #
 freeipa_server_ca_mode: external-ca
 freeipa_server_external_cert_files: []          # empty on phase 1 → CSR is emitted
@@ -57,7 +57,7 @@ freeipa_server_no_pkinit: false
 # your org root, and every cert IPA issues chains to it.
 #
 #   ansible-playbook -i inventories/<testenv>/hosts.yml \
-#       playbooks/freeipa_idam.yml --tags install --limit freeipa-central-qa
+#       playbooks/freeipa_iam.yml --tags install --limit freeipa-central-qa
 #
 # Uncomment for phase 2 (paths relative to the inventory, resolved by the installer
 # on the primary — stage them there, or use absolute control-node paths):

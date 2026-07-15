@@ -1,15 +1,15 @@
 ---
-# Native freeipa_idam_* dicts + the OPTIONAL thin RBAC overlay — compiled BY THE ROLE
+# Native freeipa_iam_* dicts + the OPTIONAL thin RBAC overlay — compiled BY THE ROLE
 # (tasks/rbac.yml, inside the desired phase). Declare freeipa_server_rbac_* in group_vars
 # and just run the role; with no overlay vars declared the role runs pure-native.
 #
-#   ansible-playbook -i inventory.yml site.yml --tags idam       # add --check --diff to preview
-- name: FreeIPA IDAM — native dicts + thin RBAC overlay (compiled by the role)
+#   ansible-playbook -i inventory.yml site.yml --tags iam       # add --check --diff to preview
+- name: FreeIPA IAM — native dicts + thin RBAC overlay (compiled by the role)
   hosts: ipaserver
   gather_facts: false
   become: true
 
   roles:
-    # Consumes the native freeipa_idam_* dicts; compiles the overlay itself when
+    # Consumes the native freeipa_iam_* dicts; compiles the overlay itself when
     # freeipa_server_rbac_roles is declared (group_vars/all/10_rbac.yml).
     - role: freeipa_server

@@ -8,7 +8,7 @@
 #   * INDIVIDUAL tokens: {{ tenant }} / {{ local_env }} spliced into each name
 #   * COMPOUND prefixes: {{ ug_prefix }} / {{ hg_prefix }} / {{ hbac_prefix }} — built ONCE
 #     in the header, substituted everywhere (one place to change the whole naming scheme)
-# Plus: freeipa_idam_sudo_commands pulls a WHOLE list in from group_vars
+# Plus: freeipa_iam_sudo_commands pulls a WHOLE list in from group_vars
 # (shared_sudo_commands in group_vars/all/realm.yml) — it stays a native list.
 #
 # `tenant` / `shared` are the only header keys the loader itself consumes (the ownership
@@ -41,7 +41,7 @@ freeipa_server_rbac_roles:
     # (another tenant's name stays literal: it is not derived from THIS file's header).
     members: ["{{ tenant }}.dave", acme.dave]
 
-freeipa_idam_usergroups:
+freeipa_iam_usergroups:
   # individual-token style
   - { name: "{{ tenant }}-admins", description: "{{ tenant }} admins", gidnumber: 1647200509 }
   # compound-prefix style — granular policy groups targeted by the HBAC rules below
@@ -49,25 +49,25 @@ freeipa_idam_usergroups:
   - { name: "{{ ug_prefix }}-docker-operators", description: "Operators on Docker hosts [{{ tenant }}/{{ local_env }}]" }
   - { name: "{{ ug_prefix }}-grafana-readers", description: "Readers on Grafana [{{ tenant }}/{{ local_env }}]" }
 
-freeipa_idam_users:
+freeipa_iam_users:
   - { name: "{{ tenant }}.dave", givenname: Dave, sn: Dunn, email: ["{{ tenant }}.dave@{{ tenant }}.au"], groups: [ipausers, "{{ tenant }}-admins"] }
   - { name: "{{ tenant }}.erin", givenname: Erin, sn: Ellis, email: ["{{ tenant }}.erin@{{ tenant }}.au"], groups: [ipausers] }
 
-freeipa_idam_hostgroups:
+freeipa_iam_hostgroups:
   - { name: "{{ hg_prefix }}-docker-operators", description: "Hosts for Docker [{{ tenant }}/{{ local_env }}]" }
   - { name: "{{ hg_prefix }}-grafana-readers", description: "Hosts for Grafana [{{ tenant }}/{{ local_env }}]" }
 
 # Bundle services (declared realm-wide in global.yml) so one rule grants the whole set.
-freeipa_idam_hbacsvcgroups:
+freeipa_iam_hbacsvcgroups:
   - { name: "{{ tenant }}-remote", description: "Interactive remote login [{{ tenant }}]", hbacsvc: [sshd, xrdp-sesman] }
 
-freeipa_idam_hbac_rules:
+freeipa_iam_hbac_rules:
   # rule name, member group and hostgroup ALL follow the header prefixes — they can never drift apart
   - { name: "{{ hbac_prefix }}-docker-operators", description: "Operators on Docker hosts [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-docker-operators"], hostgroup: ["{{ hg_prefix }}-docker-operators"], service: [sshd, docker] }
   - { name: "{{ hbac_prefix }}-grafana-readers", description: "Readers on Grafana [{{ tenant }}/{{ local_env }}]", usergroup: ["{{ ug_prefix }}-grafana-readers"], hostgroup: ["{{ hg_prefix }}-grafana-readers"], servicegroup: ["{{ tenant }}-remote"] }
 
 # A WHOLE list pulled in from group_vars (group_vars/all/realm.yml) — stays a native list.
-freeipa_idam_sudo_commands: "{{ shared_sudo_commands }}"
+freeipa_iam_sudo_commands: "{{ shared_sudo_commands }}"
 
 freeipa_server_dns_zones:
   - { name: 100.51.198.in-addr.arpa., dynamic_update: true, allow_sync_ptr: false }

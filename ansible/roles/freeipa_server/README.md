@@ -2,17 +2,17 @@
 
 Portable, multi-OS FreeIPA **server** role. Wraps the upstream
 `freeipa.ansible_freeipa` `ipaserver`/`ipareplica` roles for install, and layers
-cold-start resilience, a scheduled backup timer, declarative IDAM
+cold-start resilience, a scheduled backup timer, declarative IAM
 reconciliation, and an opt-in post-install hardening baseline.
 
 Pairs with [`freeipa_client`](../freeipa_client/) for host enrolment.
 
 ## TL;DR
 
-**Most common: reconcile identity (users/groups/HBAC/sudo).** Edit the `freeipa_idam_*` lists (or the per-tenant files), then re-run `--tags idam` — idempotent, primary-only.
+**Most common: reconcile identity (users/groups/HBAC/sudo).** Edit the `freeipa_iam_*` lists (or the per-tenant files), then re-run `--tags iam` — idempotent, primary-only.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags idam
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags iam
 ```
 
 Install is a separate one-time run (no tags does install + everything):
@@ -48,7 +48,7 @@ all:
 
 ```bash
 ansible-playbook -i inventory.yml site.yml            # install + everything
-ansible-playbook -i inventory.yml site.yml -t idam    # later: just reconcile identity
+ansible-playbook -i inventory.yml site.yml -t iam    # later: just reconcile identity
 ```
 
 Add hosts (optionally to a `freeipa_primary` group) to grow into a cluster —
@@ -68,21 +68,21 @@ A no-tag run runs everything except the `never`-tagged ops.
 | `hardening` | Opt-in post-install hardening (primary) |
 | `backup` | Scheduled ipa-backup timer + opt-in controller offload (primary) |
 | `backup_now` | Force an on-demand backup NOW; fails the run on error (primary, `never`; for nightly CI) |
-| `idam` (`users`/`groups`/`hbac`/`sudo`) | Declarative IDAM reconciliation (primary) |
+| `iam` (`users`/`groups`/`hbac`/`sudo`) | Declarative IAM reconciliation (primary) |
 | `dns` | Declarative DNS zones / forward-zones / records (primary, opt-in) |
 | `automember` | Auto group/hostgroup membership rules (primary, opt-in) |
 | `adtrust` (`trust`) | Active Directory trust(s) (primary, opt-in) |
 | `export` | Read-only config snapshot of a live realm (see [Adopt an existing instance](#adopt-an-existing-instance-config-export--snapshot)) |
 | `ca_report` | Read-only probe printing a paste-ready block of the CA topology vars (primary, `never`; see [Certificate Authority](#certificate-authority-ca)) |
 | `restore` | Break-glass restore from a backup (`never`) |
-| `delete` | HARD-DELETE declared IDAM objects (`never`; see [Destructive operations](#destructive-operations)) |
+| `delete` | HARD-DELETE declared IAM objects (`never`; see [Destructive operations](#destructive-operations)) |
 | `prune_preserved` | HARD-DELETE orphaned preserved users (`never`; same section) |
 
 ```bash
-# Re-reconcile IDAM after editing the data
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/freeipa_idam.yml --tags idam
+# Re-reconcile IAM after editing the data
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/freeipa_iam.yml --tags iam
 # Re-apply just resilience
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/freeipa_idam.yml --tags resilience
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/freeipa_iam.yml --tags resilience
 ```
 
 The resilience phase (cold-start recovery timer, ccache cleanup, SSSD self-heal
@@ -142,7 +142,7 @@ file, or `-e`) and **no HashiCorp Vault at all**.
 | Directory Manager password | `freeipa_server_dm_password` | `freeipa_server_vault_secret` : `dm_password` |
 
 `freeipa_server_admin_password` is the **single** admin credential for the *entire* role
-(install, IDAM, reconcile, automember, export, delete — no separate `freeipa_idam_*`
+(install, IAM, reconcile, automember, export, delete — no separate `freeipa_iam_*`
 credential vars). Provide **one** column; the role asserts at least one source exists.
 
 ### Minimum to run each phase
@@ -150,7 +150,7 @@ credential vars). Provide **one** column; the role asserts at least one source e
 | Phase | Minimum vars |
 |---|---|
 | `export` | `freeipa_server_admin_password` **or** `freeipa_server_vault_secret` — nothing else |
-| `idam` | admin password (declared or Vault) + the `freeipa_idam_*` data |
+| `iam` | admin password (declared or Vault) + the `freeipa_iam_*` data |
 | `install` | admin **and** dm password + `freeipa_server_forwarders` (e.g. `[192.0.2.1]`) |
 
 Derived automatically (override only to break convention): `freeipa_server_domain`
@@ -163,7 +163,7 @@ inventory group + `ansible_host`).
 Topology comes from inventory — no code change between sizes:
 
 - **Single server:** one host in the `freeipa` group. It's the primary; the replica path
-  never runs; backup/IDAM/hardening all run on it.
+  never runs; backup/IAM/hardening all run on it.
 - **Cluster:** add hosts to `freeipa` (optionally `freeipa_primary` / `freeipa_replica`
   for clarity). Non-primary hosts enrol as replicas.
 
@@ -212,7 +212,7 @@ Two related knobs (both `""` = upstream default):
 > deriving the mode from the CA cert (issuer==subject + no AIA ⇒ self-signed; else
 > external-ca). See `tasks/ca_report.yml`.
 > ```bash
-> ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags ca_report
+> ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags ca_report
 > ```
 
 ### external-ca is two-phase
@@ -289,7 +289,7 @@ backup`, which a normal run does).
 
 ```bash
 # nightly job — force a backup, fail the pipeline on error
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags backup_now
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags backup_now
 ```
 
 CI — a scheduled pipeline (nightly) so every failure lands on the pipelines dashboard:
@@ -299,7 +299,7 @@ freeipa_backup:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
-    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/freeipa_idam.yml --tags backup_now
+    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/freeipa_iam.yml --tags backup_now
 ```
 
 ## Declarative DNS
@@ -340,7 +340,7 @@ forward zones, and app records.
 ## Automember
 
 Auto-assign users/hosts to a group/hostgroup by attribute regex (target group must already
-exist via IDAM):
+exist via IAM):
 
 ```yaml
 freeipa_server_automember_rules:
@@ -378,29 +378,29 @@ freeipa_server_ad_trusts:
 `_require_otp_groups`, `_disable_allow_all` (guarded — refuses unless a replacement HBAC rule
 exists), `_crypto_policy` (report-only).
 
-## Declarative IDAM provisioning
+## Declarative IAM provisioning
 
 Reconciles a declarative description of identity — users, groups, hostgroups, HBAC, sudo,
 password policies, delegation roles — into a live realm. Primary only (replicas replicate),
-server-side via `ipalib`. Run with `--tags idam`.
+server-side via `ipalib`. Run with `--tags iam`.
 
 ### Native dicts are the source of truth
 
-Everything is declared in native `freeipa_idam_*` lists (`_usergroups`, `_users`, `_hostgroups`,
+Everything is declared in native `freeipa_iam_*` lists (`_usergroups`, `_users`, `_hostgroups`,
 `_hbac_rules`, `_sudo_rules`, `_hbacsvcs`, `_sudo_commands`, `_pwpolicies`, `_iparoles`, …);
 `defaults/main.yml` documents every list + item shape. `--tags export` snapshots a live realm
 into exactly this shape, so you can adopt an existing instance and reapply it idempotently.
 
 ### Per-tenant identity directory (optional front-end)
 
-Instead of one big group_vars file, point **`freeipa_idam_tenants_dir`** (typically
+Instead of one big group_vars file, point **`freeipa_iam_tenants_dir`** (typically
 `"{{ inventory_dir }}/tenants"`) at a directory of per-tenant files. The role reads and flattens
 **all** of them in **one run** — the precondition for a single declarative reconcile that sees
 every tenant at once. Empty = legacy mode (lists directly in group_vars).
 
 Each file is a plain `.yml` of `{tenant, shared?, <object lists>}` and may carry a tenant's
 **whole** config. Use the short key (`users`, `groups`, `hbac_rules`, …) **or** the full
-`freeipa_idam_*`/`freeipa_server_*` var (e.g. straight from an export). Lists concatenate across
+`freeipa_iam_*`/`freeipa_server_*` var (e.g. straight from an export). Lists concatenate across
 files by target var; users/groups are stamped `_owner` + `_shared`. Loaded via a single
 `include_vars`, so a file templates **exactly like any inventory YAML**: a value can reference
 **any other var the file defines** (native self-reference) as well as group_vars, including
@@ -418,7 +418,7 @@ groups:
   - { name: "{{ ug_prefix }}-admins", description: "Acme admins" }   # -> ug-acme-dev-admins
 users:
   - { name: acme.dave, givenname: Dave, sn: Okafor, groups: ["{{ ug_prefix }}-admins"] }
-freeipa_idam_hbac_rules: "{{ shared_hbac_baseline }}"   # pull a whole list from group_vars
+freeipa_iam_hbac_rules: "{{ shared_hbac_baseline }}"   # pull a whole list from group_vars
 dns_records:
   - { zone_name: ipa.example.com., records: [ { record_name: app1, a_record: [10.0.0.20] } ] }
 ```
@@ -446,11 +446,11 @@ policy groups, and user→role-group membership — nothing else. It is compiled
 itself** (`tasks/rbac.yml`, inside the desired phase): declare `freeipa_server_rbac_roles`
 in group_vars and run the role — no playbook `pre_task` needed. With nothing declared it
 no-ops, so a pure-baseline realm runs untouched, and because it compiles **after** the tenant
-load it composes with `freeipa_idam_tenants_dir`. (Compiled objects are merged via `set_fact`,
-so supplying `freeipa_idam_users`/`_usergroups` as extra-vars would bypass the overlay — use
+load it composes with `freeipa_iam_tenants_dir`. (Compiled objects are merged via `set_fact`,
+so supplying `freeipa_iam_users`/`_usergroups` as extra-vars would bypass the overlay — use
 group_vars or tenant files.)
 
-**WYSIWYG**: a flat list with the same visual shape as `freeipa_idam_usergroups` — every name
+**WYSIWYG**: a flat list with the same visual shape as `freeipa_iam_usergroups` — every name
 is used verbatim, no naming templates. Paste policy group names straight from the
 `--tags export` snapshot, zero renaming. Scope (tenant/environment) lives in the names you
 declare — `role-<tenant>-<env>-<name>` is the recommended convention, not code.
@@ -483,9 +483,9 @@ beyond the role; a category takes `all` — or `""` to clear it — and cannot b
 with explicit members on the same axis, which IPA rejects). `usergroup` is rejected, and
 so is `usercategory`: IPA refuses member users/groups alongside `usercategory: all`, and
 every role-scoped rule carries the injected role usergroup — declare an all-users rule in
-baseline `freeipa_idam_hbac_rules` instead (the baseline dicts support all three
+baseline `freeipa_iam_hbac_rules` instead (the baseline dicts support all three
 categories natively).
-Rules merge onto `freeipa_idam_hbac_rules` and go through
+Rules merge onto `freeipa_iam_hbac_rules` and go through
 the same reference validation; a rule name may live under exactly ONE role, and a name
 that is also declared natively is rejected (one place only). `member_of` nesting remains
 the primary model — use `hbac_rules` when a rule genuinely belongs to the role itself
@@ -500,23 +500,23 @@ Declare the overlay in ONE place: tenant files **or** group_vars (a tenant-decla
 replaces the group_vars value).
 The `member_of` target groups **must already exist natively** (the overlay only nests
 onto them). `freeipa_rbac_validate` fails fast — naming the culprit — on a target group
-not declared in `freeipa_idam_usergroups` (the typo trap for pasted names), a member not
-in `freeipa_idam_users`, a duplicate or protected name, an unknown key (`member` vs
+not declared in `freeipa_iam_usergroups` (the typo trap for pasted names), a member not
+in `freeipa_iam_users`, a duplicate or protected name, an unknown key (`member` vs
 `members`; the pre-rename `policy_groups` key gets a rename hint), or a role name that is
 also a `member_of` target (would cycle). The two escape hatches are
 `freeipa_server_rbac_allow_unknown_users` and `freeipa_server_rbac_allow_missing_member_of`.
 
-Don't confuse the overlay with **`freeipa_idam_roles`** (a flat bundle of groups added *directly*
-to a user — no role group, no nesting) or native **`freeipa_idam_iparoles`** (delegation of
+Don't confuse the overlay with **`freeipa_iam_roles`** (a flat bundle of groups added *directly*
+to a user — no role group, no nesting) or native **`freeipa_iam_iparoles`** (delegation of
 IPA-management *privileges*).
 
 ### Delegation building blocks & password policies
 
 For IPA-*management* delegation (helpdesk, self-service tooling) declare the native chain
-`freeipa_idam_permissions` (atomic right) → `freeipa_idam_privileges` (bundle of permissions)
-→ `freeipa_idam_iparoles` (bundle of privileges + members). Per-group password policies go in
-`freeipa_idam_pwpolicies` (`maxlife` in **days**, `minlife` in **hours**), and
-`freeipa_idam_password_expiration_floors` bumps a user's expiry when it drops below a floor
+`freeipa_iam_permissions` (atomic right) → `freeipa_iam_privileges` (bundle of permissions)
+→ `freeipa_iam_iparoles` (bundle of privileges + members). Per-group password policies go in
+`freeipa_iam_pwpolicies` (`maxlife` in **days**, `minlife` in **hours**), and
+`freeipa_iam_password_expiration_floors` bumps a user's expiry when it drops below a floor
 (e.g. keep a bind account from expiring). Shapes in `defaults/main.yml`.
 
 ### Additive by default; one switch that prunes
@@ -527,15 +527,15 @@ Creation is *additive* — `state: present` never deletes. **`freeipa_server_aut
 | Mechanism (when `true`) | Removes | Scoped by |
 |---|---|---|
 | Membership reconcile | members no longer declared in a managed group | the declared, non-protected groups |
-| Group-existence reconcile | groups dropped from `freeipa_idam_usergroups` | container marker (`idam-managed-groups`) |
-| Object reconcile | orphaned `ug-`/`hg-`/`hbac-`/`sudo-`/automember objects | name substring `freeipa_idam_reconcile_scope` (blank ⇒ nothing) |
+| Group-existence reconcile | groups dropped from `freeipa_iam_usergroups` | container marker (`iam-managed-groups`) |
+| Object reconcile | orphaned `ug-`/`hg-`/`hbac-`/`sudo-`/automember objects | name substring `freeipa_iam_reconcile_scope` (blank ⇒ nothing) |
 
 Removed **users** are archived (preserved, recoverable). **Authoritative is realm-scoped** — only
 run it against a *complete* assembled desired state, never a partial tenant file, or it prunes the
 other tenants.
 
 > **The scope marker is a plain SUBSTRING match.** Object reconcile deletes a found object only
-> when `freeipa_idam_reconcile_scope` appears *anywhere inside its name* — no anchoring, no regex,
+> when `freeipa_iam_reconcile_scope` appears *anywhere inside its name* — no anchoring, no regex,
 > no word boundary. Pick a marker that cannot occur in unrelated names: `prod` also matches a
 > hand-made `reproduction-team`; a distinctive prefix like `acme-prod-` is safe. Three guard rails
 > always hold: a **blank** marker deletes nothing (fail-safe), names on the protected lists are
@@ -544,7 +544,7 @@ other tenants.
 > The export carver (`freeipa_server_export_scope`) uses the same substring semantics, so a marker
 > that carves the export cleanly is also a safe reconcile scope.
 
-**`freeipa_idam_reconcile_memberships_only`** (default `false`) is the **safe nightly drift-revoke
+**`freeipa_iam_reconcile_memberships_only`** (default `false`) is the **safe nightly drift-revoke
 mode**: runs the membership reconcile (strips members no longer declared) but **suppresses every
 deletion**. It enables the strip on its own (no `authoritative` needed) and, removing nothing, is
 safe to run per-tenant against a partial file — the right mode for a nightly cron.
@@ -556,17 +556,17 @@ safe to run per-tenant against a partial file — the right mode for a nightly c
 
 ### Account types & state controls
 
-`freeipa_idam_service_accounts` (forced nologin), `_breakglass_accounts` (login-on, auto-protected),
+`freeipa_iam_service_accounts` (forced nologin), `_breakglass_accounts` (login-on, auto-protected),
 `_nologin_accounts` / `_disabled_accounts` (with admin-lockout guards), `_default_user_password`,
 `_group_gids` (deterministic GIDs), `_hbac_rules_disable` (guarded), `_reactivate_preserved`
-(undelete a re-declared archived user). The `idam` phase is fully idempotent.
+(undelete a re-declared archived user). The `iam` phase is fully idempotent.
 
 ### Apply mode: bulk vs per-item
 
 Users, groups, memberships and sudo rules apply as **one bulk module call per type** by
 default — fastest, since every server-side invocation costs a full Python+ipalib
 bootstrap, but silent while a large payload applies. Set
-**`freeipa_idam_per_item_apply: true`** for one call per item: real-time per-item task
+**`freeipa_iam_per_item_apply: true`** for one call per item: real-time per-item task
 output (same payloads, same end state) at per-invocation cost. Useful for watching a big
 first apply or comparing timings; keep bulk for routine runs.
 
@@ -575,7 +575,7 @@ first apply or comparing timings; keep bulk for routine runs.
 Before any change, the role validates the whole data set and reports *all* problems at once.
 Shape/typo errors (missing `name`, a user with no groups/roles, a duplicate user) **always
 hard-fail**. Cross-object *reference* checks (role→group, user→group/role, hbac→service,
-sudo→command) are governed by **`freeipa_idam_reference_validation`**:
+sudo→command) are governed by **`freeipa_iam_reference_validation`**:
 
 | Mode | Behaviour |
 |---|---|
@@ -584,7 +584,7 @@ sudo→command) are governed by **`freeipa_idam_reference_validation`**:
 | `off` | reference checks skipped |
 | `live` | also accept any reference already on the realm (`ipa *-find`; not usable under `--check`) |
 
-Built-ins (`freeipa_idam_builtin_groups`) are always valid targets, so a tenant slice
+Built-ins (`freeipa_iam_builtin_groups`) are always valid targets, so a tenant slice
 never has to redeclare them just to validate.
 
 ## Destructive operations
@@ -595,13 +595,13 @@ Two cases, by increasing severity. **Soft = prune** (recoverable), **hard = dele
 | Case | Gate | What it does |
 |---|---|---|
 | **Prune** (soft) | `freeipa_server_authoritative` | Reconcile: archive undeclared users (recoverable) + delete undeclared objects. See above. |
-| **Delete** (hard) | `freeipa_idam_delete` | Irrecoverable `ipa *-del`. **ONE** gate for all hard-deletes; default off; MOCK/lab realms only. |
+| **Delete** (hard) | `freeipa_iam_delete` | Irrecoverable `ipa *-del`. **ONE** gate for all hard-deletes; default off; MOCK/lab realms only. |
 
-With `freeipa_idam_delete: true`, the `never`-tag picks *which* hard-delete runs — you do **not**
+With `freeipa_iam_delete: true`, the `never`-tag picks *which* hard-delete runs — you do **not**
 set a second boolean per operation. Add `--check` to make any of them a read-only dry-run.
 
 ```bash
-# Hard-delete every object DECLARED in this run's freeipa_idam_* lists (protected excluded)
+# Hard-delete every object DECLARED in this run's freeipa_iam_* lists (protected excluded)
 ansible-playbook ... --tags delete
 
 # Hard-delete ORPHANED preserved users the reconcile archived but no longer declares
@@ -611,8 +611,8 @@ ansible-playbook ... --tags prune_preserved            # apply
 ```
 
 Scope selectors for `--tags prune_preserved` (shield preserved logins from the sweep — not gates):
-`freeipa_idam_prune_preserved_keep` (explicit list, on top of `freeipa_idam_protected_users`) and
-`freeipa_idam_prune_preserved_keep_regex` (default `^svc-` shields service accounts; `""` = none).
+`freeipa_iam_prune_preserved_keep` (explicit list, on top of `freeipa_iam_protected_users`) and
+`freeipa_iam_prune_preserved_keep_regex` (default `^svc-` shields service accounts; `""` = none).
 
 ## Adopt an existing instance (config export / snapshot)
 
@@ -623,11 +623,11 @@ Minimum: an inventory with the IPA host in `freeipa`, and **one** credential sou
 ```bash
 # Option A — no Vault: pass the admin password directly.
 # (Best from an Ansible-Vault file: -e @secrets.yml, so it isn't in shell history.)
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml \
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml \
   --tags export -e freeipa_server_admin_password='<ADMIN_PASSWORD>'
 
 # Option B — fall back to Vault (set freeipa_server_vault_secret in group_vars):
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tags export
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags export
 
 # Either way → writes freeipa.config.snapshot.yml on the control node; move it into an
 # inventory group_vars to reapply.
@@ -635,7 +635,7 @@ ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_idam.yml --tag
 
 Captures realm/domain, users, groups (+ nesting + member-managers), hostgroups, custom HBAC
 services, HBAC rules, sudo commands & rules, password policies, and automember rules into
-`freeipa_idam_*` / `freeipa_server_*` — drop-in and idempotent, **including onto a fresh, empty
+`freeipa_iam_*` / `freeipa_server_*` — drop-in and idempotent, **including onto a fresh, empty
 server** (users and custom HBAC services are created before the rules that reference them, so no
 first-run ordering race).
 
@@ -667,7 +667,7 @@ are **not** migrated (Kerberos keys are realm-salted) — plan a password campai
 
 ### Raw-output parsing drift (after a FreeIPA upgrade)
 
-Several filters in `filter_plugins/freeipa_idam.py` parse the *text* of
+Several filters in `filter_plugins/freeipa_iam.py` parse the *text* of
 `ipa <type>-find --all --raw` with regexes (there is no JSON API on the CLI path). A FreeIPA
 upgrade that reformats that output cannot corrupt the realm — every consumer fails safe — but
 each degrades differently. What you'll see:
@@ -675,15 +675,15 @@ each degrades differently. What you'll see:
 | Symptom | Cause | Severity |
 |---|---|---|
 | Prechecked types (hostgroups, HBAC, sudo, pwpolicy, …) suddenly report **every** entry changed; runs get slower but the end state stays correct | `_parse_raw_entries` no longer recognises entries — the conservative fallback re-includes everything | Performance only — fix at leisure |
-| Run **fails** with `freeipa_idam_evict_payload: … no group entries could be parsed` | The eviction parsing canary: `group-find` output no longer yields `cn:` blocks | Intentional hard stop — eviction would otherwise silently stop enforcing |
+| Run **fails** with `freeipa_iam_evict_payload: … no group entries could be parsed` | The eviction parsing canary: `group-find` output no longer yields `cn:` blocks | Intentional hard stop — eviction would otherwise silently stop enforcing |
 | Run **fails** on `Eviction \| Read current members of all groups` | `ipa group-find` errored — rc >1, **or rc 1 with `ipa: ERROR` on stderr** (expired Kerberos ticket, IPA API down; verified live: ipa returns rc 1 for both zero-matches *and* real errors, so the task also gates on stderr). `no_log` censors the detail — rerun the command manually on the server | Environmental, not a format change |
-| Evictions stop with **no** error and `freeipa_idam_current_managed_users` is `[]` at `-vv` | The `member: uid=…` line format changed — the uid regexes select nothing (canary can't distinguish this from genuinely empty groups) | Silent — explicitly check this one after upgrades |
+| Evictions stop with **no** error and `freeipa_iam_current_managed_users` is `[]` at `-vv` | The `member: uid=…` line format changed — the uid regexes select nothing (canary can't distinguish this from genuinely empty groups) | Silent — explicitly check this one after upgrades |
 
 The drill: run `ipa group-find --all --raw --sizelimit=0` (or the failing type's `*-find`) on
-the server, compare against the regexes in `filter_plugins/freeipa_idam.py`
-(`_RAW_ATTR_RE`, and the `cn:` / `member: uid=` patterns in `freeipa_idam_evict_payload`),
+the server, compare against the regexes in `filter_plugins/freeipa_iam.py`
+(`_RAW_ATTR_RE`, and the `cn:` / `member: uid=` patterns in `freeipa_iam_evict_payload`),
 adjust them, then paste a sample of the **new** output into the RAW fixtures in
-`ansible/tests/unit/roles/test_freeipa_idam_filters.py` so the fix is pinned —
+`ansible/tests/unit/roles/test_freeipa_iam_filters.py` so the fix is pinned —
 `pytest ansible/tests/unit -q` runs in CI.
 
 ## See also

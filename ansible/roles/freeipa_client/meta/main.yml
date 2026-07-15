@@ -21,7 +21,7 @@ galaxy_info:
   galaxy_tags:
     - freeipa
     - identity
-    - idam
+    - iam
     - kerberos
     - sssd
 

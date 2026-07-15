@@ -1,10 +1,10 @@
 ---
-# health_check.yml — Ensure all FreeIPA services are running before IDAM operations.
+# health_check.yml — Ensure all FreeIPA services are running before IAM operations.
 #
 # Problem: After extended downtime or cold starts, `ipactl start` can time out
 # waiting for Directory Service (389-ds), leaving dependent services (krb5kdc,
 # kadmin, named, httpd, ipa-custodia, pki-tomcatd, ipa-otpd, ipa-dnskeysyncd)
-# stopped. IDAM operations (user/group/HBAC management) require a fully healthy
+# stopped. IAM operations (user/group/HBAC management) require a fully healthy
 # FreeIPA stack.
 #
 # Approach: Check `ipactl status`, and if any services are STOPPED, start them

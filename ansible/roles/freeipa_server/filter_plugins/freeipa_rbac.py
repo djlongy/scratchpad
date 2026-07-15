@@ -3,7 +3,7 @@
 
 A THIN, PURELY OPTIONAL overlay. It lets a human assign users to an abstract ROLE
 instead of hand-adding them to many granular target groups. It compiles INTO the
-role's native ``freeipa_idam_usergroups`` / ``freeipa_idam_users`` lists and
+role's native ``freeipa_iam_usergroups`` / ``freeipa_iam_users`` lists and
 generates ONLY:
 
   * the role group itself (a plain usergroup, name declared literally)
@@ -28,7 +28,7 @@ invented — they must already exist natively (that is where the HBAC/sudo point
 the overlay only adds the role-group nesting onto them.
 
 Input var (role-prefixed per ansible-lint var-naming) — a flat LIST with the same
-visual shape as ``freeipa_idam_usergroups``:
+visual shape as ``freeipa_iam_usergroups``:
 
   freeipa_server_rbac_roles:
     - name: role-acme-prod-platform-admin      # the role group, exactly as created
@@ -76,7 +76,7 @@ ALLOWED_KEYS = frozenset({"name", "description", "member_of", "members", "hbac_r
 # hostcategory/servicecategory pass through to ipahbacrule (value "all" opens that
 # axis; "" clears it). usercategory is FORBIDDEN too: IPA rejects member users/groups
 # alongside usercategory=all, and every role-scoped rule carries the injected role
-# usergroup — an all-users rule belongs in baseline freeipa_idam_hbac_rules instead.
+# usergroup — an all-users rule belongs in baseline freeipa_iam_hbac_rules instead.
 HBAC_RULE_KEYS = frozenset({"name", "description", "hostgroup", "host", "user",
                             "service", "servicegroup", "state",
                             "hostcategory", "servicecategory"})
@@ -98,7 +98,7 @@ def _iter_roles(roles):
         raise AnsibleFilterError(
             "freeipa_server_rbac_roles is now a flat LIST (WYSIWYG — one entry per role "
             "group with its literal name, member_of and members, same shape as "
-            "freeipa_idam_usergroups). The nested tenant→environment tree was removed; "
+            "freeipa_iam_usergroups). The nested tenant→environment tree was removed; "
             "migrate per the role README.")
     if not isinstance(roles, (list, tuple)):
         raise AnsibleFilterError(
@@ -187,7 +187,7 @@ def _nest_into_member_of(out, order, role, entry):
 # ── filter 2: user -> role-group membership (as native user `groups` additions) ──
 def freeipa_rbac_memberships(roles):
     """``[{name: <user>, groups: [<role>, ...]}]`` — the role groups each user joins,
-    shaped as additions to the native ``freeipa_idam_users`` entries (merge with
+    shaped as additions to the native ``freeipa_iam_users`` entries (merge with
     union_fields=['groups']). Derived from each role's ``members`` list, so granting
     a role is a one-line diff on the role entry — the user's own ``groups:`` list is
     never touched."""
@@ -213,7 +213,7 @@ def _unknown_key_hint(unknown):
         return (" (usercategory is incompatible with a role-scoped rule: IPA "
                 "rejects member users/groups alongside usercategory=all, and "
                 "the compiler injects the role usergroup — declare an all-users "
-                "rule in baseline freeipa_idam_hbac_rules instead)")
+                "rule in baseline freeipa_iam_hbac_rules instead)")
     return ""
 
 
@@ -289,7 +289,7 @@ def _validate_role(name, entry, native_names, known_users, allow):
             f"role group '{name}' collides with a protected FreeIPA built-in")
     if name in native_names:
         raise AnsibleFilterError(
-            f"role group '{name}' is also declared in freeipa_idam_usergroups — the "
+            f"role group '{name}' is also declared in freeipa_iam_usergroups — the "
             f"overlay owns the role group; declare it in exactly one place")
     member_of = set()
     for ug in _string_list(entry.get("member_of"), f"role '{name}'", required=True):
@@ -299,13 +299,13 @@ def _validate_role(name, entry, native_names, known_users, allow):
         if not allow["missing_member_of"] and ug not in native_names:
             raise AnsibleFilterError(
                 f"role '{name}' is member_of group '{ug}', which is not declared "
-                f"in freeipa_idam_usergroups. Paste/declare it (with its HBAC/sudo) "
+                f"in freeipa_iam_usergroups. Paste/declare it (with its HBAC/sudo) "
                 f"natively first, or set allow_missing_member_of.")
         member_of.add(ug)
     for user in _string_list(entry.get("members"), f"role '{name}' members"):
         if not allow["unknown_users"] and known_users and user not in known_users:
             raise AnsibleFilterError(
-                f"role '{name}' member '{user}' is not in freeipa_idam_users "
+                f"role '{name}' member '{user}' is not in freeipa_iam_users "
                 f"(set allow_unknown_users to permit)")
     return member_of
 
@@ -332,7 +332,7 @@ def freeipa_rbac_validate(roles, native_usergroups=None, native_users=None,
             if rule_name in native_rules:
                 raise AnsibleFilterError(
                     f"role '{name}' hbac rule '{rule_name}' is also declared in "
-                    f"freeipa_idam_hbac_rules — the overlay owns its role-scoped "
+                    f"freeipa_iam_hbac_rules — the overlay owns its role-scoped "
                     f"rules; declare it in exactly one place")
     clash = role_names & target_names
     if clash:
