@@ -28,6 +28,7 @@ set -uo pipefail
 IPA_CA="/etc/ipa/ca.crt"
 NSSDB=""
 FILES=()
+CA_MODE=""   # set authoritatively from a signing cert if one is inspected
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,7 +40,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ ${#FILES[@]} -gt 0 ]] || { echo "ERROR: pass at least one .p12 file (see --help)"; exit 2; }
+[[ ${#FILES[@]} -gt 0 || -n "$NSSDB" ]] || { echo "ERROR: pass at least one .p12 file, or --nssdb PATH (see --help)"; exit 2; }
 for bin in pk12util certutil openssl; do
   command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: '$bin' not found (dnf install nss-tools openssl)"; exit 2; }
 done
@@ -62,8 +63,10 @@ read_pw_file(){
   local prompt="$1" envvar="${2:-}" pwf="$WORK/pw.$RANDOM" pw=""
   if [[ -n "$envvar" && -n "${!envvar:-}" ]]; then
     pw="${!envvar}"
-  else
+  elif { : </dev/tty; } 2>/dev/null; then   # /dev/tty openable (interactive)?
     read -rs -p "$prompt" pw </dev/tty; echo >&2
+  else
+    pw=""   # no usable tty (SSH/automation) and no env var — leave blank rather than erroring
   fi
   printf '%s' "$pw" > "$pwf"; unset pw
   printf '%s' "$pwf"
@@ -131,6 +134,34 @@ inspect_p12(){
       echo "          issuer: $iss"
       echo "          ${bc:-CA:?}   $( [[ "$bc" == "CA:TRUE" ]] && echo '(a CA)' || echo '(leaf/client)' )   EKU: ${eku:-none}"
     done
+
+    # AUTHORITATIVE CA mode — read the SIGNING cert's own subject vs issuer (not a bundle).
+    # Definitive answer to "self-signed vs external-ca"; overrides the /etc/ipa/ca.crt reading.
+    if [[ "$has_ca" -gt 0 ]]; then
+      local scS="" scI="" cc s bcc
+      for cc in "$WORK"/c-*.pem; do
+        [[ -f "$cc" ]] || continue
+        openssl x509 -in "$cc" -noout >/dev/null 2>&1 || continue
+        bcc=$(openssl x509 -in "$cc" -noout -ext basicConstraints 2>/dev/null | grep -io 'CA:TRUE')
+        [[ "$bcc" == "CA:TRUE" ]] || continue
+        s=$(openssl x509 -in "$cc" -noout -subject 2>/dev/null | sed 's/^subject= *//')
+        echo "$s" | grep -qi 'Certificate Authority' || continue
+        scS="$s"; scI=$(openssl x509 -in "$cc" -noout -issuer 2>/dev/null | sed 's/^issuer= *//'); break
+      done
+      if [[ -n "$scS" ]]; then
+        sub; echo "  CA MODE (AUTHORITATIVE — from the signing cert itself, not a bundle):"
+        if [[ "$(printf %s "$scS" | tr -d ' ')" == "$(printf %s "$scI" | tr -d ' ')" ]]; then
+          echo "    SELF-SIGNED ROOT  (subject == issuer) — this CA is its own root."
+          CA_MODE="self-signed"
+        else
+          echo "    EXTERNAL-CA SUB-CA  (subject != issuer)."
+          echo "      signed by (root/intermediate): $scI"
+          echo "      -> sign your sibling TEST CA's CSR with THAT issuer."
+          CA_MODE="external-ca"
+        fi
+        echo "      (Definitive. If the /etc/ipa/ca.crt section below disagrees, trust THIS line.)"
+      fi
+    fi
   else
     echo "      (could not extract certs with openssl — use pk12util list above)"
   fi
@@ -139,29 +170,43 @@ inspect_p12(){
 # ---- inspect each p12 ----
 for f in "${FILES[@]}"; do inspect_p12 "$f"; done
 
-# ---- prod CA chain level: the fact that decides the test-CA plan ----
+# ---- /etc/ipa/ca.crt trust bundle — SECONDARY cross-check only ----
+# A bundle can hold just an anchor, be stale, or belong to a different box, so it can
+# read "self-signed" even when the real signing cert is external. If a signing cert was
+# inspected above, THAT (CA_MODE) is authoritative; this is only a cross-check.
 line
 if [[ -r "$IPA_CA" ]]; then
-  echo "PROD CA CHAIN  ($IPA_CA)"
+  echo "TRUST BUNDLE  ($IPA_CA)   [secondary — the CA MODE line above is authoritative]"
   openssl crl2pkcs7 -nocrl -certfile "$IPA_CA" 2>/dev/null | openssl pkcs7 -print_certs -noout 2>/dev/null > "$WORK/chain.txt" || true
   cat "$WORK/chain.txt"
   n=$(grep -c '^subject=' "$WORK/chain.txt")
-  # self-signed if any cert's subject == issuer
   selfsigned=$(paste <(grep '^subject=' "$WORK/chain.txt" | sed 's/^subject= *//') \
                      <(grep '^issuer='  "$WORK/chain.txt" | sed 's/^issuer= *//') \
                | awk -F'\t' '$1==$2{print "yes"}' | head -1)
   sub
+  bundle=""
   if [[ "$n" -ge 2 ]]; then
-    echo "  VERDICT: prod CA is a SUB-CA. Its Issuer (the cert above it) is the ROOT/INTERMEDIATE"
-    echo "           that must sign your sibling TEST CA (external-ca). Grab THAT signer, not the Dogtag key."
+    bundle="sub-CA"
+    echo "  bundle shows: a SUB-CA + its issuer (root/intermediate) — external-ca."
   elif [[ "$selfsigned" == "yes" ]]; then
-    echo "  VERDICT: prod CA is a SELF-SIGNED ROOT (no parent). A sibling test CA would be signed by"
-    echo "           this same root key — different plan; tell your agent this result."
+    bundle="self-signed"
+    echo "  bundle shows: a single SELF-SIGNED cert."
   else
-    echo "  VERDICT: could not classify — paste the lines above."
+    echo "  bundle: could not classify from these lines."
+  fi
+  if [[ -n "$CA_MODE" ]]; then
+    echo "  AUTHORITATIVE (from the signing cert) = $CA_MODE."
+    if { [[ "$CA_MODE" == "external-ca" && "$bundle" == "self-signed" ]] || \
+         [[ "$CA_MODE" == "self-signed" && "$bundle" == "sub-CA" ]]; }; then
+      echo "  ⚠ bundle DISAGREES with the signing cert — trust the signing cert ($CA_MODE)."
+      echo "    (This ca.crt is a bundle/anchor or from a different host; not the CA identity.)"
+    fi
+  else
+    echo "  (No signing cert was inspected, so this bundle is the only signal — for a definitive"
+    echo "   answer, run with the cacert.p12 that holds caSigningCert, or --nssdb.)"
   fi
 else
-  echo "PROD CA CHAIN: $IPA_CA not readable (run on the FreeIPA server, or pass --ipa-ca PATH)"
+  echo "TRUST BUNDLE: $IPA_CA not readable (pass --ipa-ca PATH, or rely on the CA MODE line above)"
 fi
 
 # ---- optional: confirm live CA private keys in the running NSS DB ----
@@ -171,8 +216,13 @@ if [[ -n "$NSSDB" ]]; then
     echo "  !! not a directory (need root; typical: /var/lib/pki/pki-tomcat/alias)"
   else
     pwf=""
-    if [[ -r "$NSSDB/../conf/password.conf" ]]; then
-      # Dogtag stores the internal token pw here; extract 'internal=' value into a temp pw file
+    # Dogtag stores the NSS token password either as a raw one-liner (conf/pwdfile.txt) or
+    # as internal=<pw> in conf/password.conf. Try both (need root to read them).
+    if [[ -r "$NSSDB/../conf/pwdfile.txt" ]]; then
+      pwf="$NSSDB/../conf/pwdfile.txt"
+    elif [[ -r "$NSSDB/pwdfile.txt" ]]; then
+      pwf="$NSSDB/pwdfile.txt"
+    elif [[ -r "$NSSDB/../conf/password.conf" ]]; then
       awk -F= '/^internal=/{sub(/^internal=/,""); print; exit}' "$NSSDB/../conf/password.conf" > "$WORK/nsspw" 2>/dev/null && pwf="$WORK/nsspw"
     fi
     if [[ -z "$pwf" ]]; then
@@ -180,8 +230,24 @@ if [[ -n "$NSSDB" ]]; then
     fi
     echo "  Private keys in the live CA database (certutil -K):"
     certutil -K -d "$NSSDB" -f "$pwf" 2>/dev/null | sed 's/^/    /' || echo "    (could not read — wrong password / need sudo)"
-    rm -f "$WORK/nsspw"
     echo "  Any line above ending 'caSigningCert cert-pki-ca' proves the live signing key is present."
+    rm -f "$WORK/nsspw"
+    # AUTHORITATIVE CA mode straight from the live signing cert (definitive, no bundle involved)
+    sub; echo "  CA MODE (AUTHORITATIVE — live caSigningCert subject vs issuer):"
+    if certutil -L -d "$NSSDB" -n 'caSigningCert cert-pki-ca' >"$WORK/sc.txt" 2>/dev/null; then
+      scs=$(grep -m1 'Subject: ' "$WORK/sc.txt" | sed 's/.*Subject: *//; s/^"//; s/"$//')
+      sci=$(grep -m1 'Issuer: '  "$WORK/sc.txt" | sed 's/.*Issuer: *//; s/^"//; s/"$//')
+      echo "    Subject: $scs"
+      echo "    Issuer : $sci"
+      if [[ "$(printf %s "$scs" | tr -d ' ')" == "$(printf %s "$sci" | tr -d ' ')" ]]; then
+        echo "    => SELF-SIGNED ROOT."
+      else
+        echo "    => EXTERNAL-CA SUB-CA. Signed by: $sci"
+        echo "       (that issuer is the root/intermediate that signs your sibling test CA)."
+      fi
+    else
+      echo "    (could not read caSigningCert — wrong password / need sudo)"
+    fi
   fi
 fi
 line

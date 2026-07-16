@@ -48,12 +48,24 @@ grep -q "CONTAINS the CA SIGNING key" out1.txt && ok "cacert.p12 -> signing-key 
 grep -q "caSigningCert cert-pki-ca" out1.txt && ok "detected caSigningCert friendly name (pk12util)" || no "caSigningCert name"
 grep -q "CLIENT / AGENT identity" out1.txt && ok "ca-agent.p12 -> client verdict" || no "agent verdict"
 grep -qi "CA:FALSE" out1.txt && ok "agent cert classified CA:FALSE" || no "agent CA:FALSE"
-grep -q "prod CA is a SUB-CA" out1.txt && ok "chain -> sub-CA verdict" || no "sub-CA verdict"
 grep -qi "Test Root CA" out1.txt && ok "chain names the root signer" || no "root signer shown"
+# authoritative CA-mode read from the signing cert itself (the definitive verdict)
+grep -q "EXTERNAL-CA SUB-CA" out1.txt && ok "authoritative CA MODE = external-ca (from signing cert)" || no "authoritative external-ca"
+grep -Eq "AUTHORITATIVE .*= external-ca|= external-ca\." out1.txt && ok "bundle section reconciles to external-ca" || no "reconcile external-ca"
 
-echo "### run 2: self-signed chain"
-P12PASS=$PW bash "$VALIDATOR" --ipa-ca chain-selfsigned.crt cacert.p12 > out2.txt 2>&1 || true
-grep -q "SELF-SIGNED ROOT" out2.txt && ok "self-signed chain verdict" || no "self-signed verdict"
+echo "### run 2: self-signed chain + self-signed cacert-style p12"
+# a self-signed CA p12 -> authoritative CA MODE must say self-signed
+openssl req -x509 -newkey rsa:2048 -nodes -keyout ss.key -out ss.crt -days 3 \
+  -subj "/O=SS.REALM/CN=Certificate Authority" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1
+openssl pkcs12 -export -legacy -inkey ss.key -in ss.crt -name "caSigningCert cert-pki-ca" -passout pass:$PW -out ss-cacert.p12 >/dev/null 2>&1
+P12PASS=$PW bash "$VALIDATOR" --ipa-ca chain-selfsigned.crt ss-cacert.p12 > out2.txt 2>&1 || true
+grep -q "SELF-SIGNED ROOT" out2.txt && ok "authoritative CA MODE = self-signed" || no "self-signed verdict"
+
+echo "### run 2b: DISAGREEMENT — external signing cert vs self-signed bundle (the user's case)"
+P12PASS=$PW bash "$VALIDATOR" --ipa-ca chain-selfsigned.crt cacert.p12 > out2b.txt 2>&1 || true
+grep -q "EXTERNAL-CA SUB-CA" out2b.txt && ok "signing cert wins: external-ca" || no "signing cert external"
+grep -q "bundle DISAGREES" out2b.txt && ok "flags bundle/signing-cert disagreement" || no "disagreement flagged"
 
 echo "### run 3: REAL Dogtag export (if this box runs pki-tomcat CA)"
 ALIAS=/var/lib/pki/pki-tomcat/alias

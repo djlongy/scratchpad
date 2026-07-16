@@ -79,10 +79,17 @@ Options: `--ipa-ca PATH` (default `/etc/ipa/ca.crt`), `--nssdb PATH`, `-h`.
   listing keys incl. `caSigningCert cert-pki-ca`.
 - **`ca-agent.p12`** → `VERDICT: This is a CLIENT / AGENT identity … cannot sign`,
   with the agent cert shown as `CA:FALSE … EKU: Client Authentication`.
-- **PROD CA CHAIN** → the deciding fact:
-  - `prod CA is a SUB-CA` + the Issuer line = you have an **external-signed** CA; that Issuer
-    is your **root/intermediate** (the signer for a sibling test CA). → **Case X** below.
-  - `prod CA is a SELF-SIGNED ROOT` → the CA *is* the root. → **Case Y** below.
+- **CA MODE (AUTHORITATIVE)** → the deciding fact, read from the `caSigningCert` itself (via the
+  `cacert.p12` or `--nssdb`):
+  - `EXTERNAL-CA SUB-CA` + the "signed by" line = the Issuer is your **root/intermediate**, the
+    signer for a sibling test CA. → **Case X** below.
+  - `SELF-SIGNED ROOT` → the CA *is* the root. → **Case Y** below.
+- **TRUST BUNDLE (`/etc/ipa/ca.crt`)** is shown as a **secondary cross-check only**. It can read
+  "self-signed" even on an external-ca server, because that file often publishes the **external
+  root** (which is self-signed — all roots are), *not* the IPA CA. If the bundle disagrees with
+  the CA MODE line, the tool flags it — **trust the CA MODE line** (it reads the actual signing
+  cert). The fastest definitive check needs no P12:
+  `sudo ./validate-freeipa-p12.sh --nssdb /var/lib/pki/pki-tomcat/alias`
 
 ## 4. How to proceed (decision tree)
 
@@ -98,6 +105,9 @@ Trusted Root CA
 
 Benefits: endpoints already trust the root, prod & test stay isolated, no shared keys, no
 serial/CRL conflicts, a test compromise can't touch prod trust.
+
+**→ Full step-by-step for standing up the test realm is in [`SIGNING.md`](./SIGNING.md)** (both
+the sibling path and the pragmatic "sign with the CA you have" path).
 
 **The one dependency:** you need to *sign the test CA's CSR with that root/intermediate* —
 either you hold its private key, or corporate/offline PKI signs the CSR for you (no key
