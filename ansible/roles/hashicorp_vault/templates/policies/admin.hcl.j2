@@ -1,0 +1,17 @@
+{{ ansible_managed | comment }}
+# Vault admin — full CRUD on the configured KV mounts plus auth / policy / mount
+# / identity management. Env-agnostic: the KV mounts come from
+# hashicorp_vault_admin_kv_mounts.
+{% for m in hashicorp_vault_admin_kv_mounts %}
+path "{{ m }}/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+{% endfor %}
+
+path "sys/auth/*"          { capabilities = ["create", "read", "update", "delete", "sudo"] }
+path "sys/auth"            { capabilities = ["read"] }
+path "sys/policies/acl/*"  { capabilities = ["create", "read", "update", "delete", "list"] }
+path "sys/mounts/*"        { capabilities = ["create", "read", "update", "delete", "sudo"] }
+path "sys/mounts"          { capabilities = ["read"] }
+path "identity/*"          { capabilities = ["create", "read", "update", "delete", "list"] }
+path "auth/*"              { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }

@@ -1,0 +1,162 @@
+---
+# Preflight — validate prerequisites and derive the scaling topology.
+# Tagged `always` (via main.yml) so the derived facts exist for every phase,
+# even when the caller runs a single tag like --tags deploy.
+
+- name: "Assert at least one cluster node is defined"
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_nodes | length > 0
+    fail_msg: >-
+      hashicorp_vault_nodes is empty. It defaults to the play's hosts; target the
+      Vault host(s) or pin hashicorp_vault_nodes in inventory.
+    quiet: true
+
+- name: "Derive cluster topology facts"
+  ansible.builtin.set_fact:
+    hashicorp_vault_node_count: "{{ hashicorp_vault_nodes | length }}"
+    hashicorp_vault_is_ha: "{{ (hashicorp_vault_nodes | length | int) > 1 }}"
+    hashicorp_vault_first_node: "{{ hashicorp_vault_nodes | first }}"
+    hashicorp_vault_scheme: "{{ 'https' if (hashicorp_vault_tls_enabled | bool) else 'http' }}"
+
+# Raft tolerates the loss of (N-1)/2 nodes: quorum = floor(N/2)+1. Only ODD
+# counts give real fault tolerance — an EVEN count (esp. 2) has NONE, because
+# quorum then needs every-but-none of the nodes (2-node quorum = 2, so a single
+# failure loses quorum and Vault stops serving writes). Standalone (1) is the
+# sanctioned single-node case. So the only valid topologies are 1, 3, 5, 7…
+# (all odd). This guard also catches a scale-DOWN that would land on an even
+# count — grow/shrink 1<->3 directly, never pause on 2.
+- name: "Assert a valid Raft topology (standalone or an ODD HA count)"
+  ansible.builtin.assert:
+    that:
+      - (hashicorp_vault_node_count | int) is odd
+    fail_msg: >-
+      hashicorp_vault_nodes resolves to {{ hashicorp_vault_node_count }} node(s) — not a safe
+      Raft topology. Use 1 (standalone) or an ODD number >= 3 (3, 5, 7…). An even
+      count has no fault tolerance: quorum = floor(N/2)+1, so one failure at N=2
+      halts writes. If this is a --limit run, hashicorp_vault_nodes may have collapsed
+      to a subset — target the whole group or pin hashicorp_vault_nodes explicitly.
+    success_msg: "Topology OK: {{ hashicorp_vault_node_count }} node(s) (odd)."
+    quiet: true
+
+# tenant is OPTIONAL. With a tenant the mount is kv-<tenant>-<env>; without one it
+# collapses to a plain kv-<env> (single-tenant/shared estate). Either way the names
+# must be hyphen-free: a hyphen makes kv-<tenant>-<env> ambiguous (kv-a-b-c = tenant
+# a-b/env c OR tenant a/env b-c) and breaks the kv-<tenant>-* admin glob. env is
+# required; tenant may be empty/omitted (the '*' allows the empty string).
+- name: "Assert tenant and env names are hyphen-free (kv-<tenant>-<env> mount safety)"
+  ansible.builtin.assert:
+    that:
+      - (item.tenant | default('')) is match('[a-z0-9]*$')
+      - item.env | default('') is match('[a-z0-9]+$')
+    fail_msg: >-
+      Tenant/env '{{ item.tenant | default('') }}/{{ item.env | default('') }}' is
+      invalid. env is required and both must be hyphen-free ([a-z0-9]) — the KV mount
+      is {{ hashicorp_vault_kv_mount_prefix }}-[<tenant>-]<env> and a hyphen makes it
+      ambiguous / breaks the kv-<tenant>-* admin glob.
+    quiet: true
+  loop: "{{ hashicorp_vault_tenants }}"
+  loop_control:
+    label: "{{ item.tenant | default('(none)') }}-{{ item.env | default('?') }}"
+  when: hashicorp_vault_manage_policies | bool
+  run_once: true
+
+# Centralised mount/policy/group naming so a tenant is optional in ONE place. Each
+# slot carries the derived mount (kv-<tenant>-<env> or kv-<env>), policy name
+# (<tenant>-<env> or <env>) and LDAP group (the group pattern with {tenant}-
+# elided when tenantless). policies.yml / ldap.yml / tenant.hcl.j2 all read these,
+# never rebuild the conditional. Reset first — a set_fact accumulator persists
+# across plays and would otherwise leak into a second role invocation in one run.
+- name: "Reset the tenant-slot accumulator"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_tenant_slots: []
+  run_once: true
+  when: (hashicorp_vault_manage_policies | bool) or (hashicorp_vault_ldap_enabled | bool)
+
+- name: "Derive a mount/policy/group slot per tenant (tenant optional -> kv-<env>)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_tenant_slots: >-
+      {{ _hashicorp_vault_tenant_slots + [{
+           'env': item.env,
+           'tenant': item.tenant | default(''),
+           'mount': hashicorp_vault_kv_mount_prefix ~ '-'
+                    ~ ((item.tenant ~ '-') if (item.tenant | default('')) else '') ~ item.env,
+           'policy': ((item.tenant ~ '-') if (item.tenant | default('')) else '') ~ item.env,
+           'group': hashicorp_vault_ldap_group_pattern
+                    | replace('{tenant}-', ((item.tenant ~ '-') if (item.tenant | default('')) else ''))
+                    | replace('-{tenant}', (('-' ~ item.tenant) if (item.tenant | default('')) else ''))
+                    | replace('{tenant}', item.tenant | default(''))
+                    | replace('{env}', item.env)
+      }] }}
+  loop: "{{ hashicorp_vault_tenants }}"
+  loop_control:
+    label: "{{ item.tenant | default('(none)') }}-{{ item.env }}"
+  run_once: true
+  when: (hashicorp_vault_manage_policies | bool) or (hashicorp_vault_ldap_enabled | bool)
+
+# Tenant-WIDE opt-in: a tenant entry with `wide: true` also gets a tenant-scoped
+# policy "<tenant>" granting kv-<tenant>-* (ALL its envs). Collect the UNIQUE
+# tenants that opted in (a tenant may appear in several {tenant,env} rows). Safe vs
+# the glob-leak because tenant names are hyphen-free (asserted above).
+- name: "Derive the tenant-wide policy set (opt-in via wide: true)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_wide_tenants: >-
+      {{ hashicorp_vault_tenants
+         | selectattr('wide', 'defined') | selectattr('wide', 'equalto', true)
+         | map(attribute='tenant') | reject('equalto', '') | unique | list }}
+  run_once: true
+  when: hashicorp_vault_manage_policies | bool
+
+- name: "Announce resolved topology"
+  ansible.builtin.debug:
+    msg: >-
+      hashicorp_vault: {{ hashicorp_vault_node_count }} node(s) ->
+      {{ 'Raft HA' if (hashicorp_vault_is_ha | bool) else 'standalone (single server)' }};
+      first node = {{ hashicorp_vault_first_node }}; scheme = {{ hashicorp_vault_scheme }}
+  run_once: true
+
+- name: "WARN if the play looks limited (topology may be collapsed)"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: ansible_limit is set ({{ ansible_limit }}). hashicorp_vault_nodes
+      defaults to the play's hosts, so a --limit run can silently derive a
+      smaller/standalone topology than the real cluster. Pin hashicorp_vault_nodes
+      explicitly in inventory if this run should still see the full cluster.
+  run_once: true
+  when: ansible_limit is defined
+
+- name: "Check the data mount is a real mountpoint"
+  ansible.builtin.command:
+    cmd: "findmnt --noheadings --output TARGET --target {{ hashicorp_vault_data_mount }}"
+  register: _hashicorp_vault_findmnt
+  changed_when: false
+  failed_when: false
+
+- name: "Assert the second disk is mounted at the data mount"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_findmnt.rc == 0
+      - (_hashicorp_vault_findmnt.stdout | trim) == hashicorp_vault_data_mount
+    fail_msg: >-
+      {{ hashicorp_vault_data_mount }} is not a dedicated mountpoint (findmnt ->
+      '{{ _hashicorp_vault_findmnt.stdout | trim }}'). Provision + mount the second
+      disk there first (e.g. via the `storage` role), or set
+      hashicorp_vault_require_mounted=false to bypass this guard.
+    quiet: true
+  when: hashicorp_vault_require_mounted | bool
+
+- name: "Check Docker Compose is available on the host"
+  ansible.builtin.command:
+    cmd: "docker compose version"
+  register: _hashicorp_vault_compose_check
+  changed_when: false
+  failed_when: false
+
+- name: "Assert Docker + Compose plugin are installed"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_compose_check.rc == 0
+    fail_msg: >-
+      `docker compose` is not available. Install the Docker engine + compose
+      plugin before this role (e.g. compose the `docker` role ahead of it).
+    quiet: true

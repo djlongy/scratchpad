@@ -1,0 +1,139 @@
+---
+# LDAP — enable + configure the LDAP auth method (FreeIPA here), then map groups
+# to policies. Tenant groups (vault-<tenant>-<env>) map to [default, <tenant>-<env>]
+# automatically; add non-tenant groups via hashicorp_vault_ldap_extra_groups.
+# All writes go via docker exec on the first node (root token in env, forwarded
+# to the leader). The bind password is read declared-var-first, Vault as fallback
+# (ADR-0011), and passed to Vault over stdin so it never hits argv.
+
+- name: "LDAP | Resolve the bind password (declared var first, Vault fallback)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_ldap_bindpass: >-
+      {{ hashicorp_vault_ldap_bindpass
+         if (hashicorp_vault_ldap_bindpass | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret=' + hashicorp_vault_ldap_bindpass_vault_path) }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: "LDAP | Assert the bind password resolved"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_ldap_bindpass | length > 0
+    fail_msg: "LDAP bind password is empty — set hashicorp_vault_ldap_bindpass or _bindpass_vault_path."
+    quiet: true
+  run_once: true
+
+- name: "LDAP | Read the root token from the first node"
+  become: true  # root: reads the root-owned root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_ldap_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "LDAP | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_ldap_token: "{{ _hashicorp_vault_ldap_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "LDAP | List enabled auth methods"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+  register: _hashicorp_vault_auth_list
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "LDAP | Enable the LDAP auth method"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable ldap"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+  when: "'ldap/' not in (_hashicorp_vault_auth_list.stdout | from_json).keys()"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "LDAP | Configure the LDAP auth method"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write auth/ldap/config
+      url={{ hashicorp_vault_ldap_url }}
+      binddn={{ hashicorp_vault_ldap_binddn }}
+      bindpass=-
+      userdn={{ hashicorp_vault_ldap_userdn }}
+      userattr={{ hashicorp_vault_ldap_userattr }}
+      groupdn={{ hashicorp_vault_ldap_groupdn }}
+      groupattr={{ hashicorp_vault_ldap_groupattr }}
+      groupfilter={{ hashicorp_vault_ldap_groupfilter }}
+      starttls={{ hashicorp_vault_ldap_starttls | bool | lower }}
+      insecure_tls={{ hashicorp_vault_ldap_insecure_tls | bool | lower }}
+    stdin: "{{ _hashicorp_vault_ldap_bindpass }}"
+    # CRITICAL: without this, Ansible appends a trailing newline to stdin, so the
+    # bindpass becomes "<pass>\n" and the admin bind fails err=49 (invalid
+    # credentials) -> every LDAP login fails "failed to bind as user".
+    stdin_add_newline: false
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "LDAP | Map each tenant's LDAP group to its policy"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write
+      auth/ldap/groups/{{ item.group }}
+      policies=default,{{ item.policy }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+  loop: "{{ _hashicorp_vault_tenant_slots }}"
+  loop_control:
+    label: "{{ item.group }} -> {{ item.policy }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "LDAP | Map extra (non-tenant) LDAP groups"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write
+      auth/ldap/groups/{{ item.ldap_group }} policies={{ item.policies | join(',') }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+  loop: "{{ hashicorp_vault_ldap_extra_groups }}"
+  loop_control:
+    label: "{{ item.ldap_group }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Per-user authorisation (auth/ldap/users/<name>) — authorises a specific
+# directory user directly, independent of group membership resolution.
+- name: "LDAP | Authorise individual users (auth/ldap/users)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write
+      auth/ldap/users/{{ item.ldap_username }} policies={{ item.policies | join(',') }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+  loop: "{{ hashicorp_vault_ldap_users }}"
+  loop_control:
+    label: "{{ item.ldap_username }} -> {{ item.policies | join(',') }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

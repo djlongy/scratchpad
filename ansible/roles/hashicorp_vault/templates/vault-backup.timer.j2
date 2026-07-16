@@ -1,0 +1,12 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=hashicorp_vault — scheduled Raft snapshot backup
+Documentation=https://developer.hashicorp.com/vault/docs/commands/operator/raft
+
+[Timer]
+OnCalendar={{ hashicorp_vault_backup_schedule }}
+# Catch up if the host was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

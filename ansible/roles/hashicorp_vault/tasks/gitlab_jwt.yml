@@ -1,0 +1,105 @@
+---
+# GitLab CI JWT — JWT auth so GitLab CI jobs exchange their pipeline-issued JWT
+# (CI_JOB_JWT / id_tokens) for a scoped Vault token. Data-driven, OPTIONAL,
+# idempotent. Enables the jwt auth method once, configures the backend to trust
+# the GitLab issuer, then upserts each CI role.
+#
+# Roles are DATA (hashicorp_vault_gitlab_jwt_roles) — define them in inventory:
+#   - name: myproject
+#     bound_claims: {project_id: "42", ref: main, ref_type: branch}
+#     policies: [svc-ci-prod]
+#     token_ttl: 1h
+#     token_max_ttl: 4h
+#
+# All writes go via docker exec on the first node with the root token in the
+# process env (never argv); writes forward to the active leader.
+
+- name: "GitLab JWT | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_jwt_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "GitLab JWT | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_jwt_token: "{{ _hashicorp_vault_jwt_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "GitLab JWT | Assert the GitLab base URL is set"
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_gitlab_base_url | length > 0
+    fail_msg: "GitLab JWT is enabled but hashicorp_vault_gitlab_base_url is empty."
+    quiet: true
+  run_once: true
+
+- name: "GitLab JWT | List enabled auth methods"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+  register: _hashicorp_vault_jwt_auth
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "GitLab JWT | Enable the jwt auth method"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable jwt"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+  when: "'jwt/' not in (_hashicorp_vault_jwt_auth.stdout | from_json).keys()"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "GitLab JWT | Configure the jwt backend to trust the GitLab issuer"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write auth/jwt/config
+      oidc_discovery_url={{ hashicorp_vault_gitlab_base_url }}
+      bound_issuer={{ hashicorp_vault_gitlab_base_url }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Upsert — writing auth/jwt/role/<name> is idempotent. bound_claims is a JSON
+# object: shell (not command) so the single-quotes survive to the delegate host's
+# shell, protecting the JSON's double-quotes/spaces from shlex stripping (command
+# would corrupt {"k": "v"} into {k: v}). Claim values never contain single quotes.
+- name: "GitLab JWT | Create/update each CI role"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write auth/jwt/role/{{ item.name | quote }}
+      role_type={{ item.role_type | default('jwt') }}
+      user_claim={{ item.user_claim | default('user_login') }}
+      'bound_claims={{ item.bound_claims | to_json }}'
+      bound_audiences={{ (item.bound_audiences | default(_hashicorp_vault_jwt_aud)) | join(',') | quote }}
+      policies={{ (item.policies | default(['default'])) | join(',') | quote }}
+      token_ttl={{ item.token_ttl | default('1h') }}
+      token_max_ttl={{ item.token_max_ttl | default('4h') }}
+  vars:
+    _hashicorp_vault_jwt_aud: >-
+      {{ [hashicorp_vault_gitlab_jwt_default_audience]
+         if (hashicorp_vault_gitlab_jwt_default_audience | length > 0) else [] }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+  loop: "{{ hashicorp_vault_gitlab_jwt_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

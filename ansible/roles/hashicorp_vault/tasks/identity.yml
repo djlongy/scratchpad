@@ -1,0 +1,150 @@
+---
+# Identity — Vault Identity groups: the cross-auth-method RBAC layer. Optional,
+# data-driven, idempotent. Two group types (hashicorp_vault_identity_groups):
+#   external: membership comes from an auth-method group (LDAP now, OIDC later) via
+#             a group-alias -> the SAME identity group + policies apply no matter
+#             how the user logs in.
+#             {identity_group_name, type: external, ldap_group, policies}
+#   internal: explicit membership; can NEST other identity groups for indirect
+#             inheritance (a parent's policies flow to child-group members).
+#             {identity_group_name, type: internal, policies, member_group_names}
+# All writes run once from the leader via docker exec (root token in the env).
+
+- name: "Identity | Read the root token from the first node"
+  become: true  # root: reads the root-owned root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_id_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "Identity | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_id_token: "{{ _hashicorp_vault_id_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "Identity | List auth methods (to resolve the ldap mount accessor)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+  register: _hashicorp_vault_id_auth
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Identity | Set the ldap mount accessor fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_ldap_accessor: "{{ (_hashicorp_vault_id_auth.stdout | from_json)['ldap/'].accessor | default('') }}"
+  run_once: true
+
+# ── Pass 1: upsert every group with its policies (idempotent by name). Nested
+#    member_group_ids are set in pass 3 so child groups exist first. ────────────
+- name: "Identity | Create/update each identity group (name + type + policies)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write identity/group
+      name={{ item.identity_group_name }}
+      type={{ item.type | default('external') }}
+      policies={{ (item.policies | default([])) | join(',') }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+  loop: "{{ hashicorp_vault_identity_groups }}"
+  loop_control:
+    label: "{{ item.identity_group_name }} ({{ item.type | default('external') }})"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Identity | Read each group's canonical id"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault read -field=id identity/group/name/{{ item.identity_group_name }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+  loop: "{{ hashicorp_vault_identity_groups }}"
+  loop_control:
+    label: "{{ item.identity_group_name }}"
+  register: _hashicorp_vault_id_reads
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Identity | Build a group name -> id map"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_group_ids: >-
+      {{ dict(_hashicorp_vault_id_reads.results
+              | map(attribute='item.identity_group_name') | list
+              | zip(_hashicorp_vault_id_reads.results | map(attribute='stdout') | list)) }}
+  run_once: true
+  no_log: true
+
+# ── Pass 2: EXTERNAL groups — ensure a group-alias (ldap_group -> group) exists.
+#    Idempotent via identity/lookup/group (create the alias only when absent). ───
+- name: "Identity | Look up existing group-alias for each external group"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write -format=json identity/lookup/group
+      alias_name={{ item.ldap_group }}
+      alias_mount_accessor={{ _hashicorp_vault_ldap_accessor }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+  loop: "{{ hashicorp_vault_identity_groups | selectattr('type', 'defined') | selectattr('type', 'equalto', 'external') | list
+            + hashicorp_vault_identity_groups | rejectattr('type', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.ldap_group }} @ ldap"
+  register: _hashicorp_vault_id_alias_lookup
+  changed_when: false
+  failed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Identity | Create the group-alias when it does not already exist"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write identity/group-alias
+      name={{ item.item.ldap_group }}
+      mount_accessor={{ _hashicorp_vault_ldap_accessor }}
+      canonical_id={{ _hashicorp_vault_group_ids[item.item.identity_group_name] }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+  loop: "{{ _hashicorp_vault_id_alias_lookup.results }}"
+  loop_control:
+    label: "{{ item.item.ldap_group }} -> {{ item.item.identity_group_name }}"
+  when: (item.stdout | default('') | trim | length == 0) or (item.rc != 0)
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# ── Pass 3: INTERNAL groups with nesting — set member_group_ids from the name map.
+- name: "Identity | Set nested member groups on internal identity groups"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write identity/group name={{ item.identity_group_name }} type=internal
+      member_group_ids={{ (item.member_group_names | map('extract', _hashicorp_vault_group_ids) | join(',')) }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+  loop: "{{ hashicorp_vault_identity_groups
+            | selectattr('type', 'defined') | selectattr('type', 'equalto', 'internal')
+            | selectattr('member_group_names', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.identity_group_name }} <- {{ item.member_group_names | join(',') }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

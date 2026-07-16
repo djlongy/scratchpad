@@ -1,0 +1,394 @@
+---
+argument_specs:
+  main:
+    short_description: Auto-scaling containerized HashiCorp Vault on a persistent disk.
+    description:
+      - Deploys Vault as a Docker container with all state on a persistent
+        second disk. The topology auto-scales from the play's host count.
+    options:
+      hashicorp_vault_image:
+        type: str
+        description: Vault container image reference.
+        default: "hashicorp/vault:1.19"
+      hashicorp_vault_name:
+        type: str
+        description: Container and compose service name.
+        default: "vault"
+      hashicorp_vault_data_mount:
+        type: str
+        description: >-
+          Mount point of the persistent second disk. Must be a real mountpoint
+          (guarded by preflight); all Vault state lives under it.
+        default: "/opt/vault"
+      hashicorp_vault_require_mounted:
+        type: bool
+        description: Fail preflight unless data_mount is a dedicated mountpoint.
+        default: true
+      hashicorp_vault_api_port:
+        type: int
+        description: Vault API / listener port.
+        default: 8200
+      hashicorp_vault_cluster_port:
+        type: int
+        description: Vault Raft cluster port.
+        default: 8201
+      hashicorp_vault_advertise_addr:
+        type: str
+        description: >-
+          Address peers and clients use to reach this node. Defaults to the
+          node IP (ansible_host); set to an FQDN where DNS resolves.
+        default: "{{ ansible_host }}"
+      hashicorp_vault_nodes:
+        type: list
+        elements: str
+        description: >-
+          Cluster members. Defaults to the play's hosts (ansible_play_hosts_all)
+          so 1 host yields standalone Raft and N hosts yield Raft HA. Pin to
+          decouple the cluster from --limit.
+      hashicorp_vault_key_shares:
+        type: int
+        description: Number of unseal key shares generated at init.
+        default: 1
+      hashicorp_vault_key_threshold:
+        type: int
+        description: Unseal key shares required to unseal.
+        default: 1
+      hashicorp_vault_auto_unseal:
+        type: bool
+        description: >-
+          Install a systemd unit that unseals Vault on boot (self-healing after a
+          reboot). Places the unseal key on every node; false leaves nodes sealed
+          after a reboot until `--tags unseal`.
+        default: false
+      hashicorp_vault_autounseal_keys_file:
+        type: str
+        description: Host path the auto-unseal keys are written to (when enabled).
+        default: "{{ hashicorp_vault_keys_dir }}/unseal_keys"
+      hashicorp_vault_autounseal_script_path:
+        type: str
+        description: Host path the auto-unseal boot script is installed to.
+        default: "/usr/local/bin/vault-container-unseal.sh"
+      hashicorp_vault_manage_policies:
+        type: bool
+        description: Ensure kv-<tenant>-<env> mounts + write the multi-tenant/extra ACL policies.
+        default: false
+      hashicorp_vault_kv_mount_prefix:
+        type: str
+        description: KV mount name prefix; a tenant's mount is <prefix>-<tenant>-<env>.
+        default: "kv"
+      hashicorp_vault_tenants:
+        type: list
+        elements: dict
+        description: >-
+          {tenant, env} pairs (tenant + env MUST be hyphen-free; tenant optional ->
+          kv-<env>). Each gets its own mount <prefix>-<tenant>-<env> + a policy
+          "<tenant>-<env>" (whole mount) + an LDAP group mapping. Add wide:true to
+          also write a tenant-scoped policy "<tenant>" granting kv-<tenant>-* (all
+          envs) for a tenant admin.
+        default: []
+      hashicorp_vault_policies:
+        type: list
+        elements: dict
+        description: Extra non-tenant policies ({policy_name, template} under templates/policies/; bundled all-kv.hcl.j2 = kv-*).
+        default: []
+      hashicorp_vault_admin_kv_mounts:
+        type: list
+        elements: str
+        description: KV mounts the bundled admin.hcl.j2 policy grants full CRUD on.
+        default: []
+      hashicorp_vault_ldap_enabled:
+        type: bool
+        description: Enable + configure the LDAP auth method and group mappings.
+        default: false
+      hashicorp_vault_ldap_url:
+        type: str
+        description: LDAP server URL (e.g. ldaps://host).
+        default: ""
+      hashicorp_vault_ldap_binddn:
+        type: str
+        description: Bind DN used to search the directory.
+        default: ""
+      hashicorp_vault_ldap_bindpass:
+        type: str
+        description: Bind password (declared-var-first; else _bindpass_vault_path).
+        default: ""
+      hashicorp_vault_ldap_bindpass_vault_path:
+        type: str
+        description: HC-Vault fallback for the bind password ("mount/data/path:field").
+        default: ""
+      hashicorp_vault_ldap_userdn:
+        type: str
+        description: Base DN for user search.
+        default: ""
+      hashicorp_vault_ldap_groupdn:
+        type: str
+        description: Base DN for group search.
+        default: ""
+      hashicorp_vault_ldap_group_pattern:
+        type: str
+        description: LDAP group name pattern for a tenant ({tenant}/{env} placeholders).
+        default: "vault-{tenant}-{env}"
+      hashicorp_vault_ldap_extra_groups:
+        type: list
+        elements: dict
+        description: Non-tenant LDAP group->policy mappings ({ldap_group, policies}) -> auth/ldap/groups/<ldap_group>.
+        default: []
+      hashicorp_vault_ldap_users:
+        type: list
+        elements: dict
+        description: >-
+          Per-user LDAP authorisations ({ldap_username, policies}) written to
+          auth/ldap/users/<name> — direct, independent of group resolution.
+        default: []
+      hashicorp_vault_identity_groups:
+        type: list
+        elements: dict
+        description: >-
+          Vault Identity groups (cross-auth-method RBAC). external:
+          {identity_group_name, type: external, ldap_group, policies} maps an LDAP
+          group via a group-alias. internal:
+          {identity_group_name, type: internal, policies, member_group_names} has
+          explicit membership and can NEST child groups. Empty = phase skipped.
+        default: []
+      hashicorp_vault_ldap_insecure_tls:
+        type: bool
+        description: Skip LDAPS cert verification (self-signed directory CA).
+        default: true
+      hashicorp_vault_userpass_accounts:
+        type: list
+        elements: dict
+        description: >-
+          Human operator accounts ({username, password, policies}) upserted into
+          userpass. Empty = phase skipped. Keep passwords in a vaulted inventory.
+        default: []
+      hashicorp_vault_approles:
+        type: list
+        elements: dict
+        description: >-
+          Automation AppRoles ({role_name, policies, token_ttl, token_max_ttl,
+          secret_id_ttl}) upserted into approle. Empty = phase skipped. Roles are
+          created only; role_id/secret_id retrieval is out of band.
+        default: []
+      hashicorp_vault_gitlab_oidc_enabled:
+        type: bool
+        description: Enable + configure the oidc auth method for GitLab UI/CLI SSO.
+        default: false
+      hashicorp_vault_gitlab_oidc_mount_path:
+        type: str
+        description: Auth mount path for the oidc method.
+        default: "oidc"
+      hashicorp_vault_gitlab_base_url:
+        type: str
+        description: GitLab base URL (OIDC/JWT discovery + issuer). Required when either is enabled.
+        default: ""
+      hashicorp_vault_gitlab_oidc_discovery_url:
+        type: str
+        description: OIDC discovery URL; defaults to the GitLab base URL.
+        default: "{{ hashicorp_vault_gitlab_base_url }}"
+      hashicorp_vault_gitlab_oidc_client_id:
+        type: str
+        description: OIDC client id (declared-var first; else _client_id_vault_path).
+        default: ""
+      hashicorp_vault_gitlab_oidc_client_id_vault_path:
+        type: str
+        description: HC-Vault fallback for the client id ("mount/data/path:field").
+        default: ""
+      hashicorp_vault_gitlab_oidc_client_secret:
+        type: str
+        description: OIDC client secret (declared-var first; else _client_secret_vault_path).
+        default: ""
+      hashicorp_vault_gitlab_oidc_client_secret_vault_path:
+        type: str
+        description: HC-Vault fallback for the client secret ("mount/data/path:field").
+        default: ""
+      hashicorp_vault_gitlab_oidc_default_role:
+        type: str
+        description: Optional default oidc login role (empty = none).
+        default: ""
+      hashicorp_vault_gitlab_oidc_roles:
+        type: list
+        elements: dict
+        description: >-
+          OIDC login roles ({name, user_claim, groups_claim, allowed_redirect_uris,
+          oidc_scopes, policies, ttl, max_ttl, bound_claims_type, bound_claims}).
+          Empty = no roles written.
+        default: []
+      hashicorp_vault_gitlab_jwt_enabled:
+        type: bool
+        description: Enable + configure the jwt auth method for GitLab CI pipelines.
+        default: false
+      hashicorp_vault_gitlab_jwt_default_audience:
+        type: str
+        description: Default bound audience for JWT roles that omit bound_audiences (empty = none).
+        default: ""
+      hashicorp_vault_gitlab_jwt_roles:
+        type: list
+        elements: dict
+        description: >-
+          GitLab CI JWT roles ({name, bound_claims, policies, user_claim,
+          bound_audiences, token_ttl, token_max_ttl}). Empty = phase writes no roles.
+        default: []
+      hashicorp_vault_transit_enabled:
+        type: bool
+        description: Enable the Transit secrets engine and create the configured keys.
+        default: false
+      hashicorp_vault_transit_mount:
+        type: str
+        description: Mount path for the Transit secrets engine.
+        default: "transit"
+      hashicorp_vault_transit_keys:
+        type: list
+        elements: dict
+        description: >-
+          Transit keys, create-if-missing ({name, type, exportable,
+          allow_plaintext_backup, deletion_allowed, export_public_key: {mount, path}}).
+          export_public_key publishes the public half to KV (full PUT). Empty = phase skipped.
+        default: []
+      hashicorp_vault_audit_enabled:
+        type: bool
+        description: Enable the file audit device (writes under /vault/logs, persisted).
+        default: false
+      hashicorp_vault_audit_path:
+        type: str
+        description: In-container path for the file audit device.
+        default: "{{ hashicorp_vault_container_logs_dir }}/vault_audit.log"
+      hashicorp_vault_tls_enabled:
+        type: bool
+        description: Serve the Vault API over TLS.
+        default: true
+      hashicorp_vault_tls_generate:
+        type: bool
+        description: >-
+          Self-sign a CA + multi-SAN server certificate on the controller. When
+          false, supply hashicorp_vault_tls_ca_cert / _server_cert / _server_key.
+        default: true
+      hashicorp_vault_tls_local_dir:
+        type: str
+        description: Controller-side directory persisting the generated CA/cert.
+      hashicorp_vault_tls_ca_cert:
+        type: str
+        description: Controller path to a CA cert (when tls_generate=false).
+        default: ""
+      hashicorp_vault_tls_server_cert:
+        type: str
+        description: Controller path to a server cert (when tls_generate=false).
+        default: ""
+      hashicorp_vault_tls_server_key:
+        type: str
+        description: Controller path to a server key (when tls_generate=false).
+        default: ""
+      hashicorp_vault_tls_onhost:
+        type: bool
+        description: >-
+          Use cert/key/CA already present ON THE NODE (certmonger/ipa-getcert)
+          instead of generating or copying from the controller. Overrides _generate.
+        default: false
+      hashicorp_vault_tls_onhost_cert:
+        type: str
+        description: On-node path to the certmonger-issued server cert (tls_onhost=true).
+        default: ""
+      hashicorp_vault_tls_onhost_key:
+        type: str
+        description: On-node path to the certmonger-issued server key (tls_onhost=true).
+        default: ""
+      hashicorp_vault_tls_onhost_ca:
+        type: str
+        description: On-node path to the CA chain, e.g. /etc/ipa/ca.crt (tls_onhost=true).
+        default: ""
+      hashicorp_vault_selinux_relabel:
+        type: bool
+        description: Add :Z to bind mounts so the container works under SELinux enforcing.
+        default: true
+      hashicorp_vault_tls_extra_sans:
+        type: list
+        elements: str
+        description: >-
+          Extra SAN entries (e.g. "DNS:vault.dev.example.com", "IP:10.0.20.55").
+          Node IPs and short hostnames are added automatically.
+        default: []
+      hashicorp_vault_domain:
+        type: str
+        description: When set, "<host>.<domain>" is added to cert SANs per node.
+        default: ""
+      hashicorp_vault_ui:
+        type: bool
+        description: Enable the Vault web UI.
+        default: true
+      hashicorp_vault_disable_mlock:
+        type: bool
+        description: Disable mlock (typical for containers).
+        default: true
+      hashicorp_vault_manage_firewall:
+        type: bool
+        description: Open the API + cluster ports via firewalld when present.
+        default: true
+      hashicorp_vault_backup_enabled:
+        type: bool
+        description: Install a systemd timer that takes scheduled Raft snapshots (leader-only).
+        default: true
+      hashicorp_vault_backup_dir:
+        type: str
+        description: Host path snapshots are written to (a local path or an NFS mountpoint).
+        default: "{{ hashicorp_vault_data_mount }}/backups"
+      hashicorp_vault_backup_schedule:
+        type: str
+        description: systemd OnCalendar expression for the backup timer.
+        default: "*-*-* 02:00:00"
+      hashicorp_vault_backup_retention_days:
+        type: int
+        description: Delete snapshots older than this many days.
+        default: 7
+      hashicorp_vault_backup_nfs_server:
+        type: str
+        description: NFS server for the backup target; set with _export to mount it at the backup dir.
+        default: ""
+      hashicorp_vault_backup_nfs_export:
+        type: str
+        description: NFS export path for the backup target.
+        default: ""
+      hashicorp_vault_backup_nfs_opts:
+        type: str
+        description: Mount options for the NFS backup share.
+        default: "rw,hard,nfsvers=4.1,_netdev,nofail"
+      hashicorp_vault_restore_snapshot:
+        type: str
+        description: >-
+          Snapshot to restore with --tags restore. "latest"/empty = newest
+          across all nodes; else an absolute .snap path (on the leader).
+        default: "latest"
+      hashicorp_vault_backup_policy_name:
+        type: str
+        description: Vault policy name for the scoped backup token (snapshot read-only).
+        default: "vault-backup"
+      hashicorp_vault_backup_token_period:
+        type: str
+        description: Period (TTL) of the periodic backup token; the script renews it each run.
+        default: "768h"
+      hashicorp_vault_backup_token_file:
+        type: str
+        description: Host path the scoped backup token is written to on each node.
+        default: "{{ hashicorp_vault_keys_dir }}/backup_token"
+      hashicorp_vault_backup_script_path:
+        type: str
+        description: Host path the backup script is installed to.
+        default: "/usr/local/bin/vault-container-backup.sh"
+      hashicorp_vault_tls_cn:
+        type: str
+        description: Common name on the self-signed server certificate.
+        default: "vault"
+      hashicorp_vault_tls_validity_days:
+        type: int
+        description: Validity (days) of the generated CA + server certificate.
+        default: 3650
+      hashicorp_vault_log_level:
+        type: str
+        description: Vault server log level.
+        default: "info"
+      hashicorp_vault_log_format:
+        type: str
+        description: Vault server log format (json/standard).
+        default: "json"
+      hashicorp_vault_telemetry_enabled:
+        type: bool
+        description: Emit the Prometheus telemetry stanza in vault.hcl.
+        default: true

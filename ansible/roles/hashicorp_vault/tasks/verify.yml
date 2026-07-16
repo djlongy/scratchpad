@@ -1,0 +1,111 @@
+---
+# Verify — confirm each node is unsealed and, for HA, that all peers joined.
+
+- name: "Wait for every node to be unsealed (active or standby)"
+  become: false  # localhost/API — API reachability probe, no host privilege
+  ansible.builtin.uri:
+    url: "{{ hashicorp_vault_scheme }}://127.0.0.1:{{ hashicorp_vault_api_port }}/v1/sys/health"
+    validate_certs: false
+    status_code: [200, 429]
+  register: _hashicorp_vault_final_health
+  until: _hashicorp_vault_final_health.status in [200, 429]
+  retries: 30
+  delay: 5
+
+# Peer verification runs for BOTH standalone and HA. Raft always keeps a peer
+# list — even a single node has one — so checking it standalone catches the
+# dangerous case where a shrink (e.g. 3 -> 1) removed hosts from the play but the
+# operator never ran `raft remove-peer`, leaving GHOST peers that still count
+# toward quorum and silently break availability.
+- name: "Verify | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _verify_tok
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "Verify | Set the token fact"
+  ansible.builtin.set_fact:
+    _verify_root_token: "{{ _verify_tok.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "List Raft peers on the leader"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault operator raft list-peers -format=json
+  environment:
+    VAULT_TOKEN: "{{ _verify_root_token }}"
+  register: _hashicorp_vault_peers
+  # Retry: a legitimate restart (e.g. a cert/config change earlier in the run)
+  # can trigger a Raft re-election, and list-peers needs an active leader — ride
+  # out the election window rather than fail spuriously.
+  until: _hashicorp_vault_peers.rc == 0
+  retries: 12
+  delay: 5
+  changed_when: false
+  failed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Verify | Derive the Raft peer set vs the desired node set"
+  ansible.builtin.set_fact:
+    # node_id is the inventory_hostname (see vault.hcl.j2), so these compare
+    # directly against hashicorp_vault_nodes.
+    _hashicorp_vault_raft_peer_ids: >-
+      {{ (_hashicorp_vault_peers.stdout | from_json).data.config.servers
+         | map(attribute='node_id') | list }}
+  run_once: true
+  when: _hashicorp_vault_peers.rc == 0
+
+- name: "Assert the leader answered and every desired node joined Raft"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_peers.rc == 0
+      - hashicorp_vault_nodes | difference(_hashicorp_vault_raft_peer_ids) | length == 0
+    fail_msg: >-
+      {{ 'Raft list-peers failed — no active leader? Check the cluster is up and
+      unsealed on ' ~ hashicorp_vault_first_node ~ '.'
+         if _hashicorp_vault_peers.rc != 0 else
+         'Desired nodes missing from Raft: '
+         ~ (hashicorp_vault_nodes | difference(_hashicorp_vault_raft_peer_ids)) ~
+         '. They did not join — check unseal + retry_join on those hosts.' }}
+    quiet: true
+  run_once: true
+
+# GHOST-PEER GUARD — raft members that are NOT in the play's desired node set.
+# These come from a scale-down where `raft remove-peer` was not run. They still
+# count toward quorum, so the cluster is NOT healthy until they are removed.
+- name: "Assert there are no stale Raft peers outside the desired node set"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_raft_peer_ids | difference(hashicorp_vault_nodes) | length == 0
+    fail_msg: >-
+      Stale Raft peers not in the play:
+      {{ _hashicorp_vault_raft_peer_ids | difference(hashicorp_vault_nodes) }}.
+      They still count toward quorum. Remove them (the role can do it for you):
+        ansible-playbook ... --tags remove_peers
+      or manually on {{ hashicorp_vault_first_node }}, e.g.:
+      {% for id in (_hashicorp_vault_raft_peer_ids | difference(hashicorp_vault_nodes)) %}
+      docker exec {{ hashicorp_vault_name }} vault operator raft remove-peer {{ id }}
+      {% endfor %}
+    success_msg: >-
+      Raft membership matches the desired {{ hashicorp_vault_node_count }}-node set —
+      no stale peers.
+    quiet: true
+  run_once: true
+  when: _hashicorp_vault_peers.rc == 0
+
+- name: "Report cluster status"
+  ansible.builtin.debug:
+    msg: >-
+      hashicorp_vault ready:
+      {{ hashicorp_vault_node_count }}-node
+      {{ 'Raft HA cluster' if hashicorp_vault_is_ha | bool else 'standalone Vault' }}.
+      Init material on {{ hashicorp_vault_first_node }}:{{ hashicorp_vault_keys_dir }}/vault_init.json
+  run_once: true

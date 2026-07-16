@@ -1,0 +1,47 @@
+{{ ansible_managed | comment }}
+# vault.hcl — hashicorp_vault
+# Topology: {{ 'Raft HA across ' ~ hashicorp_vault_node_count ~ ' nodes' if hashicorp_vault_is_ha | bool else 'standalone (single server)' }}
+
+storage "raft" {
+  path    = "{{ hashicorp_vault_container_data_dir }}"
+  node_id = "{{ inventory_hostname }}"
+{% if hashicorp_vault_is_ha | bool %}
+{% for node in hashicorp_vault_nodes %}
+  retry_join {
+    leader_api_addr     = "{{ hashicorp_vault_scheme }}://{{ hostvars[node].hashicorp_vault_advertise_addr | default(hostvars[node].ansible_host) }}:{{ hashicorp_vault_api_port }}"
+{% if hashicorp_vault_tls_enabled | bool %}
+    leader_ca_cert_file = "{{ hashicorp_vault_container_certs_dir }}/ca.crt"
+{% endif %}
+  }
+{% endfor %}
+{% endif %}
+}
+
+listener "tcp" {
+  address         = "0.0.0.0:{{ hashicorp_vault_api_port }}"
+  cluster_address = "0.0.0.0:{{ hashicorp_vault_cluster_port }}"
+{% if hashicorp_vault_tls_enabled | bool %}
+  tls_cert_file            = "{{ hashicorp_vault_container_certs_dir }}/vault.crt"
+  tls_key_file             = "{{ hashicorp_vault_container_certs_dir }}/vault.key"
+  tls_client_ca_file       = "{{ hashicorp_vault_container_certs_dir }}/ca.crt"
+  tls_disable_client_certs = "true"
+{% else %}
+  tls_disable = "true"
+{% endif %}
+}
+
+api_addr     = "{{ hashicorp_vault_scheme }}://{{ hashicorp_vault_advertise_addr }}:{{ hashicorp_vault_api_port }}"
+cluster_addr = "{{ hashicorp_vault_scheme }}://{{ hashicorp_vault_advertise_addr }}:{{ hashicorp_vault_cluster_port }}"
+
+ui            = {{ hashicorp_vault_ui | bool | lower }}
+disable_mlock = {{ hashicorp_vault_disable_mlock | bool | lower }}
+{% if hashicorp_vault_telemetry_enabled | bool %}
+
+telemetry {
+  prometheus_retention_time = "24h"
+  disable_hostname          = true
+}
+{% endif %}
+
+log_level  = "{{ hashicorp_vault_log_level }}"
+log_format = "{{ hashicorp_vault_log_format }}"

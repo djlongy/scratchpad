@@ -1,0 +1,71 @@
+---
+# AppRole — automation service accounts (data-driven, OPTIONAL). Idempotent.
+# Enables the approle auth method once, then upserts each role. Writes go via
+# docker exec on the first node with the root token in the process env (never argv).
+#
+# Roles are DATA (hashicorp_vault_approles) — define them in inventory, e.g.:
+#   - {name: svc-ansible, policies: [svc-automation], token_ttl: 4h, token_max_ttl: 12h}
+#
+# This phase CREATES the roles only. Retrieving role_id / minting secret_id and
+# distributing them is caller responsibility (they are credentials) — do it out of
+# band or in a dedicated, secret-handling play; the role deliberately does not
+# write secret_ids to disk here.
+
+- name: "AppRole | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_ar_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "AppRole | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_ar_token: "{{ _hashicorp_vault_ar_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "AppRole | List enabled auth methods"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ar_token }}"
+  register: _hashicorp_vault_ar_auth
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "AppRole | Enable the approle auth method"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable approle"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ar_token }}"
+  when: "'approle/' not in (_hashicorp_vault_ar_auth.stdout | from_json).keys()"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Upsert — writing auth/approle/role/<name> is idempotent. TTLs default when the
+# entry omits them so a minimal {name, policies} works.
+- name: "AppRole | Create/update each automation role"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write auth/approle/role/{{ item.role_name }}
+      token_policies={{ (item.policies | default(['default'])) | join(',') }}
+      token_ttl={{ item.token_ttl | default('1h') }}
+      token_max_ttl={{ item.token_max_ttl | default('4h') }}
+      secret_id_ttl={{ item.secret_id_ttl | default('0') }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_ar_token }}"
+  loop: "{{ hashicorp_vault_approles }}"
+  loop_control:
+    label: "{{ item.role_name }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

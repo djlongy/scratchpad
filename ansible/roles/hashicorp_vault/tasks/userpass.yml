@@ -1,0 +1,72 @@
+---
+# Userpass — human operator accounts (data-driven, OPTIONAL). Idempotent.
+# Enables the userpass auth method once, then upserts each account. All writes go
+# via docker exec on the first node with the root token in the process env (never
+# argv); the password is passed over STDIN (password=-), never on the command line.
+#
+# Accounts are DATA (hashicorp_vault_userpass_accounts) — keep them and their
+# passwords in a vaulted inventory / group_vars, NEVER in role code:
+#   - {username: alice, password: "{{ vaulted_pw }}", policies: [default, ops-admin]}
+
+- name: "Userpass | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_up_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "Userpass | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_up_token: "{{ _hashicorp_vault_up_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "Userpass | List enabled auth methods"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_up_token }}"
+  register: _hashicorp_vault_up_auth
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Userpass | Enable the userpass auth method"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable userpass"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_up_token }}"
+  when: "'userpass/' not in (_hashicorp_vault_up_auth.stdout | from_json).keys()"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Upsert (create or update) — writing the user is idempotent. Password over stdin
+# (password=-); token_policies on argv (not secret). An existing user's password
+# is reset to the declared value on every run, keeping inventory authoritative.
+- name: "Userpass | Create/update each operator account"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write auth/userpass/users/{{ item.username }}
+      password=-
+      token_policies={{ (item.policies | default(['default'])) | join(',') }}
+    stdin: "{{ item.password }}"
+    # Ansible appends a trailing newline to stdin by default -> the stored password
+    # would become "<pass>\n" and the user could never log in. Suppress it.
+    stdin_add_newline: false
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_up_token }}"
+  loop: "{{ hashicorp_vault_userpass_accounts }}"
+  loop_control:
+    label: "{{ item.username }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

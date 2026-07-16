@@ -1,0 +1,48 @@
+---
+# Deploy — render config, bring up the container, wait until the API answers.
+
+- name: "Template the Vault HCL config"
+  become: true  # root: writes the root-owned vault.hcl on the data mount
+  ansible.builtin.template:
+    src: vault.hcl.j2
+    dest: "{{ hashicorp_vault_config_dir }}/vault.hcl"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vault container
+
+- name: "Template the docker-compose file"
+  become: true  # root: writes the root-owned docker-compose.yml on the data mount
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ hashicorp_vault_data_mount }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vault container
+
+- name: "Ensure the Vault container is running"
+  become: true  # root: docker CLI needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker compose up -d"
+    chdir: "{{ hashicorp_vault_data_mount }}"
+  register: _hashicorp_vault_up
+  changed_when: >-
+    (['Started', 'Created', 'Recreated'] | select('in', _hashicorp_vault_up.stderr) | list | length > 0)
+    or (['Started', 'Created', 'Recreated'] | select('in', _hashicorp_vault_up.stdout) | list | length > 0)
+
+- name: "Apply any pending config changes (restart)"
+  ansible.builtin.meta: flush_handlers
+
+- name: "Wait for the Vault API to respond"
+  become: false  # localhost/API — API reachability probe, no host privilege
+  ansible.builtin.uri:
+    url: "{{ hashicorp_vault_scheme }}://127.0.0.1:{{ hashicorp_vault_api_port }}/v1/sys/health"
+    validate_certs: false
+    # 200 active · 429 standby · 501 not-initialized · 503 sealed — all mean
+    # the API is up. We only need the listener answering here.
+    status_code: [200, 429, 472, 473, 501, 503]
+  register: _hashicorp_vault_health
+  retries: 20
+  delay: 5
+  until: _hashicorp_vault_health.status in [200, 429, 472, 473, 501, 503]

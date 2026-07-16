@@ -1,0 +1,58 @@
+---
+# Init — initialize the cluster ONCE (first node only, first run only) and
+# persist the init material. Unsealing is a SEPARATE phase (unseal.yml, tag
+# `unseal`) so operators can re-unseal after a reboot without touching init.
+# init is a strict no-op on an already-initialized cluster — it never wipes.
+
+# ── Initialize (first node only, first run only) ─────────────────────────
+- name: "Check whether Vault is already initialized"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec {{ hashicorp_vault_name }} vault status -format=json"
+  register: _hashicorp_vault_status
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Record initialization state"
+  ansible.builtin.set_fact:
+    # Guard the from_json against EMPTY stdout — `vault status` prints nothing on
+    # a TLS/connection error (e.g. a loopback cert-verify failure), and a bare
+    # from_json on '' raises an opaque "could not be converted to dict". Treat an
+    # empty/failed status as "not initialized" so init proceeds (or fails loudly).
+    _hashicorp_vault_initialized: >-
+      {{ (_hashicorp_vault_status.stdout | from_json).initialized | default(false)
+         if (_hashicorp_vault_status.stdout | default('') | trim | length > 0
+             and _hashicorp_vault_status.rc in [0, 1, 2]) else false }}
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Initialize Vault"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec {{ hashicorp_vault_name }} vault operator init
+      -key-shares={{ hashicorp_vault_key_shares }}
+      -key-threshold={{ hashicorp_vault_key_threshold }}
+      -format=json
+  register: _hashicorp_vault_init
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: not _hashicorp_vault_initialized
+
+- name: "Persist the init material on the first node"
+  become: true  # root: writes the root-only init material to the keys dir
+  ansible.builtin.copy:
+    content: "{{ _hashicorp_vault_init.stdout }}"
+    dest: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: _hashicorp_vault_init is changed
+# Unsealing + cluster formation continue in unseal.yml (tag `unseal`).

@@ -1,0 +1,20 @@
+{{ ansible_managed | comment }}
+# Tenant "{{ _t.tenant | default('') or '(shared)' }}" in environment "{{ _t.env }}".
+# The mount {{ _t.mount }} is this slot's private isolation domain — grant the
+# WHOLE mount; the path grammar (<type>/<service>/<context>) lives INSIDE the
+# mount and stays tenant-agnostic. A tenantless slot is a plain kv-<env> mount.
+
+# Secret data anywhere in the mount.
+path "{{ _t.mount }}/data/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Metadata (versions, list, soft-delete) anywhere in the mount.
+path "{{ _t.mount }}/metadata/*" {
+  capabilities = ["read", "list", "delete"]
+}
+
+# Let the holder list the root of the mount.
+path "{{ _t.mount }}/metadata" {
+  capabilities = ["read", "list"]
+}

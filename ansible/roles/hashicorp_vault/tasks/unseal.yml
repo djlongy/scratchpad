@@ -1,0 +1,102 @@
+---
+# Unseal — unseal every node using the stored keys. Self-contained so it can be
+# run on its OWN with `--tags unseal` to bring a node (or the whole cluster)
+# back after a reboot / container restart, WITHOUT re-running init (which only
+# touches an uninitialized cluster and never wipes an existing one, but the
+# `unseal` tag makes the safe, non-destructive intent unambiguous).
+#
+#   ansible-playbook ... --tags unseal          # unseal whatever is sealed
+#
+# For hands-off recovery after a reboot, enable hashicorp_vault_auto_unseal instead
+# (a systemd unit does this on boot) — see autounseal.yml.
+
+- name: "Unseal | Read the persisted init material"
+  become: true  # root: reads the root-only vault_init.json
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+  register: _hashicorp_vault_init_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  no_log: true
+
+- name: "Unseal | Extract unseal keys and root token"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_unseal_keys: >-
+      {{ (_hashicorp_vault_init_slurp.content | b64decode | from_json).unseal_keys_b64[:hashicorp_vault_key_threshold | int] }}
+    _hashicorp_vault_root_token: >-
+      {{ (_hashicorp_vault_init_slurp.content | b64decode | from_json).root_token }}
+  no_log: true
+
+- name: "Unseal | Save the root token for operator convenience (first node)"
+  become: true  # root: writes the root-only root_token.txt to the keys dir
+  ansible.builtin.copy:
+    content: "{{ _hashicorp_vault_root_token }}\n"
+    dest: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# ── Unseal the first node, then wait for it to come up ────────────────────
+- name: "Unseal | Check the first node's seal status"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec {{ hashicorp_vault_name }} vault status -format=json"
+  register: _hashicorp_vault_leader_seal
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Unseal | Unseal the first node"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec {{ hashicorp_vault_name }} vault operator unseal {{ item }}"
+  loop: "{{ _hashicorp_vault_unseal_keys }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: (_hashicorp_vault_leader_seal.stdout | default('{}') | from_json).sealed | default(true)
+
+# standbyok=true so this passes whether the first node is the active leader
+# (fresh init) OR a healthy unsealed STANDBY (re-run after Raft leadership
+# migrated off node 1). A sealed node still returns 503, so the wait still
+# guarantees the node is up AND unsealed.
+- name: "Unseal | Wait for the first node to be unsealed (active or standby)"
+  become: false  # localhost/API — API reachability probe, no host privilege
+  ansible.builtin.uri:
+    url: "{{ hashicorp_vault_scheme }}://127.0.0.1:{{ hashicorp_vault_api_port }}/v1/sys/health?standbyok=true"
+    validate_certs: false
+    status_code: [200]
+  register: _hashicorp_vault_leader_active
+  until: _hashicorp_vault_leader_active.status == 200
+  retries: 30
+  delay: 5
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# ── Unseal the remaining nodes (HA only) ──────────────────────────────────
+- name: "Unseal | Check the other nodes' seal status"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec {{ hashicorp_vault_name }} vault status -format=json"
+  register: _hashicorp_vault_node_seal
+  changed_when: false
+  failed_when: false
+  when:
+    - hashicorp_vault_is_ha | bool
+    - inventory_hostname != hashicorp_vault_first_node
+
+- name: "Unseal | Unseal the other nodes"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec {{ hashicorp_vault_name }} vault operator unseal {{ item }}"
+  loop: "{{ _hashicorp_vault_unseal_keys }}"
+  changed_when: true
+  no_log: true
+  when:
+    - hashicorp_vault_is_ha | bool
+    - inventory_hostname != hashicorp_vault_first_node
+    - (_hashicorp_vault_node_seal.stdout | default('{}') | from_json).sealed | default(true)

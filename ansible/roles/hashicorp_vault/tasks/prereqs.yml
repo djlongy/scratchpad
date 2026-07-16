@@ -1,0 +1,57 @@
+---
+# Prerequisites — host directories on the second disk, and firewall.
+
+- name: "Create Vault directories the container only READS (root-owned)"
+  become: true  # root: creates root-owned dirs on the data mount
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ hashicorp_vault_config_dir }}"
+    - "{{ hashicorp_vault_certs_dir }}"
+
+- name: "Create Vault directories the container WRITES (owned by the vault uid)"
+  become: true  # root: creates + chowns the data/logs dirs on the data mount
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ hashicorp_vault_uid }}"
+    group: "{{ hashicorp_vault_gid }}"
+    mode: "0750"
+  loop:
+    # data = Raft storage; logs = audit device + operational logs. Both are
+    # written by the Vault server process (uid {{ hashicorp_vault_uid }}), so the
+    # dirs must be vault-owned or `vault audit enable file` fails permission-denied.
+    - "{{ hashicorp_vault_data_dir }}"
+    - "{{ hashicorp_vault_logs_dir }}"
+
+- name: "Create the keys directory (root-only)"
+  become: true  # root: creates the root-only keys dir
+  ansible.builtin.file:
+    path: "{{ hashicorp_vault_keys_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: "Gather service facts (for the firewall gate below)"
+  ansible.builtin.service_facts:
+  when: hashicorp_vault_manage_firewall | bool
+
+- name: "Open firewall ports for Vault API and cluster"
+  become: true  # root: firewalld module reconfigures the firewall
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    state: enabled
+    immediate: true
+  loop:
+    - "{{ hashicorp_vault_api_port }}/tcp"
+    - "{{ hashicorp_vault_cluster_port }}/tcp"
+  when:
+    - hashicorp_vault_manage_firewall | bool
+    - ansible_facts.services is defined
+    - "'firewalld.service' in ansible_facts.services"

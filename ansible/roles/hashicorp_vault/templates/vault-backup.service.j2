@@ -1,0 +1,25 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=hashicorp_vault — Raft snapshot backup (leader-only)
+After=docker.service network-online.target
+Wants=network-online.target
+Documentation=https://developer.hashicorp.com/vault/docs/commands/operator/raft
+
+[Service]
+Type=oneshot
+# Bound the run so a hung snapshot fails (surfaces in the journal / list-timers)
+# instead of blocking forever. The script also exits non-zero on unreachable /
+# sealed Vault or an empty snapshot, so failures are visible via systemctl.
+TimeoutStartSec=300
+ExecStart={{ hashicorp_vault_backup_script_path }}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vault-container-backup
+User=root
+Group=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={{ hashicorp_vault_backup_dir }} /var/log
+
+[Install]
+WantedBy=multi-user.target

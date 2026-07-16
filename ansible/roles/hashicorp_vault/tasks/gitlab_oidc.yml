@@ -1,0 +1,148 @@
+---
+# GitLab OIDC (SSO) — the oidc auth method so operators log into the Vault UI/CLI
+# with their GitLab identity. Data-driven, OPTIONAL, idempotent. Enables the oidc
+# method once, configures the backend against GitLab's discovery URL, then upserts
+# each login role.
+#
+# The client_id/client_secret come from a GitLab OAuth application (created out of
+# band — instance "Applications", scope openid+profile+email, the redirect URIs
+# below). They resolve declared-var-first, HashiCorp Vault as a lazy fallback
+# (ADR-0011). The client_secret is passed to Vault over STDIN so it never hits argv.
+#
+# Roles are DATA (hashicorp_vault_gitlab_oidc_roles) — define them in inventory:
+#   - name: gitlab
+#     user_claim: sub
+#     groups_claim: groups_direct
+#     allowed_redirect_uris: ["https://vault.example.com:8200/ui/vault/auth/oidc/oidc/callback"]
+#     oidc_scopes: [openid, profile, email]
+#     policies: [ops-admin]
+#     bound_claims: {groups_direct: ["infra/platform-admins"]}
+#
+# All Vault writes go via docker exec on the first node with the root token in the
+# process env (never argv); writes forward to the active leader.
+
+- name: "GitLab OIDC | Resolve the client_id (declared var first, Vault fallback)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_oidc_client_id: >-
+      {{ hashicorp_vault_gitlab_oidc_client_id
+         if (hashicorp_vault_gitlab_oidc_client_id | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret=' + hashicorp_vault_gitlab_oidc_client_id_vault_path) }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: "GitLab OIDC | Resolve the client_secret (declared var first, Vault fallback)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_oidc_client_secret: >-
+      {{ hashicorp_vault_gitlab_oidc_client_secret
+         if (hashicorp_vault_gitlab_oidc_client_secret | length > 0)
+         else lookup('community.hashi_vault.hashi_vault', 'secret=' + hashicorp_vault_gitlab_oidc_client_secret_vault_path) }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: "GitLab OIDC | Assert the client credentials + discovery URL resolved"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_oidc_client_id | length > 0
+      - _hashicorp_vault_oidc_client_secret | length > 0
+      - hashicorp_vault_gitlab_oidc_discovery_url | length > 0
+    fail_msg: >-
+      GitLab OIDC is enabled but client_id, client_secret, or discovery_url is
+      empty — set hashicorp_vault_gitlab_oidc_client_id(_vault_path) /
+      _client_secret(_vault_path) and hashicorp_vault_gitlab_base_url.
+    quiet: true
+  run_once: true
+
+- name: "GitLab OIDC | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_oidc_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "GitLab OIDC | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_oidc_token: "{{ _hashicorp_vault_oidc_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "GitLab OIDC | List enabled auth methods"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_oidc_token }}"
+  register: _hashicorp_vault_oidc_auth
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "GitLab OIDC | Enable the oidc auth method"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault auth enable -path={{ hashicorp_vault_gitlab_oidc_mount_path }} oidc
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_oidc_token }}"
+  when: >-
+    (hashicorp_vault_gitlab_oidc_mount_path ~ '/') not in (_hashicorp_vault_oidc_auth.stdout | from_json).keys()
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Client secret over stdin (oidc_client_secret=-); discovery URL + client id are
+# not secret and go on argv. default_role is optional (empty = no default).
+- name: "GitLab OIDC | Configure the oidc backend"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write auth/{{ hashicorp_vault_gitlab_oidc_mount_path }}/config
+      oidc_discovery_url={{ hashicorp_vault_gitlab_oidc_discovery_url }}
+      oidc_client_id={{ _hashicorp_vault_oidc_client_id }}
+      oidc_client_secret=-
+      {{ ('default_role=' ~ hashicorp_vault_gitlab_oidc_default_role)
+         if (hashicorp_vault_gitlab_oidc_default_role | length > 0) else '' }}
+    stdin: "{{ _hashicorp_vault_oidc_client_secret }}"
+    stdin_add_newline: false
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_oidc_token }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Upsert each login role. shell (not command) so a single-quoted bound_claims JSON
+# survives shlex; the optional bound_claims fragment is built inline (empty when
+# the role omits it). Lists (redirect URIs, scopes, policies) go comma-joined.
+- name: "GitLab OIDC | Create/update each login role"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write auth/{{ hashicorp_vault_gitlab_oidc_mount_path }}/role/{{ item.name | quote }}
+      role_type=oidc
+      user_claim={{ item.user_claim | default('sub') }}
+      groups_claim={{ item.groups_claim | default('groups') }}
+      allowed_redirect_uris={{ (item.allowed_redirect_uris | default([])) | join(',') | quote }}
+      oidc_scopes={{ (item.oidc_scopes | default(['openid'])) | join(',') | quote }}
+      policies={{ (item.policies | default(['default'])) | join(',') | quote }}
+      ttl={{ item.ttl | default('1h') }}
+      max_ttl={{ item.max_ttl | default('4h') }}
+      bound_claims_type={{ item.bound_claims_type | default('string') }}
+      {{ ("'bound_claims=" ~ (item.bound_claims | to_json) ~ "'") if item.bound_claims is defined else '' }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_oidc_token }}"
+  loop: "{{ hashicorp_vault_gitlab_oidc_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

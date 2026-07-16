@@ -1,0 +1,275 @@
+---
+# hashicorp_vault — behavioural defaults (all overridable).
+#
+# Env-specific values (node IPs, domains, VIPs) are NOT set here — they come
+# from inventory. The topology auto-scales from the hosts in the play, so a
+# single-host run yields a standalone Vault and an N-host run yields Raft HA.
+
+# ── Container image ──────────────────────────────────────────────────────
+# Pin an EXACT version — never a floating tag like hashicorp/vault:1.19 (it drifts
+# and breaks reproducibility). 1.19.5 is the latest 1.19.x Community image and is
+# LDAP-verified against FreeIPA (direct-bind AND binddn/search, dev + live cluster,
+# 10/10 logins). NOTE for future debuggers: an earlier persistent "failed to bind
+# as user" here was NOT a version bug and NOT a FreeIPA bug — it was stuck runtime
+# state in a long-lived container (from heavy re-config/lockout churn during
+# debugging); recreating the container fixed it. Every clean 1.19.3/1.19.5/1.20.4/
+# 1.21.3 container authenticates fine. Newer 1.19.x are Enterprise-only; the
+# Community upgrade path is a newer minor (1.20.x/1.21.x) — re-verify LDAP on bump.
+hashicorp_vault_image: "hashicorp/vault:1.19.5"
+hashicorp_vault_name: "vault"
+
+# ── Persistent storage (SECOND DISK) ─────────────────────────────────────
+# hashicorp_vault_data_mount MUST be the mount point of a persistent second disk,
+# provisioned + mounted BEFORE this role (e.g. by the universal `storage`
+# role). All Vault state lives under it so it survives host/container
+# rebuilds. Preflight refuses to run if it is not a real mountpoint.
+hashicorp_vault_data_mount: "/opt/vault"
+hashicorp_vault_require_mounted: true
+
+# Derived host paths under the mount — override only to relocate.
+hashicorp_vault_config_dir: "{{ hashicorp_vault_data_mount }}/config"
+hashicorp_vault_data_dir: "{{ hashicorp_vault_data_mount }}/data"
+hashicorp_vault_certs_dir: "{{ hashicorp_vault_data_mount }}/certs"
+hashicorp_vault_keys_dir: "{{ hashicorp_vault_data_mount }}/keys"
+hashicorp_vault_logs_dir: "{{ hashicorp_vault_data_mount }}/logs"
+
+# ── Networking ───────────────────────────────────────────────────────────
+hashicorp_vault_api_port: 8200
+hashicorp_vault_cluster_port: 8201
+# Address peers/clients use to reach THIS node. IP by default so the role
+# works with no DNS; set to an FQDN in inventory when DNS resolves.
+hashicorp_vault_advertise_addr: "{{ ansible_host }}"
+
+# ── Cluster topology (AUTO-SCALING) ──────────────────────────────────────
+# Derived from the hosts in the current play: 1 host -> standalone Raft,
+# N hosts -> Raft HA joining all N. Pin an explicit list to decouple the
+# cluster from --limit. Do NOT --limit a subset during deploy/init.
+# Only ODD counts are valid (1, 3, 5, 7…) — preflight refuses an even count
+# because 2-node Raft has no fault tolerance (quorum = floor(N/2)+1). Grow/shrink
+# 1 <-> 3 directly; a scale-down evicts stale peers via `--tags remove_peers`.
+hashicorp_vault_nodes: "{{ ansible_play_hosts_all }}"
+
+# ── Seal / init ──────────────────────────────────────────────────────────
+# Homelab default: single unseal key for playbook-driven unseal. Raise for
+# a shared-custody unseal ceremony.
+hashicorp_vault_key_shares: 1
+hashicorp_vault_key_threshold: 1
+
+# ── Auto-unseal on boot (OPTIONAL) ───────────────────────────────────────
+# false (default): a rebooted node stays SEALED until you run `--tags unseal`.
+# true: a systemd unit unseals each node on boot using an on-disk key copy —
+# self-healing, but the unseal key is then present on every node (see
+# autounseal.yml's security note). Toggling back to false removes it + the keys.
+hashicorp_vault_auto_unseal: false
+hashicorp_vault_autounseal_keys_file: "{{ hashicorp_vault_keys_dir }}/unseal_keys"
+hashicorp_vault_autounseal_script_path: "/usr/local/bin/vault-container-unseal.sh"
+
+# ── TLS ──────────────────────────────────────────────────────────────────
+hashicorp_vault_tls_enabled: true
+# true  -> role self-signs a CA + multi-SAN server cert (portable default)
+# false -> supply the three controller-side paths below instead
+hashicorp_vault_tls_generate: true
+# Where the generated CA/key persist on the CONTROLLER so re-runs reuse the
+# same CA (stable trust). Kept outside the repo — never commit it.
+hashicorp_vault_tls_local_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.local/share/hashicorp_vault/tls"
+hashicorp_vault_tls_ca_cert: ""      # consulted only when hashicorp_vault_tls_generate=false
+hashicorp_vault_tls_server_cert: ""
+hashicorp_vault_tls_server_key: ""
+# On-host cert mode (certmonger / ipa-getcert): the cert/key/CA already exist ON
+# THE NODE at these paths (issued BEFORE this role runs). When true the role does
+# NOT generate or copy-from-controller — it copies these in place into the certs
+# dir, owned by the vault uid (:Z relabel handles SELinux). Overrides _generate.
+hashicorp_vault_tls_onhost: false
+hashicorp_vault_tls_onhost_cert: ""    # e.g. /etc/pki/tls/vault/vault.crt (certmonger)
+hashicorp_vault_tls_onhost_key: ""     # e.g. /etc/pki/tls/vault/vault.key
+hashicorp_vault_tls_onhost_ca: ""      # e.g. /etc/ipa/ca.crt (FreeIPA CA chain)
+hashicorp_vault_tls_cn: "vault"
+hashicorp_vault_tls_validity_days: 3650
+# Extra SANs. Node IPs + short hostnames are added automatically; add FQDNs
+# / VIPs here, e.g. ["DNS:vault.dev.example.com", "IP:10.0.20.55"].
+hashicorp_vault_tls_extra_sans: []
+# Optional domain: when set, "<inventory_hostname>.<domain>" is added to the
+# cert SANs for every node.
+hashicorp_vault_domain: ""
+
+# ── Vault server config ──────────────────────────────────────────────────
+hashicorp_vault_ui: true
+hashicorp_vault_log_level: "info"
+hashicorp_vault_log_format: "json"
+hashicorp_vault_disable_mlock: true          # containers frequently cannot mlock
+# Privately relabel (:Z) the container's bind mounts so it can access /opt/vault
+# under SELinux ENFORCING. Harmless on permissive / no-SELinux hosts. Set false to
+# manage the contexts out of band (semanage fcontext) for very large data dirs.
+hashicorp_vault_selinux_relabel: true
+hashicorp_vault_telemetry_enabled: true
+
+# ── Firewall ─────────────────────────────────────────────────────────────
+hashicorp_vault_manage_firewall: true
+
+# ── Multi-tenant policies (optional) ─────────────────────────────────────
+# The MOUNT is the isolation domain: each {tenant, env} pair gets its OWN KV v2
+# mount kv-<tenant>-<env> (the mount — not a path prefix — is the ACL boundary,
+# so a tenant is offboarded with one `vault secrets disable kv-<tenant>-<env>`).
+# Each pair yields a policy "<tenant>-<env>" granting the WHOLE mount, attached
+# (via an LDAP group) so a user sees only their tenant's mount. Tenant AND env
+# names MUST be hyphen-free (^[a-z0-9]+$) — a hyphen makes kv-<tenant>-<env>
+# ambiguous and breaks the kv-<tenant>-* admin glob (preflight asserts this).
+# The role ensures each kv-<tenant>-<env> mount exists.
+hashicorp_vault_manage_policies: false
+hashicorp_vault_kv_mount_prefix: "kv"
+hashicorp_vault_tenants: []
+#   - {tenant: acme,   env: prod}             # -> mount kv-acme-prod,  policy acme-prod
+#   - {tenant: globex, env: dev}              # -> mount kv-globex-dev, policy globex-dev
+#   - {tenant: acme,   env: dev, wide: true}  # + tenant-WIDE policy "acme" -> kv-acme-*
+# `wide: true` on ANY of a tenant's rows also writes a tenant-scoped policy named
+# "<tenant>" granting kv-<tenant>-* (ALL that tenant's envs) — for a tenant admin.
+# Prefer the per-env policies for automation (least privilege).
+# Extra, non-tenant policies: {policy_name, template} where template is under
+# templates/policies/ (bundled: admin.hcl.j2 = CRUD on _admin_kv_mounts;
+# all-kv.hcl.j2 = tier-3 kv-* over EVERY mount + auth/policy/identity mgmt).
+hashicorp_vault_policies: []
+#   - {policy_name: vault-admin, template: admin.hcl.j2}
+#   - {policy_name: vault-superadmin, template: all-kv.hcl.j2}  # tier-3: kv-* (all mounts)
+# admin.hcl.j2 grants full CRUD on these mounts + auth/policy mgmt. List the
+# tenant mounts an admin should reach (kv-<tenant>-<env>), one per line.
+hashicorp_vault_admin_kv_mounts: []
+#   - kv-acme-prod
+#   - kv-globex-dev
+
+# ── LDAP auth (optional; FreeIPA in this homelab) ────────────────────────
+# Group naming: a tenant's LDAP group defaults to "vault-<tenant>-<env>", mapped
+# to policies [default, <tenant>-<env>]. Add non-tenant groups via _extra_groups.
+hashicorp_vault_ldap_enabled: false
+hashicorp_vault_ldap_url: ""                     # e.g. ldaps://10.0.0.11
+hashicorp_vault_ldap_binddn: ""
+hashicorp_vault_ldap_bindpass: ""                # declared-var-first (ansible-vault)
+hashicorp_vault_ldap_bindpass_vault_path: ""     # HC-Vault fallback: "mount/path:field"
+hashicorp_vault_ldap_userdn: ""
+hashicorp_vault_ldap_userattr: "uid"
+hashicorp_vault_ldap_groupdn: ""
+hashicorp_vault_ldap_groupattr: "cn"
+hashicorp_vault_ldap_groupfilter: "(&(objectClass=posixgroup)(memberUid={{ '{{.Username}}' }}))"
+hashicorp_vault_ldap_starttls: false
+hashicorp_vault_ldap_insecure_tls: true          # self-signed FreeIPA CA in the lab
+hashicorp_vault_ldap_group_pattern: "vault-{tenant}-{env}"
+hashicorp_vault_ldap_extra_groups: []
+#   - {ldap_group: vault-admins, policies: [default, vault-admin]}
+# Per-user authorisation — authorises a specific directory user directly
+# (auth/ldap/users/<name>), independent of group membership resolution.
+hashicorp_vault_ldap_users: []
+#   - {ldap_username: long, policies: [default, vault-admin]}
+
+# ── Identity groups (cross-auth-method RBAC layer, optional) ──────────────
+# Vault Identity groups. EXTERNAL groups map an auth-method group (LDAP now, OIDC
+# later) to policies via a group-alias, so the SAME policies apply regardless of
+# login method. INTERNAL groups have explicit membership and can NEST other groups
+# (member_group_names) for indirect inheritance (e.g. an "admin-all" parent).
+#   external: {identity_group_name, type: external, ldap_group, policies}
+#   internal: {identity_group_name, type: internal, policies, member_group_names}
+# type defaults to external. Requires hashicorp_vault_ldap_enabled for the alias.
+hashicorp_vault_identity_groups: []
+#   - {identity_group_name: acme-prod-admins, ldap_group: vault-acme-prod, policies: [acme-prod]}
+#   - {identity_group_name: platform-superadmins, type: internal, policies: [vault-superadmin],
+#      member_group_names: [acme-prod-admins]}
+
+# ── Human operator accounts (userpass, optional) ─────────────────────────
+# Data-driven; empty = phase skipped. Keep passwords in a VAULTED inventory /
+# group_vars, NEVER here. Each: {username, password, policies}. The account is
+# upserted every run (password reset to the declared value → inventory is source
+# of truth). Pair with hashicorp_vault_policies for the named policies referenced.
+hashicorp_vault_userpass_accounts: []
+#   - {username: alice, password: "{{ vaulted_alice_pw }}", policies: [default, ops-admin]}
+
+# ── Automation service accounts (AppRole, optional) ──────────────────────
+# Data-driven; empty = phase skipped. Each: {name, policies, token_ttl,
+# token_max_ttl, secret_id_ttl}. TTLs default when omitted. The phase CREATES the
+# roles only — retrieving role_id / minting secret_id is done out of band (they
+# are credentials; the role does not write secret_ids to disk).
+hashicorp_vault_approles: []
+#   - {role_name: svc-ansible, policies: [svc-automation], token_ttl: 4h, token_max_ttl: 12h}
+
+# ── GitLab OIDC / SSO (optional) ─────────────────────────────────────────
+# Enable the oidc auth method so operators log into the Vault UI/CLI with their
+# GitLab identity. client_id/secret come from a GitLab OAuth application (created
+# out of band): resolved declared-var-first, HC-Vault as a lazy fallback (ADR-0011);
+# the secret is passed to Vault over stdin. Roles are data — empty = phase skipped.
+hashicorp_vault_gitlab_oidc_enabled: false
+hashicorp_vault_gitlab_oidc_mount_path: "oidc"
+# Discovery URL + issuer default to the GitLab base URL (shared with JWT below).
+hashicorp_vault_gitlab_base_url: ""
+hashicorp_vault_gitlab_oidc_discovery_url: "{{ hashicorp_vault_gitlab_base_url }}"
+hashicorp_vault_gitlab_oidc_client_id: ""            # declared-var first
+hashicorp_vault_gitlab_oidc_client_id_vault_path: ""     # HC-Vault fallback "mount/data/path:field"
+hashicorp_vault_gitlab_oidc_client_secret: ""        # declared-var first
+hashicorp_vault_gitlab_oidc_client_secret_vault_path: ""  # HC-Vault fallback "mount/data/path:field"
+hashicorp_vault_gitlab_oidc_default_role: ""         # optional default login role
+hashicorp_vault_gitlab_oidc_roles: []
+#   - name: gitlab
+#     user_claim: sub
+#     groups_claim: groups_direct
+#     allowed_redirect_uris: ["https://vault.example.com:8200/ui/vault/auth/oidc/oidc/callback"]
+#     oidc_scopes: [openid, profile, email]
+#     policies: [ops-admin]
+#     bound_claims: {groups_direct: ["infra/platform-admins"]}
+
+# ── GitLab CI JWT (optional) ─────────────────────────────────────────────
+# Enable the jwt auth method so GitLab CI jobs exchange their pipeline JWT for a
+# scoped Vault token. Roles are data — empty = phase skipped. bound_audiences
+# defaults to _default_audience when a role omits it (empty = no audience binding).
+hashicorp_vault_gitlab_jwt_enabled: false
+hashicorp_vault_gitlab_jwt_default_audience: ""
+hashicorp_vault_gitlab_jwt_roles: []
+#   - name: myproject
+#     bound_claims: {project_id: "42", ref: main, ref_type: branch}
+#     policies: [svc-ci-prod]
+#     token_ttl: 1h
+#     token_max_ttl: 4h
+
+# ── Transit engine + Cosign signing keys (optional) ──────────────────────
+# Enable the Transit secrets engine and create-if-missing each key (a signing key's
+# PRIVATE half never leaves Vault). Keys are data — empty = phase skipped. A key
+# with export_public_key: {mount, path} publishes its PUBLIC half to that KV path
+# (a full PUT of public_key/key_type/key_version/transit_path — the path is OWNED
+# by this export) for Kyverno/offline verification.
+hashicorp_vault_transit_enabled: false
+hashicorp_vault_transit_mount: "transit"
+hashicorp_vault_transit_keys: []
+#   - name: cosign
+#     type: ecdsa-p256          # default
+#     exportable: false          # default (private key never leaves Vault)
+#     export_public_key: {mount: secret, path: platform/cosign/runtime}
+
+# ── Audit logging (optional) ─────────────────────────────────────────────
+# Enable the file audit device. It writes INSIDE the container to _audit_path
+# (under /vault/logs, bind-mounted to the persistent disk), so the trail survives
+# rebuilds. Cluster-wide in Raft — enabled once from the first node.
+hashicorp_vault_audit_enabled: false
+hashicorp_vault_audit_path: "{{ hashicorp_vault_container_logs_dir }}/vault_audit.log"
+
+# ── Backup (scheduled Raft snapshots) ────────────────────────────────────
+# A systemd timer runs on every node; only the active leader snapshots. The
+# snapshot is copied out of the container to hashicorp_vault_backup_dir on the host.
+hashicorp_vault_backup_enabled: true
+hashicorp_vault_backup_dir: "{{ hashicorp_vault_data_mount }}/backups"   # the "given path"
+hashicorp_vault_backup_schedule: "*-*-* 02:00:00"                  # systemd OnCalendar
+hashicorp_vault_backup_retention_days: 7
+hashicorp_vault_backup_script_path: "/usr/local/bin/vault-container-backup.sh"
+# Backup auth = a SCOPED periodic token (policy: read on sys/storage/raft/snapshot)
+# minted on the leader and distributed to nodes — avoids spreading the root token.
+# The backup script renews it each run; backup setup re-mints it if it's gone
+# (self-heals after a rollback to a pre-mint snapshot). Restore still uses root.
+hashicorp_vault_backup_policy_name: "vault-backup"
+hashicorp_vault_backup_token_period: "768h"
+hashicorp_vault_backup_token_file: "{{ hashicorp_vault_keys_dir }}/backup_token"
+# Optional NFS backup target — the "mount NFS as the backup location" pattern.
+# Set BOTH to have the role mount <server>:<export> at hashicorp_vault_backup_dir
+# (else the backup dir is a plain local path). Point hashicorp_vault_backup_dir at a
+# dedicated mountpoint (e.g. /mnt/vault-backups) when using NFS.
+hashicorp_vault_backup_nfs_server: ""
+hashicorp_vault_backup_nfs_export: ""
+hashicorp_vault_backup_nfs_opts: "rw,hard,nfsvers=4.1,_netdev,nofail"
+
+# ── Restore (opt-in via --tags restore; DESTRUCTIVE) ─────────────────────
+# Which snapshot to roll back to: "latest" (or empty) = newest in the backup
+# dir on the leader; otherwise an absolute path to a .snap on the leader.
+hashicorp_vault_restore_snapshot: "latest"

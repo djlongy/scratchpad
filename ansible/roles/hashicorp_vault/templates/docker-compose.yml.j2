@@ -1,0 +1,56 @@
+{{ ansible_managed | comment }}
+# docker-compose.yml — hashicorp_vault
+# Bridge network with published ports: peers reach a node on <node>:{{ hashicorp_vault_api_port }}
+# / :{{ hashicorp_vault_cluster_port }}. Portable across engines (host networking is
+# unreliable on some — e.g. Colima/Docker Desktop).
+#
+# The container runs the stock entrypoint as root, which setcaps the vault
+# binary for IPC_LOCK and drops to the in-image vault user (uid {{ hashicorp_vault_uid }}). Do NOT set
+# `user:` + SKIP_SETCAP here — without the setcap step the entrypoint's mlock
+# retry re-execs vault and the two processes collide on the API port.
+services:
+  {{ hashicorp_vault_name }}:
+    image: {{ hashicorp_vault_image }}
+    container_name: {{ hashicorp_vault_name }}
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "{{ hashicorp_vault_api_port }}:{{ hashicorp_vault_api_port }}"
+      - "{{ hashicorp_vault_cluster_port }}:{{ hashicorp_vault_cluster_port }}"
+    environment:
+      # Skip the entrypoint's recursive chown of the bind-mounted config/logs
+      # dirs (we set ownership from Ansible) so re-runs stay idempotent. NOTE:
+      # do NOT also set SKIP_SETCAP — setcap must run so IPC_LOCK works and the
+      # entrypoint does not re-exec vault (which collides on the API port).
+      SKIP_CHOWN: "1"
+      VAULT_ADDR: "{{ hashicorp_vault_scheme }}://127.0.0.1:{{ hashicorp_vault_api_port }}"
+{% if hashicorp_vault_tls_enabled | bool %}
+      VAULT_CACERT: "{{ hashicorp_vault_container_certs_dir }}/ca.crt"
+{% if hashicorp_vault_tls_onhost | bool %}
+      # An externally-issued cert (e.g. FreeIPA/certmonger) cannot carry a
+      # 127.0.0.1 SAN — a public CA only certifies the host's own DNS names — so
+      # the container's OWN loopback CLI (VAULT_ADDR=127.0.0.1) cannot verify it.
+      # Skip verification for the LOCAL admin CLI only; external clients still
+      # validate the served cert against the real CA.
+      VAULT_SKIP_VERIFY: "true"
+{% endif %}
+{% endif %}
+{# :Z privately relabels each bind mount to container_file_t so the container can
+   access it under SELinux ENFORCING. Harmless on permissive/no-SELinux hosts.
+   Toggle off (hashicorp_vault_selinux_relabel=false) to manage contexts out of
+   band instead (e.g. semanage fcontext) — recommended for very large data dirs
+   where a per-start recursive relabel is costly. #}
+{% set _z = ':Z' if (hashicorp_vault_selinux_relabel | bool) else '' %}
+{% set _zro = ':ro,Z' if (hashicorp_vault_selinux_relabel | bool) else ':ro' %}
+    volumes:
+      - {{ hashicorp_vault_config_dir }}:{{ hashicorp_vault_container_config_dir }}{{ _z }}
+      - {{ hashicorp_vault_data_dir }}:{{ hashicorp_vault_container_data_dir }}{{ _z }}
+{% if hashicorp_vault_tls_enabled | bool %}
+      - {{ hashicorp_vault_certs_dir }}:{{ hashicorp_vault_container_certs_dir }}{{ _zro }}
+{% endif %}
+      - {{ hashicorp_vault_logs_dir }}:{{ hashicorp_vault_container_logs_dir }}{{ _z }}
+    # `server` only — the image entrypoint auto-adds -config=/vault/config (the
+    # dir). Passing an explicit -config too would load vault.hcl TWICE and the
+    # second listener bind fails "address already in use".
+    command: server
