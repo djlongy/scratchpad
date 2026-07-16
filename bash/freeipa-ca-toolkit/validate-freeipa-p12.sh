@@ -248,6 +248,55 @@ if [[ -n "$NSSDB" ]]; then
     else
       echo "    (could not read caSigningCert — wrong password / need sudo)"
     fi
+
+    # ---- CA HIERARCHY & KEY MAP — label every CA, mark which private keys are here ----
+    line; echo "CA HIERARCHY & KEY MAP  (what each CA is, and whether its key is here)"
+    certutil -K -d "$NSSDB" -f "$pwf" 2>/dev/null | sed -n 's/.*[Cc]ertificate DB:[[:space:]]*//p' | sort -u > "$WORK/keynicks"
+    certutil -L -d "$NSSDB" 2>/dev/null | sed -E '1,/Trust Attributes/d' \
+      | sed -E 's/[[:space:]]+[[:alnum:]]*,[[:alnum:]]*,[[:alnum:]]*[[:space:]]*$//' | sed '/^[[:space:]]*$/d' > "$WORK/certnicks"
+    have_root_key="no"; have_ipa_key="no"; root_seen="no"; ipa_seen="no"
+    while IFS= read -r nick; do
+      [[ -n "$nick" ]] || continue
+      certutil -L -d "$NSSDB" -n "$nick" -a >"$WORK/n.pem" 2>/dev/null || continue
+      [[ "$(openssl x509 -in "$WORK/n.pem" -noout -ext basicConstraints 2>/dev/null | grep -io 'CA:TRUE')" == "CA:TRUE" ]] || continue
+      s=$(openssl x509 -in "$WORK/n.pem" -noout -subject 2>/dev/null | sed 's/^subject= *//')
+      i=$(openssl x509 -in "$WORK/n.pem" -noout -issuer  2>/dev/null | sed 's/^issuer= *//')
+      haskey="no"; grep -qxF "$nick" "$WORK/keynicks" && haskey="yes"
+      ss="no"; [[ "$(printf %s "$s"|tr -d ' ')" == "$(printf %s "$i"|tr -d ' ')" ]] && ss="yes"
+      ipa="no"; printf %s "$nick" | grep -q 'caSigningCert cert-pki-ca' && ipa="yes"
+      if [[ "$ss" == yes && "$ipa" == yes ]]; then
+        label="ROOT CA = your IPA CA (self-signed realm: the IPA CA is its OWN root)"
+        root_seen=yes; ipa_seen=yes; [[ "$haskey" == yes ]] && { have_root_key=yes; have_ipa_key=yes; }
+      elif [[ "$ss" == yes ]]; then
+        label="ROOT CA (top of trust — self-signed)"; root_seen=yes; [[ "$haskey" == yes ]] && have_root_key=yes
+      elif [[ "$ipa" == yes ]]; then
+        label="IPA CA — your FreeIPA sub-CA (what cacert.p12 holds)"; ipa_seen=yes; [[ "$haskey" == yes ]] && have_ipa_key=yes
+      else
+        label="INTERMEDIATE CA (a middle layer)"
+      fi
+      echo "  • [$label]"
+      echo "      name      : $nick"
+      echo "      subject   : $s"
+      echo "      signed by : $i"
+      echo "      key here  : $( [[ "$haskey" == yes ]] && echo 'YES  <-- can sign with this' || echo 'no (public cert only)' )"
+    done < "$WORK/certnicks"
+
+    sub; echo "  ===> WHAT YOU CAN DO (stand up a test realm trusted by the same endpoints):"
+    if [[ "$have_ipa_key" == yes ]]; then
+      echo "    PATH B  (sign the test CA with your IPA CA): READY — you hold the IPA CA key."
+    else
+      echo "    PATH B: IPA CA key not found here (need sudo / correct --nssdb)."
+    fi
+    if [[ "$have_root_key" == yes && "$ipa_seen" == yes ]]; then
+      echo "    PATH A  (isolated sibling under the root): READY HERE — the ROOT key is in this DB."
+    elif [[ "$root_seen" == yes ]]; then
+      echo "    PATH A  (isolated sibling under the root): you have the root CERT but NOT its key here."
+      echo "            -> submit your test CSR to the root's owner to sign, or find the root key file."
+    else
+      echo "    PATH A: the root's cert isn't in this DB — the root lives OUTSIDE FreeIPA."
+      echo "            -> whoever signed this IPA CA at install holds it; submit your CSR to them."
+    fi
+    echo "    Full step-by-step for each path: see SIGNING.md."
   fi
 fi
 line

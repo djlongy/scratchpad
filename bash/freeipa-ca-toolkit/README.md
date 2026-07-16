@@ -65,6 +65,11 @@ chmod +x validate-freeipa-p12.sh
 sudo ./validate-freeipa-p12.sh --nssdb /var/lib/pki/pki-tomcat/alias ca-agent.p12 cacert.p12
 ```
 
+Run with `--nssdb` on the FreeIPA server and the tool does the thinking for you: a
+**`CA HIERARCHY & KEY MAP`** (labels each cert ROOT CA / IPA CA / intermediate and marks which
+private keys are present) and a **`===> WHAT YOU CAN DO`** verdict telling you whether Path A or
+Path B is available. Then follow the matching section in [`SIGNING.md`](./SIGNING.md).
+
 Non-interactive / automation (password via env, never on the command line):
 
 ```bash
