@@ -94,6 +94,16 @@ Test becomes a child of prod's IPA CA (chains to root, trusted). Contained by `n
 ---
 
 ## Common — Step 2: sign the CSR (Path A-local / Path B only)
+
+**One-shot helper (does everything in this step + Step 3's chain automatically):**
+```
+sudo ./sign-test-ca.sh --csr /root/ipa.csr --name-constraint .<testsub>.<root-domain>
+#   Path B (default): signs with your IPA CA from the NSS DB.
+#   Path A-local:     add  --signer-cert root.crt --signer-key root.key   to sign with the ROOT.
+# → writes test-ipa-ca.crt + ca-chain.crt (public), verifies the chain, shreds the key copy,
+#   and prints the exact phase-2 command. Then skip to Step 3.
+```
+Manual equivalent (what the helper runs):
 ```
 cat > subca-ext.cnf <<'EOF'
 basicConstraints      = critical,CA:TRUE,pathlen:0
