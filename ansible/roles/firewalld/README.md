@@ -33,7 +33,7 @@ referencing `harbor` in a zone is firewalld's native, declarative model. It:
 ## Quickstart
 
 ```yaml
-# inventories/<env>/group_vars/docker_hosts.yml
+# inventories/mgt/group_vars/docker_hosts.yml
 firewalld_default_zone: trusted-mgmt
 
 firewalld_services:
@@ -67,7 +67,7 @@ firewalld_zones:
     services: [http, https]
 
 firewalld_source_zone_bindings:
-  - { zone: trusted-mgmt, source: 192.0.2.0/24 }
+  - { zone: trusted-mgmt, source: 10.0.0.0/24 }
   - { zone: dmz-ingress,  source: 0.0.0.0/0 }
 ```
 
@@ -97,7 +97,7 @@ Then in a playbook:
 Run only the binding phase:
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/baseline.yml \
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/30_plat_baseline.yml \
   --tags bindings
 ```
 

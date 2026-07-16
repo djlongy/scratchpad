@@ -86,8 +86,8 @@ firewalld_zones_remove: []
 
 # Bind source CIDRs to zones (L3 segregation pattern — preferred).
 # Schema:
-#   - { zone: trusted-mgmt, source: 192.0.2.0/24 }
-#   - { zone: dmz-ingress,  source: 198.51.100.0/24 }
+#   - { zone: trusted-mgmt, source: 10.0.0.0/24 }
+#   - { zone: dmz-ingress,  source: 10.0.40.0/24 }
 firewalld_source_zone_bindings: []
 
 # Bind physical/virtual interfaces to zones (L2 segregation — use only if you

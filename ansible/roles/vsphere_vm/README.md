@@ -43,7 +43,7 @@ Tiny copy-pasteable minimal example (DRS cluster, Vault-backed credentials):
 # group_vars/vmware_vms.yml — the shared minimum
 vsphere_vm_server: "vcenter.example.com"
 vsphere_vm_datacenter: "Datacenter"
-vsphere_vm_vault_secret: "secret/vcenter"   # holds the vCenter password
+vsphere_vm_vault_secret: "secret/data/vsphere/vcenter"   # holds the vCenter password
 # vsphere_vm_username / vsphere_vm_password_field default to administrator@vsphere.local / password
 vsphere_vm_cluster: "Cluster"          # or: vsphere_vm_esxi_host + vsphere_vm_resource_pool
 vsphere_vm_datastore: "datastore1"
@@ -136,7 +136,7 @@ phase handles this automatically:
 ```yaml
 # group_vars / play vars
 vsphere_vm_server: "vcenter.example.com"
-vsphere_vm_vault_secret: "secret/vcenter"
+vsphere_vm_vault_secret: "secret/data/vsphere/vcenter"
 vsphere_vm_datacenter: "Datacenter"
 vsphere_vm_esxi_host: "192.0.2.11"
 vsphere_vm_resource_pool: "/Datacenter/host/192.0.2.11/Resources"
@@ -222,9 +222,9 @@ the common spec + minimal host_vars for the uniques** (usually just the IP).
 ```yaml
 # group_vars/vmware_vms.yml — the common spec
 vsphere_vm_template: linux-almalinux-9-main
-vsphere_vm_hardware:            # native vmware_guest dict (replaces the role default)
-  num_cpus: 2
-  memory_mb: 4096
+vsphere_vm_cpu: 2               # → hardware.num_cpus
+vsphere_vm_memory: 4096         # MB → hardware.memory_mb
+# vsphere_vm_hardware: {boot_firmware: efi}   # extra native vmware_guest hardware keys
 vsphere_vm_network: "VLAN10-SVC"
 vsphere_vm_dns: [192.0.2.53]
 domain: example.com
@@ -248,9 +248,8 @@ the role is a drop-in replacement (no per-host edits):
 # group_vars/<vm_group>.yml — marry the exports to the role
 vsphere_vm_template: "{{ template }}"
 vsphere_vm_folder: "{{ folder }}"
-vsphere_vm_hardware:
-  num_cpus: "{{ cpus }}"
-  memory_mb: "{{ memory }}"
+vsphere_vm_cpu: "{{ cpus }}"
+vsphere_vm_memory: "{{ memory }}"
 vsphere_vm_disk: "{{ disks }}"
 vsphere_vm_networks: "{{ networks }}"
 vsphere_vm_customization:
@@ -369,7 +368,8 @@ but **not sufficient** — GOSC reverts it after the clone returns. That is why 
 bounded **multi-pass** reconnect over all managed VMs (the pass that lands just after customization
 finishes makes it stick). If you still see a disconnected NIC: `govc device.connect -vm <name> ethernet-0`.
 
-**Root cause + permanent fix.**
+**Root cause + permanent fix:** a vSphere GOSC customization spec races the NIC's
+"Connect at power on" flag on a freshly cloned VM, leaving the interface disconnected.
 The durable cure — **now implemented** as `vsphere_vm_provision_via_guestinfo` (see next section) —
 is to stop using GOSC and drive first-boot config via the cloud-init VMware GuestInfo datasource.
 
@@ -412,8 +412,8 @@ the static hostname + network. Verified end-to-end (NIC `Connected: true` throug
 
 **Requires a GuestInfo-ready template** (Packer-baked): cloud-init with `datasource_list: [VMware, OVF,
 None]`, `allow_raw_data: true`, and `disable_vmware_customization: true`. Verify on a built host with
-`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and where every VLAN has
-DHCP, that means an IP-conflict risk; pick target IPs not already allocated in inventory).
+`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every homelab VLAN has
+DHCP, so that means an IP-conflict risk; pick target IPs not already allocated in inventory).
 
 **Multi-NIC** — every entry in a guest's `networks` becomes its own cloud-init ethernet, keyed by an
 **explicit** guest device name (cloud-init's RHEL renderer ignores netplan `match:` globs). Defaults follow
@@ -423,7 +423,7 @@ The first NIC with a gateway (else NIC 0) carries the resolvers.
 ```yaml
 # host_vars/monster-01.yml — a (deliberately gnarly) 3-NIC guest
 vsphere_vm_networks:
-  - {name: "VLAN10",     interface: ens192, ip: 192.0.2.60, netmask: 255.255.255.0, gateway: 192.0.2.1}
+  - {name: "VLAN10-APP",     interface: ens192, ip: 10.0.0.60, netmask: 255.255.255.0, gateway: 10.0.0.1}
   - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.60,    netmask: 255.255.255.0}   # data plane, no gateway
   - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.60,    netmask: 255.255.255.0}   # ingress plane
 ```
