@@ -402,20 +402,19 @@ freeipa_iam_reconcile_all_confirm: false
 freeipa_iam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
 freeipa_iam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
 
-# ── EleGrant / externally-managed object protection (reconcile shield) ────────
-# Objects another system creates at runtime (EleGrant PIM: pam_* groups, per-tenant
-# PIM hbac/sudo rules, and its svc accounts) are NOT in the declarative model, so a
-# scoped reconcile whose scope substring collides with their names — or reconcile_all —
-# would delete/archive them. Protection is by NAME PATTERN, not a single prefix: these are
-# LISTS of regexes, and a found object/user is shielded if its name matches ANY entry
-# (re.search — matches anywhere in the name, so a bare slug like "acme" also works). Add a
-# tenant's slug(s) here if EleGrant names its groups per-tenant instead of with a common
-# prefix; multiple slugs per tenant is fine — one list entry each. The shield applies to
-# BOTH scoped reconcile AND reconcile_all, and to user archival. [] → shield nothing extra.
+# ── Externally-managed object protection (reconcile shield) ──────────────────
+# Objects another system creates at runtime (e.g. a runtime PIM/provisioning manager:
+# pam_* groups, per-tenant hbac/sudo rules, and its service accounts) are NOT in the
+# declarative model, so a scoped reconcile whose scope substring collides with their
+# names — or reconcile_all — would delete/archive them. Protection is by NAME PATTERN:
+# these are LISTS of regexes, and a found object/user is shielded if its name matches ANY
+# entry (re.search — matches anywhere, so a bare slug like "acme" also works). Add your
+# runtime manager's group/account patterns (or per-tenant slugs) here. The shield applies
+# to BOTH scoped reconcile AND reconcile_all, and to user archival. [] → shield nothing.
 freeipa_iam_reconcile_protect_regexes:
-  - "^pam_"           # EleGrant shadow groups (default naming); add tenant slugs as needed
-freeipa_iam_reconcile_protect_users_regexes:
-  - "^svc-elegrant"   # EleGrant service accounts (svc-elegrant, -toggler-*, -dex-bind)
+  - "^pam_"           # shadow groups from a runtime PIM manager; add patterns/slugs as needed
+freeipa_iam_reconcile_protect_users_regexes: []
+                      # externally-managed service accounts — add your own name patterns, e.g. "^svc-"
 
 # Container-marker group for GROUP-EXISTENCE reconcile: every declared group is nested here during
 # apply; under authoritative any container member no longer in freeipa_iam_usergroups (and not

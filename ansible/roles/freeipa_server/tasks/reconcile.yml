@@ -107,7 +107,7 @@
   loop_control:
     label: "{{ item.item }}"
 
-# Shield externally-managed objects (EleGrant pam_* groups + per-tenant PIM hbac/sudo
+# Shield externally-managed objects (e.g. pam_* groups + per-tenant PIM hbac/sudo
 # rules) from orphan deletion: any FOUND name matching ANY freeipa_iam_reconcile_protect_regexes
 # entry joins the protection set, so neither a name-colliding scoped reconcile NOR reconcile_all
 # can delete it. Empty/whitespace patterns are dropped; an empty effective list degrades to a

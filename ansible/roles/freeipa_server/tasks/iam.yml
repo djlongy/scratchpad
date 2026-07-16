@@ -918,7 +918,7 @@
     - freeipa_server_authoritative | bool
     - freeipa_iam_current_managed_users | default([]) | length > 0
 
-# The protect-users regexes shield EleGrant svc accounts (and any externally-managed
+# The protect-users regexes shield externally-managed service accounts (any externally-managed
 # login) from archival even if once declared then undeclared (belt-and-suspenders atop
 # the marker gate). ANY-match via re.search; an empty effective list degrades to a
 # never-matching regex so normal archival is unaffected.
