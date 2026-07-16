@@ -8,6 +8,15 @@ cloud image — regardless of disk size or device naming (`sda` / `nvme0n1` /
 It consolidates four older patterns (grow, provision, mount-hygiene, repair)
 into one role driven by a single declarative list.
 
+## TL;DR
+
+**Most common: grow a disk after expanding its backing volume.** `--tags grow` rescans, then runs growpart → pvresize → lvextend → fs grow (auto, non-destructive); provisioning fresh disks is opt-in.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags grow       # resize existing
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags provision  # opt-in, fresh disks
+```
+
 ## How it works
 
 One list, `storage_volumes`, where each entry describes a volume end-to-end.

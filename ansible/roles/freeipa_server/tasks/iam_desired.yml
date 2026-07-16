@@ -211,7 +211,7 @@
       (2026/07): freeipa_server_iam_builtin_* -> freeipa_iam_builtin_*,
       freeipa_server_iam_reference_validation -> freeipa_iam_reference_validation,
       freeipa_server_export_hbacsvc_stock -> freeipa_server_export_stock_hbacsvcs
-      (re-export the snapshot or rename in place).
+      (stock HBAC services). Re-export the snapshot or rename in place.
 
 # SURGICAL VALIDATION: collect EVERY referential/structural problem in one pass and
 # report them all at once at the end — so a bad item 2000 lines into a large dict

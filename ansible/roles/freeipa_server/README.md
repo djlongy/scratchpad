@@ -1,9 +1,3 @@
-> **Variant family:** `freeipa_server*` — two FreeIPA server deployment modes, selected per host:
-> package/native (this role) and container (`freeipa_server_docker`, which borrows this role's task
-> engine via `import_role` for zero duplication). Both modes are supported simultaneously; neither
-> supersedes the other. This role is the package/native install and the reference implementation for
-> the family's Ansible-Vault-first credential handling.
-
 # freeipa_server
 
 Portable, multi-OS FreeIPA **server** role. Wraps the upstream
@@ -12,6 +6,20 @@ cold-start resilience, a scheduled backup timer, declarative IAM
 reconciliation, and an opt-in post-install hardening baseline.
 
 Pairs with [`freeipa_client`](../freeipa_client/) for host enrolment.
+
+## TL;DR
+
+**Most common: reconcile identity (users/groups/HBAC/sudo).** Edit the `freeipa_iam_*` lists (or the per-tenant files), then re-run `--tags iam` — idempotent, primary-only.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags iam
+```
+
+Install is a separate one-time run (no tags does install + everything):
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml
+```
 
 ## Quick start
 
@@ -72,9 +80,9 @@ A no-tag run runs everything except the `never`-tagged ops.
 
 ```bash
 # Re-reconcile IAM after editing the data
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/20_idm_freeipa_iam.yml --tags iam
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags iam
 # Re-apply just resilience
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/20_idm_freeipa_iam.yml --tags resilience
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags resilience
 ```
 
 The resilience phase (cold-start recovery timer, ccache cleanup, SSSD self-heal
@@ -187,7 +195,7 @@ picks **which CA the realm serves** (the signer of every user/host/service cert 
 
 | Mode (`freeipa_server_ca_mode`) | What it does | Trust outcome | When to pick it |
 |---|---|---|---|
-| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into (typical for a standalone lab realm) |
+| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into (the usual choice) |
 | `external-ca` | IPA's CA becomes a **sub-CA signed by your org root** (two-phase) | Certs **chain to your root** — anything already trusting your root trusts IPA's certs | Fit an existing PKI hierarchy; make test/prod certs chain to the same root |
 | `ca-less` | IPA runs with **no CA of its own** | You supply every HTTP/LDAP service cert yourself; IPA issues nothing | Rare — an external PKI owns all issuance and renewal |
 
@@ -204,7 +212,7 @@ Two related knobs (both `""` = upstream default):
 > deriving the mode from the CA cert (issuer==subject + no AIA ⇒ self-signed; else
 > external-ca). See `tasks/ca_report.yml`.
 > ```bash
-> ansible-playbook -i inventories/<env>/hosts.yml playbooks/20_idm_freeipa_iam.yml --tags ca_report
+> ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags ca_report
 > ```
 
 ### external-ca is two-phase
@@ -290,7 +298,7 @@ backup`, which a normal run does).
 
 ```bash
 # nightly job — force a backup, fail the pipeline on error
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/20_idm_freeipa_iam.yml --tags backup_now
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags backup_now
 ```
 
 GitLab CI — a scheduled pipeline (Settings → CI/CD → Pipeline schedules, nightly) so every
@@ -301,7 +309,7 @@ freeipa_backup:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
-    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/20_idm_freeipa_iam.yml --tags backup_now
+    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/freeipa_iam.yml --tags backup_now
 ```
 
 ## Declarative DNS
@@ -616,6 +624,29 @@ Scope selectors for `--tags prune_preserved` (shield preserved logins from the s
 `freeipa_iam_prune_preserved_keep` (explicit list, on top of `freeipa_iam_protected_users`) and
 `freeipa_iam_prune_preserved_keep_regex` (default `^svc-` shields service accounts; `""` = none).
 
+## Decommissioning a server
+
+Removing a master from the realm is **deliberately not automated by this role** — it is a rare,
+high-blast-radius operation (get it wrong and you can orphan the CA or destroy the realm), so it is
+left to the operator to perform by hand and verify at each step. Do it manually on a **surviving**
+master, in this order:
+
+```bash
+# 0. NEVER remove the last master. Confirm at least one other master survives:
+ipa server-find
+
+# 1. If the target holds the CA renewal master role, MOVE it first (else the CA can't renew):
+ipa config-show | grep 'IPA CA renewal master'
+ipa config-mod --ca-renewal-master-server=<surviving-master-fqdn>   # only if target held it
+ipa-crlgen-manage enable                                            # on the new renewal master
+
+# 2. Remove the target from topology (run on the SURVIVOR, not the node being removed):
+ipa server-del <target-fqdn> --ignore-topology-disconnect
+
+# 3. Tear down the package install ON THE TARGET host:
+ipa-server-install --uninstall -U
+```
+
 ## Adopt an existing instance (config export / snapshot)
 
 Snapshot a live FreeIPA into this role's declarative contract, then reapply — no green-field
@@ -625,11 +656,11 @@ Minimum: an inventory with the IPA host in `freeipa`, and **one** credential sou
 ```bash
 # Option A — no Vault: pass the admin password directly.
 # (Best from an Ansible-Vault file: -e @secrets.yml, so it isn't in shell history.)
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/20_idm_freeipa_iam.yml \
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml \
   --tags export -e freeipa_server_admin_password='<ADMIN_PASSWORD>'
 
 # Option B — fall back to Vault (set freeipa_server_vault_secret in group_vars):
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/20_idm_freeipa_iam.yml --tags export
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags export
 
 # Either way → writes freeipa.config.snapshot.yml on the control node; move it into an
 # inventory group_vars to reapply.
@@ -663,7 +694,7 @@ a source realm over LDAPS (its CA is slurped from the source host automatically)
 are **not** migrated (Kerberos keys are realm-salted) — plan a password campaign.
 `freeipa_migrate_dryrun: true` is the safe default; set `freeipa_migrate_source`,
 `freeipa_migrate_source_host` and a bind-password source in inventory. Runs via
-`playbooks/20_idm_freeipa_migrate.yml`.
+`playbooks/freeipa_migrate.yml`.
 
 ## Troubleshooting
 

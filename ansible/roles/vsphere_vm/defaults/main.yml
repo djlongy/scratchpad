@@ -29,14 +29,15 @@ vsphere_vm_folder: "/vm"                       # inventory folder for new VMs
 vsphere_vm_datastore: ""                       # default datastore for clones
 
 # ── Per-VM hardware defaults (override per host/group) ───────────────────────
-# Flat scalars cover the common case; vsphere_vm_hardware carries any EXTRA
-# native community.vmware.vmware_guest hardware keys (boot_firmware, scsi,
-# hotadd_cpu, …) and is merged OVER the pair — a num_cpus/memory_mb key there
-# wins. Keys never set inherit from the source template — the right behaviour
-# for clones. vsphere_vm_disk stays a NATIVE vmware_guest disk list, passed 1:1.
-vsphere_vm_cpu: 2                                # → hardware.num_cpus
-vsphere_vm_memory: 4096                          # MB → hardware.memory_mb
-vsphere_vm_hardware: {}                          # extra native hardware keys
+# NATIVE community.vmware.vmware_guest dicts, passed through 1:1 — the accepted
+# keys are exactly the module's own (hardware.num_cpus/memory_mb/boot_firmware/
+# scsi/…, disk[].size_gb/type/datastore/…). Normal Ansible precedence: a
+# host/group-level value replaces this default wholesale. Keys omitted from
+# hardware (e.g. boot_firmware, scsi) inherit from the source template — the
+# right behaviour for clones.
+vsphere_vm_hardware:
+  num_cpus: 2
+  memory_mb: 4096
 vsphere_vm_disk:
   - size_gb: 40                                  # primary disk — must be >= the template's
     type: thin                                   # thin | thick | eagerzeroedthick
@@ -92,7 +93,7 @@ vsphere_vm_connect_pass_delay: 10                # seconds between polls within 
 # setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
 # becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
 # (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the role README for the full write-up.
+# no new inventory. See the role README for the root cause and durable fix.
 #
 # REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
 # (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
@@ -124,7 +125,7 @@ vsphere_vm_provision_via_guestinfo: false
 # RETIRED; the role refuses them with a migration message. Per-host vars (all
 # optional except the template; they fall back to the role defaults above):
 #   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
-#   vsphere_vm_cpu / _memory / _hardware (extra keys) / _disk / _state / _folder / _datastore,
+#   vsphere_vm_hardware / _disk / _state / _folder / _datastore,
 #   vsphere_vm_networks (else derived from ansible_host + the vars below),
 #   vsphere_vm_customization (else derived from hostname/domain/dns),
 #   vsphere_vm_provision_via_guestinfo, vsphere_vm_tags, vsphere_vm_guestinfo_userdata.
@@ -135,8 +136,9 @@ vsphere_vm_provision_via_guestinfo: false
 # group_vars templates resolve per host, so each host's values flow through:
 #   vsphere_vm_template: "{{ template }}"
 #   vsphere_vm_folder: "{{ folder }}"
-#   vsphere_vm_cpu: "{{ cpus }}"
-#   vsphere_vm_memory: "{{ memory }}"
+#   vsphere_vm_hardware:
+#     num_cpus: "{{ cpus }}"
+#     memory_mb: "{{ memory }}"
 #   vsphere_vm_disk: "{{ disks }}"
 #   vsphere_vm_networks: "{{ networks }}"
 #   vsphere_vm_customization:

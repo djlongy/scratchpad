@@ -9,6 +9,14 @@ configurable allowlist.
 Non-EL hosts skip the role. It self-heals `min` facts, so it also works under a
 `gather_facts: false` play or a tag-isolated `--tags yum_repos` run.
 
+## TL;DR
+
+**Most common: reconcile `/etc/yum.repos.d`.** Declare `yum_repos_repos` in group_vars (add `yum_repos_keep` for repos to preserve), then run — the role writes the managed repos and sweeps every other `.repo` file.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags yum_repos
+```
+
 ## What it does
 
 1. **assert** — every repo has a `name` + `baseurl`; refuses to run if the sweep
@@ -41,7 +49,7 @@ Per-repo keys: `name`, `baseurl` (required); `file`, `description`, `enabled`,
 Put env-specific URLs in inventory `group_vars`, not the role:
 
 ```yaml
-# inventories/example/group_vars/some_group.yml
+# inventories/<env>/group_vars/some_group.yml
 yum_repos_keep: [epel]          # keep EPEL, replace everything else
 
 yum_repos_repos:

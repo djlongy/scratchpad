@@ -21,18 +21,6 @@ freeipa_server_fqdn: "{{ inventory_hostname }}.{{ freeipa_server_domain }}"
 freeipa_server_realm_systemd_instance: "{{ freeipa_server_realm | replace('.', '-') }}"
 freeipa_server_dirsrv_service_name: "dirsrv@{{ freeipa_server_realm_systemd_instance }}.service"
 
-# Declarative membership state (like freeipa_server_is_primary, but for removal). "present"
-# (default) = this server is part of the realm. "absent" = DECOMMISSION it: set on the host
-# (host_vars) and run the play across the group — the server is removed from topology and its
-# FreeIPA install torn down. SAFETY: refuses to remove the last server or the CA renewal
-# master (transfer that first: `ipa config-mod --ca-renewal-master-server=<other>`).
-freeipa_server_state: "present"
-# Also wipe the data dir / preserved backups on decommission (default: leave them for forensics).
-freeipa_server_decommission_wipe_data: false
-# On decommission, if this host is the CA renewal master, MOVE that role (+ CRL generation) to the
-# surviving master automatically instead of refusing. Default off = deliberate, guarded removal.
-freeipa_server_decommission_transfer_renewal: false
-
 # Topology derived from inventory groups: first host of freeipa_server_primary_group,
 # else of `freeipa`, else this host (single-server needs NO group setup at all).
 # Add hosts (optionally to freeipa_primary) to cluster; non-primaries become replicas.
@@ -561,7 +549,7 @@ freeipa_server_export_stock_hbacsvcs:
   - systemd-user
   - vsftpd
 
-# ── IPA-to-IPA realm migration (opt-in; via playbooks/20_idm_freeipa_migrate.yml) ──
+# ── IPA-to-IPA realm migration (opt-in; via playbooks/freeipa_migrate.yml) ──
 # Runs ipa-migrate on this (new-realm) primary, pulling identities from a source (old) realm.
 # Passwords are NOT migrated (Kerberos keys are realm-salted).
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write

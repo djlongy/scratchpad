@@ -25,15 +25,6 @@
   when: ansible_os_family is not defined
   tags: [always]
 
-# Declarative removal. When freeipa_server_state == absent this host is decommissioned from
-# the realm and the play ends for it (no install/config runs). Tagged so you can target
-# just removals (--tags decommission) or let a full no-tag run honour the per-host flag.
-- name: Decommission this server from the realm (freeipa_server_state = absent)
-  ansible.builtin.import_tasks: decommission.yml
-  become: true
-  when: freeipa_server_state == "absent"
-  tags: [decommission]
-
 - name: Run FreeIPA dependency-ordering preflight guards
   ansible.builtin.import_tasks: preflight.yml
   become: true

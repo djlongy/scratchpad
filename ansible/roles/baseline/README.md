@@ -8,6 +8,14 @@ never surprises an existing fleet.
 > **openclaw moved out** — the bot account now lives in the dedicated
 > [`openclaw`](../openclaw/) role. Apply `openclaw` alongside `baseline` where needed.
 
+## TL;DR
+
+**Most common: re-converge the baseline (idempotent).** A no-tags run applies everything; opt-in capabilities are enabled via host/group vars. Narrow to one area with a tag, e.g. `--tags agents`.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags baseline
+```
+
 ## Execution order
 
 Phases run in a deliberate dependency order, each idempotent and individually

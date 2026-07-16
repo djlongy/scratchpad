@@ -11,6 +11,15 @@ Hosts build in parallel for free.
 > Ansible-native, inventory-driven create/destroy (e.g. spinning up SOE desktops
 > to then hand to `baseline`).
 
+## TL;DR
+
+**Most common: provision a VM.** Add the host to inventory (with its `vsphere_vm_*` vars) and run scoped to it — a no-tag run creates/ensures; recreate-from-scratch is the guarded `--tags redeploy` variant.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --limit <newhost>
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true --limit <newhost>
+```
+
 ## Minimum required variables
 
 The role's `meta/argument_specs.yml` marks only **two** vars `required: true` —
@@ -213,9 +222,9 @@ the common spec + minimal host_vars for the uniques** (usually just the IP).
 ```yaml
 # group_vars/vmware_vms.yml — the common spec
 vsphere_vm_template: linux-almalinux-9-main
-vsphere_vm_cpu: 2               # → hardware.num_cpus
-vsphere_vm_memory: 4096         # MB → hardware.memory_mb
-# vsphere_vm_hardware: {boot_firmware: efi}   # extra native vmware_guest hardware keys
+vsphere_vm_hardware:            # native vmware_guest dict (replaces the role default)
+  num_cpus: 2
+  memory_mb: 4096
 vsphere_vm_network: "VLAN10-SVC"
 vsphere_vm_dns: [192.0.2.53]
 domain: example.com
@@ -239,8 +248,9 @@ the role is a drop-in replacement (no per-host edits):
 # group_vars/<vm_group>.yml — marry the exports to the role
 vsphere_vm_template: "{{ template }}"
 vsphere_vm_folder: "{{ folder }}"
-vsphere_vm_cpu: "{{ cpus }}"
-vsphere_vm_memory: "{{ memory }}"
+vsphere_vm_hardware:
+  num_cpus: "{{ cpus }}"
+  memory_mb: "{{ memory }}"
 vsphere_vm_disk: "{{ disks }}"
 vsphere_vm_networks: "{{ networks }}"
 vsphere_vm_customization:
@@ -359,8 +369,7 @@ but **not sufficient** — GOSC reverts it after the clone returns. That is why 
 bounded **multi-pass** reconnect over all managed VMs (the pass that lands just after customization
 finishes makes it stick). If you still see a disconnected NIC: `govc device.connect -vm <name> ethernet-0`.
 
-**Root cause + permanent fix (documented once, cross-environment):** see the
-"Provisioning mode: cloud-init GuestInfo" section below.
+**Root cause + permanent fix.**
 The durable cure — **now implemented** as `vsphere_vm_provision_via_guestinfo` (see next section) —
 is to stop using GOSC and drive first-boot config via the cloud-init VMware GuestInfo datasource.
 
@@ -403,8 +412,8 @@ the static hostname + network. Verified end-to-end (NIC `Connected: true` throug
 
 **Requires a GuestInfo-ready template** (Packer-baked): cloud-init with `datasource_list: [VMware, OVF,
 None]`, `allow_raw_data: true`, and `disable_vmware_customization: true`. Verify on a built host with
-`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every lab VLAN has
-DHCP, so that means an IP-conflict risk; pick target IPs not already allocated in inventory).
+`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and where every VLAN has
+DHCP, that means an IP-conflict risk; pick target IPs not already allocated in inventory).
 
 **Multi-NIC** — every entry in a guest's `networks` becomes its own cloud-init ethernet, keyed by an
 **explicit** guest device name (cloud-init's RHEL renderer ignores netplan `match:` globs). Defaults follow

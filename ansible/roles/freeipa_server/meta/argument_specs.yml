@@ -19,16 +19,6 @@ argument_specs:
       freeipa_server_fqdn:
         type: str
         description: This host's FQDN. Defaults to inventory_hostname + domain (never ansible_fqdn).
-      freeipa_server_state:
-        type: str
-        choices: [present, absent]
-        description: Membership state. absent = decommission this server (server-del from a surviving master + tear down); guarded against last-server / CA-renewal-master removal.
-      freeipa_server_decommission_transfer_renewal:
-        type: bool
-        description: On decommission, if this host is the CA renewal master, move that role (+ CRL) to the survivor instead of refusing.
-      freeipa_server_decommission_wipe_data:
-        type: bool
-        description: Also delete residual backup data on decommission (default keeps it).
       freeipa_server_primary_group:
         type: str
         description: Inventory group whose first host is the primary. Falls back to `freeipa`, then to the current host (single-server needs no groups).

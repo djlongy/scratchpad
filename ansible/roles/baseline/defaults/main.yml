@@ -220,7 +220,7 @@ baseline_fail2ban_destemail: "root@localhost"
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
-# Off by default; the RedHat path (tasks/redhat.yml) still handles
+# Off by default; the lab's RedHat path (tasks/redhat.yml) still handles
 # network where used. Enable for the portable, distro-agnostic path.
 baseline_network_manage: false
 # baseline_network_interface: "ens192"      # default: host's primary interface

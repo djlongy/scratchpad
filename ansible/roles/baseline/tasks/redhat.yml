@@ -4,7 +4,7 @@
 # phases. Repos (RHSM/EPEL/CRB), the package baseline, crypto/FIPS, SSH and the
 # tuning sysctls now live in their own phase files — keep them out of here.
 
-# ── Default network (NetworkManager nmcli) — default convention path ─────────
+# ── Default network (NetworkManager nmcli) — lab convention path ─────────────
 # Opt-in by defining connection_name + dns_nameserver + search_domain. The
 # portable, distro-agnostic path is network.yml (baseline_network_manage).
 - name: Configure DNS via NetworkManager
@@ -43,7 +43,7 @@
 
 # ── Baseline service tooling ─────────────────────────────────────────────────
 - name: Ensure baseline service tooling is installed
-  # Minimal GenericCloud images omit packages the kickstart-built base
+  # Minimal GenericCloud images omit packages the kickstart-built lab
   # template ships: firewalld (started below) and initscripts (provides
   # /sbin/service, which the auditd restart handler requires — systemctl
   # refuses manual auditd restart on EL9).

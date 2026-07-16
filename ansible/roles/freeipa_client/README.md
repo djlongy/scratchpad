@@ -8,6 +8,20 @@ rejoin** (including realm-cutover re-enrolment).
 
 Pairs with [`freeipa_server`](../freeipa_server/).
 
+## TL;DR
+
+**Most common: enrol a host into an existing IPA realm.** Add the host to the `freeipa_clients` group, then run — the join is idempotent and a stale/realm-mismatched enrolment is auto-detected and cleanly re-joined.
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml
+```
+
+Force a clean uninstall + re-join (the guarded rejoin variant):
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml -e freeipa_client_force_rejoin=true
+```
+
 ## Supported platforms
 
 EL-family (RHEL/Rocky/Alma/CentOS/Fedora) and Debian/Ubuntu — packaging of the join
