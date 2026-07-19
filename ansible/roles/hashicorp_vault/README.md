@@ -51,7 +51,7 @@ Docker, wire these ahead of it (it asserts both and fails fast otherwise):
 ## Minimal usage
 
 ```yaml
-# playbooks/30_plat_vault_container.yml
+# playbooks/vault_cluster.yml
 - name: Deploy containerized HashiCorp Vault (auto-scaling)
   hosts: vault_container          # 1 host -> standalone; 3 hosts -> Raft HA
   become: true
@@ -83,9 +83,9 @@ hashicorp_vault_tls_extra_sans:
 Run everything, or a single phase for fast iteration:
 
 ```bash
-ansible-playbook -i inventories/dev/hosts.yml playbooks/30_plat_vault_container.yml
-ansible-playbook ... playbooks/30_plat_vault_container.yml --tags deploy
-ansible-playbook ... playbooks/30_plat_vault_container.yml --list-tags
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml
+ansible-playbook ... playbooks/vault_cluster.yml --tags deploy
+ansible-playbook ... playbooks/vault_cluster.yml --list-tags
 ```
 
 > **Do not `--limit` a subset during deploy/init.** Topology is derived from the
@@ -136,7 +136,7 @@ quorum. Removal is a deliberate, `never`-gated step:
 # 1. Drop the retiring hosts from the group (survivors only in the play).
 # 2. While the cluster STILL HAS A LEADER (before powering the old nodes off):
 ansible-playbook -i inventories/<env>/hosts.yml \
-  playbooks/30_plat_vault_container.yml --tags remove_peers
+  playbooks/vault_cluster.yml --tags remove_peers
 # 3. Decommission the retired VMs. A normal run now verifies clean.
 ```
 
@@ -199,7 +199,7 @@ unit must already be deployed (`--tags backup` once first).
 ```bash
 # force a snapshot NOW and fail the play on error
 ansible-playbook -i inventories/<env>/hosts.yml \
-  playbooks/30_plat_vault_container.yml --tags backup_now
+  playbooks/vault_cluster.yml --tags backup_now
 ```
 
 ```yaml
@@ -207,7 +207,7 @@ ansible-playbook -i inventories/<env>/hosts.yml \
 vault-backup:
   script:
     - ansible-playbook -i inventories/$ENV/hosts.yml
-        playbooks/30_plat_vault_container.yml --tags backup_now
+        playbooks/vault_cluster.yml --tags backup_now
 ```
 
 Under the hood you can still trigger it directly with
@@ -223,9 +223,9 @@ role (the L0_lab E2E playbook also carries vsphere_vm/baseline/storage, whose
 ```bash
 # newest snapshot ACROSS ALL NODES:
 ansible-playbook -i inventories/<env>/hosts.yml \
-  playbooks/30_plat_vault_container.yml --tags restore
+  playbooks/vault_cluster.yml --tags restore
 # a specific snapshot (absolute path on the leader):
-ansible-playbook ... playbooks/30_plat_vault_container.yml --tags restore \
+ansible-playbook ... playbooks/vault_cluster.yml --tags restore \
   -e hashicorp_vault_restore_snapshot=/opt/vault/backups/vault-snapshot-20260707-020000.snap
 ```
 
@@ -334,7 +334,7 @@ image-signing integrations:
 hashicorp_vault_gitlab_oidc_enabled: true
 hashicorp_vault_gitlab_base_url: "https://gitlab.example.com"
 hashicorp_vault_gitlab_oidc_client_id_vault_path: "secret/data/platform/vault/runtime:oidc_app_id"
-hashicorp_vault_gitlab_oidc_client_secret_vault_path: "secret/data/vault/runtime:oidc_client_secret"
+hashicorp_vault_gitlab_oidc_client_secret_vault_path: "secret/data/platform/vault/runtime:oidc_secret"
 hashicorp_vault_gitlab_oidc_roles:
   - name: gitlab
     user_claim: sub
@@ -371,7 +371,7 @@ Three policy tiers, least-privilege by default:
 ```yaml
 hashicorp_vault_tenants:
   - {tenant: acme, env: prod}              # tier-1: acme-prod  -> kv-acme-prod/*
-  - {tenant: acme, env: dev, wide: true}   # tier-2: + acme     -> kv-acme-*  (all envs)
+  - {tenant: acme, env: dev, wide: true}   # tier-2: + acme      -> kv-acme-*  (all envs)
 hashicorp_vault_policies:
   - {policy_name: vault-superadmin, template: all-kv.hcl.j2}   # tier-3: kv-* (every mount)
 ```
@@ -411,7 +411,7 @@ Named policies referenced above are supplied through `hashicorp_vault_policies`
 
   ```bash
   ansible-playbook -i inventories/<env>/hosts.yml \
-    playbooks/30_plat_vault_container.yml --tags unseal
+    playbooks/vault_cluster.yml --tags unseal
   ```
 
   For hands-off recovery, set **`hashicorp_vault_auto_unseal: true`** — the role ships a

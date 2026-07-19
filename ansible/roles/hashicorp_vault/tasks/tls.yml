@@ -201,9 +201,9 @@
       notify: Restart vault container
 
     # certmonger issues the LEAF only — a leaf-only tls_cert_file makes clients see
-    # just "vaultsolo-01" with no chain. ASSEMBLE vault.crt = leaf + CA so Vault
+    # just "vault-01" with no chain. ASSEMBLE vault.crt = leaf + CA so Vault
     # SERVES the full chain (a client that trusts the FreeIPA CA then builds/displays
-    # FreeIPA-CA -> vaultsolo). Idempotent: copy compares the assembled content.
+    # FreeIPA-CA -> vault-01). Idempotent: copy compares the assembled content.
     - name: "Read the on-host leaf cert + CA chain (to assemble the served fullchain)"
       become: true  # root: reads the root-owned on-host cert + CA
       ansible.builtin.slurp:
