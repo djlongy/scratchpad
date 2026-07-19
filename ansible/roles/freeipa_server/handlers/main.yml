@@ -1,7 +1,12 @@
 ---
+# Every handler here is a root operation (systemd daemon/units, systemd-tmpfiles,
+# rndc against the IPA-managed BIND) — each carries its own become per the
+# roles-self-escalate standard; the calling play has no play-level become to lean on.
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
+  become: true  # systemd manager reload requires root
 
 - name: Restart IPA recovery timer
   ansible.builtin.systemd:
@@ -9,16 +14,19 @@
     enabled: true
     state: restarted
     daemon_reload: true
+  become: true  # system unit management requires root
 
 - name: Restart tmpfiles clean timer
   ansible.builtin.systemd:
     name: systemd-tmpfiles-clean.timer
     state: restarted
     daemon_reload: true
+  become: true  # system unit management requires root
 
 - name: Clean ipa ccaches now
   ansible.builtin.command: systemd-tmpfiles --clean
   changed_when: false
+  become: true  # cleans root-owned /var/lib/ipa ccache dirs
 
 - name: Restart sssd selfheal timer
   ansible.builtin.systemd:
@@ -26,9 +34,11 @@
     enabled: true
     state: restarted
     daemon_reload: true
+  become: true  # system unit management requires root
 
 # rndc reconfig re-reads named.conf + its includes and loads new zones WITHOUT
 # flushing the resolver cache — the light-touch reload for ACL/options changes.
 - name: Reload BIND
   ansible.builtin.command: rndc reconfig
   changed_when: true
+  become: true  # rndc needs the root-owned /etc/rndc.key

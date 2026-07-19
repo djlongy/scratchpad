@@ -41,16 +41,21 @@ def flatten(tasks: list) -> list:
     return flat
 
 
-def test_heal_is_gated_defaulted_on_and_part_of_a_no_tags_run() -> None:
-    assert "freeipa_server_heal_enabled: true" in DEFAULTS.read_text()
+def test_heal_repair_is_opt_in_but_the_aborted_install_guard_always_runs() -> None:
+    # The mutating repair is opt-in — an incident-response tool, not a converge
+    # default. The aborted-install guard in the same file is not gated by it.
+    assert "freeipa_server_heal_enabled: false" in DEFAULTS.read_text()
     assert "freeipa_server_heal_enabled" in ARG_SPECS.read_text()
 
     heal_import = next(
         t for t in yaml.safe_load(main_text())
         if t.get("ansible.builtin.import_tasks") == "heal.yml"
     )
-    assert heal_import["when"] == "freeipa_server_heal_enabled | bool"
-    # Refinement tags only — a plain (no-tags) run and --tags install both heal.
+    # UNGATED import: the fail-fast guard must run even with heal disabled, so
+    # the toggle lives on the probe/repair blocks inside heal.yml instead.
+    assert "when" not in heal_import
+    assert "freeipa_server_heal_enabled | bool" in heal_text()
+    # Refinement tags only — a plain (no-tags) run and --tags install both guard.
     assert sorted(heal_import["tags"]) == ["heal", "install"]
     assert "never" not in heal_import["tags"]
 

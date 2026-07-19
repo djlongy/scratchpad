@@ -31,6 +31,21 @@
   changed_when: false
   failed_when: false
 
+# An UNCONFIGURED server (scrubbed / never installed) makes ipactl print
+# "IPA is not configured" — no "STOPPED" lines, so the parse below would read it
+# as fully healthy and the run would die ~50 tasks later with a cryptic
+# "Cannot find KDC" kinit error. Fail fast here instead.
+- name: Fail fast when this host has no configured FreeIPA server
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_health_status.stdout | default('')) is not search('IPA is not configured')
+      - (_freeipa_health_status.stderr | default('')) is not search('IPA is not configured')
+    fail_msg: >-
+      ipactl reports "IPA is not configured" — this host has NO FreeIPA server, so
+      IAM operations cannot run. Install first (--tags install, or the signed_install
+      two-phase flow for an external-CA realm), then re-run the IAM phase.
+    quiet: true
+
 - name: Parse stopped FreeIPA services
   ansible.builtin.set_fact:
     _freeipa_stopped_services: >-

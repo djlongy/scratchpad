@@ -3,6 +3,29 @@
 # Fetch credentials from Vault, then dispatch to upstream primary/replica wrap.
 # Packaging + firewall are owned by the upstream ipaserver/ipareplica roles.
 
+- name: Assert this host does not run FreeIPA on a container substrate
+  ansible.builtin.assert:
+    that:
+      - not (freeipa_server_docker_enabled | default(false) | bool)
+    fail_msg: >-
+      freeipa_server_docker_enabled is true: this host runs FreeIPA inside a
+      container, so the package-install path would RPM-install the server onto
+      the 389/88/464 ports the container already owns. Deploy via the container
+      plays in playbooks/freeipa.yml instead — the install path is for
+      bare-metal/VM hosts only.
+    quiet: true
+
+- name: Assert the FreeIPA domain is set before install
+  ansible.builtin.assert:
+    that:
+      - (freeipa_server_domain | default('') | trim | length) > 0
+    fail_msg: >-
+      freeipa_server_domain is empty, so freeipa_server_fqdn would be an
+      incomplete "{{ inventory_hostname }}." with a trailing dot. Set
+      freeipa_server_domain (via the inventory-wide domain var or an explicit
+      override) before installing — the upstream installer rejects a bare FQDN.
+    quiet: true
+
 - name: Install | Resolve credentials (shared resolver)
   ansible.builtin.include_tasks: resolve_credentials.yml
   vars:

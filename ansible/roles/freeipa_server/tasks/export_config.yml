@@ -35,7 +35,7 @@
 - name: Export | Acquire Kerberos ticket
   ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
   args:
-    stdin: "{{ _freeipa_admin_password }}\n"
+    stdin: "{{ _freeipa_admin_password }}"
   changed_when: false
   no_log: true
 

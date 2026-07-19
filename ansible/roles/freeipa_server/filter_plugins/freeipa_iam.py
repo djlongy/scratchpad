@@ -19,8 +19,7 @@ state and call modules; these filters do the computation in between. Five groups
                    parse one cheap `ipa <type>-find --all --raw` and gate the
                    per-item module loops on an actual diff (conservative: any
                    parse doubt re-includes the entry)
-  validation       freeipa_iam_validate — every shape + reference problem in one
-                   pass (a deliberate Python port of a formerly inline-Jinja engine)
+  validation       freeipa_iam_validate — every shape + reference problem in one pass
 
 MAINTENANCE NOTE for new eyes: the precheck/eviction filters scrape `ipa *-find
 --all --raw` text. If a FreeIPA upgrade changes that format, prechecks degrade
@@ -162,19 +161,35 @@ def freeipa_export_scope(export, scopes, mode="include"):
     if not scopes:
         return export
     exclude = (mode == "exclude")
-
-    def keep(item):
-        ident = _scope_identifier(item)
-        hit = any(s in ident for s in scopes)
-        return (not hit) if exclude else hit
-
     out = {}
     for key, value in (export or {}).items():
         if isinstance(value, list) and value and isinstance(value[0], dict):
-            out[key] = [item for item in value if keep(item)]
+            kept = [i for i in value if _export_keep(i, scopes, exclude)]
+            out[key] = [_scrub_excluded_members(i, scopes) for i in kept] if exclude else kept
         else:
             out[key] = value
     return out
+
+
+def _export_keep(item, scopes, exclude) -> bool:
+    """Whether an object survives the scope filter (name-substring match)."""
+    hit = any(s in _scope_identifier(item) for s in scopes)
+    return (not hit) if exclude else hit
+
+
+def _scrub_excluded_members(item, scopes) -> dict:
+    """Exclude mode also scrubs excluded NAMES from list-of-string fields inside
+    KEPT objects (group nestings, member lists, iparole users). Without this,
+    references an external app adds to IaC-owned objects (e.g. its shadow groups
+    nested into app-* groups) re-import on every export, and the role would then
+    re-add memberships the app owns."""
+    cleaned = {}
+    for field, val in item.items():
+        if isinstance(val, list) and val and all(isinstance(v, str) for v in val):
+            cleaned[field] = [v for v in val if not any(s in v for s in scopes)]
+        else:
+            cleaned[field] = val
+    return cleaned
 
 
 # ── unified per-realm membership model (declarative, user-centric) ────────────
@@ -234,7 +249,25 @@ def _merge_identity_entry(entry: dict, result: dict) -> None:
     tenant = entry.get("tenant", "")
     file_shared = bool(entry.get("shared", False))
     for key, value in (entry or {}).items():
-        if key in _FREEIPA_IDENTITY_META or not isinstance(value, list):
+        if key in _FREEIPA_IDENTITY_META:
+            continue
+        if not isinstance(value, list):
+            # A tenant file's helper scalars (local_env, name-prefix vars, ...) are
+            # legitimately non-list and are skipped. A KNOWN object key carrying a
+            # non-list is operator error — dropping it would silently erase those
+            # objects from the desired state (and, under authoritative, off the
+            # realm), so it fails loud instead. `None` (an empty `users:` key)
+            # stays a skip: declaring nothing is not an error.
+            if value is not None and (
+                key in _FREEIPA_IDENTITY_ALIASES
+                or key.startswith(("freeipa_iam_", "freeipa_server_"))
+            ):
+                raise AnsibleFilterError(
+                    f"tenant file (tenant '{tenant or '(unset)'}'): key '{key}' must "
+                    f"be a LIST of objects, got {type(value).__name__}. A single "
+                    "entry still needs list form (`users: [{...}]`); dict-shaped "
+                    "freeipa_* config belongs in group_vars, not tenant files."
+                )
             continue
         target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
         result["objects"].setdefault(target, []).extend(value)
@@ -363,15 +396,14 @@ def _evict_current_members(group_find_raw: str) -> dict[str, list[str]]:
 def freeipa_iam_evict_payload(group_find_raw: str, candidates: list[dict],
                                managed: list[str]) -> list[dict]:
     """Compile the managed-subset eviction payload from ONE ``ipa group-find
-    --all --raw`` output (replaces a per-group ``group-show`` command loop plus
-    a quadratic per-group set_fact accumulation).
+    --all --raw`` output.
 
     For each candidate group (declared, not automember-populated), current user
     members are read from its raw entry block (``member: uid=<login>,...``) and
     ``freeipa_iam_evictions`` keeps only managed-and-no-longer-desired logins.
     Returns ``[{name, user: [login, ...]}, ...]`` for groups needing eviction;
     a candidate group absent from the output (not created yet) contributes
-    nothing — exactly like the old per-group query's failed_when: false.
+    nothing.
 
     PARSING CANARY: unlike the precheck filters (whose parse failures degrade to
     redundant-but-correct module calls), a parse failure here would make eviction
@@ -410,7 +442,20 @@ def freeipa_iam_evict_payload(group_find_raw: str, candidates: list[dict],
 # key the comparator doesn't model, or an empty/failed find (raw="") all INCLUDE
 # the entry — the worst case is a redundant module call, never a skipped change.
 
-_RAW_ATTR_RE = re.compile(r"^\s*([A-Za-z][\w;-]*):\s+(.*)$")
+# Attribute key only — value is the remainder after the first colon so the
+# pattern cannot backtrack into the value (Sonar python:S5852 / ReDoS).
+_RAW_ATTR_KEY_RE = re.compile(r"^[A-Za-z][\w;-]*$")
+
+
+def _parse_raw_attr_line(line: str):
+    """Split one ``attr: value`` line from ``ipa *-find --all --raw`` output."""
+    stripped = line.lstrip()
+    if not stripped or ":" not in stripped:
+        return None
+    key, _, value = stripped.partition(":")
+    if not _RAW_ATTR_KEY_RE.fullmatch(key):
+        return None
+    return key, value.strip()
 
 
 def _parse_raw_entries(raw: str, key_attr: str = "cn") -> dict:
@@ -420,9 +465,10 @@ def _parse_raw_entries(raw: str, key_attr: str = "cn") -> dict:
     for block in (raw or "").split("\n\n"):
         attrs: dict[str, list[str]] = {}
         for line in block.splitlines():
-            match = _RAW_ATTR_RE.match(line)
-            if match:
-                attrs.setdefault(match.group(1).lower(), []).append(match.group(2).strip())
+            parsed = _parse_raw_attr_line(line)
+            if parsed:
+                attr_key, attr_val = parsed
+                attrs.setdefault(attr_key.lower(), []).append(attr_val)
         key = attrs.get(key_attr, [None])[0]
         if key:
             entries[key] = attrs
@@ -706,10 +752,8 @@ def freeipa_iam_pwexp_bumps(floors: list[dict], user_find_raw: str) -> list[dict
     ``krbPasswordExpiration`` (from ONE ``ipa user-find --all --raw``) leaves
     fewer than ``min_days_remaining`` days, emit ``{name, passwordexpiration}``
     bumped ``bump_to_days`` from now. No module implements the conditional floor,
-    but the WRITE is native (``ipauser passwordexpiration``) — this replaces a
-    per-user shell read-compare-set loop. Users absent from the output or
-    without an expiration attribute are skipped (matches the old NO_EXPIRY_FIELD
-    behaviour)."""
+    but the WRITE is native (``ipauser passwordexpiration``). Users absent from
+    the output or without an expiration attribute are skipped."""
     entries = _parse_raw_entries(user_find_raw, key_attr="uid")
     now = datetime.now(timezone.utc)
     bumps = []
@@ -739,11 +783,8 @@ def freeipa_iam_pwexp_bumps(floors: list[dict], user_find_raw: str) -> list[dict
 
 
 # ── desired-state validation (shape + references) ─────────────────────────────
-# Python port of the (formerly inline-Jinja) validation engine in iam_desired.yml:
-# collect EVERY structural + referential problem in one pass so the operator gets a
-# complete bullet list, not one assert at a time. Messages are kept identical to the
-# original engine; within a check block, problems are grouped per check rather than
-# per item (content-equal, order may differ from the old per-item interleave).
+# Collect EVERY structural + referential problem in one pass so the operator gets a
+# complete bullet list, not one assert at a time.
 
 def _names(items: list | None) -> list[str]:
     """The `name` of every dict item that has one."""
@@ -786,31 +827,57 @@ def _known_name_sets(data: dict) -> dict[str, set[str]]:
     }
 
 
+def _one_user_shape_problems(user, unmodifiable: set[str]) -> list[str]:
+    """Shape problems for a single user entry (mapping check first)."""
+    if not isinstance(user, dict):
+        return [f"user entry {user!r} is not a mapping — a user must be a "
+                "dict with at least name/first/last (bare strings are not valid)"]
+    name = user.get("name")
+    if name is None:
+        return ["a user entry is missing 'name'"]
+    out: list[str] = []
+    if name not in unmodifiable and "first" not in user and "givenname" not in user:
+        out.append(f"user '{name}' is missing a first name (first/givenname)")
+    if name not in unmodifiable and "last" not in user and "sn" not in user:
+        out.append(f"user '{name}' is missing a surname (last/sn)")
+    if not (user.get("groups") or []) and not (user.get("roles") or []):
+        out.append(f"user '{name}' has no groups and no roles (must belong to at least one)")
+    return out
+
+
 def _user_shape_problems(users: list, unmodifiable: set[str]) -> list[str]:
     """Per-user shape checks: name present, first/last present, has groups or roles."""
     out: list[str] = []
     for user in users or []:
-        name = user.get("name")
-        if name is None:
-            out.append("a user entry is missing 'name'")
-            continue
-        if name not in unmodifiable and "first" not in user and "givenname" not in user:
-            out.append(f"user '{name}' is missing a first name (first/givenname)")
-        if name not in unmodifiable and "last" not in user and "sn" not in user:
-            out.append(f"user '{name}' is missing a surname (last/sn)")
-        if not (user.get("groups") or []) and not (user.get("roles") or []):
-            out.append(f"user '{name}' has no groups and no roles (must belong to at least one)")
+        out.extend(_one_user_shape_problems(user, unmodifiable))
     return out
 
 
 def _duplicate_user_problems(users: list) -> list[str]:
     """Duplicate usernames across the whole assembled user set."""
-    unames = [u.get("name", "(unnamed)") for u in (users or [])]
+    unames = [u.get("name", "(unnamed)") for u in (users or []) if isinstance(u, dict)]
     out: list[str] = []
     for name in dict.fromkeys(unames):  # unique, first-occurrence order
         count = unames.count(name)
         if count > 1:
             out.append(f"duplicate username '{name}' ({count} entries)")
+    return out
+
+
+def _duplicate_named_problems(items: list, label: str) -> list[str]:
+    """Duplicate names within one assembled object list (groups, rules, ...).
+
+    Tenant files concatenate across the whole realm, so a name declared in two
+    files reaches the modules twice — last-wins on attributes and ownership,
+    silently. Surfaced as a shape problem, symmetric with duplicate users.
+    """
+    names = [i.get("name") for i in (items or [])
+             if isinstance(i, dict) and i.get("name")]
+    out: list[str] = []
+    for name in dict.fromkeys(names):
+        count = names.count(name)
+        if count > 1:
+            out.append(f"duplicate {label} '{name}' ({count} entries)")
     return out
 
 
@@ -837,6 +904,9 @@ def _ref_missing(items: list, fields: list[str], known: set[str], tmpl: str) -> 
 
 def _one_user_ref_problems(user: dict, rnames: set[str], gnames: set[str]) -> list[str]:
     """Role + group reference problems for a single (named) user."""
+    # Non-mapping entries are already reported as shape problems — no refs to check.
+    if not isinstance(user, dict):
+        return []
     name = user.get("name")
     if name is None:
         return []
@@ -891,6 +961,10 @@ def freeipa_iam_validate(data: dict) -> dict[str, list[str]]:
 
     shape = (_user_shape_problems(users, set(_lst(data, "unmodifiable_users")))
              + _duplicate_user_problems(users)
+             + _duplicate_named_problems(usergroups, "usergroup")
+             + _duplicate_named_problems(_lst(data, "hostgroups"), "hostgroup")
+             + _duplicate_named_problems(hbac_rules, "HBAC rule")
+             + _duplicate_named_problems(sudo_rules, "sudo rule")
              + _protected_group_problems(usergroups, set(_lst(data, "protected_groups"))))
 
     refs = (

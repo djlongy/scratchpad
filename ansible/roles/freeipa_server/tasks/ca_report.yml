@@ -11,8 +11,7 @@
 # Every task is changed_when:false; nothing here mutates the server. Opt-in: gated
 # behind the `ca_report` tag (main.yml tags it [never, ca_report]), primary only.
 #
-# HOW THE MODE IS DERIVED (from the IPA CA cert's OWN issuer vs subject — the only
-# reliable signal; AIA presence is NOT used, see the read task below):
+# HOW THE MODE IS DERIVED (from the IPA CA cert's OWN issuer vs subject):
 #   issuer == subject  -> self-signed  (a standalone root CA; the realm IS its own root)
 #   issuer != subject  -> external-ca  (the IPA CA is a sub-CA signed by your org root;
 #                                       certs chain up to that root)
@@ -47,13 +46,11 @@
 
 # ── Gather the raw material (all read-only) ─────────────────────────────────
 - name: CA report | Read the IPA CA subject + issuer (authoritative — the caSigningCert itself)
-  # Classify CA mode from the IPA CA cert's OWN issuer vs subject ONLY. Two traps this avoids:
-  #   1. AIA presence is NOT an external-ca signal — a self-signed IPA CA can carry an OCSP AIA
-  #      extension, so "AIA present -> external" mis-reports self-signed prod CAs as external.
-  #   2. `openssl x509 -in /etc/ipa/ca.crt` reads only the FIRST cert of the bundle, which on an
-  #      external-ca server may be the external ROOT (self-signed) -> mis-reports external as
-  #      self-signed. So we find the cert whose CN is 'Certificate Authority' (the IPA CA) and
-  #      read THAT. RFC2253 prints CN before O (the form freeipa_server_ca_subject expects).
+  # Classify CA mode from the IPA CA cert's OWN issuer vs subject ONLY. This avoids a trap:
+  #   `openssl x509 -in /etc/ipa/ca.crt` reads only the FIRST cert of the bundle, which on an
+  #   external-ca server may be the external ROOT (self-signed) -> mis-reports external as
+  #   self-signed. So we find the cert whose CN is 'Certificate Authority' (the IPA CA) and
+  #   read THAT. RFC2253 prints CN before O (the form freeipa_server_ca_subject expects).
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: |
@@ -119,7 +116,6 @@
 - name: CA report | Classify the CA mode and derive the subject base
   ansible.builtin.set_fact:
     # Authoritative: self-signed iff the IPA CA's issuer == its subject; else external-ca.
-    # (AIA presence is deliberately NOT used — a self-signed IPA CA can carry an OCSP AIA.)
     _freeipa_ca_report_mode: >-
       {{ 'self-signed'
          if (_freeipa_ca_report_subject == _freeipa_ca_report_issuer)

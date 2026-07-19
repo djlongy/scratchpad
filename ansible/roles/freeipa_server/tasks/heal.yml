@@ -1,6 +1,9 @@
 ---
 # roles/freeipa_server/tasks/heal.yml
-# Self-heal a CONFIGURED-but-BROKEN FreeIPA server BEFORE install/converge.
+# Two independent protections, run BEFORE install/converge:
+#   1. Aborted-install guard — ALWAYS on (fail fast, never mutates).
+#   2. Self-heal of a CONFIGURED-but-BROKEN server — OPT-IN via
+#      freeipa_server_heal_enabled (mutating repair; incident-response tool).
 #
 # Why: "already configured" is decided from /etc/ipa/default.conf alone, so a
 # configured host that has LOST some/all of the httpd config files the INSTALLER
@@ -44,7 +47,9 @@
 #
 # States handled:
 #   fresh host                      → untouched (install.yml owns that path)
-#   aborted half-install            → FAIL FAST with the cleanup command
+#   aborted half-install            → FAIL FAST with the cleanup command (always —
+#                                     not gated by freeipa_server_heal_enabled)
+#   heal disabled (default)         → guard only; probes + repair skipped entirely
 #   configured + healthy            → strict no-op (changed=0)
 #   configured + stopped-but-intact → untouched (primary/replica start services)
 #   configured + only pki-proxy broken           → re-render pki-proxy (round-1 behaviour)
@@ -82,9 +87,15 @@
     quiet: true
   when: not _freeipa_heal_configured.stat.exists
 
-# ── Health probes (configured hosts only; all read-only) ────────────────────
+# ── Health probes (opt-in; configured hosts only; all read-only) ────────────
+# Everything below here is the self-heal path — skipped wholesale unless
+# freeipa_server_heal_enabled. The heal blocks further down carry the same
+# gate explicitly (a _freeipa_heal_needed fact from an earlier play would
+# otherwise survive into a later disabled application of this role).
 - name: Heal | Probe deployed PKI and Apache wiring
-  when: _freeipa_heal_configured.stat.exists
+  when:
+    - freeipa_server_heal_enabled | bool
+    - _freeipa_heal_configured.stat.exists
   block:
     # ipa-pki-proxy.conf and the served ca.crt only exist where Dogtag is
     # deployed, so their absence is a defect only on a CA-bearing server.
@@ -177,14 +188,20 @@
           {{ _freeipa_heal_ca.stat.exists
              and not _freeipa_heal_ca_cert.stat.exists }}
 
-    # The ipa-pki-proxy.conf defect (missing / httpd-test fail / wrong AJP secret).
+    # The ipa-pki-proxy.conf defect (missing / httpd-test fail / wrong-or-unparseable
+    # AJP secret). 'unknown' means the probe could not read either secret — an
+    # unparseable/corrupt proxy conf — so it is treated as broken and healed by the
+    # re-render (which rewrites both sides to a consistent secret), same as 'mismatch'.
+    # default('ok') covers only the case where the probe did not run (no CA / no proxy
+    # file), where the proxy is already flagged broken by the stat clauses above; when
+    # both exist the probe runs even in check mode, so stdout is a real result.
     - name: Heal | Determine whether the PKI proxy config is broken
       ansible.builtin.set_fact:
         _freeipa_heal_pki_proxy_broken: >-
           {{ _freeipa_heal_ca.stat.exists
              and ((not _freeipa_heal_pki_proxy.stat.exists)
                   or ((_freeipa_heal_httpd_syntax.rc | default(0)) != 0)
-                  or (((_freeipa_heal_ajp.stdout | default('ok')) | trim) == 'mismatch')) }}
+                  or (((_freeipa_heal_ajp.stdout | default('ok')) | trim) in ['mismatch', 'unknown'])) }}
 
     # A CA-bearing server needs valid Apache/PKI wiring. Heal when the PKI proxy
     # is broken, when any installer-generated IPA httpd file is missing, when the
@@ -217,11 +234,13 @@
       A real run re-renders every missing IPA httpd config file from FreeIPA's
       own templates, republishes the served CA cert, and restarts the stack.
   when:
+    - freeipa_server_heal_enabled | bool
     - _freeipa_heal_needed | default(false)
     - ansible_check_mode
 
 - name: Heal | Recover the broken FreeIPA httpd/PKI config and restart the stack
   when:
+    - freeipa_server_heal_enabled | bool
     - _freeipa_heal_needed | default(false)
     - not ansible_check_mode
   block:

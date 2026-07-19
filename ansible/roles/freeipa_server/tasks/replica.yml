@@ -21,12 +21,27 @@
       register: _freeipa_server_nm_cons
       changed_when: false
 
+    - name: Match the declared replica connection among active connections
+      ansible.builtin.set_fact:
+        _freeipa_server_con_matches: >-
+          {{ _freeipa_server_nm_cons.stdout_lines
+             | select('search', ':' + freeipa_server_replica_connection + '$') | list }}
+
+    # Fail with the actual nmcli output rather than an opaque "sequence was empty"
+    # from `| first` when the device is renamed/down.
+    - name: Assert the declared replica connection is active
+      ansible.builtin.assert:
+        that: _freeipa_server_con_matches | length > 0
+        fail_msg: >-
+          freeipa_server_replica_connection '{{ freeipa_server_replica_connection }}'
+          matches NO active NetworkManager connection. Active connections (UUID:DEVICE):
+          {{ _freeipa_server_nm_cons.stdout_lines }}. Fix the device name or bring the
+          connection up before enrolment.
+        quiet: true
+
     - name: Resolve the active connection UUID
       ansible.builtin.set_fact:
-        _freeipa_server_con_uuid: >-
-          {{ (_freeipa_server_nm_cons.stdout_lines
-              | select('search', ':' + freeipa_server_replica_connection + '$')
-              | first).split(':')[0] }}
+        _freeipa_server_con_uuid: "{{ (_freeipa_server_con_matches | first).split(':')[0] }}"
 
     - name: Point DNS at the primary IPA server for enrolment
       ansible.builtin.command:
@@ -60,10 +75,24 @@
     ipareplica_auto_reverse: false
   when: freeipa_server_setup_dns | bool
 
+# Optional replica inputs are set ONLY when non-empty, leaving them undefined for
+# upstream's own default handling — firewalld_zone must stay UNDEFINED when empty
+# (upstream gates its zone-verify on `is defined`, and an empty zone fails the check),
+# and ntp_pool must stay undefined so ipaclient falls back to its own default(omit).
+- name: Map optional ipareplica inputs when provided
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ item.value }}"
+  loop: >-
+    {{ {'ipareplica_firewalld_zone': freeipa_server_firewalld_zone,
+        'ipaclient_ntp_pool': freeipa_server_ntp_pool}
+       | dict2items | rejectattr('value', 'equalto', '') | list }}
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Install FreeIPA replica via upstream ipareplica role
   ansible.builtin.include_role:
     name: freeipa.ansible_freeipa.ipareplica
-  vars:  # upstream ipareplica/ipaserver role inputs, not this role's vars
+  vars:  # upstream ipareplica/ipaclient role inputs, not this role's vars
     ipareplica_domain: "{{ freeipa_server_domain }}"
     ipareplica_realm: "{{ freeipa_server_realm }}"
     ipareplica_hostname: "{{ freeipa_server_fqdn }}"
@@ -75,6 +104,15 @@
     ipareplica_setup_kra: "{{ freeipa_server_setup_kra }}"
     ipareplica_setup_dns: "{{ freeipa_server_setup_dns }}"
     ipareplica_setup_firewalld: "{{ freeipa_server_setup_firewalld }}"
+    ipareplica_install_packages: "{{ freeipa_server_install_packages }}"
+    ipareplica_no_pkinit: "{{ freeipa_server_no_pkinit }}"
+    ipareplica_setup_adtrust: "{{ freeipa_server_setup_adtrust }}"
+    ipaclient_mkhomedir: "{{ freeipa_server_mkhomedir }}"
+    # ipareplica has no setup_ntp toggle; NTP is a client-side concern. The real gate
+    # is ipaclient_no_ntp (inverse of the role's setup_ntp), with the same
+    # ipaclient_ntp_servers / ipaclient_ntp_pool the primary uses.
+    ipaclient_no_ntp: "{{ not (freeipa_server_setup_ntp | bool) }}"
+    ipaclient_ntp_servers: "{{ freeipa_server_ntp_servers }}"
 
 - name: Ensure IPA service is enabled and started
   ansible.builtin.service:

@@ -2,7 +2,7 @@
 # roles/freeipa_server/tasks/migrate.yml
 # IPA-to-IPA realm migration via ipa-migrate, run ON the new-realm primary.
 # Pulls users/groups/hosts/HBAC/sudo/etc. from a source (old) realm, rewriting
-# realm strings into this realm. Invoke via playbooks/freeipa_migrate.yml.
+# realm strings into this realm. Invoked by the [never, migrate] play of playbooks/freeipa.yml.
 #
 # Defaults to DRY-RUN — pass -e freeipa_migrate_dryrun=false to actually write.
 # Passwords are NOT migrated (Kerberos keys are realm-salted); after a real run,
@@ -52,6 +52,7 @@
     owner: root
     group: root
     mode: "0640"
+  become: true  # root-owned staging file
 
 - name: Stage source-realm bind password file
   ansible.builtin.copy:
@@ -61,15 +62,19 @@
     group: root
     mode: "0600"
   no_log: true
+  become: true  # root-owned 0600 secret file
 
+# Password via module stdin — never argv/shell text (ps-visible, and a quote in the
+# password would break shell quoting); principal from the role var, not hardcoded.
 - name: Acquire Kerberos ticket for the new realm
-  ansible.builtin.shell:
-    cmd: "set -o pipefail; echo '{{ _freeipa_admin_password }}' | kinit admin@{{ freeipa_server_realm }}"
-    executable: /bin/bash
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
+  args:
+    stdin: "{{ _freeipa_admin_password }}"
   environment:
     KRB5CCNAME: "{{ freeipa_migrate_ccache }}"
   changed_when: false
   no_log: true
+  become: true  # ccache + ipa-migrate run as root
 
 - name: Run ipa-migrate ({{ 'dry-run' if (freeipa_migrate_dryrun | bool) else 'APPLY' }})
   ansible.builtin.command:
@@ -84,6 +89,7 @@
     KRB5CCNAME: "{{ freeipa_migrate_ccache }}"
   register: _freeipa_migrate_run
   changed_when: not (freeipa_migrate_dryrun | bool)
+  become: true  # ipa-migrate requires root
 
 - name: Show migration summary
   ansible.builtin.debug:
@@ -95,20 +101,19 @@
   ansible.builtin.service:
     name: sssd
     state: restarted
+  become: true  # system service restart
   when:
     - not (freeipa_migrate_dryrun | bool)
     - freeipa_migrate_restart_sssd | bool
 
+# ipaconfig self-authenticates via ipaadmin_password (its own ccache), so it needs neither
+# the ambient KRB5CCNAME ticket nor stdout 'modified' parsing — it reports changed itself.
 - name: Take the server out of migration mode (opt-in — only after password campaign)
-  ansible.builtin.command:
-    cmd: ipa config-mod --enable-migration=FALSE
-  environment:
-    KRB5CCNAME: "{{ freeipa_migrate_ccache }}"
-  register: _freeipa_migrate_modeoff
-  changed_when: "'Enable migration mode: False' in (_freeipa_migrate_modeoff.stdout | default(''))"
-  failed_when:
-    - _freeipa_migrate_modeoff.rc != 0
-    - "'no modifications' not in (_freeipa_migrate_modeoff.stderr | default(''))"
+  freeipa.ansible_freeipa.ipaconfig:
+    ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_admin_password }}"
+    enable_migration: false
+  no_log: true
   when:
     - not (freeipa_migrate_dryrun | bool)
     - freeipa_migrate_disable_mode_after | bool
@@ -118,8 +123,10 @@
     cmd: "kdestroy -c {{ freeipa_migrate_ccache }}"
   changed_when: false
   failed_when: false
+  become: true  # root-owned ccache
 
 - name: Remove staged source bind password file
   ansible.builtin.file:
     path: "{{ freeipa_migrate_bind_pw_file }}"
     state: absent
+  become: true  # root-owned secret file

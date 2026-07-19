@@ -89,122 +89,124 @@
   check_mode: false
   no_log: true
 
-# find criteria is EMPTY in all-undeclared mode ('*' → list everything), else the scope substring.
-- name: Reconcile | Find managed objects in scope (one query per type)
-  ansible.builtin.command: "ipa {{ item }}-find {{ '' if _reconcile_match == '*' else _reconcile_match }} --pkey-only --sizelimit=0"
-  register: _reconcile_find
-  changed_when: false
-  check_mode: false                      # run the read-only find even in --check (preview)
-  failed_when: false                     # ipa *-find returns rc=1 on zero matches
-  loop: [sudorule, hbacrule, hbacsvcgroup, sudocmdgroup, hbacsvc, sudocmd, hostgroup, group]
+- name: Reconcile | Find + prune orphans (Kerberos ticket always destroyed)
+  block:
+    # find criteria is EMPTY in all-undeclared mode ('*' → list everything), else the scope substring.
+    - name: Reconcile | Find managed objects in scope (one query per type)
+      ansible.builtin.command: "ipa {{ item }}-find {{ '' if _reconcile_match == '*' else _reconcile_match }} --pkey-only --sizelimit=0"
+      register: _reconcile_find
+      changed_when: false
+      check_mode: false                      # run the read-only find even in --check (preview)
+      failed_when: false                     # ipa *-find returns rc=1 on zero matches
+      loop: [sudorule, hbacrule, hbacsvcgroup, sudocmdgroup, hbacsvc, sudocmd, hostgroup, group]
 
-- name: Reconcile | Parse found object names per type
-  ansible.builtin.set_fact:
-    _reconcile_found: "{{ _reconcile_found | default({}) | combine({item.item: _names}) }}"
-  vars:
-    _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
-  loop: "{{ _reconcile_find.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item }}"
+    - name: Reconcile | Parse found object names per type
+      ansible.builtin.set_fact:
+        _reconcile_found: "{{ _reconcile_found | default({}) | combine({item.item: _names}) }}"
+      vars:
+        _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
+      loop: "{{ _reconcile_find.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-# Shield externally-managed objects (e.g. pam_* groups + per-tenant PIM hbac/sudo
-# rules) from orphan deletion: any FOUND name matching ANY freeipa_iam_reconcile_protect_regexes
-# entry joins the protection set, so neither a name-colliding scoped reconcile NOR reconcile_all
-# can delete it. Empty/whitespace patterns are dropped; an empty effective list degrades to a
-# never-matching regex so nothing extra is shielded. See defaults for the rationale.
-- name: Reconcile | Shield externally-managed objects (protect regexes)
-  ansible.builtin.set_fact:
-    _reconcile_protected: >-
-      {{ _reconcile_protected + (_reconcile_found.values() | list | flatten
-         | select('search', _freeipa_iam_protect_re) | list) }}
-  vars:
-    _freeipa_iam_protect_re: >-
-      {{ ('(' + (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | join(')|(')) + ')')
-         if (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | list | length > 0)
-         else '(?!)' }}
+    # Shield externally-managed objects (e.g. pam_* groups + per-tenant PIM hbac/sudo
+    # rules) from orphan deletion: any FOUND name matching ANY freeipa_iam_reconcile_protect_regexes
+    # entry joins the protection set, so neither a name-colliding scoped reconcile NOR reconcile_all
+    # can delete it. Empty/whitespace patterns are dropped; an empty effective list degrades to a
+    # never-matching regex so nothing extra is shielded. See defaults for the rationale.
+    - name: Reconcile | Shield externally-managed objects (protect regexes)
+      ansible.builtin.set_fact:
+        _reconcile_protected: >-
+          {{ _reconcile_protected + (_reconcile_found.values() | list | flatten
+             | select('search', _freeipa_iam_protect_re) | list) }}
+      vars:
+        _freeipa_iam_protect_re: >-
+          {{ ('(' + (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | join(')|(')) + ')')
+             if (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | list | length > 0)
+             else '(?!)' }}
 
-- name: Reconcile | Compute orphans (managed-but-undeclared, protected-safe)
-  ansible.builtin.set_fact:
-    _reconcile_orphans: >-
-      {{ _reconcile_found
-         | freeipa_iam_orphans(_reconcile_desired, _reconcile_match, _reconcile_protected) }}
-  vars:
-    _reconcile_desired:
-      sudorule:     "{{ freeipa_iam_sudo_rules    | default([]) | map(attribute='name') | list }}"
-      hbacrule:     "{{ freeipa_iam_hbac_rules    | default([]) | map(attribute='name') | list }}"
-      hbacsvcgroup: "{{ freeipa_iam_hbacsvcgroups | default([]) | map(attribute='name') | list }}"
-      sudocmdgroup: "{{ freeipa_iam_sudocmdgroups | default([]) | map(attribute='name') | list }}"
-      hbacsvc:      "{{ freeipa_iam_hbacsvcs      | default([]) | map(attribute='name') | list }}"
-      sudocmd:      "{{ freeipa_iam_sudo_commands | default([]) | map(attribute='name') | list }}"
-      hostgroup:    "{{ freeipa_iam_hostgroups    | default([]) | map(attribute='name') | list }}"
-      group:        "{{ freeipa_iam_usergroups    | default([]) | map(attribute='name') | list }}"
+    - name: Reconcile | Compute orphans (managed-but-undeclared, protected-safe)
+      ansible.builtin.set_fact:
+        _reconcile_orphans: >-
+          {{ _reconcile_found
+             | freeipa_iam_orphans(_reconcile_desired, _reconcile_match, _reconcile_protected) }}
+      vars:
+        _reconcile_desired:
+          sudorule: "{{ freeipa_iam_sudo_rules    | default([]) | map(attribute='name') | list }}"
+          hbacrule: "{{ freeipa_iam_hbac_rules    | default([]) | map(attribute='name') | list }}"
+          hbacsvcgroup: "{{ freeipa_iam_hbacsvcgroups | default([]) | map(attribute='name') | list }}"
+          sudocmdgroup: "{{ freeipa_iam_sudocmdgroups | default([]) | map(attribute='name') | list }}"
+          hbacsvc: "{{ freeipa_iam_hbacsvcs      | default([]) | map(attribute='name') | list }}"
+          sudocmd: "{{ freeipa_iam_sudo_commands | default([]) | map(attribute='name') | list }}"
+          hostgroup: "{{ freeipa_iam_hostgroups    | default([]) | map(attribute='name') | list }}"
+          group: "{{ freeipa_iam_usergroups    | default([]) | map(attribute='name') | list }}"
 
-- name: Reconcile | Report what will be deleted
-  ansible.builtin.debug:
-    msg: >-
-      Reconcile [{{ _reconcile_match }}] orphans to delete —
-      sudo_rules: {{ _reconcile_orphans.sudorule | default([]) }},
-      hbac_rules: {{ _reconcile_orphans.hbacrule | default([]) }},
-      hbacsvcgroups: {{ _reconcile_orphans.hbacsvcgroup | default([]) }},
-      sudocmdgroups: {{ _reconcile_orphans.sudocmdgroup | default([]) }},
-      hbacsvcs: {{ _reconcile_orphans.hbacsvc | default([]) }},
-      sudo_commands: {{ _reconcile_orphans.sudocmd | default([]) }},
-      hostgroups: {{ _reconcile_orphans.hostgroup | default([]) }},
-      groups: {{ _reconcile_orphans.group | default([]) }}
+    - name: Reconcile | Report what will be deleted
+      ansible.builtin.debug:
+        msg: >-
+          Reconcile [{{ _reconcile_match }}] orphans to delete —
+          sudo_rules: {{ _reconcile_orphans.sudorule | default([]) }},
+          hbac_rules: {{ _reconcile_orphans.hbacrule | default([]) }},
+          hbacsvcgroups: {{ _reconcile_orphans.hbacsvcgroup | default([]) }},
+          sudocmdgroups: {{ _reconcile_orphans.sudocmdgroup | default([]) }},
+          hbacsvcs: {{ _reconcile_orphans.hbacsvc | default([]) }},
+          sudo_commands: {{ _reconcile_orphans.sudocmd | default([]) }},
+          hostgroups: {{ _reconcile_orphans.hostgroup | default([]) }},
+          groups: {{ _reconcile_orphans.group | default([]) }}
 
-# Automember rules — `ipa automember-find/-del` are TYPE-scoped (--type group|hostgroup) and
-# keyed by rule name (= target group/hostgroup). Same match + protected guards. Deleted BEFORE
-# the groups below so a rule never outlives its target. Desired = freeipa_server_automember_rules.
-- name: Reconcile | Find managed automember rules in scope (per type)
-  ansible.builtin.command: "ipa automember-find {{ '' if _reconcile_match == '*' else _reconcile_match }} --type={{ item }} --pkey-only"
-  register: _reconcile_am_find
-  changed_when: false
-  check_mode: false
-  failed_when: false
-  loop: [group, hostgroup]
+    # Automember rules — `ipa automember-find/-del` are TYPE-scoped (--type group|hostgroup) and
+    # keyed by rule name (= target group/hostgroup). Same match + protected guards. Deleted BEFORE
+    # the groups below so a rule never outlives its target. Desired = freeipa_server_automember_rules.
+    - name: Reconcile | Find managed automember rules in scope (per type)
+      ansible.builtin.command: "ipa automember-find {{ '' if _reconcile_match == '*' else _reconcile_match }} --type={{ item }} --pkey-only"
+      register: _reconcile_am_find
+      changed_when: false
+      check_mode: false
+      failed_when: false
+      loop: [group, hostgroup]
 
-- name: Reconcile | Parse found automember rule names per type
-  ansible.builtin.set_fact:
-    _reconcile_am_found: "{{ _reconcile_am_found | default({}) | combine({item.item: _names}) }}"
-  vars:
-    _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
-  loop: "{{ _reconcile_am_find.results | default([]) }}"
-  loop_control:
-    label: "{{ item.item }}"
+    - name: Reconcile | Parse found automember rule names per type
+      ansible.builtin.set_fact:
+        _reconcile_am_found: "{{ _reconcile_am_found | default({}) | combine({item.item: _names}) }}"
+      vars:
+        _names: "{{ item.stdout_lines | select('match', '^  [A-Z]') | map('regex_replace', '^  [^:]+: ', '') | list }}"
+      loop: "{{ _reconcile_am_find.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
 
-- name: Reconcile | Compute automember orphans (protected-safe)
-  ansible.builtin.set_fact:
-    _reconcile_am_orphans: >-
-      {{ _reconcile_am_found
-         | freeipa_iam_orphans(_reconcile_am_desired, _reconcile_match, _reconcile_protected) }}
-  vars:
-    _reconcile_am_desired:
-      group:     "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'group')     | map(attribute='name') | list }}"
-      hostgroup: "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'hostgroup') | map(attribute='name') | list }}"
+    - name: Reconcile | Compute automember orphans (protected-safe)
+      ansible.builtin.set_fact:
+        _reconcile_am_orphans: >-
+          {{ _reconcile_am_found
+             | freeipa_iam_orphans(_reconcile_am_desired, _reconcile_match, _reconcile_protected) }}
+      vars:
+        _reconcile_am_desired:
+          group: "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'group')     | map(attribute='name') | list }}"
+          hostgroup: "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'hostgroup') | map(attribute='name') | list }}"
 
-- name: Reconcile | Report automember rules to delete
-  ansible.builtin.debug:
-    msg: >-
-      Reconcile [{{ _reconcile_match }}] automember orphans to delete —
-      group: {{ _reconcile_am_orphans.group | default([]) }},
-      hostgroup: {{ _reconcile_am_orphans.hostgroup | default([]) }}
+    - name: Reconcile | Report automember rules to delete
+      ansible.builtin.debug:
+        msg: >-
+          Reconcile [{{ _reconcile_match }}] automember orphans to delete —
+          group: {{ _reconcile_am_orphans.group | default([]) }},
+          hostgroup: {{ _reconcile_am_orphans.hostgroup | default([]) }}
 
-- name: Reconcile | Delete orphaned automember rules (no longer declared)
-  ansible.builtin.command: "ipa automember-del {{ item.1 | quote }} --type={{ item.0.key }}"
-  loop: "{{ _reconcile_am_orphans | default({}) | dict2items | subelements('value') }}"
-  loop_control:
-    label: "{{ item.0.key }} → {{ item.1 }}"
-  changed_when: true
+    - name: Reconcile | Delete orphaned automember rules (no longer declared)
+      ansible.builtin.command: "ipa automember-del {{ item.1 | quote }} --type={{ item.0.key }}"
+      loop: "{{ _reconcile_am_orphans | default({}) | dict2items | subelements('value') }}"
+      loop_control:
+        label: "{{ item.0.key }} → {{ item.1 }}"
+      changed_when: true
 
-- name: Reconcile | Delete orphaned objects (no longer declared)
-  ansible.builtin.command: "ipa {{ item.0.key }}-del {{ item.1 | quote }}"
-  loop: "{{ _reconcile_orphans | default({}) | dict2items | subelements('value') }}"
-  loop_control:
-    label: "{{ item.0.key }} → {{ item.1 }}"
-  changed_when: true
-
-- name: Reconcile | Destroy Kerberos ticket
-  ansible.builtin.command: kdestroy
-  changed_when: false
-  check_mode: false
-  failed_when: false
+    - name: Reconcile | Delete orphaned objects (no longer declared)
+      ansible.builtin.command: "ipa {{ item.0.key }}-del {{ item.1 | quote }}"
+      loop: "{{ _reconcile_orphans | default({}) | dict2items | subelements('value') }}"
+      loop_control:
+        label: "{{ item.0.key }} → {{ item.1 }}"
+      changed_when: true
+  always:
+    - name: Reconcile | Destroy Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      check_mode: false
+      failed_when: false

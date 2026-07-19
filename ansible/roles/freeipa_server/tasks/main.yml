@@ -30,15 +30,17 @@
   become: true
   tags: [preflight]
 
-# Self-heal a configured-but-broken server BEFORE the upstream include: a broken
-# httpd/PKI wiring otherwise no-ops through upstream ("already configured") and
-# dies at the ipa service-start task. Mutating repair, so it lives outside the
-# assert-only preflight. Tagged install so a --tags install repair run heals
-# too; --tags heal targets it alone.
-- name: Self-heal a configured-but-broken FreeIPA server (httpd/PKI wiring)
+# Aborted-install guard + opt-in self-heal, BEFORE the upstream include. The
+# import is UNGATED because the fail-fast guard inside (leftover sysrestore
+# state without default.conf = a half-finished ipa-server-install) must always
+# run — installing on top of that debris yields a broken half-install. The
+# mutating repair path (re-render lost httpd/PKI config from FreeIPA's own
+# templates) is opt-in via freeipa_server_heal_enabled — an incident-response
+# tool, not a converge default. Tagged install so a --tags install run is
+# guarded too; --tags heal targets this file alone.
+- name: Guard against aborted installs + self-heal broken httpd/PKI wiring (opt-in)
   ansible.builtin.import_tasks: heal.yml
   become: true
-  when: freeipa_server_heal_enabled | bool
   tags: [install, heal]
 
 # Host-package install via the upstream ipaserver/ipareplica roles.
@@ -89,7 +91,11 @@
 - name: Force a FreeIPA backup on demand (primary only; opt-in)
   ansible.builtin.import_tasks: backup_run.yml
   become: true
-  when: freeipa_server_is_primary | bool
+  # Guard against tag cascade: a co-tag inherited from the caller can defeat
+  # `never`, so only run when the tag was explicitly passed via --tags.
+  when:
+    - freeipa_server_is_primary | bool
+    - "'backup_now' in ansible_run_tags"
   tags: [never, backup_now]
 
 # IAM pipeline — three phases: 1. desired (assemble + validate), 2. apply,
@@ -194,15 +200,20 @@
 - name: Restore FreeIPA from a backup (break-glass; primary only)
   ansible.builtin.import_tasks: restore.yml
   become: true
+  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
   when:
     - freeipa_server_is_primary | bool
     - freeipa_server_restore_name | length > 0
+    - "'restore' in ansible_run_tags"
   tags: [never, restore]
 
 - name: Export live config to declarative group_vars (opt-in; primary only)
   ansible.builtin.import_tasks: export_config.yml
   become: true
-  when: freeipa_server_is_primary | bool
+  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+  when:
+    - freeipa_server_is_primary | bool
+    - "'export' in ansible_run_tags"
   tags: [never, export]
 
 # Read-only CA-topology probe (primary only). Prints a paste-ready block of
@@ -212,7 +223,10 @@
 - name: Report the CA topology as reproducible vars (opt-in; primary only)
   ansible.builtin.import_tasks: ca_report.yml
   become: true
-  when: freeipa_server_is_primary | bool
+  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+  when:
+    - freeipa_server_is_primary | bool
+    - "'ca_report' in ansible_run_tags"
   tags: [never, ca_report]
 
 # HARD-DELETE every DECLARED freeipa_iam_* object (mock/test cleanup). Double-gated:
@@ -220,9 +234,11 @@
 - name: Delete (HARD-DELETE) declared IAM objects — mock/test cleanup only
   ansible.builtin.import_tasks: delete.yml
   become: true
+  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
   when:
     - freeipa_server_is_primary | bool
     - freeipa_iam_delete | default(false) | bool
+    - "'delete' in ansible_run_tags"
   tags: [never, delete]
   module_defaults: *freeipa_admin_defaults
 
@@ -232,8 +248,10 @@
 - name: Prune (HARD-DELETE) orphaned preserved users
   ansible.builtin.import_tasks: prune_preserved.yml
   become: true
+  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
   when:
     - freeipa_server_is_primary | bool
     - freeipa_iam_delete | default(false) | bool
+    - "'prune_preserved' in ansible_run_tags"
   tags: [never, prune_preserved]
   module_defaults: *freeipa_admin_defaults

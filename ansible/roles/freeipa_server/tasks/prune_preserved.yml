@@ -30,56 +30,69 @@
   vars:
     _freeipa_resolve: [admin]
 
-# A valid admin Kerberos ticket is required for `ipa user-find`. Password on stdin, no_log.
+# A valid admin Kerberos ticket is required for `ipa user-find`. Password via module
+# stdin (never argv — argv is ps-visible on the host), same idiom as reconcile.yml.
 - name: Prune-preserved | Obtain admin Kerberos ticket
-  ansible.builtin.shell:
-    cmd: "set -o pipefail; echo {{ _freeipa_admin_password | quote }} | kinit {{ (freeipa_server_admin_principal ~ '@' ~ freeipa_server_realm) | quote }}"
-    executable: /bin/bash
+  ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
+  args:
+    stdin: "{{ _freeipa_admin_password }}"
+  changed_when: false
+  check_mode: false
   no_log: true
-  changed_when: false
-  check_mode: false
 
-# Read-only discovery of the live preserved set. --pkey-only keeps output to logins only.
-- name: Prune-preserved | Discover live preserved users
-  ansible.builtin.command:
-    cmd: ipa user-find --preserved=True --pkey-only --sizelimit=0
-  register: _prune_preserved_find
-  changed_when: false
-  check_mode: false
+- name: Prune-preserved | Discover, plan, and hard-delete (ticket always destroyed)
+  block:
+    # Read-only discovery of the live preserved set. --pkey-only keeps output to logins
+    # only. failed_when: false — ipa user-find returns rc=1 on ZERO matches, and a clean
+    # realm with nothing preserved must no-op, not fail; an empty result yields an empty
+    # candidate set (nothing deleted), so the degradation is fail-safe.
+    - name: Prune-preserved | Discover live preserved users
+      ansible.builtin.command:
+        cmd: ipa user-find --preserved=True --pkey-only --sizelimit=0
+      register: _prune_preserved_find
+      changed_when: false
+      check_mode: false
+      failed_when: false
 
-- name: Prune-preserved | Compute preserved logins
-  ansible.builtin.set_fact:
-    _preserved_logins: "{{ _prune_preserved_find.stdout | regex_findall('User login: (\\S+)') }}"
+    - name: Prune-preserved | Compute preserved logins
+      ansible.builtin.set_fact:
+        _preserved_logins: "{{ _prune_preserved_find.stdout | default('') | regex_findall('User login: (\\S+)') }}"
 
-# Candidate set = preserved − protected − explicit keep-list, then − keep-regex matches
-# (only when a regex is set, so an empty regex can never match-and-exclude everything).
-- name: Prune-preserved | Compute prune candidates (protected + keep-list + keep-regex excluded)
-  ansible.builtin.set_fact:
-    _prune_candidates: >-
-      {{ (_base | reject('match', freeipa_iam_prune_preserved_keep_regex) | list)
-         if (freeipa_iam_prune_preserved_keep_regex | default('') | length > 0)
-         else _base }}
-  vars:
-    _base: >-
-      {{ _preserved_logins
-         | difference(freeipa_iam_protected_users | default([]))
-         | difference(freeipa_iam_prune_preserved_keep | default([])) }}
+    # Candidate set = preserved − protected − explicit keep-list, then − keep-regex matches
+    # (only when a regex is set, so an empty regex can never match-and-exclude everything).
+    - name: Prune-preserved | Compute prune candidates (protected + keep-list + keep-regex excluded)
+      ansible.builtin.set_fact:
+        _prune_candidates: >-
+          {{ (_base | reject('match', freeipa_iam_prune_preserved_keep_regex) | list)
+             if (freeipa_iam_prune_preserved_keep_regex | default('') | length > 0)
+             else _base }}
+      vars:
+        _base: >-
+          {{ _preserved_logins
+             | difference(freeipa_iam_protected_users | default([]))
+             | difference(freeipa_iam_prune_preserved_keep | default([])) }}
 
-- name: Prune-preserved | Show prune plan
-  ansible.builtin.debug:
-    msg: >-
-      PRUNE-PRESERVED [{{ 'DRY-RUN (--check)' if ansible_check_mode else 'APPLY' }}]:
-      {{ _prune_candidates | length }} of {{ _preserved_logins | length }} preserved users
-      {{ 'would be' if ansible_check_mode else 'WILL BE' }} HARD-DELETED.
-      Candidates: {{ _prune_candidates | join(', ') | default('(none)', true) }}.
-      Kept: {{ (_preserved_logins | difference(_prune_candidates)) | join(', ') | default('(none)', true) }}.
+    - name: Prune-preserved | Show prune plan
+      ansible.builtin.debug:
+        msg: >-
+          PRUNE-PRESERVED [{{ 'DRY-RUN (--check)' if ansible_check_mode else 'APPLY' }}]:
+          {{ _prune_candidates | length }} of {{ _preserved_logins | length }} preserved users
+          {{ 'would be' if ansible_check_mode else 'WILL BE' }} HARD-DELETED.
+          Candidates: {{ _prune_candidates | join(', ') | default('(none)', true) }}.
+          Kept: {{ (_preserved_logins | difference(_prune_candidates)) | join(', ') | default('(none)', true) }}.
 
-# The actual hard-delete. preserve: false → user_del (NOT --preserve); the ipauser module
-# resolves preserved entries via user_show, so a preserved user is genuinely removed. Under
-# --check the module reports the change without applying it (the dry-run).
-- name: Prune-preserved | Hard-delete preserved users (preserve=false)
-  freeipa.ansible_freeipa.ipauser:
-    name: "{{ _prune_candidates }}"
-    preserve: false
-    state: absent
-  when: _prune_candidates | length > 0
+    # The actual hard-delete. preserve: false → user_del (NOT --preserve); the ipauser module
+    # resolves preserved entries via user_show, so a preserved user is genuinely removed. Under
+    # --check the module reports the change without applying it (the dry-run).
+    - name: Prune-preserved | Hard-delete preserved users (preserve=false)
+      freeipa.ansible_freeipa.ipauser:
+        name: "{{ _prune_candidates }}"
+        preserve: false
+        state: absent
+      when: _prune_candidates | length > 0
+  always:
+    - name: Prune-preserved | Destroy Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      check_mode: false
+      failed_when: false

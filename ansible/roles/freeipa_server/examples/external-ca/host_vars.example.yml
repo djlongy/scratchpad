@@ -9,13 +9,13 @@
 #     (re)build. Copy the relevant block into a real host_vars/<host>.yml when ready.
 #
 # GOAL: make a TEST realm's CA a SUB-CA of the SAME org root your production realm
-#       chains to, so test-issued certs carry an Authority Information Access (AIA)
-#       extension and validate against that shared root — matching prod 1:1.
+#       chains to, so test-issued certs chain up to that shared root and validate
+#       against it — matching prod 1:1.
 #
 # Capture prod's exact CA settings first with the read-only probe, then mirror them
 # here (mode, subject, KRA/DNS/PKINIT):
 #     ansible-playbook -i inventories/<prodenv>/hosts.yml \
-#         playbooks/freeipa_iam.yml --tags ca_report
+#         playbooks/freeipa.yml --tags ca_report
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Scenario host in these comments: freeipa.central-qa.example.com
@@ -27,10 +27,11 @@
 # /root/ipa.csr on the primary, leaving the server partially configured.
 #
 #   ansible-playbook -i inventories/<testenv>/hosts.yml \
-#       playbooks/freeipa_iam.yml --tags install --limit freeipa-central-qa
+#       playbooks/freeipa.yml --tags install --limit freeipa-central-qa
 #
 freeipa_server_ca_mode: external-ca
 freeipa_server_external_cert_files: []          # empty on phase 1 → CSR is emitted
+freeipa_server_external_ca_allow_csr_phase: true  # authorizes the empty cert list phase 1 expects
 
 # Match these to what --tags ca_report reported for prod (example values shown):
 freeipa_server_subject_base: "O=CENTRAL-QA.EXAMPLE.COM"
@@ -51,24 +52,25 @@ freeipa_server_no_pkinit: false
 # Place both PEMs on the CONTROL NODE (e.g. under files/ next to this inventory).
 
 # ── PHASE 2 — consume the signed chain and finish ────────────────────────────
-# Set freeipa_server_external_cert_files to [signed-ipa-ca.crt, org-root-chain.crt]
-# (control-node paths) and RE-RUN the SAME install. Preflight asserts the files
-# exist; the installer imports them and completes. The IPA CA is now a sub-CA of
-# your org root, and every cert IPA issues chains to it.
+# Set freeipa_server_external_cert_files to the signed cert + chain STAGED ON THE
+# MANAGED HOST (e.g. scp'd to /root) — these are host paths, passed straight to
+# upstream ipaserver_external_cert_files, not control-node paths. Preflight
+# asserts the list is non-empty, not that the files exist on disk. RE-RUN the
+# SAME install; the installer imports them and completes. The IPA CA is now a
+# sub-CA of your org root, and every cert IPA issues chains to it.
 #
+#   scp signed-ipa-ca.crt org-root-chain.crt root@freeipa-central-qa:/root/
 #   ansible-playbook -i inventories/<testenv>/hosts.yml \
-#       playbooks/freeipa_iam.yml --tags install --limit freeipa-central-qa
+#       playbooks/freeipa.yml --tags install --limit freeipa-central-qa
 #
-# Uncomment for phase 2 (paths relative to the inventory, resolved by the installer
-# on the primary — stage them there, or use absolute control-node paths):
+# Uncomment for phase 2 (host paths, as staged above):
 # freeipa_server_external_cert_files:
 #   - /root/signed-ipa-ca.crt
 #   - /root/org-root-chain.crt
 
-# ── AFTER: verify the chain ──────────────────────────────────────────────────
-# Confirm the new realm's CA now carries an AIA extension and chains to your root:
-#   openssl x509 -in /etc/ipa/ca.crt -noout -text | grep -A2 'Authority Information Access'
-# Re-running --tags ca_report on the test primary should now classify it external-ca.
+# ── AFTER: verify ────────────────────────────────────────────────────────────
+# Re-run --tags ca_report on the test primary — it should now classify the realm
+# external-ca (it reads the IPA CA's own issuer vs subject, the authoritative signal).
 #
 # NOTE: to instead TRUST other CAs alongside IPA's own CA (not replace the serving
 # CA), use freeipa_server_trusted_external_cas — see the role README.

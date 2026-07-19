@@ -5,3 +5,7 @@ rules:
   comments: disable
   comments-indentation: disable
   document-start: disable
+  # Allow (but don't require) a space inside flow collections, so both the compact
+  # {key: x} and the spaced { key: x } / [ a, b ] forms are accepted.
+  braces: {min-spaces-inside: 0, max-spaces-inside: 1}
+  brackets: {min-spaces-inside: 0, max-spaces-inside: 1}

@@ -8,6 +8,29 @@
     path: /etc/ipa/default.conf
   register: _freeipa_server_configured
 
+- name: Assert the FreeIPA domain is set before any hostname mutation
+  ansible.builtin.assert:
+    that:
+      - (freeipa_server_domain | default('') | trim | length) > 0
+    fail_msg: >-
+      freeipa_server_domain is empty, so freeipa_server_fqdn would be an
+      incomplete "{{ inventory_hostname }}." with a trailing dot. Set
+      freeipa_server_domain (via the inventory-wide domain var or an explicit
+      override) before this play mutates the hostname and /etc/hosts.
+    quiet: true
+
+- name: Assert an offline install declares its package repository
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_package_repo is defined
+    fail_msg: >-
+      freeipa_server_offline is true but freeipa_server_package_repo is
+      undefined. Define freeipa_server_package_repo (name/baseurl/gpgcheck) so
+      the offline repo can be configured — otherwise package install has no
+      source and fails later with unresolved dependencies.
+    quiet: true
+  when: freeipa_server_offline | bool
+
 - name: Configure offline package repository
   ansible.builtin.yum_repository:
     name: "{{ freeipa_server_package_repo.name }}"
@@ -47,10 +70,14 @@
     that:
       - (freeipa_server_forwarders | length > 0)
         or (freeipa_server_no_forwarders | bool)
+      - not ((freeipa_server_forwarders | default([]) | length > 0)
+        and (freeipa_server_no_forwarders | default(false) | bool))
     fail_msg: >-
-      freeipa_server_setup_dns is true but no forwarder choice is declared.
-      Set freeipa_server_forwarders (e.g. ["192.0.2.1"]) OR
-      freeipa_server_no_forwarders: true (root servers only) — or disable
+      freeipa_server_setup_dns is true but the forwarder choice is invalid.
+      Declare EXACTLY ONE of: freeipa_server_forwarders (e.g. ["192.0.2.1"]) OR
+      freeipa_server_no_forwarders: true (root servers only). Declaring neither
+      leaves the installer without a choice; declaring BOTH is rejected upstream
+      ("You cannot specify forwarders together with no-forwarders"). Or disable
       integrated DNS with freeipa_server_setup_dns: false.
     quiet: true
   # Not gated on "already configured": upstream validates these options before
@@ -69,7 +96,8 @@
     that:
       - _freeipa_server_chrony.rc == 0
       - >-
-        (_freeipa_server_chrony.stdout
+        _freeipa_server_chrony.rc != 0
+        or (_freeipa_server_chrony.stdout
         | regex_search('System time *: *([0-9.]+)', '\\1') | first | float)
         < (freeipa_server_preflight_time_tolerance_sec | float)
     fail_msg: >-
@@ -78,7 +106,6 @@
       above 300s skew. Fix NTP before installing.
   when:
     - not _freeipa_server_configured.stat.exists
-    - _freeipa_server_chrony.rc == 0
 
 - name: Set the system hostname to the FreeIPA FQDN
   ansible.builtin.hostname:

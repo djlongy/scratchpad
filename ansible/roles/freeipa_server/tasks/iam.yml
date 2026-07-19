@@ -828,7 +828,7 @@
 - name: Acquire Kerberos ticket for current membership discovery
   ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
   args:
-    stdin: "{{ _freeipa_admin_password }}\n"
+    stdin: "{{ _freeipa_admin_password }}"
   changed_when: false
   no_log: true
 
@@ -904,22 +904,24 @@
 # EMPTY-DESIRED-STATE circuit breaker: with zero desired users, EVERY managed user
 # is "removed" — a wiped realm from a typo'd tenants dir or hollow group_vars, not a
 # plausible intent. The tenants loader has its own guards; this one covers every
-# route to an empty desired set on a destructive run.
+# route to an empty desired set on a destructive run. NOT gated on authoritative:
+# the user ARCHIVAL below runs in the default (non-authoritative) mode too, so the
+# breaker must cover that path as well — only membership-only mode (which never
+# archives) skips it.
 - name: Refuse destructive reconcile against an EMPTY desired user set
   ansible.builtin.assert:
     that: freeipa_iam_desired_usernames | length > 0
     fail_msg: >-
-      freeipa_server_authoritative is enabled but ZERO users are declared — the
-      reconcile would archive every managed user and delete every managed object on
-      the realm. Refusing. Check the identity source (tenants dir path, group_vars)
-      actually loaded.
+      ZERO users are declared while the realm has managed users — the reconcile
+      would archive every managed user on the realm. Refusing. Check the identity
+      source (tenants dir path, group_vars) actually loaded.
     quiet: true
   when:
-    - freeipa_server_authoritative | bool
+    - not (freeipa_iam_reconcile_memberships_only | bool)
     - freeipa_iam_current_managed_users | default([]) | length > 0
 
-# The protect-users regexes shield externally-managed service accounts (any externally-managed
-# login) from archival even if once declared then undeclared (belt-and-suspenders atop
+# The protect-users regexes shield externally-managed service accounts (and any
+# externally-managed login) from archival even if once declared then undeclared (belt-and-suspenders atop
 # the marker gate). ANY-match via re.search; an empty effective list degrades to a
 # never-matching regex so normal archival is unaffected.
 - name: Build declarative user delete list
@@ -963,6 +965,25 @@
   check_mode: false
   when: freeipa_server_authoritative | bool
 
+# EMPTY-DESIRED-STATE circuit breaker (group twin of the user breaker above): with
+# zero declared groups and a non-empty container, EVERY managed group would be
+# hard-deleted — and groups cannot be preserve-archived, so there is no undo.
+- name: Refuse destructive group reconcile against an EMPTY desired group set
+  ansible.builtin.assert:
+    that: freeipa_iam_group_names | length > 0
+    fail_msg: >-
+      Group-existence reconcile is armed (freeipa_server_authoritative) but ZERO
+      groups are declared while the managed-groups container is non-empty — the
+      reconcile would hard-delete every managed group (unrecoverable). Refusing.
+      Check the identity source (tenants dir path, group_vars) actually loaded.
+    quiet: true
+  when:
+    - not (freeipa_iam_reconcile_memberships_only | bool)
+    - freeipa_server_authoritative | bool
+    - >-
+      (_freeipa_iam_managed_groups_show.stdout_lines | default([]) | map('trim')
+       | select('match', '^member: cn=') | list | length) > 0
+
 # Members come back as raw `member: cn=<group>,cn=groups,...` DN lines (user members
 # are `uid=...` and are skipped). `^member: cn=` excludes the container's own
 # `memberof:` lines. Orphan = enrolled in the container but NOT declared, NOT protected,
@@ -1005,8 +1026,7 @@
 
 # Password-expiration FLOOR: no module implements the conditional (only bump when
 # fewer than min_days_remaining are left), but the read is ONE user-find and the
-# write is the NATIVE ipauser passwordexpiration option in one bulk call — this
-# replaced a per-user shell read-compare-set loop (GNU-date dependent).
+# write is the NATIVE ipauser passwordexpiration option in one bulk call.
 - name: Read current password expirations (one query)
   ansible.builtin.command: "ipa user-find --all --raw --sizelimit=0"
   register: _freeipa_iam_pwexp_find

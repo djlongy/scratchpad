@@ -71,80 +71,80 @@
 
 - name: Delete | Remove sudo rules
   freeipa.ansible_freeipa.ipasudorule:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_sudo_rules | default([]) }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_sudo_rules | default([])}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_sudo_rules | default([])) | length > 0
 
 - name: Delete | Remove HBAC rules
   freeipa.ansible_freeipa.ipahbacrule:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_hbac_rules | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hbac_rules | default([])) | list }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_hbac_rules | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hbac_rules | default([])) | list}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_hbac_rules | default([])) | length > 0
 
 - name: Delete | Remove sudo command groups
   freeipa.ansible_freeipa.ipasudocmdgroup:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_sudocmdgroups | default([]) }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_sudocmdgroups | default([])}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_sudocmdgroups | default([])) | length > 0
 
 - name: Delete | Remove HBAC service groups
   freeipa.ansible_freeipa.ipahbacsvcgroup:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_hbacsvcgroups | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hbacsvcgroups | default([])) | list }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_hbacsvcgroups | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hbacsvcgroups | default([])) | list}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_hbacsvcgroups | default([])) | length > 0
 
 - name: Delete | Remove sudo commands
   freeipa.ansible_freeipa.ipasudocmd:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_sudo_commands | default([]) }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_sudo_commands | default([])}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_sudo_commands | default([])) | length > 0
 
 - name: Delete | Remove custom HBAC services
   freeipa.ansible_freeipa.ipahbacsvc:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_hbacsvcs | default([]) | rejectattr('name', 'in', freeipa_server_export_stock_hbacsvcs | default([])) | list }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_hbacsvcs | default([]) | rejectattr('name', 'in', freeipa_server_export_stock_hbacsvcs | default([])) | list}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_hbacsvcs | default([])) | length > 0
 
 - name: Delete | Remove password policies
   freeipa.ansible_freeipa.ipapwpolicy:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_pwpolicies | default([]) }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_pwpolicies | default([])}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_pwpolicies | default([])) | length > 0
 
 # HARD delete the users (preserve: false → user-del, NOT user-del --preserve).
 - name: Delete | Hard-delete declared users (not protected)
   freeipa.ansible_freeipa.ipauser:
-    name: "{{ _delete_users }}"
+    name: "{{_delete_users}}"
     preserve: false
     state: absent
   when: _delete_users | length > 0
 
 - name: Delete | Remove declared groups (not protected)
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ _delete_groups }}"
+    name: "{{_delete_groups}}"
     state: absent
   when: _delete_groups | length > 0
 
 - name: Delete | Remove hostgroups
   freeipa.ansible_freeipa.ipahostgroup:
-    name: "{{ item.name }}"
+    name: "{{item.name}}"
     state: absent
-  loop: "{{ freeipa_iam_hostgroups | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hostgroups | default([])) | list }}"
-  loop_control: { label: "{{ item.name | default('?') }}" }
+  loop: "{{freeipa_iam_hostgroups | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_hostgroups | default([])) | list}}"
+  loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_hostgroups | default([])) | length > 0
 
 # The marker group last (it has no members left once users are gone). Skipped if it

@@ -12,13 +12,13 @@ Pairs with [`freeipa_client`](../freeipa_client/) for host enrolment.
 **Most common: reconcile identity (users/groups/HBAC/sudo).** Edit the `freeipa_iam_*` lists (or the per-tenant files), then re-run `--tags iam` — idempotent, primary-only.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags iam
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml --tags iam
 ```
 
 Install is a separate one-time run (no tags does install + everything):
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml
 ```
 
 ## Quick start
@@ -26,8 +26,10 @@ ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml
 Requirements: `ansible-galaxy collection install freeipa.ansible_freeipa`
 (plus `community.general` for one hardening task, and `community.hashi_vault`
 only if you use the Vault password fallback). Targets: EL-family
-(RHEL/Rocky/Alma/CentOS/Fedora) or Debian/Ubuntu — the full FreeIPA *server*
-support matrix; packaging and firewall are handled by the upstream roles.
+(RHEL/Rocky/Alma/CentOS/Fedora) for the FreeIPA **server** — the vendored
+`ipaserver` role documents Ubuntu support only at 16.04/18.04, and Debian
+upstream is **client-only** (no server or replica role); packaging and
+firewall are handled by the upstream roles.
 
 ```yaml
 # inventory.yml — a single server needs NO special groups
@@ -61,7 +63,7 @@ A no-tag run runs everything except the `never`-tagged ops.
 | Tag | Runs |
 |---|---|
 | `preflight` | FIPS/time/FQDN/primary-up dependency guards |
-| `heal` | Self-heal a configured-but-broken server (also runs under `install`) |
+| `heal` | Aborted-install guard (always) + opt-in self-heal of a broken server (also runs under `install`) |
 | `install` | Vault creds + upstream primary/replica install |
 | `configure` / `resilience` | Cold-start timeout override + recovery timer |
 | `certs` (`ca`) | Import trusted external CAs into the IPA trust store (primary, opt-in) |
@@ -80,9 +82,9 @@ A no-tag run runs everything except the `never`-tagged ops.
 
 ```bash
 # Re-reconcile IAM after editing the data
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags iam
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml --tags iam
 # Re-apply just resilience
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags resilience
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml --tags resilience
 ```
 
 The resilience phase (cold-start recovery timer, ccache cleanup, SSSD self-heal
@@ -90,7 +92,7 @@ watchdog) is on by default — disable wholesale with
 `freeipa_server_resilience_enabled: false`, or just the watchdog with
 `freeipa_server_sssd_selfheal: false`.
 
-### Self-heal: configured but broken (`heal`, on by default)
+### Self-heal: configured but broken (`heal`, opt-in)
 
 "Already configured" is decided from `/etc/ipa/default.conf` alone, so a server that has
 **lost some or all of the httpd config files the installer generates** sails through the
@@ -123,11 +125,19 @@ found"* (its HTTPInstance step reads the file rather than creating it). `nss.con
 present) — the heal only reports on it.
 
 A half-finished (aborted) `ipa-server-install` fails fast with the cleanup command instead
-of installing on top. A cleanly stopped-but-intact server is *not* healed — the normal
-service-start path handles it. If the server is **still unhealthy after every file is
-restored**, the heal fails loud pointing at data-level LDAP/Dogtag damage with
-`ipa-restore` guidance (a file re-render can't fix that). Opt out with
-`freeipa_server_heal_enabled: false`.
+of installing on top — that guard **always runs**, independent of the toggle below. A
+cleanly stopped-but-intact server is *not* healed — the normal service-start path handles
+it. If the server is **still unhealthy after every file is restored**, the heal fails loud
+pointing at data-level LDAP/Dogtag damage with `ipa-restore` guidance (a file re-render
+can't fix that).
+
+The repair itself is **opt-in** (`freeipa_server_heal_enabled: false` by default) — it is
+an incident-response tool, not something a routine converge runs speculatively. During an
+incident, enable it for one run:
+
+```bash
+ansible-playbook ... --tags heal -e freeipa_server_heal_enabled=true
+```
 
 ## Credentials — declared vars first, HashiCorp Vault as fallback
 
@@ -209,10 +219,10 @@ Two related knobs (both `""` = upstream default):
 > **Capture a live server's CA settings** to reproduce it 1:1 on another realm:
 > `--tags ca_report` runs a **read-only** probe on the primary and prints a paste-ready
 > block of `freeipa_server_*` CA vars (mode, subject, KRA/DNS/PKINIT, trusted roots),
-> deriving the mode from the CA cert (issuer==subject + no AIA ⇒ self-signed; else
+> deriving the mode from the CA signing cert (issuer==subject ⇒ self-signed; else
 > external-ca). See `tasks/ca_report.yml`.
 > ```bash
-> ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags ca_report
+> ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml --tags ca_report
 > ```
 
 ### external-ca is two-phase
@@ -220,14 +230,20 @@ Two related knobs (both `""` = upstream default):
 `freeipa_server_ca_mode: external-ca` makes the IPA CA a **subordinate** of your org root
 via a CSR roundtrip:
 
-1. **Phase 1** — run with `freeipa_server_ca_mode: external-ca` and
-   `freeipa_server_external_cert_files: []`. The install stops after emitting the CSR at
-   **`/root/ipa.csr`** on the primary.
+1. **Phase 1** — run with `freeipa_server_ca_mode: external-ca`,
+   `freeipa_server_external_cert_files: []`, and
+   `freeipa_server_external_ca_allow_csr_phase: true` (preflight fails fast on
+   `external-ca` + an empty cert list unless this flag authorizes it). The
+   install stops after emitting the CSR at **`/root/ipa.csr`** on the primary.
 2. **Sign it** — sign `/root/ipa.csr` with your org root CA. You get back the signed IPA
    CA cert plus your root's chain.
-3. **Phase 2** — set `freeipa_server_external_cert_files: [signed-ipa-ca.crt, org-root-chain.crt]`
-   (paths on the control node) and **re-run**. Preflight asserts the files exist; the
-   install consumes them and finishes.
+3. **Phase 2** — set `freeipa_server_external_cert_files: [/root/signed-ipa-ca.crt,
+   /root/org-root-chain.crt]` (paths **on the managed host**, not the control node — the
+   role passes them straight to upstream `ipaserver_external_cert_files`) and **re-run**.
+   Preflight asserts the list is non-empty, not that the files exist on disk — place the
+   signed cert + chain on the host yourself first (e.g. `scp` to `/root`) before running
+   phase 2 manually. The consolidated `playbooks/freeipa_signed_install.yml` flow
+   stages the signed cert and chain onto the host automatically between phases.
 
 The result: IPA's certs chain up to your root, so a test realm installed this way carries
 the same trust chain as prod. A worked, copy-pasteable inventory fragment lives at
@@ -236,13 +252,12 @@ the same trust chain as prod. A worked, copy-pasteable inventory fragment lives 
 your root to sign, so run it deliberately).
 
 By default, preflight **fails fast** if `ca_mode` is `external-ca` and
-`external_cert_files` is empty — this combination usually means phase 2 was
-attempted with the cert files var left unset. Set
-`freeipa_server_external_ca_allow_csr_phase: true` to deliberately allow phase 1
-to run in that state (install stops after emitting `/root/ipa.csr`, same as
-above) — meant for a one-run pipeline that signs the CSR inline and re-invokes
-the role for phase 2, without a human pausing in between. Leave it `false`
-(default) for the manual two-phase flow described here.
+`external_cert_files` is empty — this catches the case where phase 2 was
+attempted with the cert files var left unset. Both the manual two-phase flow's
+phase 1 (above) and a one-run pipeline that signs the CSR inline and
+re-invokes the role for phase 2 need `freeipa_server_external_ca_allow_csr_phase:
+true` to authorize the expected empty-list state at that point; the flag is
+irrelevant again once phase 2 supplies `external_cert_files`.
 
 To instead *trust other CAs alongside* IPA's own CA (not replace the serving CA), see below.
 
@@ -298,7 +313,7 @@ backup`, which a normal run does).
 
 ```bash
 # nightly job — force a backup, fail the pipeline on error
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags backup_now
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml --tags backup_now
 ```
 
 GitLab CI — a scheduled pipeline (Settings → CI/CD → Pipeline schedules, nightly) so every
@@ -309,7 +324,7 @@ freeipa_backup:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
-    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/freeipa_iam.yml --tags backup_now
+    - ansible-playbook -i inventories/$ENV/hosts.yml playbooks/freeipa.yml --tags backup_now
 ```
 
 ## Declarative DNS
@@ -656,11 +671,11 @@ Minimum: an inventory with the IPA host in `freeipa`, and **one** credential sou
 ```bash
 # Option A — no Vault: pass the admin password directly.
 # (Best from an Ansible-Vault file: -e @secrets.yml, so it isn't in shell history.)
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml \
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml \
   --tags export -e freeipa_server_admin_password='<ADMIN_PASSWORD>'
 
 # Option B — fall back to Vault (set freeipa_server_vault_secret in group_vars):
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_iam.yml --tags export
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml --tags export
 
 # Either way → writes freeipa.config.snapshot.yml on the control node; move it into an
 # inventory group_vars to reapply.

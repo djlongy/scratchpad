@@ -79,26 +79,26 @@ def test_merge_empty_base_is_just_extra(fp):
 
 # ── orphan reconcile ─────────────────────────────────────────────────────────
 def test_orphans_deletes_only_undeclared_scoped(fp):
-    """Only in-scope, undeclared names are orphans: hg-newen-mgt-ztest-old and
-    ug-newen-mgt-stale. hg-newen-infra-gitlab-admins is a different env (lacks the
-    'newen-mgt' marker) so it is never touched; the declared names survive."""
+    """Only in-scope, undeclared names are orphans: hg-acme-mgt-ztest-old and
+    ug-acme-mgt-stale. hg-acme-infra-gitlab-admins is a different env (lacks the
+    'acme-mgt' marker) so it is never touched; the declared names survive."""
     found = {
-        "hostgroup": ["hg-newen-mgt-gitlab-admins", "hg-newen-mgt-ztest-old",
-                      "hg-newen-infra-gitlab-admins"],
-        "group": ["role-newen-mgt-gitlab-admins", "ug-newen-mgt-stale"],
+        "hostgroup": ["hg-acme-mgt-gitlab-admins", "hg-acme-mgt-ztest-old",
+                      "hg-acme-infra-gitlab-admins"],
+        "group": ["role-acme-mgt-gitlab-admins", "ug-acme-mgt-stale"],
     }
     desired = {
-        "hostgroup": ["hg-newen-mgt-gitlab-admins"],
-        "group": ["role-newen-mgt-gitlab-admins"],
+        "hostgroup": ["hg-acme-mgt-gitlab-admins"],
+        "group": ["role-acme-mgt-gitlab-admins"],
     }
-    out = fp.freeipa_iam_orphans(found, desired, "newen-mgt")
-    assert out["hostgroup"] == ["hg-newen-mgt-ztest-old"]
-    assert out["group"] == ["ug-newen-mgt-stale"]
+    out = fp.freeipa_iam_orphans(found, desired, "acme-mgt")
+    assert out["hostgroup"] == ["hg-acme-mgt-ztest-old"]
+    assert out["group"] == ["ug-acme-mgt-stale"]
 
 
 def test_orphans_respects_protected(fp):
-    found = {"group": ["role-newen-mgt-foo-admins", "admins"]}   # 'admins' lacks the marker anyway
-    out = fp.freeipa_iam_orphans(found, {"group": []}, "newen-mgt", protected=["role-newen-mgt-foo-admins"])
+    found = {"group": ["role-acme-mgt-foo-admins", "admins"]}   # 'admins' lacks the marker anyway
+    out = fp.freeipa_iam_orphans(found, {"group": []}, "acme-mgt", protected=["role-acme-mgt-foo-admins"])
     assert out["group"] == []        # protected excluded; 'admins' lacks marker → also excluded
 
 
@@ -146,7 +146,7 @@ def test_named_mixed_and_empty(fp):
 # ── freeipa_export_scope: carve a snapshot into per-tenant/env slices ──────────
 def _sample_export():
     return {
-        "meta": {"realm": "IPA.MGT.NEWEN.AU"},
+        "meta": {"realm": "IPA.EXAMPLE.COM"},
         "freeipa_server_domain": "ipa.example.com",
         "freeipa_server_forwarders": ["10.0.0.1"],
         "freeipa_iam_usergroups": [
@@ -190,7 +190,7 @@ def test_export_scope_passes_scalars_and_str_lists_through(fp):
     out = fp.freeipa_export_scope(_sample_export(), ["acme-prod-"], "include")
     assert out["freeipa_server_domain"] == "ipa.example.com"
     assert out["freeipa_server_forwarders"] == ["10.0.0.1"]  # list[str] untouched
-    assert out["meta"] == {"realm": "IPA.MGT.NEWEN.AU"}
+    assert out["meta"] == {"realm": "IPA.EXAMPLE.COM"}
     assert out["freeipa_iam_hostgroups"] == []                  # empty list stays empty
 
 
@@ -841,3 +841,71 @@ class TestDnsReverseDefaulted:
     def test_empty_and_none_pass_through(self, fp):
         assert fp.freeipa_dns_reverse_defaulted([], True) == []
         assert fp.freeipa_dns_reverse_defaulted(None, True) is None
+
+
+class TestIdentityMergeTypeGuard:
+    """A KNOWN object key carrying a non-list must fail loud, never drop silently."""
+
+    def test_dict_valued_users_raises(self, fp):
+        files = [{"tenant": "acme", "users": {"name": "alice", "first": "A", "last": "B"}}]
+        with pytest.raises(fp.AnsibleFilterError, match="'users' must be a LIST"):
+            fp.freeipa_iam_identity_merge(files)
+
+    def test_scalar_valued_full_var_raises(self, fp):
+        files = [{"tenant": "acme", "freeipa_iam_usergroups": "acme-admins"}]
+        with pytest.raises(fp.AnsibleFilterError, match="freeipa_iam_usergroups"):
+            fp.freeipa_iam_identity_merge(files)
+
+    def test_helper_scalars_and_empty_keys_still_skip(self, fp):
+        files = [{"tenant": "acme", "local_env": "dev", "hg_prefix": "hg-acme",
+                  "users": None,
+                  "groups": [{"name": "acme-admins"}]}]
+        out = fp.freeipa_iam_identity_merge(files)
+        assert out["objects"]["freeipa_iam_usergroups"] == [{"name": "acme-admins"}]
+        assert "freeipa_iam_users" not in out["objects"]
+
+
+class TestValidateShapeGuards:
+    def test_bare_string_user_is_a_shape_problem_not_a_crash(self, fp):
+        out = fp.freeipa_iam_validate({"users": ["alice", {"name": "bob", "first": "B",
+                                                           "last": "B", "groups": ["g"]}],
+                                       "usergroups": [{"name": "g"}]})
+        assert any("not a mapping" in p for p in out["shape"])
+
+    def test_duplicate_non_user_objects_are_shape_problems(self, fp):
+        out = fp.freeipa_iam_validate({
+            "users": [],
+            "usergroups": [{"name": "devs"}, {"name": "devs"}],
+            "hostgroups": [{"name": "hg-a"}, {"name": "hg-a"}],
+            "hbac_rules": [{"name": "r1"}, {"name": "r1"}],
+            "sudo_rules": [{"name": "s1"}, {"name": "s1"}],
+        })
+        for needle in ("duplicate usergroup 'devs' (2 entries)",
+                       "duplicate hostgroup 'hg-a' (2 entries)",
+                       "duplicate HBAC rule 'r1' (2 entries)",
+                       "duplicate sudo rule 's1' (2 entries)"):
+            assert needle in out["shape"]
+
+
+class TestExportScopeExcludeScrubsMembers:
+    SNAP = {
+        "meta": {"realm": "EXAMPLE.TEST"},
+        "freeipa_iam_usergroups": [
+            {"name": "app-harbor-admin", "group": ["pam_marvel_prod_harbor", "ops-core"]},
+            {"name": "pam_marvel_prod_harbor", "membermanager_user": ["svc-extapp-toggler-marvel"]},
+        ],
+        "freeipa_iam_iparoles": [
+            {"name": "Fleet Ops", "user": ["svc-extapp", "svc-fleet"], "usergroup": ["ops-core"]},
+        ],
+    }
+
+    def test_exclude_drops_objects_and_scrubs_member_references(self, fp):
+        got = fp.freeipa_export_scope(self.SNAP, ["extapp", "pam_"], mode="exclude")
+        assert [g["name"] for g in got["freeipa_iam_usergroups"]] == ["app-harbor-admin"]
+        assert got["freeipa_iam_usergroups"][0]["group"] == ["ops-core"]
+        assert got["freeipa_iam_iparoles"][0]["user"] == ["svc-fleet"]
+        assert got["freeipa_iam_iparoles"][0]["usergroup"] == ["ops-core"]
+
+    def test_include_mode_leaves_member_lists_untouched(self, fp):
+        got = fp.freeipa_export_scope(self.SNAP, ["app-"], mode="include")
+        assert got["freeipa_iam_usergroups"][0]["group"] == ["pam_marvel_prod_harbor", "ops-core"]

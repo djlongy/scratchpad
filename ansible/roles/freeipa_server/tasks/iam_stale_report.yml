@@ -5,10 +5,12 @@
 # that never authenticated yet were created before the cutoff — shields service/protected
 # logins, and PRINTS the list. It NEVER disables, archives, or deletes anything.
 #
-# ldapi:// + SASL/EXTERNAL autobinds root to cn=Directory Manager (FreeIPA enables root
-# ldapi autobind), so no password is fetched. krbLastSuccessfulAuth and createTimestamp
-# are operational attrs but are valid in search filters. argv form (no shell) means a
-# failing ldapsearch fails the task loudly instead of a pipe silently masking it.
+# Search is done with community.general.ldap_search (not a raw ldapsearch shell-out):
+# server_uri points at the 389-ds ldapi socket and, with no bind_dn, the module SASL/EXTERNAL
+# autobinds as root → cn=Directory Manager (FreeIPA enables root ldapi autobind), so no
+# password is fetched. krbLastSuccessfulAuth and createTimestamp are operational attrs but
+# are valid in search filters. The module returns structured entries (results[].uid), so
+# there is no fragile LDIF text-parsing and a failed search fails the task loudly.
 
 - name: Stale report | Compute the inactivity cutoff (LDAP generalized time)
   ansible.builtin.command: "date -u -d '-{{ freeipa_iam_stale_days | int }} days' +%Y%m%d%H%M%SZ"
@@ -16,57 +18,38 @@
   changed_when: false
 
 - name: Stale report | Find users whose last successful auth predates the cutoff
-  ansible.builtin.command:
-    argv:
-      - ldapsearch
-      - -LLL
-      - -o
-      - ldif-wrap=no
-      - -Y
-      - EXTERNAL
-      - -H
-      - "ldapi://%2Frun%2Fslapd-{{ freeipa_server_realm_systemd_instance }}.socket"
-      - -b
-      - "cn=users,cn=accounts,{{ _freeipa_stale_basedn }}"
-      - "(&(objectClass=krbPrincipalAux)(krbLastSuccessfulAuth<={{ _freeipa_stale_cutoff.stdout }}))"
-      - uid
+  community.general.ldap_search:
+    server_uri: "ldapi://%2Frun%2Fslapd-{{ freeipa_server_realm_systemd_instance }}.socket"
+    dn: "cn=users,cn=accounts,{{ _freeipa_stale_basedn }}"
+    scope: onelevel
+    filter: "(&(objectClass=krbPrincipalAux)(krbLastSuccessfulAuth<={{ _freeipa_stale_cutoff.stdout }}))"
+    attrs: [uid]
   vars:
     _freeipa_stale_basedn: "dc={{ freeipa_server_domain.split('.') | join(',dc=') }}"
   register: _freeipa_stale_inactive
   changed_when: false
 
 - name: Stale report | Find never-authenticated accounts created before the cutoff
-  ansible.builtin.command:
-    argv:
-      - ldapsearch
-      - -LLL
-      - -o
-      - ldif-wrap=no
-      - -Y
-      - EXTERNAL
-      - -H
-      - "ldapi://%2Frun%2Fslapd-{{ freeipa_server_realm_systemd_instance }}.socket"
-      - -b
-      - "cn=users,cn=accounts,{{ _freeipa_stale_basedn }}"
-      - "(&(objectClass=krbPrincipalAux)(!(krbLastSuccessfulAuth=*))(createTimestamp<={{ _freeipa_stale_cutoff.stdout }}))"
-      - uid
+  community.general.ldap_search:
+    server_uri: "ldapi://%2Frun%2Fslapd-{{ freeipa_server_realm_systemd_instance }}.socket"
+    dn: "cn=users,cn=accounts,{{ _freeipa_stale_basedn }}"
+    scope: onelevel
+    filter: "(&(objectClass=krbPrincipalAux)(!(krbLastSuccessfulAuth=*))(createTimestamp<={{ _freeipa_stale_cutoff.stdout }}))"
+    attrs: [uid]
   vars:
     _freeipa_stale_basedn: "dc={{ freeipa_server_domain.split('.') | join(',dc=') }}"
   register: _freeipa_stale_never
   changed_when: false
   when: freeipa_iam_stale_include_never | bool
 
-# Parse `uid:` values out of the LDIF, combine, shield service/protected/unmodifiable
+# Combine the uid values the module returned, shield service/protected/unmodifiable
 # accounts, sort. An empty ignore_regex must shield NOTHING, so it degrades to `(?!)` (a
 # never-matching pattern) rather than '' (which re.match treats as matching every string).
 - name: Stale report | Compile the shielded stale-user list
   ansible.builtin.set_fact:
     _freeipa_stale_users: >-
-      {{ ((_freeipa_stale_inactive.stdout_lines
-           + (_freeipa_stale_never.stdout_lines | default([])))
-          | select('match', '^uid:')
-          | map('regex_replace', '^uid:\s*', '')
-          | list)
+      {{ ((_freeipa_stale_inactive.results | map(attribute='uid') | flatten)
+          + (_freeipa_stale_never.results | default([]) | map(attribute='uid') | flatten))
          | unique
          | reject('match', freeipa_iam_stale_ignore_regex
                            if (freeipa_iam_stale_ignore_regex | length > 0) else '(?!)')

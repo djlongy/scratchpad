@@ -11,8 +11,13 @@
 #   - ipa-cacert-manage install  -> needs the Directory Manager password; fed on
 #                                   STDIN (not argv) so it never lands in `ps`.
 #   - ipa-certupdate             -> runs as root via the host keytab (no kinit).
-# Idempotent: nicknames already in `ipa-cacert-manage list` are skipped, and
-# ipa-certupdate runs only when something was installed.
+# Rotation-aware idempotency: a per-nickname stamp under /etc/ipa/.trusted-ca-fingerprints/
+# records the SHA-256 (canonical DER) fingerprint last installed for that nickname.
+# A nickname is (re)installed when it is absent from `ipa-cacert-manage list` OR the
+# declared PEM's fingerprint differs from its stamp (a rotated cert under an existing
+# nickname). ipa-certupdate runs only when at least one install fired; steady state is
+# a clean no-op. The fingerprint (not the raw PEM bytes) is the comparison key, so PEM
+# whitespace/encoding differences never trigger a false rotation.
 
 - name: Trusted CAs | Validate each entry has a name and a source
   ansible.builtin.assert:
@@ -38,6 +43,16 @@
 - name: Trusted CAs | Ensure the staging directory exists
   ansible.builtin.file:
     path: "{{ freeipa_server_trusted_ca_staging_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Persistent (not removed with the staging dir): holds one fingerprint stamp per
+# nickname so a rotated cert under an existing nickname is detected on later runs.
+- name: Trusted CAs | Ensure the fingerprint stamp directory exists
+  ansible.builtin.file:
+    path: /etc/ipa/.trusted-ca-fingerprints
     state: directory
     owner: root
     group: root
@@ -116,7 +131,64 @@
   register: _freeipa_trusted_ca_list
   changed_when: false
 
-- name: Trusted CAs | Install external CA certificates not already trusted
+# Canonical DER fingerprint of the declared PEM — the comparison key for rotation.
+# Immune to PEM whitespace/encoding, so re-serialising the same cert never trips it.
+- name: Trusted CAs | Fingerprint each staged certificate (SHA-256)
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ freeipa_server_trusted_ca_staging_dir }}/{{ item.name }}.pem"
+      - -noout
+      - -fingerprint
+      - -sha256
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _freeipa_trusted_ca_fp
+  changed_when: false
+
+# The fingerprint last installed for each nickname (empty when the stamp is absent).
+- name: Trusted CAs | Read the recorded fingerprint stamp for each nickname
+  ansible.builtin.slurp:
+    src: "/etc/ipa/.trusted-ca-fingerprints/{{ item.name }}"
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _freeipa_trusted_ca_stamp
+  changed_when: false
+  failed_when: false
+
+# ROTATION ONLY: NSS refuses to add a DIFFERENT certificate under a nickname that
+# already exists (certutil SEC_ERROR_ADDING_CERT / exit 255), so a rotated cert can
+# only be installed after the old one under that nickname is removed. `ipa-cacert-manage
+# delete <nickname>` takes the DM password on STDIN (same as install, kept off argv/ps)
+# and removes the added trusted root without touching the IPA CA. Fires ONLY when the
+# nickname is ALREADY trusted AND its stamp differs from the declared fingerprint — i.e.
+# the rotation branch of the install condition below. The first-install path (nickname
+# absent) never reaches here, so its cert is added directly with no delete.
+- name: Trusted CAs | Remove the superseded certificate before installing a rotated one
+  ansible.builtin.command:
+    argv:
+      - ipa-cacert-manage
+      - delete
+      - "{{ item.name }}"
+    stdin: "{{ _freeipa_dm_password }}"
+  loop: "{{ freeipa_server_trusted_external_cas }}"
+  loop_control:
+    label: "{{ item.name }}"
+    index_var: _idx
+  when: >-
+    (_freeipa_trusted_ca_list.stdout_lines | default([])
+     | select('search', '(^|\s)' ~ (item.name | regex_escape) ~ '($|\s)')
+     | list | length) > 0
+    and ((_freeipa_trusted_ca_stamp.results[_idx].content | default('') | b64decode | trim)
+         != (_freeipa_trusted_ca_fp.results[_idx].stdout | default('') | trim))
+  changed_when: true
+  no_log: true
+
+- name: Trusted CAs | Install external CA certificates that are absent or rotated
   ansible.builtin.command:
     argv:
       - ipa-cacert-manage
@@ -128,7 +200,18 @@
   loop: "{{ freeipa_server_trusted_external_cas }}"
   loop_control:
     label: "{{ item.name }}"
-  when: item.name not in _freeipa_trusted_ca_list.stdout
+    index_var: _idx
+  # Install when the nickname is not yet trusted OR the declared fingerprint differs
+  # from the stamp (rotation). Word-bounded per-line match, not a substring test — a
+  # plain `in stdout` would treat nickname 'corp' as already-trusted whenever
+  # 'corp-root' is listed. An absent stamp decodes to '' and never equals a real
+  # fingerprint, so it forces a reconcile install.
+  when: >-
+    (_freeipa_trusted_ca_list.stdout_lines | default([])
+     | select('search', '(^|\s)' ~ (item.name | regex_escape) ~ '($|\s)')
+     | list | length) == 0
+    or ((_freeipa_trusted_ca_stamp.results[_idx].content | default('') | b64decode | trim)
+        != (_freeipa_trusted_ca_fp.results[_idx].stdout | default('') | trim))
   register: _freeipa_trusted_ca_install
   changed_when: true
   no_log: true
@@ -137,6 +220,19 @@
   ansible.builtin.command: ipa-certupdate
   when: _freeipa_trusted_ca_install is changed
   changed_when: true
+
+# Record the declared fingerprint for every nickname after the store is reconciled,
+# so the next run's rotation check has a baseline and steady state is a clean no-op.
+- name: Trusted CAs | Record the installed fingerprint stamp per nickname
+  ansible.builtin.copy:
+    dest: "/etc/ipa/.trusted-ca-fingerprints/{{ item.item.name }}"
+    content: "{{ item.stdout | trim }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ _freeipa_trusted_ca_fp.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
 
 - name: Trusted CAs | Remove the staging directory
   ansible.builtin.file:

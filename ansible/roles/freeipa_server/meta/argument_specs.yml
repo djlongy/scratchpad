@@ -540,7 +540,7 @@ argument_specs:
       # ── Configured-but-broken self-heal (heal.yml, before install) ──
       freeipa_server_heal_enabled:
         type: bool
-        description: Self-heal a configured server that lost its installer-generated httpd config files (ipa.conf, ipa-rewrite.conf, ipa-kdc-proxy.conf + symlink, ipa-pki-proxy.conf) and/or the served CA cert, by re-rendering FreeIPA's own templates and republishing ca.crt; fail fast on aborted half-installs; fail loud (ipa-restore guidance) if still broken after recovery. Default on.
+        description: OPT-IN (default off) self-heal of a configured server that lost its installer-generated httpd config files (ipa.conf, ipa-rewrite.conf, ipa-kdc-proxy.conf + symlink, ipa-pki-proxy.conf) and/or the served CA cert, by re-rendering FreeIPA's own templates and republishing ca.crt; fails loud (ipa-restore guidance) if still broken after recovery. The aborted-half-install fail-fast guard in the same file always runs, regardless of this toggle.
       freeipa_server_heal_verify_retries:
         type: int
         description: ipactl settle probes after a heal (10s apart) before the run fails.
@@ -615,3 +615,46 @@ argument_specs:
       freeipa_server_sssd_selfheal_start_limit_burst:
         type: int
         description: systemd StartLimitBurst for the self-heal service.
+      freeipa_server_ca_signing_algorithm:
+        type: str
+        description: CA certificate signing algorithm passed to the installer (empty = installer default).
+      freeipa_server_dns_trusted_networks:
+        type: list
+        elements: str
+        description: >-
+          CIDRs/addresses granted BIND recursion + query-cache access (env-specific).
+          Non-empty arms the dns_hardening phase; empty leaves BIND untouched.
+      freeipa_server_dns_restrict_recursion:
+        type: bool
+        description: Restrict BIND recursion to the trusted-networks ACL (dns_hardening).
+      freeipa_server_dns_options_dnssec_validation:
+        type: str
+        description: dnssec-validation value rendered into the BIND options include (dns_hardening).
+      freeipa_server_dns_create_reverse:
+        type: bool
+        description: Default create_reverse for declared A/AAAA records lacking an explicit per-record value.
+      freeipa_iam_stale_report:
+        type: bool
+        description: Run the read-only inactive-account report (on by default; never mutates).
+      freeipa_iam_stale_days:
+        type: int
+        description: Days without a successful Kerberos auth before a user is reported stale.
+      freeipa_iam_stale_include_never:
+        type: bool
+        description: Also report users who have NEVER authenticated but were created before the stale window.
+      freeipa_iam_stale_ignore_regex:
+        type: str
+        description: Regex of logins excluded from the stale report (default shields svc-*).
+      freeipa_iam_reconcile_protect_regexes:
+        type: list
+        elements: str
+        description: >-
+          SAFETY SHIELD — any FOUND object name matching one of these regexes joins the
+          reconcile protection set, so neither a scoped reconcile nor reconcile_all can
+          delete it (objects an external application provisions and owns, e.g. pam_* shadow groups).
+      freeipa_iam_reconcile_protect_users_regexes:
+        type: list
+        elements: str
+        description: >-
+          SAFETY SHIELD — logins matching one of these regexes are exempt from user
+          archival/eviction under authoritative reconcile.
