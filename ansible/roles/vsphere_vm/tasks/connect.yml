@@ -39,6 +39,25 @@
       delegate_to: localhost
       become: false
 
+    # A FAILED pre-check (wrong datacenter/name, auth, vCenter down) leaves
+    # `instance` undefined, which reads downstream as "no IP yet" and sends the
+    # run into the full reconnect+poll budget for a VM it can never inspect.
+    # Surface the real reason instead of waiting silently on a broken call.
+    - name: Connect | Warn that the IP pre-check could not query the VM
+      ansible.builtin.debug:
+        msg: >-
+          vCenter lookup FAILED for {{ _vsphere_guest.name }} — the reconnect
+          passes below cannot see this VM's IP and will burn their whole budget.
+          Check vsphere_vm_datacenter / the VM name / credentials. vCenter said:
+          {{ _vsphere_ip_precheck.msg | default('(no message)') }}
+      # NOT `is failed`: failed_when:false forces failed=false, so that test is
+      # dead code. A successful lookup always returns `instance`; a failed one
+      # returns only `msg` — so a missing `instance` IS the error signal, and it
+      # also distinguishes "call broke" from "call worked, no IP yet".
+      when: _vsphere_ip_precheck.instance is not defined
+      delegate_to: localhost
+      become: false
+
     - name: Connect | Mark this VM as needing an IP (only when it has none yet)
       ansible.builtin.set_fact:
         _vsphere_connect_pending: >-

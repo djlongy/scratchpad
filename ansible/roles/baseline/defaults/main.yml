@@ -1,7 +1,7 @@
 ---
 # baseline defaults
 # Override these in inventory group_vars or host_vars as needed.
-# Production values are in inventories/prod/group_vars/all.yml.
+# Production values are in inventories/<env>/group_vars/all.yml.
 
 # Task display name used in include_tasks banners
 base_task_name: "Configure OS"
@@ -15,7 +15,6 @@ baseline_opt_vg: "vg_data"
 baseline_opt_lv: "lv_opt"
 # /opt directory mode. 0755 root:root is the distro default and CIS-compliant
 # (CIS flags world-WRITABLE dirs, not world-readable/traversable ones).
-baseline_opt_mode: "0755"
 
 # Disk/mount management is always delegated to the universal `storage` role,
 # driven by baseline_storage_volumes below.
@@ -23,26 +22,26 @@ baseline_opt_mode: "0755"
 # Volumes managed on baselined hosts. The /var entry is grow-only (never
 # created — only resized when the root disk grows); /opt is provisioned from
 # the first blank data disk and grown thereafter. Override per estate.
-baseline_storage_volumes:
-  - name: var
-    lvm: true
-    vg: sysvg
-    lv: lv_var
-    mount: /var
-    partition_number: 3
-    provision: false
-    grow: true
-  - name: opt
-    lvm: true
-    vg: "{{ baseline_opt_vg }}"
-    lv: "{{ baseline_opt_lv }}"
-    size: "100%FREE"
-    fstype: xfs
-    mount: /opt
-    sefcontext: usr_t
-    disk: auto
-    provision: true
-    grow: true
+baseline_storage_volumes: []
+  # - name: var
+  #   lvm: true
+  #   vg: sysvg
+  #   lv: lv_var
+  #   mount: /var
+  #   partition_number: 3
+  #   provision: false
+  #   grow: true
+  # - name: opt
+  #   lvm: true
+  #   vg: "{{ baseline_opt_vg }}"
+  #   lv: "{{ baseline_opt_lv }}"
+  #   size: "100%FREE"
+  #   fstype: xfs
+  #   mount: /opt
+  #   sefcontext: usr_t
+  #   disk: auto
+  #   provision: true
+  #   grow: true
 
 # ── Reboot control ────────────────────────────────────────────────────────
 # Some changes need a reboot to apply: a FIPS/crypto-policy toggle, and a
@@ -142,12 +141,27 @@ baseline_ssh_bastion_user: ""          # default: current user
 baseline_ssh_bastion_match_hosts: "*"  # host glob the ProxyJump applies to
 
 # ════════════════════════════════════════════════════════════════════════════
-# Login banner (all hosts) — shows environment, host, and the logging-in user
+# Login banner (all hosts) — shows environment, FQDN, and the logging-in user
 # so nobody mistakes prod for dev. env-derived label, overridable.
 # ════════════════════════════════════════════════════════════════════════════
 baseline_banner_enabled: true
 baseline_banner_env_label: "{{ env | default('UNKNOWN') | upper }}"
 baseline_banner_message: ""            # optional extra notice line
+# Host line is the intended FQDN (not the short name, not a fragile hostname -f).
+# Preference: canonical_fqdn → freeipa_server_fqdn → inventory_hostname.<ipa|estate domain>.
+baseline_banner_fqdn: >-
+  {{ canonical_fqdn
+     | default(freeipa_server_fqdn
+       | default(
+           (inventory_hostname ~ '.' ~ (
+             freeipa_server_domain | default(domain | default(''), true)
+           )) | regex_replace('\\.$', ''),
+           true),
+         true) }}
+# IP line: inventory ansible_host (management address), else primary IPv4 at deploy time.
+baseline_banner_ip: >-
+  {{ ansible_host
+     | default(ansible_default_ipv4.address | default('', true), true) }}
 
 # ════════════════════════════════════════════════════════════════════════════
 # Bastion / jump-host conduit (opt-in; set on the bastion inventory group). A
@@ -160,10 +174,10 @@ baseline_bastion_enabled: false
 baseline_bastion_ip_forward: true      # turn the bastion into a router
 baseline_bastion_masquerade: false     # SNAT forwarded traffic out the backend NIC
 baseline_bastion_monitoring_ips: []    # Prometheus/monitoring source IPs allowed through
-#  - 192.0.2.74
+#  - 192.0.2.10
 baseline_bastion_exporter_ports: ["9100/tcp"]   # exporter ports the monitoring plane scrapes
 baseline_bastion_backend_subnets: []   # optional "<dest/prefix> <gateway>" static routes
-#  - "198.51.100.0/24 10.0.0.1"
+#  - "198.51.100.0/24 192.0.2.1"
 baseline_bastion_route_conn: ""        # NetworkManager connection to attach routes to
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -220,7 +234,7 @@ baseline_fail2ban_destemail: "root@localhost"
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
-# Off by default; the lab's RedHat path (tasks/redhat.yml) still handles
+# Off by default; the homelab's RedHat path (tasks/redhat.yml) still handles
 # network where used. Enable for the portable, distro-agnostic path.
 baseline_network_manage: false
 # baseline_network_interface: "ens192"      # default: host's primary interface

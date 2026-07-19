@@ -8,12 +8,13 @@
 #   certs      → import trusted external CAs (primary only; opt-in)
 #   hardening  → opt-in post-install hardening
 #   backup     → scheduled ipa-backup timer + opt-in controller offload (primary)
-#   iam       → declarative IAM reconciliation (primary only)
-#   stale      → read-only inactive-account report (primary; on by default)
+#   iam        → declarative IAM reconciliation (primary only)
 #   dns        → declarative DNS zones/forward-zones/records (primary; opt-in)
 #   automember → auto group/hostgroup membership rules (primary; opt-in)
 #   dns-harden → BIND recursion/query ACL includes (primary; opt-in, integrated DNS)
 #   adtrust    → Active Directory trust(s) (primary; opt-in)
+#   reports    → IAM summary + stale-account report (last so they land at the end of
+#                the scroll; --tags stale / --tags report still select them alone)
 #   restore    → break-glass restore from backup (never tag; opt-in)
 
 # Self-sufficient about facts: a gather_facts:false caller with a cold fact cache
@@ -134,27 +135,6 @@
       or (freeipa_iam_reconcile_all | default(false) | bool)
   tags: [iam, reconcile]
 
-# End-of-run IAM summary (after iam + reconcile so prunes are included).
-# On by default; freeipa_iam_report: false to silence.
-- name: Report IAM run summary (primary only)
-  ansible.builtin.import_tasks: iam_report.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_iam_report | default(true) | bool
-  tags: [iam, report]
-
-# READ-ONLY inactive-account sweep — lists users whose last successful Kerberos auth
-# predates freeipa_iam_stale_days. Never disables/archives/deletes; the operator acts on
-# the list. On by default; --tags stale runs it alone.
-- name: Report inactive (stale) user accounts (read-only; primary only)
-  ansible.builtin.import_tasks: iam_stale_report.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_iam_stale_report | default(true) | bool
-  tags: [iam, report, stale]
-
 - name: Manage declarative DNS zones/records (primary only; needs integrated DNS)
   ansible.builtin.import_tasks: dns_records.yml
   become: true
@@ -196,6 +176,32 @@
     - freeipa_server_ad_trusts | length > 0
   tags: [adtrust, trust]
   module_defaults: *freeipa_admin_defaults
+
+# ── End-of-run operator reports (last of the default path) ────────────────────
+# Kept AFTER every mutating converge phase (iam/dns/automember/adtrust) so the
+# summaries are the last thing on a normal scroll. never-tagged ops below still
+# come later but only when explicitly requested.
+#
+# IAM summary (after iam + reconcile so prunes are included). On by default;
+# freeipa_iam_report: false to silence.
+- name: Report IAM run summary (primary only)
+  ansible.builtin.import_tasks: iam_report.yml
+  become: true
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_iam_report | default(true) | bool
+  tags: [iam, report]
+
+# READ-ONLY inactive-account sweep — lists users whose last successful Kerberos
+# auth predates freeipa_iam_stale_days. Never disables/archives/deletes; the
+# operator acts on the list. On by default; --tags stale runs it alone.
+- name: Report inactive (stale) user accounts (read-only; primary only)
+  ansible.builtin.import_tasks: iam_stale_report.yml
+  become: true
+  when:
+    - freeipa_server_is_primary | bool
+    - freeipa_iam_stale_report | default(true) | bool
+  tags: [iam, report, stale]
 
 - name: Restore FreeIPA from a backup (break-glass; primary only)
   ansible.builtin.import_tasks: restore.yml

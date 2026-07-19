@@ -5,9 +5,6 @@ consistent, hardened foundation before app roles run. Everything beyond the core
 OS setup is **opt-in via override host/group vars**, so enabling a capability
 never surprises an existing fleet.
 
-> **openclaw moved out** — the bot account now lives in the dedicated
-> [`openclaw`](../openclaw/) role. Apply `openclaw` alongside `baseline` where needed.
-
 ## TL;DR
 
 **Most common: re-converge the baseline (idempotent).** A no-tags run applies everything; opt-in capabilities are enabled via host/group vars. Narrow to one area with a tag, e.g. `--tags agents`.
@@ -71,7 +68,6 @@ Opt-in (distro-agnostic — enabling a capability never surprises an existing fl
 - hosts: linux_hosts
   roles:
     - baseline
-    - openclaw   # the openclaw bot account
 ```
 
 ## Network
@@ -164,9 +160,9 @@ reboot is pending instead of rebooting the fleet from under you.
 ## Time sync (chrony)
 
 ```yaml
-baseline_ntp_servers: ["192.0.2.1"]   # [] = keep distro default config
+baseline_ntp_servers: ["192.0.2.1"]      # [] = keep distro default config
 baseline_ntp_pools: ["pool.ntp.org"]
-baseline_ntp_allow: ["192.0.2.0/24"]  # subnets this host serves time to
+baseline_ntp_allow: ["192.0.2.0/24"]     # subnets this host serves time to
 ```
 
 chrony is always installed and running; the managed `chrony.conf` is only
@@ -182,7 +178,7 @@ baseline_ssh_allow_tcp_forwarding: true    # bastions set true
 baseline_ssh_allow_agent_forwarding: false
 baseline_ssh_permit_root_login: "prohibit-password"
 baseline_ssh_bastion_host: "bastion.example.com"
-baseline_ssh_bastion_match_hosts: "192.0.2.*"
+baseline_ssh_bastion_match_hosts: "10.*.*.*"
 ```
 
 ## CIS hardening
@@ -245,7 +241,7 @@ The Squid **server** itself is the separate [`squid`](../squid/) role.
 
 ## Login banner
 
-Every host gets an interactive banner (env / host / logged-in user) plus a
+Every host gets an interactive banner (env / **FQDN** / **IP** / logged-in user) plus a
 pre-auth `/etc/issue`:
 
 ```yaml
@@ -266,10 +262,10 @@ allow-listed to the monitoring source IPs and exporter ports only.
 baseline_bastion_enabled: true              # set on the bastion inventory group
 baseline_ssh_allow_tcp_forwarding: true     # SSH jump side
 baseline_bastion_ip_forward: true
-baseline_bastion_monitoring_ips: ["192.0.2.74"]   # Prometheus source IP(s)
+baseline_bastion_monitoring_ips: ["192.0.2.10"]      # Prometheus source IP(s)
 baseline_bastion_exporter_ports: ["9100/tcp"]
 baseline_bastion_masquerade: true           # SNAT so backends can reply
-baseline_bastion_backend_subnets: ["198.51.100.0/24 10.0.0.1"]   # optional routes
+baseline_bastion_backend_subnets: ["198.51.100.0/24 192.0.2.1"]  # optional routes
 baseline_bastion_route_conn: "ens192"
 ```
 

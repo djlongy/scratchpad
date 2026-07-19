@@ -97,35 +97,66 @@
   when: storage_debug | bool
   tags: [storage, always]
 
+# ── Nothing-to-do short-circuit ──────────────────────────────────────────
+# A host that declares no volumes is a legitimate, common case: the role runs
+# unconditionally ahead of `baseline` in every playbook, and most hosts have no
+# extra storage. Without this the empty list would still install parted/lvm2/
+# xfsprogs and run a full device discovery + grow pass on every such host —
+# work whose only possible outcome is "no volumes to act on". Every acting
+# phase below is gated on it, so an undeclared host is a clean no-op.
+- name: Decide whether any storage is declared for this host
+  ansible.builtin.set_fact:
+    _storage_declared: "{{ (_storage_volumes | default([]) | length) > 0 }}"
+  tags: [storage, always]
+
+- name: Report that no storage is declared (no-op)
+  ansible.builtin.debug:
+    msg: >-
+      No storage declared for {{ inventory_hostname }} — skipping packages,
+      discovery, grow, provision, mount and SELinux. Declare storage_volumes
+      (or storage_profile) to manage disks here.
+  when: not _storage_declared
+  tags: [storage, always]
+
 # ── Phases ───────────────────────────────────────────────────────────────
 - name: Install prerequisite packages
   ansible.builtin.import_tasks: packages.yml
-  when: storage_manage_packages | bool
+  when:
+    - storage_manage_packages | bool
+    - _storage_declared
   tags: [storage, packages]
 
 - name: Discover devices and resolve selectors
   ansible.builtin.import_tasks: discover.yml
+  when: _storage_declared
   tags: [storage, discover, grow, provision, mount, selinux]
 
 - name: Grow existing volumes (auto, non-destructive)
   ansible.builtin.import_tasks: grow.yml
-  when: storage_grow | bool
+  when:
+    - storage_grow | bool
+    - _storage_declared
   tags: [storage, grow]
 
 - name: Provision new volumes (opt-in, FRESH-guarded)
   ansible.builtin.import_tasks: provision.yml
-  when: storage_provision | bool
+  when:
+    - storage_provision | bool
+    - _storage_declared
   tags: [storage, provision]
 
 - name: Mount volumes (UUID + nofail)
   ansible.builtin.import_tasks: mount.yml
-  when: storage_manage_fstab | bool
+  when:
+    - storage_manage_fstab | bool
+    - _storage_declared
   tags: [storage, mount]
 
 - name: Apply SELinux file contexts (EL)
   ansible.builtin.import_tasks: selinux.yml
   when:
     - storage_manage_selinux | bool
+    - _storage_declared
     - ansible_os_family == "RedHat"
     # Skip when SELinux is disabled — managing fcontext there is a no-op the
     # sefcontext module refuses anyway. Runs under enforcing OR permissive.

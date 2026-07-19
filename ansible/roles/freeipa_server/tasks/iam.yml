@@ -74,12 +74,14 @@
 
 - name: Build effective FreeIPA groups with merged memberships
   ansible.builtin.set_fact:
-    freeipa_iam_usergroups_effective: "{{ (freeipa_iam_usergroups_effective | default([])) + [item | combine(_freeipa_iam_group_user_block, recursive=True)] }}"
+    freeipa_iam_usergroups_effective: "{{ (freeipa_iam_usergroups_effective | default([], true)) + [item | combine(_freeipa_iam_group_user_block, recursive=True)] }}"
   vars:
-    _freeipa_iam_users_from_group_entry: "{{ item.user | default([]) }}"
+    # default([], true): bare `user:` / `group:` in YAML is null; default([]) alone
+    # leaves None and later `| length` / list concat TypeErrors under no_log.
+    _freeipa_iam_users_from_group_entry: "{{ item.user | default([], true) }}"
     _freeipa_iam_users_from_user_entries: >-
       {{
-        (freeipa_iam_user_group_pairs | default([]))
+        (freeipa_iam_user_group_pairs | default([], true))
         | selectattr('group', 'equalto', item.name)
         | map(attribute='user')
         | list
@@ -100,22 +102,30 @@
 # exist) while collapsing two per-group LOOPS into two single module calls — the
 # speedup. gidnumber: a group's own value wins, else the freeipa_iam_group_gids
 # map (deterministic GIDs), else IPA auto-assigns.
+#
+# List fields use default([], true): a bare `group:` in YAML is null, and
+# default([]) alone does NOT replace None — `| length` then TypeErrors (and
+# with no_log the failure is just "output has been hidden").
 - name: Build bulk ipagroup create + membership payloads
   ansible.builtin.set_fact:
     _freeipa_iam_usergroups_create: "{{ (_fc_yaml | from_yaml) or [] }}"
     _freeipa_iam_usergroups_members: "{{ (_fm_yaml | from_yaml) or [] }}"
   vars:
     _fc_yaml: |-
-      {% for g in (freeipa_iam_usergroups_effective | default([])) %}
+      {% for g in (freeipa_iam_usergroups_effective | default([], true)) %}
       {% if (g.state | default('present')) != 'absent' %}
       {% set _gid = g.gidnumber | default(freeipa_iam_group_gids[g.name] | default('')) %}
       - {name: "{{ g.name }}"{% if g.description is defined %}, description: "{{ g.description }}"{% endif %}{% if _gid | string | length > 0 %}, gidnumber: {{ _gid }}{% endif %}{% if g.posix is defined %}, posix: {{ g.posix | to_json }}{% endif %}{% if g.nonposix is defined %}, nonposix: {{ g.nonposix | to_json }}{% endif %}}
       {% endif %}
       {% endfor %}
     _fm_yaml: |-
-      {% for g in (freeipa_iam_usergroups_effective | default([])) %}
-      {% if (g.state | default('present')) != 'absent' and ((g.user | default([]) | length > 0) or (g.group | default([]) | length > 0) or (g.membermanager_user | default([]) | length > 0) or (g.membermanager_group | default([]) | length > 0)) %}
-      - {name: "{{ g.name }}"{% if g.user | default([]) | length > 0 %}, user: {{ g.user | to_json }}{% endif %}{% if g.group | default([]) | length > 0 %}, group: {{ g.group | to_json }}{% endif %}{% if g.membermanager_user | default([]) | length > 0 %}, membermanager_user: {{ g.membermanager_user | to_json }}{% endif %}{% if g.membermanager_group | default([]) | length > 0 %}, membermanager_group: {{ g.membermanager_group | to_json }}{% endif %}}
+      {% for g in (freeipa_iam_usergroups_effective | default([], true)) %}
+      {% set _users = g.user | default([], true) %}
+      {% set _groups = g.group | default([], true) %}
+      {% set _mm_users = g.membermanager_user | default([], true) %}
+      {% set _mm_groups = g.membermanager_group | default([], true) %}
+      {% if (g.state | default('present')) != 'absent' and ((_users | length > 0) or (_groups | length > 0) or (_mm_users | length > 0) or (_mm_groups | length > 0)) %}
+      - {name: "{{ g.name }}"{% if _users | length > 0 %}, user: {{ _users | to_json }}{% endif %}{% if _groups | length > 0 %}, group: {{ _groups | to_json }}{% endif %}{% if _mm_users | length > 0 %}, membermanager_user: {{ _mm_users | to_json }}{% endif %}{% if _mm_groups | length > 0 %}, membermanager_group: {{ _mm_groups | to_json }}{% endif %}}
       {% endif %}
       {% endfor %}
   # ipagroup create/membership payloads — NAMES only (no secrets) — shown at -vv.
@@ -643,9 +653,9 @@
     _freeipa_members_declarative: "{{ (_mdecl_yaml | from_yaml) or [] }}"
   vars:
     _mdecl_yaml: |-
-      {% for g in (freeipa_iam_usergroups_effective | default([])) %}
-      {% if (g.state | default('present')) != 'absent' and g.name not in (freeipa_iam_protected_groups | default([])) %}
-      - {name: "{{ g.name }}", user: {{ g.user | default([]) | to_json }}, group: {{ g.group | default([]) | to_json }}}
+      {% for g in (freeipa_iam_usergroups_effective | default([], true)) %}
+      {% if (g.state | default('present')) != 'absent' and g.name not in (freeipa_iam_protected_groups | default([], true)) %}
+      - {name: "{{ g.name }}", user: {{ g.user | default([], true) | to_json }}, group: {{ g.group | default([], true) | to_json }}}
       {% endif %}
       {% endfor %}
   # membership reconcile payload — NAMES only (no secrets) — shown at -vv.

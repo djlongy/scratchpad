@@ -19,37 +19,18 @@
 # included tasks). No-tags runs everything; tags only *narrow* the run.
 
 # ── Identity ────────────────────────────────────────────────────────────────
+# Owned by this role (tasks/hostname.yml), not borrowed from `common` — baseline
+# stays self-contained and portable, and import_tasks keeps --tags propagating.
 - name: Set hostname and timezone
-  ansible.builtin.include_role:
-    name: common
-    tasks_from: update_hostname
-    apply:
-      tags: [baseline, hostname]
+  ansible.builtin.import_tasks: hostname.yml
   tags: [baseline, hostname]
 
-# ── Storage: disks + mounts via the universal `storage` role ─────────────────
-- name: Manage disks and mounts via the storage role
-  ansible.builtin.include_role:
-    name: storage
-    apply:
-      tags: [baseline, storage]
-  vars:
-    storage_volumes: "{{ baseline_storage_volumes }}"
-    storage_provision: true
-  tags: [baseline, storage]
-
-- name: Ensure /opt is traversable
-  become: true  # root: sets ownership/mode on /opt
-  # 0755 (root:root) is the distro default and CIS-compliant — CIS only flags
-  # world-WRITABLE dirs (group/other +w), which this is not. Override via
-  # baseline_opt_mode if your benchmark mandates something tighter.
-  ansible.builtin.file:
-    path: /opt
-    state: directory
-    owner: root
-    group: root
-    mode: "{{ baseline_opt_mode }}"
-  tags: [baseline, storage]
+# NOTE: baseline does NOT create or chmod /opt. Disks and mountpoints belong to
+# the `storage` role, which runs as its own playbook-level role BEFORE this one
+# and already creates each mountpoint with that volume's own owner/group/mode.
+# A baseline task forcing /opt to root:root would fight a volume that declares a
+# different owner, and on a host where /opt is NOT a volume it is a no-op — the
+# distro's filesystem package already ships /opt as 0755 root:root.
 
 # ── Authorized keys (EARLY — before any hardening can restrict key algorithms) ─
 # Guarantees a FIPS-approved automation key is authorised before crypto/FIPS and
@@ -267,4 +248,7 @@
   ansible.builtin.reboot:
     msg: "Rebooting the system to apply changes."
     reboot_timeout: 300
+  # Guard against tag cascade: a co-tag inherited from the caller can defeat
+  # `never`, so only reboot when `reboot` was explicitly passed via --tags.
+  when: "'reboot' in ansible_run_tags"
   tags: [never, reboot]

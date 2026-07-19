@@ -1,9 +1,9 @@
 ---
 # roles/baseline/tasks/banner.yml
 # Interactive login banner (all hosts) — tells whoever logs in which environment
-# they've landed in (so nobody fat-fingers prod thinking it's dev), the host, and
-# who they're logged in as. A profile.d script keeps it dynamic ($USER/hostname
-# resolve at login); /etc/issue covers the pre-auth console/SSH banner.
+# they've landed in (so nobody fat-fingers prod thinking it's dev), the host FQDN,
+# and who they're logged in as. The FQDN is baked from inventory (baseline_banner_fqdn);
+# $USER still resolves at login. /etc/issue covers the pre-auth console/SSH banner.
 
 - name: Banner | Deploy the interactive login banner
   become: true  # root: writes /etc/profile.d/

@@ -1,0 +1,37 @@
+---
+# roles/baseline/tasks/hostname.yml
+# Set the system hostname + /etc/hosts entry + timezone.
+# Uses canonical_hostname / canonical_fqdn when defined (see the canonical-name
+# group_vars pattern) so the OS hostname matches the vCenter VM name; falls back
+# to inventory_hostname when they're not set.
+#
+# Self-contained: every task carries its own become, so this runs correctly from
+# a play with no play-level become.
+
+- name: Change hostname to the canonical (or inventory) hostname
+  ansible.builtin.hostname:
+    name: "{{ canonical_hostname | default(inventory_hostname) }}"
+  # root: writes /etc/hostname and calls sethostname().
+  become: true
+
+- name: Add hostname and IP to /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^{{ ansible_host | regex_escape }}\\s"
+    line: >-
+      {{ ansible_host }}{{ ' ' * (16 - ansible_host | length) }}{{
+        (canonical_fqdn ~ ' ') if (canonical_fqdn is defined) else '' }}{{
+        canonical_hostname | default(inventory_hostname) }}
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: ansible_host is defined
+  # root: /etc/hosts is root-owned 0644.
+  become: true
+
+- name: Ensure the timezone is set
+  community.general.timezone:
+    name: "{{ baseline_timezone | default('Australia/Sydney') }}"
+  # root: rewrites /etc/localtime via timedatectl.
+  become: true

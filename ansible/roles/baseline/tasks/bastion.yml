@@ -60,7 +60,7 @@
   become: true  # root: nmcli reconfigures NetworkManager connections
   # Optional: only needed when the bastion isn't already on-link to the backend
   # subnets. Declarative + idempotent via NetworkManager. Each entry is a
-  # "<dest/prefix> <gateway>" string, e.g. "198.51.100.0/24 10.0.0.1".
+  # "<dest/prefix> <gateway>" string, e.g. "198.51.100.0/24 192.0.2.1".
   community.general.nmcli:
     conn_name: "{{ baseline_bastion_route_conn }}"
     type: ethernet

@@ -5,7 +5,7 @@
 # host's primary interface (ens*/eth*/eno*) unless baseline_network_interface
 # is set. Opt-in: only runs when baseline_network_manage is true AND the
 # connection details are provided. Hostname/timezone are handled separately
-# (common/update_hostname.yml).
+# (baseline/tasks/hostname.yml).
 #
 # Ubuntu Server uses netplan (not NetworkManager); for those hosts set
 # baseline_network_manage: false and manage netplan out of band.

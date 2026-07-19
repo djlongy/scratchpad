@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: storage
-  author: homelab
+  author: user
   description: >-
     Universal, hardware/name-agnostic disk role — provisions, grows,
     formats, and mounts LVM or plain storage on any Linux host.

@@ -24,9 +24,20 @@
   failed_when: false
   check_mode: false
 
+# An unformatted device here is normal mid-build, but it is ALSO what you see when
+# the volume asked to be created and the role-level opt-in was never passed — the
+# provision phase is skipped, nothing formats the disk, and the only trace is this
+# message. Name that case explicitly instead of leaving a bare "not formatted".
 - name: "{{ vol.name }} | skip mount (no filesystem yet)"
   ansible.builtin.debug:
-    msg: "{{ _m_dev }} has no UUID yet (not formatted) — skipping mount of {{ vol.mount }}."
+    msg: >-
+      {{ _m_dev }} has no UUID yet (not formatted) — skipping mount of {{ vol.mount }}.
+      {{ 'This volume declares provision: true but the role-level storage_provision
+      is FALSE, so the provision phase was skipped and nothing created it. Pass
+      storage_provision: true to the role (it is opt-in precisely because it
+      formats disks; creation stays FRESH-guarded and refuses a non-empty disk).'
+      if (vol.provision | bool and not (storage_provision | bool))
+      else 'Provisioning is enabled, so this is expected before the create pass.' }}
   when: _m_uuid.stdout | trim | length == 0
 
 - name: "{{ vol.name }} | manage mount + fstab"

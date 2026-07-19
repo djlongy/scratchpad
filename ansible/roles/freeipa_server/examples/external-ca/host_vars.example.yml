@@ -18,7 +18,7 @@
 #         playbooks/freeipa.yml --tags ca_report
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Scenario host in these comments: freeipa.central-qa.example.com
+# Scenario host in these comments: freeipa.central-qa.core.domain.lan
 # (a test realm to be signed by your existing org root CA).
 
 # ── PHASE 1 — emit the CSR ───────────────────────────────────────────────────
@@ -34,8 +34,8 @@ freeipa_server_external_cert_files: []          # empty on phase 1 → CSR is em
 freeipa_server_external_ca_allow_csr_phase: true  # authorizes the empty cert list phase 1 expects
 
 # Match these to what --tags ca_report reported for prod (example values shown):
-freeipa_server_subject_base: "O=CENTRAL-QA.EXAMPLE.COM"
-freeipa_server_ca_subject: "CN=Certificate Authority,O=CENTRAL-QA.EXAMPLE.COM"
+freeipa_server_subject_base: "O=CENTRAL-QA.CORE.DOMAIN.LAN"
+freeipa_server_ca_subject: "CN=Certificate Authority,O=CENTRAL-QA.CORE.DOMAIN.LAN"
 freeipa_server_setup_kra: false
 freeipa_server_setup_dns: true
 freeipa_server_no_pkinit: false

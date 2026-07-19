@@ -1,3 +1,12 @@
+> **Scope — FreeIPA package/native install.** This role installs FreeIPA from OS packages and
+> manages it over SSH: install, cold-start resilience, scheduled backup, declarative IAM/DNS,
+> hardening, config export, and realm-to-realm migration. It does **not** decommission a server —
+> removing a master from the realm is a deliberate, operator-driven action (do it by hand per
+> [the runbook](#decommissioning-a-server) below).
+> **Reference implementation** for the ADR-0011 Ansible-Vault-first credential standard. Wired in
+> `playbooks/freeipa.yml` (deploy + declarative IAM; `--tags migrate` for realm-to-realm
+> `ipa-migrate` onto a freshly stood-up realm). See docs/designs task pack 2026-07-11.
+
 # freeipa_server
 
 Portable, multi-OS FreeIPA **server** role. Wraps the upstream
@@ -205,7 +214,7 @@ picks **which CA the realm serves** (the signer of every user/host/service cert 
 
 | Mode (`freeipa_server_ca_mode`) | What it does | Trust outcome | When to pick it |
 |---|---|---|---|
-| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into (the usual choice) |
+| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into (the homelab uses this) |
 | `external-ca` | IPA's CA becomes a **sub-CA signed by your org root** (two-phase) | Certs **chain to your root** — anything already trusting your root trusts IPA's certs | Fit an existing PKI hierarchy; make test/prod certs chain to the same root |
 | `ca-less` | IPA runs with **no CA of its own** | You supply every HTTP/LDAP service cert yourself; IPA issues nothing | Rare — an external PKI owns all issuance and renewal |
 
@@ -242,7 +251,7 @@ via a CSR roundtrip:
    role passes them straight to upstream `ipaserver_external_cert_files`) and **re-run**.
    Preflight asserts the list is non-empty, not that the files exist on disk — place the
    signed cert + chain on the host yourself first (e.g. `scp` to `/root`) before running
-   phase 2 manually. The consolidated `playbooks/freeipa_signed_install.yml` flow
+   phase 2 manually. The consolidated `--tags signed_install` flow (see the runbook)
    stages the signed cert and chain onto the host automatically between phases.
 
 The result: IPA's certs chain up to your root, so a test realm installed this way carries

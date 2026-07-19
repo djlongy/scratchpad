@@ -45,7 +45,11 @@
 # tagged import is skipped on a normal run.)
 - name: Redeploy | Delete this host's VM first so create rebuilds it (opt-in)
   ansible.builtin.import_tasks: redeploy.yml
-  when: _vsphere_desired_present | bool
+  # Guard against tag cascade defeating `never`: an inherited co-tag could select
+  # this destructive delete, so also require an explicit `redeploy` in --tags.
+  when:
+    - _vsphere_desired_present | bool
+    - "'redeploy' in ansible_run_tags"
   tags: [never, redeploy]
   module_defaults: &vcenter_connection
     group/community.vmware.vmware:
@@ -84,5 +88,8 @@
 
 - name: Destroy this host's VM when marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml
+  # Guard against tag cascade defeating `never`: only destroy when `destroy`
+  # was explicitly requested via --tags.
+  when: "'destroy' in ansible_run_tags"
   tags: [never, destroy]
   module_defaults: *vcenter_connection
