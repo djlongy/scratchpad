@@ -356,6 +356,26 @@ def test_validate_refs_catch_unknowns_across_object_types(fp):
     assert "password policy 'ghost-pol' targets unknown group 'ghost-pol'" in refs
 
 
+def test_validate_pwpolicy_global_policy_needs_no_group(fp):
+    # global_policy is FreeIPA's built-in realm-wide policy — a valid update target
+    # with no backing usergroup. A genuinely-unknown name still errors alongside it.
+    out = fp.freeipa_iam_validate(_valid_data(
+        pwpolicies=[{"name": "global_policy", "maxlife": 90},
+                    {"name": "nonexistent-grp", "maxlife": 30}],
+    ))
+    assert out["shape"] == []
+    assert out["refs"] == [
+        "password policy 'nonexistent-grp' targets unknown group 'nonexistent-grp'"]
+
+
+def test_validate_pwpolicy_global_policy_refuses_absent(fp):
+    out = fp.freeipa_iam_validate(_valid_data(
+        pwpolicies=[{"name": "global_policy", "state": "absent"}],
+    ))
+    assert ("password policy 'global_policy' is FreeIPA's built-in realm-wide policy — "
+            "refusing state: absent (it can be updated, never deleted)") in out["shape"]
+
+
 def test_validate_live_names_satisfy_references(fp):
     out = fp.freeipa_iam_validate(_valid_data(
         users=[{"name": "alice", "givenname": "A", "sn": "A", "groups": ["realm-only-group"]}],

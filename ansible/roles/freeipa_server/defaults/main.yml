@@ -402,6 +402,11 @@ freeipa_iam_reconcile_all_confirm: false
 freeipa_iam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
 freeipa_iam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
 
+# FreeIPA's built-in realm-wide password policy. Declarable in
+# freeipa_iam_pwpolicies to UPDATE the realm defaults, but never deletable — the
+# delete-declared loop rejects these names so a --tags delete run cannot target it.
+freeipa_iam_builtin_pwpolicies: ["global_policy"]
+
 # ── Externally-managed object protection (reconcile shield) ──────────────────
 # Objects a runtime PIM/provisioning manager creates (pam_* shadow groups, per-tenant
 # PIM hbac/sudo rules, and its svc accounts) are NOT in the declarative model, so a

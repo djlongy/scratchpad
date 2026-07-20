@@ -312,7 +312,9 @@ argument_specs:
         description: Declarative sudo rules (cmd/cmdgroup/usergroup/hostgroup refs are validated).
       freeipa_iam_pwpolicies:
         type: list
-        description: Per-group password policies (ipapwpolicy). maxlife in DAYS, minlife in HOURS.
+        description: >-
+          Per-group password policies (ipapwpolicy), plus the built-in global_policy
+          (update-only — state absent is refused). maxlife in DAYS, minlife in HOURS.
       freeipa_iam_permissions:
         type: list
         description: Custom IPA permissions (atomic rights; ipapermission params). Built-ins are never declared.
@@ -454,6 +456,12 @@ argument_specs:
         type: list
         elements: str
         description: Built-in HBAC service groups never pruned by whole-realm reconcile.
+      freeipa_iam_builtin_pwpolicies:
+        type: list
+        elements: str
+        description: >-
+          Built-in realm password policies — declarable for update, excluded from the
+          delete-declared loop so they can never be deleted.
 
       # ── Config export / snapshot (--tags export) ───────────────────────────
       freeipa_server_export_output:

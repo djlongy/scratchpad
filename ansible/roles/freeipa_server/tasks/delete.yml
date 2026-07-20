@@ -121,7 +121,7 @@
   freeipa.ansible_freeipa.ipapwpolicy:
     name: "{{item.name}}"
     state: absent
-  loop: "{{freeipa_iam_pwpolicies | default([])}}"
+  loop: "{{freeipa_iam_pwpolicies | default([]) | rejectattr('name', 'in', freeipa_iam_builtin_pwpolicies | default([])) | list}}"
   loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_pwpolicies | default([])) | length > 0
 

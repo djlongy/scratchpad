@@ -3,9 +3,10 @@
 > hardening, config export, and realm-to-realm migration. It does **not** decommission a server —
 > removing a master from the realm is a deliberate, operator-driven action (do it by hand per
 > [the runbook](#decommissioning-a-server) below).
-> **Reference implementation** for the ADR-0011 Ansible-Vault-first credential standard. Wired in
+> **Reference implementation** of an Ansible-Vault-first credential standard: every secret is
+> read from an encrypted vars file, with an optional external secrets-manager fallback. Wired in
 > `playbooks/freeipa.yml` (deploy + declarative IAM; `--tags migrate` for realm-to-realm
-> `ipa-migrate` onto a freshly stood-up realm). See docs/designs task pack 2026-07-11.
+> `ipa-migrate` onto a freshly stood-up realm).
 
 # freeipa_server
 
@@ -214,7 +215,7 @@ picks **which CA the realm serves** (the signer of every user/host/service cert 
 
 | Mode (`freeipa_server_ca_mode`) | What it does | Trust outcome | When to pick it |
 |---|---|---|---|
-| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into (the homelab uses this) |
+| `self-signed` *(default)* | IPA mints a standalone **root** CA | Trusted only where you distribute `/etc/ipa/ca.crt`; nothing chains above it | Standalone realm; no existing PKI to fit into |
 | `external-ca` | IPA's CA becomes a **sub-CA signed by your org root** (two-phase) | Certs **chain to your root** — anything already trusting your root trusts IPA's certs | Fit an existing PKI hierarchy; make test/prod certs chain to the same root |
 | `ca-less` | IPA runs with **no CA of its own** | You supply every HTTP/LDAP service cert yourself; IPA issues nothing | Rare — an external PKI owns all issuance and renewal |
 
@@ -549,9 +550,16 @@ IPA-management *privileges*).
 For IPA-*management* delegation (helpdesk, self-service tooling) declare the native chain
 `freeipa_iam_permissions` (atomic right) → `freeipa_iam_privileges` (bundle of permissions)
 → `freeipa_iam_iparoles` (bundle of privileges + members). Per-group password policies go in
-`freeipa_iam_pwpolicies` (`maxlife` in **days**, `minlife` in **hours**), and
+`freeipa_iam_pwpolicies` (`maxlife` in **days**, `minlife` in **hours**); the built-in
+`global_policy` may also be declared there to manage the realm default — it is update-only
+(validation refuses `state: absent`, and export/reconcile never touch it), and
 `freeipa_iam_password_expiration_floors` bumps a user's expiry when it drops below a floor
 (e.g. keep a bind account from expiring). Shapes in `defaults/main.yml`.
+
+A per-group policy's name **must** be an existing group — that is FreeIPA's own rule
+(`pwpolicy-add` fails with `group not found` otherwise), so validation rejects unknown names
+rather than letting the apply fail mid-run. `global_policy` is the sole exception, because
+FreeIPA precreates it with no backing group.
 
 ### Additive by default; one switch that prunes
 

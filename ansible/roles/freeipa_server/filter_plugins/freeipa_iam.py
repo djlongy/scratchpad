@@ -934,10 +934,31 @@ def _automember_target_problems(rules: list, gnames: set[str], hgnames: set[str]
     return out
 
 
+# FreeIPA's built-in realm-wide default policy: a real, modifiable pwpolicy object
+# with NO backing usergroup, so the name-must-be-a-group rule does not apply to it.
+# It is the sole exception — the rule mirrors FreeIPA's own server-side validation
+# (pwpolicy-add for any other group-less name fails with "group not found").
+# Update-only — deletion is refused below, and export deny-lists it independently
+# (files/freeipa_config_export.py PWPOLICY_DENYLIST).
+_PWPOLICY_BUILTINS = frozenset({"global_policy"})
+
+
 def _pwpolicy_target_problems(pwpolicies: list, gnames: set[str]) -> list[str]:
-    """A password policy's NAME must be a known group (it targets itself)."""
+    """A password policy's NAME must be a known group (it targets itself).
+    Built-in realm policies (_PWPOLICY_BUILTINS) have no backing group and are exempt."""
     return [f"password policy '{p.get('name')}' targets unknown group '{p.get('name')}'"
-            for p in pwpolicies if p.get("name") not in gnames]
+            for p in pwpolicies
+            if p.get("name") not in gnames and p.get("name") not in _PWPOLICY_BUILTINS]
+
+
+def _pwpolicy_builtin_absent_problems(pwpolicies: list) -> list[str]:
+    """A built-in realm policy declared state: absent is refused (update-only)."""
+    return [
+        f"password policy '{p.get('name')}' is FreeIPA's built-in realm-wide policy — "
+        "refusing state: absent (it can be updated, never deleted)"
+        for p in pwpolicies
+        if p.get("state", "present") == "absent" and p.get("name") in _PWPOLICY_BUILTINS
+    ]
 
 
 def freeipa_iam_validate(data: dict) -> dict[str, list[str]]:
@@ -965,7 +986,8 @@ def freeipa_iam_validate(data: dict) -> dict[str, list[str]]:
              + _duplicate_named_problems(_lst(data, "hostgroups"), "hostgroup")
              + _duplicate_named_problems(hbac_rules, "HBAC rule")
              + _duplicate_named_problems(sudo_rules, "sudo rule")
-             + _protected_group_problems(usergroups, set(_lst(data, "protected_groups"))))
+             + _protected_group_problems(usergroups, set(_lst(data, "protected_groups")))
+             + _pwpolicy_builtin_absent_problems(_lst(data, "pwpolicies")))
 
     refs = (
         _ref_missing(_lst(data, "roles"), ["groups"], known["groups"],
