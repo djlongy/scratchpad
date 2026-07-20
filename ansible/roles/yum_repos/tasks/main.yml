@@ -26,6 +26,10 @@
     - ansible_os_family == "RedHat"
   block:
 
+    - name: Resolve the effective repo list for this host's EL major
+      ansible.builtin.import_tasks: resolve.yml
+      tags: [always, yum_repos]
+
     - name: Validate the managed repo set and sweep safety
       ansible.builtin.import_tasks: assert.yml
       tags: [assert, yum_repos]

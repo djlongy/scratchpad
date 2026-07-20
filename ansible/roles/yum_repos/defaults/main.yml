@@ -4,7 +4,9 @@
 # mirrors) and, optionally, sweeps away every other .repo file so the directory
 # ends up containing exactly the repos you declare (plus an allowlist).
 #
-# EL-family only (RHEL / AlmaLinux / Rocky). Non-EL hosts skip the role.
+# EL-family only (RHEL / AlmaLinux / Rocky). Supported majors: 8, 9, 10.
+# Non-EL hosts skip the role. Pick repos per major via yum_repos_by_major (map)
+# or the flat yum_repos_repos list (optional per-entry majors filter).
 
 # Master toggle. Set false to skip the role entirely.
 yum_repos_enabled: true
@@ -12,32 +14,71 @@ yum_repos_enabled: true
 # The repository directory this role owns.
 yum_repos_dir: /etc/yum.repos.d
 
+# Host majors this role will manage. Anything outside fails the resolve assert.
+yum_repos_supported_majors: ["8", "9", "10"]
+
 # ── The managed repositories ─────────────────────────────────────────────────
-# Each entry maps onto ansible.builtin.yum_repository. `name` is the repo id and
-# `baseurl` are the only required keys; everything else has a sensible default.
-# Multiple entries can share a `file` to group them into one .repo file.
-# Env-specific values (real Artifactory URLs) belong in inventory group_vars,
-# NOT here — keep this default empty. Example shape:
+# Prefer the multi-EL map when a fleet mixes majors (GPG keys and sometimes paths
+# differ per major). Keys MUST be strings matching ansible_distribution_major_version.
+# When the map is non-empty it is authoritative for every host — each major the
+# play hits needs a key. Leave the map empty to use the flat list instead.
+#
+# yum_repos_by_major:
+#   "8":
+#     - name: baseos
+#       description: "AlmaLinux 8 BaseOS (Artifactory mirror)"
+#       baseurl: "https://artifactory.example.com/artifactory/almalinux-baseos/$releasever/BaseOS/$basearch/os/"
+#       gpgcheck: true
+#       gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-8"
+#     - name: appstream
+#       description: "AlmaLinux 8 AppStream (Artifactory mirror)"
+#       baseurl: "https://artifactory.example.com/artifactory/almalinux-appstream/$releasever/AppStream/$basearch/os/"
+#       gpgcheck: true
+#       gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-8"
+#   "9":
+#     - name: baseos
+#       description: "AlmaLinux 9 BaseOS (Artifactory mirror)"
+#       baseurl: "https://artifactory.example.com/artifactory/almalinux-baseos/$releasever/BaseOS/$basearch/os/"
+#       gpgcheck: true
+#       gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-9"
+#     - name: appstream
+#       description: "AlmaLinux 9 AppStream (Artifactory mirror)"
+#       baseurl: "https://artifactory.example.com/artifactory/almalinux-appstream/$releasever/AppStream/$basearch/os/"
+#       gpgcheck: true
+#       gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-9"
+#   "10":
+#     - name: baseos
+#       description: "AlmaLinux 10 BaseOS (Artifactory mirror)"
+#       baseurl: "https://artifactory.example.com/artifactory/almalinux-baseos/$releasever/BaseOS/$basearch/os/"
+#       gpgcheck: true
+#       gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-10"
+#
+# Flat list (used when yum_repos_by_major is empty). Optional per-entry
+# `majors: [8, 9]` limits that entry to those majors (int or string). Entries
+# without `majors` apply to every supported host. $releasever still expands on
+# the host. Example:
 #
 # yum_repos_repos:
 #   - name: baseos
 #     description: "AlmaLinux BaseOS (Artifactory mirror)"
 #     baseurl: "https://artifactory.example.com/artifactory/almalinux-baseos/$releasever/BaseOS/$basearch/os/"
 #     gpgcheck: true
-#     gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-9"
+#     gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-{{ ansible_distribution_major_version }}"
 #   - name: appstream
 #     description: "AlmaLinux AppStream (Artifactory mirror)"
 #     baseurl: "https://artifactory.example.com/artifactory/almalinux-appstream/$releasever/AppStream/$basearch/os/"
 #     gpgcheck: true
-#     gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-9"
+#     gpgkey: "https://artifactory.example.com/artifactory/almalinux-baseos/RPM-GPG-KEY-AlmaLinux-{{ ansible_distribution_major_version }}"
 #   - name: extras
 #     file: almalinux-extras          # groups into almalinux-extras.repo
+#     majors: [8, 9]                  # extras layout differs on some majors
 #     baseurl: "https://artifactory.example.com/artifactory/almalinux-extras/$releasever/extras/$basearch/os/"
 #     gpgcheck: false
 #
 # Supported per-entry keys (all optional except name + baseurl):
 #   name, baseurl, file, description, enabled, gpgcheck, gpgkey, sslverify,
-#   priority, module_hotfixes, metadata_expire, state
+#   priority, module_hotfixes, metadata_expire, state, majors
+yum_repos_by_major: {}
 yum_repos_repos: []
 
 # ── The sweep — remove .repo files that aren't ours ──────────────────────────

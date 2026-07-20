@@ -1,8 +1,9 @@
 ---
-# Write each managed repository. yum_repository is idempotent and owns the file
-# it writes (default <name>.repo, or a shared <file>.repo when `file` is set).
+# Write each managed repository for this host's EL major (_yum_repos_effective).
+# yum_repository is idempotent and owns the file it writes (default <name>.repo,
+# or a shared <file>.repo when `file` is set).
 
-- name: Configure the managed YUM/DNF repositories
+- name: Configure the managed YUM/DNF repositories (EL{{ _yum_repos_major }})
   become: true  # root: writes .repo files under /etc/yum.repos.d
   ansible.builtin.yum_repository:
     name: "{{ item.name }}"
@@ -16,9 +17,12 @@
     priority: "{{ item.priority | default(omit) }}"
     module_hotfixes: "{{ item.module_hotfixes | default(omit) }}"
     metadata_expire: "{{ item.metadata_expire | default(omit) }}"
+    username: "{{ item.username | default(omit) }}"
+    password: "{{ item.password | default(omit) }}"
     mode: "0644"
     state: "{{ item.state | default('present') }}"
-  loop: "{{ yum_repos_repos }}"
+  loop: "{{ _yum_repos_effective }}"
   loop_control:
-    label: "{{ item.name }} -> {{ item.file | default(item.name) }}.repo"
+    label: "EL{{ _yum_repos_major }} {{ item.name }} -> {{ item.file | default(item.name) }}.repo"
+  no_log: "{{ item.password is defined }}"
   notify: Refresh dnf metadata cache

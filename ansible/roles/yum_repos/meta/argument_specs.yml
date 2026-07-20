@@ -14,8 +14,27 @@ argument_specs:
         description: "Repository directory this role owns."
         type: str
         default: /etc/yum.repos.d
+      yum_repos_supported_majors:
+        description: >-
+          EL major versions this role manages (string form of
+          ansible_distribution_major_version). Hosts outside this set fail
+          resolve. Default covers EL8, EL9, EL10.
+        type: list
+        elements: str
+        default: ["8", "9", "10"]
+      yum_repos_by_major:
+        description: >-
+          Multi-EL map of managed repos keyed by major version string
+          ("8", "9", "10"). When non-empty this map is authoritative: every host
+          major the play hits must have a key. Preferred when GPG keys or repo
+          layouts differ per major. Leave empty to use yum_repos_repos.
+        type: dict
+        default: {}
       yum_repos_repos:
-        description: "Managed repositories. Maps onto ansible.builtin.yum_repository."
+        description: >-
+          Flat managed repository list (used when yum_repos_by_major is empty).
+          Maps onto ansible.builtin.yum_repository. Optional per-entry majors
+          limits the entry to those EL majors.
         type: list
         elements: dict
         default: []
@@ -57,6 +76,18 @@ argument_specs:
           metadata_expire:
             description: "Metadata cache lifetime, e.g. '6h' or '86400'."
             type: str
+          username:
+            description: "Optional HTTP basic-auth username for the repo URL."
+            type: str
+          password:
+            description: "Optional HTTP basic-auth password for the repo URL."
+            type: str
+          majors:
+            description: >-
+              Optional list of EL majors this entry applies to (int or string,
+              e.g. [8, 9] or ["8", "9"]). Omitted = all supported majors.
+            type: list
+            elements: raw
           state:
             description: "present or absent."
             type: str

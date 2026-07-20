@@ -1,0 +1,69 @@
+---
+# Resolve THIS host's managed repo list from either:
+#   1. yum_repos_by_major[<major>]  — preferred multi-EL map (keys "8"/"9"/"10")
+#   2. yum_repos_repos              — flat list (optionally filtered by per-entry majors)
+#
+# Sets:
+#   _yum_repos_major     — ansible_distribution_major_version as a string
+#   _yum_repos_effective — the list configure/cleanup/assert should use
+
+- name: Resolve | Record the host's EL major version
+  ansible.builtin.set_fact:
+    _yum_repos_major: "{{ ansible_distribution_major_version | string }}"
+
+- name: Resolve | Assert the host major is in the supported set
+  ansible.builtin.assert:
+    that:
+      - _yum_repos_major in (yum_repos_supported_majors | map('string') | list)
+    fail_msg: >-
+      yum_repos: EL{{ _yum_repos_major }} is not in yum_repos_supported_majors
+      {{ yum_repos_supported_majors }} (host={{ inventory_hostname }},
+      distro={{ ansible_distribution }}). Extend yum_repos_supported_majors or
+      skip this host.
+    quiet: true
+
+# Normalize map keys to strings so YAML `8:` and `"8":` both work.
+- name: Resolve | Normalize yum_repos_by_major keys to strings
+  ansible.builtin.set_fact:
+    _yum_repos_by_major: >-
+      {%- set ns = namespace(d={}) -%}
+      {%- for k, v in yum_repos_by_major.items() -%}
+      {%-   set _ = ns.d.update({(k | string): v}) -%}
+      {%- endfor -%}
+      {{ ns.d }}
+  when: yum_repos_by_major | length > 0
+
+# Map wins when it is non-empty: the host must have an entry (even if []). That
+# keeps "declare el8 + el9, run on both" unambiguous and fails closed on a
+# missing major instead of silently falling back to a flat el9-only list.
+- name: Resolve | Assert yum_repos_by_major covers this host major (when the map is used)
+  ansible.builtin.assert:
+    that:
+      - _yum_repos_major in _yum_repos_by_major
+    fail_msg: >-
+      yum_repos_by_major is set but has no key for EL{{ _yum_repos_major }}.
+      Declared majors: {{ _yum_repos_by_major.keys() | list }}. Add an
+      '{{ _yum_repos_major }}' entry (list of repos, may be empty) or leave
+      yum_repos_by_major empty and use the flat yum_repos_repos list.
+    quiet: true
+  when: yum_repos_by_major | length > 0
+
+# Map path: authoritative per-major list. Flat path: include entries with no
+# `majors` key, or whose majors list contains this host major (string-normalized
+# so [8, 9] and ["8", "9"] both match).
+- name: Resolve | Build the effective managed repo list for this host
+  ansible.builtin.set_fact:
+    _yum_repos_effective: >-
+      {%- if yum_repos_by_major | length > 0 -%}
+      {{ _yum_repos_by_major[_yum_repos_major] }}
+      {%- else -%}
+      {%- set ns = namespace(out=[]) -%}
+      {%- for r in yum_repos_repos -%}
+      {%-   if r.majors is not defined -%}
+      {%-     set _ = ns.out.append(r) -%}
+      {%-   elif (_yum_repos_major in (r.majors | map('string') | list)) -%}
+      {%-     set _ = ns.out.append(r) -%}
+      {%-   endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+      {%- endif -%}
