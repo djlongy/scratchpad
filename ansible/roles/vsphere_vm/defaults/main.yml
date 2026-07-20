@@ -197,14 +197,25 @@ vsphere_vm_dns: []                            # DNS servers for guest customizat
 # role creates the whole tree first (one call).
 vsphere_vm_tags: {}
 
-# ── Destroy safety ───────────────────────────────────────────────────────────
-# Destroying (state: absent) is refused unless this is true — a guard against
-# accidental mass-deletion. Combine with the `destroy` tag (see tasks/main.yml).
-vsphere_vm_allow_destroy: false
-
-# ── Redeploy (delete → rebuild from scratch) ─────────────────────────────────
-# `--tags redeploy` DELETES this host's VM (and its disks) then rebuilds it fresh
-# from the template in the same pass. Doubly guarded like destroy: the `never`-
-# tagged redeploy phase runs ONLY with `--tags redeploy` AND this flag true.
-#   ansible-playbook ... --tags redeploy -e vsphere_vm_allow_redeploy=true
-vsphere_vm_allow_redeploy: false
+# ── Destroy / redeploy action gates (var-driven, like audit_logging_mode) ────
+# Destructive phases used to be `never`-tagged so they only ran under
+# `--tags redeploy|destroy`. That works for a tag-isolated vsphere-only pass,
+# but a tagged run SKIPS every later role in the play (baseline, docker, Vault…)
+# unless those roles also carry the tag — so you cannot "wipe the VM then finish
+# the daisy chain" with tags alone.
+#
+# These vars flip the same phases ON during a normal (untagged) play. Pair each
+# action gate with its allow_* safety flag (double guard, like before):
+#
+#   # Full play: delete → rebuild → continue storage/baseline/…/vault
+#   ansible-playbook ... -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true
+#
+#   # Full play: remove guests whose state is absent
+#   ansible-playbook ... -e vsphere_vm_destroy=true -e vsphere_vm_allow_destroy=true
+#
+# Tag paths still work (`--tags redeploy` / `--tags destroy`) for a vsphere-only
+# pass that deliberately does NOT continue the rest of the play.
+vsphere_vm_redeploy: false                       # action: delete then create this run
+vsphere_vm_destroy: false                        # action: honour state:absent this run
+vsphere_vm_allow_destroy: false                  # safety: refuse destroy unless true
+vsphere_vm_allow_redeploy: false                 # safety: refuse redeploy unless true

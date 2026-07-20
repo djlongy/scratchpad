@@ -13,11 +13,14 @@ Hosts build in parallel for free.
 
 ## TL;DR
 
-**Most common: provision a VM.** Add the host to inventory (with its `vsphere_vm_*` vars) and run scoped to it — a no-tag run creates/ensures; recreate-from-scratch is the guarded `--tags redeploy` variant.
+**Most common: provision a VM.** Add the host to inventory (with its `vsphere_vm_*` vars) and run scoped to it — a no-tag run creates/ensures.
 
 ```bash
+# ensure / create
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --limit <newhost>
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true --limit <newhost>
+# wipe + rebuild, then CONTINUE the rest of the play (preferred)
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml \
+  -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true --limit <newhost>
 ```
 
 ## Minimum required variables
@@ -43,7 +46,7 @@ Tiny copy-pasteable minimal example (DRS cluster, Vault-backed credentials):
 # group_vars/vmware_vms.yml — the shared minimum
 vsphere_vm_server: "vcenter.example.com"
 vsphere_vm_datacenter: "Datacenter"
-vsphere_vm_vault_secret: "kv-ops/platform/vsphere/runtime"   # holds the vCenter password
+vsphere_vm_vault_secret: "kv-mgt/platform/vsphere/runtime"   # holds the vCenter password
 # vsphere_vm_username / vsphere_vm_password_field default to administrator@vsphere.local / password
 vsphere_vm_cluster: "Cluster"          # or: vsphere_vm_esxi_host + vsphere_vm_resource_pool
 vsphere_vm_datastore: "datastore1"
@@ -68,28 +71,37 @@ default — see the sections below to tune it.
 
 ## Phases (tags)
 
-| Tag | Runs |
+| Tag / var | Runs |
 |---|---|
-| `preflight` | assert inputs + resolve the vCenter password |
-| `create` | clone/ensure guests whose `state` ≠ `absent` |
-| `redeploy` | **delete then rebuild** from scratch — **`never` tag**, needs `vsphere_vm_allow_redeploy=true` |
-| `destroy` | remove guests whose `state` = `absent` — **`never` tag**, needs `vsphere_vm_allow_destroy=true` |
+| (no tags) | create/ensure present guests |
+| `vsphere_vm_redeploy=true` + `vsphere_vm_allow_redeploy=true` | **delete → rebuild**, then the **rest of the play continues** |
+| `--tags redeploy` + `vsphere_vm_allow_redeploy=true` | same wipe+rebuild, but **vsphere-only** (later roles are tag-skipped) |
+| `vsphere_vm_destroy=true` + `vsphere_vm_allow_destroy=true` | remove guests with `state: absent` on a full play |
+| `--tags destroy` + `vsphere_vm_allow_destroy=true` | same remove, vsphere-only pass |
 
-A no-tag run creates/ensures; redeploy and destroy are opt-in only.
+A no-tag / no-var run only creates/ensures. Destructive phases are **var-gated**
+(same idea as `audit_logging_mode` / ssh-agent unlock vars), not `never`-tagged,
+so a daisy-chain play can wipe the VM and keep going.
 
-**Redeploy (recreate from scratch):** `--tags redeploy` runs `delete → create →
-connect` for the targeted hosts in one pass — the VM and its disks are removed,
-then rebuilt fresh from the template. Doubly guarded (never-tag + flag):
+**Redeploy (preferred — full play continues):**
+
+```bash
+# delete → create → connect → then storage / baseline / freeipa / docker / vault …
+ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
+  -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true
+# scope with --limit
+ansible-playbook ... -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true --limit web01
+```
+
+**Redeploy (legacy tag path — stops after vsphere phases):**
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags redeploy -e vsphere_vm_allow_redeploy=true
-# scope to specific hosts with --limit
-ansible-playbook ... --tags redeploy -e vsphere_vm_allow_redeploy=true --limit web01
 ```
 
 The delete is by name and idempotent, so redeploy also works on a host whose VM
-doesn't exist yet (it just builds it). Pair with `--limit` to recreate a subset.
+doesn't exist yet (it just builds it).
 
 ## Robust spin-up (NIC reconnect + bounded waits)
 
@@ -152,6 +164,10 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml
 Destroy (set `vsphere_vm_state: absent` on the host, then):
 
 ```bash
+# full play (preferred when other roles follow)
+ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
+  -e vsphere_vm_destroy=true -e vsphere_vm_allow_destroy=true
+# vsphere-only
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags destroy -e vsphere_vm_allow_destroy=true
 ```
