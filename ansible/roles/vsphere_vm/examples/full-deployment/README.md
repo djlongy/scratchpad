@@ -32,7 +32,8 @@ ansible-playbook site.yml
 Day-2:
 
 ```bash
-ansible-playbook site.yml --tags redeploy -e vsphere_vm_force_redeploy=true   # rebuild the VM, re-run everything
+ansible-playbook site.yml -e vsphere_vm_force_redeploy=true                   # rebuild the VM, re-run everything
+ansible-playbook site.yml --tags redeploy -e vsphere_vm_force_redeploy=true   # VM-only rebuild (on-guest roles tag-skipped)
 ansible-playbook site.yml --tags create,grow                                  # after bumping a disk size
 ansible-playbook site.yml -e vsphere_vm_state=absent --tags destroy -e vsphere_vm_force_destroy=true
 ```

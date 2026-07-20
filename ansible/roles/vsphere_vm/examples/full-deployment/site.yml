@@ -10,6 +10,8 @@
 #   ansible-playbook site.yml
 #
 #   # recreate the VM from scratch (delete + rebuild), then re-run everything:
+#   ansible-playbook site.yml -e vsphere_vm_force_redeploy=true
+#   # VM-only rebuild (--tags redeploy tag-skips storage/baseline/firewall/docker):
 #   ansible-playbook site.yml --tags redeploy -e vsphere_vm_force_redeploy=true
 #   # grow disks after bumping vsphere_vm_disk sizes:
 #   ansible-playbook site.yml --tags create,grow

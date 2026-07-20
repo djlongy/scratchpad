@@ -13,7 +13,7 @@
 #
 #   # destroy (mark the guest state: absent first)
 #   ansible-playbook -i inventories/example/hosts.yml playbooks/vsphere_vm.yml \
-#       --tags destroy -e vsphere_vm_allow_destroy=true
+#       --tags destroy -e vsphere_vm_force_destroy=true
 
 - name: Create / destroy vCenter VMs
   hosts: vmware_vms

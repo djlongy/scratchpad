@@ -22,7 +22,10 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory.yml site.yml
 ```
 
 ```bash
-# recreate from scratch (delete VM + disks, rebuild)
+# recreate from scratch (delete VM + disks, rebuild), then storage re-runs
+ansible-playbook -i inventory.yml site.yml -e vsphere_vm_force_redeploy=true
+
+# VM-only rebuild (--tags redeploy tag-skips the storage role)
 ansible-playbook -i inventory.yml site.yml --tags redeploy -e vsphere_vm_force_redeploy=true
 
 # grow: bump the vsphere_vm_disk sizes (and the by-size: selectors), then

@@ -19,8 +19,10 @@
 # Tags for iteration once the VM exists:
 #   --tags yum_repos|storage|baseline|certs|docker|tls|init|ldap|policies|pki|verify
 #
-# Rebuild the guest from the template (destructive):
-#   --tags redeploy -e vsphere_vm_allow_redeploy=true
+# Rebuild the guest from the template, then continue the full daisy chain
+# (destructive):
+#   -e vsphere_vm_force_redeploy=true
+# (Optional --tags redeploy scopes to vsphere phases only — later roles skipped.)
 
 - name: Unlock the management SSH key into ssh-agent
   hosts: localhost

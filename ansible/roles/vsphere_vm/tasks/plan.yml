@@ -66,6 +66,23 @@
       {%- set _ = L.append('=' * 84) -%}
       {{ L }}
 
+# Same contract call-out for the redeploy path — `--tags redeploy` WITHOUT the
+# force var quietly degrades to a plain ensure (create/connect also carry the
+# tag), so say so up front instead of letting a green changed=0 run masquerade
+# as a wipe.
+- name: Plan | Advise that redeploy is not armed (ensure-only run)
+  ansible.builtin.debug:
+    msg: >-
+      'redeploy' tag requested but vsphere_vm_force_redeploy is not true — this run
+      only ENSURES {{ _vsphere_guest.name }} (idempotent create, NO wipe). Add
+      -e vsphere_vm_force_redeploy=true to delete and rebuild it.
+  when:
+    - _vsphere_desired_present | bool
+    - "'redeploy' in ansible_run_tags"
+    - not (vsphere_vm_force_redeploy | default(false) | bool)
+  delegate_to: localhost
+  become: false
+
 # Make the destroy CONTRACT explicit when something is marked absent — otherwise
 # a plain run silently no-ops (destroy is var/tag-gated) and the operator just
 # sees changed=0 with no clue why.

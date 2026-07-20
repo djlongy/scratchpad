@@ -66,7 +66,9 @@ default — see the sections below to tune it.
 
 ## Requirements
 
-- `community.vmware` **>= 6.x** + `pyvmomi` on the controller (4.x is incompatible with pyVmomi 9).
+- `community.vmware` **>= 4.x** with a matching `pyVmomi` **<= 8.0.2.x** on the
+  controller (pyVmomi 9 removed `VmomiSupport.VmomiJSONEncoder`, which the
+  modules still call).
 - vCenter credentials (Vault path or `vsphere_vm_password`).
 
 ## Phases (tags)
@@ -100,7 +102,9 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
 ```
 
 The delete is by name and idempotent, so redeploy also works on a host whose VM
-doesn't exist yet (it just builds it).
+doesn't exist yet (it just builds it). The vsphere-only scope rebuilds the VM but
+tag-skips every later role — the guest comes back a bare template until a full
+(or config) run follows.
 
 ## Robust spin-up (NIC reconnect + bounded waits)
 
@@ -128,9 +132,6 @@ phase handles this automatically:
 | `vsphere_vm_connect_pass_delay` | `10` | seconds between polls within a pass |
 | `vsphere_vm_create_retries` | `3` | retry transient vCenter errors |
 | `vsphere_vm_create_delay` | `15` | seconds between create retries |
-
-> Needs `community.vmware` ≥ 4 with a matching `pyVmomi` (≤ 8.0.2.x — newer
-> pyVmomi removed `VmomiSupport.VmomiJSONEncoder` that the modules still call).
 
 ## Usage
 
