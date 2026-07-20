@@ -4,42 +4,52 @@
 # phases. Repos (RHSM/EPEL/CRB), the package baseline, crypto/FIPS, SSH and the
 # tuning sysctls now live in their own phase files — keep them out of here.
 
-# ── Default network (NetworkManager nmcli) — lab convention path ─────────────
-# Opt-in by defining connection_name + dns_nameserver + search_domain. The
+# ── Default network (NetworkManager nmcli) — lab convention path ─────────
+# Opt-in when dns_nameserver + search_domain are set. Interface resolution:
+#   connection_name (inventory) → primary_interface (environment facts) → default IPv4.
 # portable, distro-agnostic path is network.yml (baseline_network_manage).
 - name: Configure DNS via NetworkManager
   become: true  # root: nmcli/systemd reconfigure networking
   when:
-    - connection_name is defined
     - dns_nameserver is defined
     - search_domain is defined
   tags: host
   block:
+    - name: Resolve NetworkManager connection / device name
+      ansible.builtin.set_fact:
+        _baseline_nm_iface: >-
+          {{ connection_name
+             | default(primary_interface, true)
+             | default(ansible_default_ipv4.interface | default(''), true) }}
+
     # gw4 must be the on-subnet router, NOT the DNS server. Derive `.1` of the
     # host's /24 by default; allow inventory override via network_gateway.
     - name: Set DNS and search domain using nmcli
       community.general.nmcli:
         type: ethernet
-        conn_name: "{{ connection_name }}"
-        ifname: "{{ connection_name }}"
+        conn_name: "{{ _baseline_nm_iface }}"
+        ifname: "{{ _baseline_nm_iface }}"
         ip4: "{{ ansible_host }}/24"
         gw4: "{{ network_gateway | default((ansible_host.split('.')[:3] | join('.')) + '.1') }}"
         dns4: "{{ dns_nameserver }}"
         dns4_search: "{{ search_domain }}"
         state: present
       register: nmcli_result
+      when:
+        - _baseline_nm_iface is defined
+        - _baseline_nm_iface | length > 0
 
     - name: Reload NetworkManager resolv.conf
       ansible.builtin.command: nmcli general reload
       changed_when: false
       failed_when: false
-      when: nmcli_result.changed
+      when: nmcli_result is defined and nmcli_result is changed
 
     - name: Restart NetworkManager to apply DNS settings
       ansible.builtin.systemd:
         name: NetworkManager
         state: restarted
-      when: nmcli_result.changed
+      when: nmcli_result is defined and nmcli_result is changed
 
 # ── Baseline service tooling ─────────────────────────────────────────────────
 - name: Ensure baseline service tooling is installed

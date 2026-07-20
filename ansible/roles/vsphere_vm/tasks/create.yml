@@ -26,8 +26,9 @@
 # ─── Folder tree ──────────────────────────────────────────────────────────────
 # Ensure this VM's (possibly NESTED) folder path exists before placing it.
 # community.vmware.vcenter_folder is single-level, so vmware.vmware.folder is used —
-# it creates the WHOLE path in one call (e.g. tenancy/environment → /<DC>/vm/prod/alma).
-# relative_path is the path under the DC's vm root; a bare base folder (empty) is skipped.
+# it creates the WHOLE path in one call (e.g. swarm/alma → /<DC>/vm/swarm/alma).
+# folder_path is already the DC-relative dialect this module wants (spec.yml derives
+# it); an empty value means the DC VM root, which needs no creating.
 # throttle: 1 — parallel hosts often share a folder path; serialize the (idempotent)
 # create so concurrent same-path calls can't race.
 - name: Create | Ensure this VM's (nested) folder path exists
@@ -37,14 +38,10 @@
     password: "{{ vsphere_vm_password }}"
     validate_certs: "{{ vsphere_vm_validate_certs }}"
     datacenter: "{{ vsphere_vm_datacenter }}"
-    relative_path: "{{ _rel }}"
+    relative_path: "{{ _vsphere_guest.folder_path }}"
     folder_type: vm
     state: present
-  vars:
-    _rel: >-
-      {{ _vsphere_guest.folder | regex_replace('^/?' ~ vsphere_vm_datacenter ~ '/vm/?', '')
-                               | regex_replace('^/?vm/?', '') | regex_replace('^/', '') }}
-  when: _rel | length > 0
+  when: _vsphere_guest.folder_path | length > 0
   throttle: 1
   delegate_to: localhost
   become: false

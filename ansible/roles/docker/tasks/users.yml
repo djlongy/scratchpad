@@ -1,12 +1,56 @@
 ---
 # roles/docker/tasks/users.yml
-# Add users to the docker group (grants unprivileged Docker socket access).
-# Gated by `docker_users | length > 0` in main.yml — no-ops when the list is empty.
+# Docker group access, optional service account, and optional shared-storage
+# group ACLs. Distro-agnostic: the same user/group/ACL setup applies on EL and
+# Debian. Gated in main.yml — no-ops unless at least one sub-feature is requested.
 
-- name: Add users to docker group
+- name: Add users to the docker group
+  become: true  # root: modifies system group membership
   ansible.builtin.user:
     name: "{{ item }}"
     groups: docker
     append: true
     state: present
   loop: "{{ docker_users }}"
+
+# Optional dedicated service account for running/owning Docker workloads.
+# Skipped when docker_service_user is empty (the default) — existing hosts are
+# unaffected.
+- name: Ensure the Docker service account exists
+  become: true  # root: creates a system user
+  ansible.builtin.user:
+    name: "{{ docker_service_user }}"
+    system: "{{ docker_service_user_system }}"
+    shell: "{{ docker_service_user_shell }}"
+    create_home: true
+    password: "!"
+    groups: "{{ docker_service_user_groups }}"
+    append: true
+    state: present
+  when: docker_service_user | length > 0
+
+# Give the service account ownership of the data-root so it can manage volumes
+# and bind mounts under it. Only runs when a service account is configured and
+# ownership management is explicitly enabled.
+- name: Own the Docker data directory with the service account
+  become: true  # root: chown data dir to the service account
+  ansible.builtin.file:
+    path: "{{ docker_data_root }}"
+    state: directory
+    owner: "{{ docker_service_user }}"
+    group: "{{ docker_service_user }}"
+    mode: "{{ docker_data_dir_mode }}"
+    recurse: true
+  when:
+    - docker_service_user | length > 0
+    - docker_manage_data_dir_owner | bool
+
+# NOTE: Do NOT recurse ownership of the shared parent (e.g. /opt) — other
+# services install binaries there and need 'other' execute to traverse it.
+# Instead, grant the docker group write access via default + recursive ACLs.
+- name: Set default + recursive ACLs for the docker group on the shared path
+  become: true  # root: setfacl on the shared /opt path
+  ansible.builtin.command:
+    cmd: "setfacl -R -m d:g:docker:rwx -m g:docker:rwx {{ docker_opt_acl_path }}"
+  changed_when: false
+  when: docker_manage_opt_acl | bool

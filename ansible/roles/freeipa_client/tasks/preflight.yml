@@ -55,9 +55,17 @@
           | regex_search('realm\s*=\s*(\S+)', '\1') | first | default('')) | trim }}
   when: _freeipa_client_conf.stat.exists
 
+# A FAILURE HERE UNINSTALLS THE ENROLMENT, so it must not trigger on a blip.
+# One unlucky kinit — a KDC restart, a moment of clock skew, crypto state still
+# settling right after a FIPS reboot — would otherwise tear down a perfectly
+# healthy client and force a full re-enrol, which destabilises krb5 for every
+# task that follows. Retry before concluding the enrolment is genuinely broken.
 - name: Health-check existing enrolment via host-keytab kinit
   ansible.builtin.command: "kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}"
   register: _freeipa_client_kinit
+  until: _freeipa_client_kinit.rc == 0
+  retries: 3
+  delay: 5
   changed_when: false
   failed_when: false
   become: true                           # /etc/krb5.keytab is root-only; non-root → "no suitable keys"
@@ -92,6 +100,31 @@
       host_keytab_kinit_rc={{ _freeipa_client_kinit.rc | default('n/a') }}
       needs_rejoin={{ _freeipa_client_stale }}
 
+# Packages are installed above, but a half-enrolled host (leftover /etc/ipa
+# without ipa-client) or a tag-limited run that skipped the dnf task can still
+# reach here. Without a binary check, ansible.builtin.command dies with
+# [Errno 2] No such file or directory — opaque and non-actionable.
+- name: Locate ipa-client-install before stale uninstall
+  ansible.builtin.command: command -v ipa-client-install
+  register: _freeipa_client_ipa_bin
+  changed_when: false
+  failed_when: false
+  when:
+    - _freeipa_client_conf.stat.exists
+    - _freeipa_client_stale | bool
+
+- name: Fail if stale enrolment needs uninstall but ipa-client-install is missing
+  ansible.builtin.fail:
+    msg: >-
+      /etc/ipa/default.conf exists and enrolment is stale
+      (needs_rejoin=true), but ipa-client-install is not on PATH. Install the
+      freeipa-client package (or re-run without skipping the preflight package
+      task) before rejoining.
+  when:
+    - _freeipa_client_conf.stat.exists
+    - _freeipa_client_stale | bool
+    - (_freeipa_client_ipa_bin.rc | default(1)) != 0
+
 - name: Uninstall stale enrolment before rejoin
   ansible.builtin.command: ipa-client-install --uninstall --unattended
   register: _freeipa_client_uninstall
@@ -103,3 +136,4 @@
   when:
     - _freeipa_client_conf.stat.exists
     - _freeipa_client_stale | bool
+    - (_freeipa_client_ipa_bin.rc | default(1)) == 0

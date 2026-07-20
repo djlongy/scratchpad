@@ -4,7 +4,7 @@
   injected (base64) as guestinfo.metadata by tasks/create.yml when
   vsphere_vm_provision_via_guestinfo is true. Drives first-boot hostname + static
   networking WITHOUT a vSphere GOSC customization spec, so the NIC never
-  async-disconnects (see the role README).
+  async-disconnects (see the role README + the knowledge base GOSC note).
 
   Multi-NIC: every entry in _vsphere_guest.networks becomes its own cloud-init ethernet,
   keyed by an EXPLICIT interface name. cloud-init's RHEL/NetworkManager renderer

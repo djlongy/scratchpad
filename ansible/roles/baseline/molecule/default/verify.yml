@@ -34,12 +34,12 @@
         path: /etc/localtime
       register: tz_link
 
-    - name: Assert timezone is set to Australia/Sydney
+    - name: Assert timezone is set to UTC
       ansible.builtin.assert:
         that:
           - tz_link.stat.islnk
-          - tz_link.stat.lnk_target == '/usr/share/zoneinfo/Australia/Sydney'
-        fail_msg: "/etc/localtime is not symlinked to Australia/Sydney"
+          - tz_link.stat.lnk_target == '/usr/share/zoneinfo/UTC'
+        fail_msg: "/etc/localtime is not symlinked to UTC"
 
     - name: Verify packages via rpm command  # noqa: command-instead-of-module
       ansible.builtin.command: "rpm -q {{ item }}"

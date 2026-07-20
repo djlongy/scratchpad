@@ -1,0 +1,19 @@
+{{ ansible_managed | comment }}
+# Global Vault admin ("see everything") — full CRUD on EVERY KV mount (current AND
+# future) plus auth / policy / mount / identity management. Attach to a top-level
+# LDAP group (e.g. vault-admins) or an internal identity group. This is the tier-3
+# "vault-admin-all" grant; use sparingly.
+#
+# {{ hashicorp_vault_kv_mount_prefix }}-* is a trailing-glob over every mount whose
+# name starts with the KV prefix, so new tenant mounts are covered automatically.
+path "{{ hashicorp_vault_kv_mount_prefix }}-*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+path "sys/auth/*"          { capabilities = ["create", "read", "update", "delete", "sudo"] }
+path "sys/auth"            { capabilities = ["read"] }
+path "sys/policies/acl/*"  { capabilities = ["create", "read", "update", "delete", "list"] }
+path "sys/mounts/*"        { capabilities = ["create", "read", "update", "delete", "sudo"] }
+path "sys/mounts"          { capabilities = ["read"] }
+path "identity/*"          { capabilities = ["create", "read", "update", "delete", "list"] }
+path "auth/*"              { capabilities = ["create", "read", "update", "delete", "list", "sudo"] }

@@ -1,0 +1,95 @@
+---
+# vault_solo_e2e.yml — build ONE containerized HashiCorp Vault host end to end.
+#
+# Daisy chain (same shape as a greenfield lab or a production seed Vault):
+#   ssh_agent_key → vsphere_vm → yum_repos → storage → baseline → firewalld
+#   → [freeipa_client] → docker → hashicorp_vault_container
+#
+# Two TLS modes (inventory-selected):
+#   vault_tls_mode: freeipa     enrol into FreeIPA; certmonger issues the cert
+#   vault_tls_mode: selfsigned  skip FreeIPA; role self-signs CA + server cert
+#
+# Minimal greenfield run (self-signed, stock distro repos):
+#   ansible-playbook -i inventories/vaultsolo/hosts.yml playbooks/vault_solo_e2e.yml
+#
+# FreeIPA-TLS lab (requires a reachable realm + inventory freeipa_client_* vars):
+#   ansible-playbook -i inventories/vaultsolo/hosts.yml playbooks/vault_solo_e2e.yml \
+#     -e vault_tls_mode=freeipa
+#
+# Tags for iteration once the VM exists:
+#   --tags yum_repos|storage|baseline|certs|docker|tls|init|ldap|policies|pki|verify
+#
+# Rebuild the guest from the template (destructive):
+#   --tags redeploy -e vsphere_vm_allow_redeploy=true
+
+- name: Unlock the management SSH key into ssh-agent
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  tags: [always]
+  pre_tasks:
+    - name: Load vaulted secrets when present (optional)
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/group_vars/all/vault.yml"
+      failed_when: false
+      no_log: true
+  roles:
+    - role: ssh_agent_key
+      vars:
+        # Prefer an inventory/extra-var over embedding key material here.
+        ssh_agent_key_content: "{{ avault_ansible_ssh_key | default(omit) }}"
+      when: avault_ansible_ssh_key is defined
+
+- name: Provision the Vault VM
+  hosts: vault_container
+  gather_facts: false
+  roles:
+    - role: vsphere_vm
+      tags: [vsphere_vm, create]
+      vars:
+        vsphere_vm_wait_for_ssh: true
+
+- name: Build the standalone containerized Vault host
+  hosts: vault_container
+  gather_facts: true
+  pre_tasks:
+    - name: Validate the selected TLS mode
+      ansible.builtin.assert:
+        that:
+          - vault_tls_mode | default('selfsigned') in ['freeipa', 'selfsigned']
+        fail_msg: >-
+          vault_tls_mode must be 'freeipa' or 'selfsigned'.
+          Got: {{ vault_tls_mode | default('selfsigned') }}
+        quiet: true
+      tags: [always]
+
+  roles:
+    - role: yum_repos
+      become: true
+      tags: [yum_repos, repos]
+
+    - role: storage
+      become: true
+      tags: [storage]
+
+    - role: baseline
+      become: true
+      tags: [baseline]
+
+    - role: firewalld
+      become: true
+      tags: [firewalld, firewall]
+
+    - role: freeipa_client
+      become: true
+      when: vault_tls_mode | default('selfsigned') == 'freeipa'
+      tags: [freeipa_client, freeipa, certs]
+
+    - role: docker
+      become: true
+      tags: [docker]
+
+    - role: hashicorp_vault_container
+      become: true
+      tags: [hashicorp_vault_container, vault]

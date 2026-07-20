@@ -1,7 +1,6 @@
 ---
 # Fail fast on a mis-declared repo set, and refuse the footgun of wiping every
-# repository (which would break dnf on the target). Operates on
-# _yum_repos_effective (resolved for this host's EL major in resolve.yml).
+# repository (which would break dnf on the target).
 
 - name: Assert every managed repo has a name and a baseurl
   ansible.builtin.assert:
@@ -10,24 +9,19 @@
       - item.name | string | length > 0
       - item.baseurl is defined
       - item.baseurl | string | length > 0
-    fail_msg: >-
-      Each managed repo needs a non-empty 'name' and 'baseurl'
-      (EL{{ _yum_repos_major }}, offending entry: {{ item }}).
+    fail_msg: "Each yum_repos_repos entry needs a non-empty 'name' and 'baseurl' (offending entry: {{ item }})."
     quiet: true
-  loop: "{{ _yum_repos_effective }}"
+  loop: "{{ yum_repos_repos }}"
   loop_control:
     label: "{{ item.name | default('<unnamed>') }}"
 
 - name: Assert the sweep will not delete every repository
   ansible.builtin.assert:
     that:
-      - (_yum_repos_effective | length > 0) or (yum_repos_keep | length > 0)
+      - (yum_repos_repos | length > 0) or (yum_repos_keep | length > 0)
     fail_msg: >-
-      Refusing to run: yum_repos_remove_unmanaged is true but the effective
-      managed set for EL{{ _yum_repos_major }} is empty and yum_repos_keep is
-      empty — this would delete every .repo file and break package management.
-      Declare yum_repos_by_major['{{ _yum_repos_major }}'] or yum_repos_repos.
-    success_msg: >-
-      Sweep safety check passed for EL{{ _yum_repos_major }} —
-      at least one repo will remain.
+      Refusing to run: yum_repos_remove_unmanaged is true but both
+      yum_repos_repos and yum_repos_keep are empty — this would delete every
+      .repo file and break package management on the host.
+    success_msg: "Sweep safety check passed — at least one repo will remain."
   when: yum_repos_remove_unmanaged | bool

@@ -3,15 +3,14 @@
 # yum_repos_keep allowlist, leaving the directory holding exactly the desired
 # set. Runs after configure.yml so the managed files already exist on disk.
 
-# Managed basenames (no .repo suffix) that must survive: every effective repo's
-# name, plus any explicit `file` override. Use _yum_repos_effective so a host
-# only preserves the repos for ITS major (an el8 host does not keep el9-only
-# basenames). Single-expression set_fact (recomputed each run).
+# Managed basenames (no .repo suffix) that must survive: every repo's name, plus
+# any explicit `file` override. Single-expression set_fact (recomputed each run,
+# never accumulated) so it can't leak stale entries across plays.
 - name: Compute the managed repo basenames (these survive the sweep)
   ansible.builtin.set_fact:
     _yum_repos_managed: >-
-      {{ (_yum_repos_effective | map(attribute='name') | list)
-         + (_yum_repos_effective | selectattr('file', 'defined') | map(attribute='file') | list) }}
+      {{ (yum_repos_repos | map(attribute='name') | list)
+         + (yum_repos_repos | selectattr('file', 'defined') | map(attribute='file') | list) }}
 
 - name: Find every .repo file currently on disk
   ansible.builtin.find:

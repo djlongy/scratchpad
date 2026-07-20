@@ -12,10 +12,17 @@ ansible/
 ├── roles/                   # portable roles (each has its own README.md)
 │   ├── common/                  # function-like task helpers (tasks_from: …)
 │   ├── firewalld/               # XML-template firewalld service + zone management
-│   ├── vault_container/         # 3-node HashiCorp Vault Raft HA on Docker
+│   ├── hashicorp_vault_container/  # auto-scaling Vault (standalone or Raft HA) on Docker
+│   ├── hashicorp_vault/            # alias of hashicorp_vault_container
+│   ├── freeipa_client/          # FreeIPA enrol + certmonger service certs
+│   ├── docker/                  # Docker CE install
+│   ├── storage/                 # disk → LVM/plain → mount
+│   ├── baseline/                # OS hardening baseline
+│   ├── vsphere_vm/              # vCenter VM lifecycle
 │   ├── swarm_stack/             # generic Docker Swarm deploy engine
 │   └── mattermost_swarm/        # wrapper: Mattermost via swarm_stack
 ├── playbooks/               # entry-point playbooks
+│   ├── vault_solo_e2e.yml       # full daisy-chain: VM → baseline → FreeIPA/TLS → Vault
 │   ├── vault_cluster.yml
 │   ├── mattermost_swarm.yml
 │   ├── mattermost_freeipa_prep.yml
@@ -24,6 +31,7 @@ ansible/
 │   ├── audit_multi_play.yml
 │   └── audit_semaphore.yml
 ├── inventories/             # one subdir per environment / source
+│   ├── vaultsolo/               # single-node Vault E2E lab inventory
 │   ├── vault/                   # 3-node vault cluster lab inventory
 │   ├── swarm/                   # docker swarm bootstrap inventory
 │   └── vmware/                  # vSphere dynamic inventory configs
@@ -47,9 +55,12 @@ not Ansible-specific.
 
 | Role | What it does |
 |---|---|
+| [`hashicorp_vault_container`](roles/hashicorp_vault_container/) | Auto-scaling containerized HashiCorp Vault (1 node = standalone Raft; odd N ≥ 3 = HA). Self-signed or FreeIPA/certmonger TLS, Shamir unseal, multi-tenant KV, ACL policies, LDAP/userpass/AppRole, PKI mount, audit, backup timer, rename self-heal (`peers.json`). |
+| [`hashicorp_vault`](roles/hashicorp_vault/) | Alias of `hashicorp_vault_container` (same code; kept for older docs/inventories). |
+| [`freeipa_client`](roles/freeipa_client/) | FreeIPA client enrol + certmonger service certificates (with DNS/principal drift self-heal). |
+| [`docker`](roles/docker/), [`storage`](roles/storage/), [`baseline`](roles/baseline/), [`firewalld`](roles/firewalld/), [`yum_repos`](roles/yum_repos/), [`vsphere_vm`](roles/vsphere_vm/), [`ssh_agent_key`](roles/ssh_agent_key/) | Supporting daisy-chain roles for a full Vault host build. |
 | [`audit_logging`](roles/audit_logging/) | Portable run-audit logging for `ansible-playbook`. Buffers play metadata (`accumulate`) and ships one JSON record to file / syslog / rsyslog / Fluentd / Elasticsearch / Splunk HEC / CloudWatch. List under `roles:` with `audit_logging_mode` — no `post_tasks` required. |
 | [`common`](roles/common/) | Function-like task helpers callable as `tasks_from:` — passphrase generation, vault-backed secret bootstrapping, fapolicyd rule deploy. (Legacy audit helpers still present; prefer the standalone `audit_logging` role.) |
-| [`vault_container`](roles/vault_container/) | 3-node HashiCorp Vault Raft HA cluster as a Docker container. Self-signed TLS, Shamir unseal, KV v2 mounts, ACL policies, optional FreeIPA LDAP auth. |
 | [`swarm_stack`](roles/swarm_stack/) | Generic engine for deploying any application stack onto an existing Docker Swarm. Encrypted overlays, NFS volumes, content-versioned secrets/configs, redeploy + teardown via tags. |
 | [`mattermost_swarm`](roles/mattermost_swarm/) | Wrapper over `swarm_stack` for Mattermost (postgres + app), with optional FreeIPA-backed LDAP/SSO. Worked example of the wrapper pattern. LDAP off = a minimal Mattermost deploy. |
 

@@ -74,8 +74,9 @@ Opt-in (distro-agnostic — enabling a capability never surprises an existing fl
 
 ```yaml
 baseline_network_manage: true
-# interface auto-detected; override if needed:
-baseline_network_interface: ens192
+# Device auto-resolved: baseline_network_interface → connection_name →
+# primary_interface (environment facts) → ansible_default_ipv4.interface
+# baseline_network_interface: ens224   # only if you must force a non-primary NIC
 baseline_network_ip4: "192.0.2.50/24"     # default {{ ansible_host }}/prefix
 baseline_network_gateway: "192.0.2.1"     # default .1 of the host /24
 baseline_network_dns: ["192.0.2.53"]
@@ -230,7 +231,7 @@ lives in the crypto phase above. `setroubleshoot` is enforced **absent** via
 
 Point the host's package managers + environment at a Squid proxy for general
 internet egress (configured **before** repos/packages). Internal mirrors
-(Artifactory) and the estate domain bypass via `no_proxy`:
+(Artifactory) and the environment domain bypass via `no_proxy`:
 
 ```yaml
 baseline_proxy_url: "http://squid.example.com:3128"
@@ -266,7 +267,7 @@ baseline_bastion_monitoring_ips: ["192.0.2.10"]      # Prometheus source IP(s)
 baseline_bastion_exporter_ports: ["9100/tcp"]
 baseline_bastion_masquerade: true           # SNAT so backends can reply
 baseline_bastion_backend_subnets: ["198.51.100.0/24 192.0.2.1"]  # optional routes
-baseline_bastion_route_conn: "ens192"
+baseline_bastion_route_conn: "{{ primary_interface }}"  # NM profile for static routes
 ```
 
 ## Observability / security agents

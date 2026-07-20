@@ -140,7 +140,7 @@ Minimal — provision + mount a fresh data disk at `/opt`:
             mount: /opt
 ```
 
-Modeling a typical estate (grow-only root `/var`, data `/opt`, plain `/data`):
+Modeling a typical environment (grow-only root `/var`, data `/opt`, plain `/data`):
 
 ```yaml
 storage_volumes:
@@ -173,15 +173,14 @@ storage_volumes:
     provision: true
 ```
 
-Named profile:
+Named profile — environment catalog lives in `playbooks/group_vars/all/storage.yml`.
+Inventories only select a key (do not redefine `storage_profiles` in host_vars;
+list/dict vars replace, they do not merge):
 
 ```yaml
-storage_profile: docker
-storage_profiles:
-  docker:
-    - name: docker
-      vg: vg_data
-      lv: lv_docker
-      mount: /var/lib/docker
-      provision: true
+storage_profile: vault          # or freeipa, swarm_data, opt, opt_50g, …
+storage_provision: true         # first-time create
 ```
+
+Common keys: `sys_var`, `opt`, `opt_50g`, `swarm_data`, `vault`, `freeipa`,
+`throwaway`, `docker`. Add new presets to the environment catalog, not per inventory.

@@ -82,7 +82,30 @@
     state: present
   become: true                           # ipaclient writes /etc/ipa, sssd and krb5 config — root-only
 
+# kinit -k FIRST, from this host's own keytab. The upstream ipaclient role ends
+# enrolment with its own "Cleanup leftover ccache" task, which destroys the admin
+# TGT obtained during the join — so ipa-certupdate cannot rely on an inherited
+# ccache and fails "No credentials were supplied ... Preauthentication failed".
+# The host principal in /etc/krb5.keytab is always available post-enrolment and
+# needs no admin rights, so this works on both a fresh join and a re-run.
 - name: Refresh local IPA certificate stores (ipa-certupdate)
-  ansible.builtin.command: ipa-certupdate
+  ansible.builtin.shell:                 # shell: needs && to chain kinit into ipa-certupdate
+    cmd: kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }} && ipa-certupdate
   become: true                           # writes to the system NSS/CA trust store — root-only
   changed_when: false
+
+# Enrolment reconfigures DNS/NetworkManager and may change the hostname, which
+# resets the network path underneath the multiplexed SSH master. The master is
+# not torn down immediately — it dies once ServerAlive keepalives go unanswered
+# for their full budget, so the play fails on some UNRELATED task minutes later
+# with "Data could not be sent to remote host". Dropping the connection makes
+# the reconnect explicit instead of a delayed, misattributed failure.
+# (Restarting sshd does NOT do this — established sessions are forked children
+# and survive; it is the network path, not the daemon.)
+#
+# MUST come AFTER ipa-certupdate. Enrolment's Kerberos TGT lives in a
+# SESSION-scoped ccache (KEYRING:/KCM: on EL9), so dropping the connection
+# destroys it — ipa-certupdate then dies with "No credentials were supplied ...
+# Preauthentication failed".
+- name: Reconnect after enrolment reset the network path
+  ansible.builtin.meta: reset_connection

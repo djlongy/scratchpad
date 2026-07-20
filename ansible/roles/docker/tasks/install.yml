@@ -6,6 +6,7 @@
 # Portable: EL (RHEL/AlmaLinux) + Debian/Ubuntu.
 
 - name: Install Docker CE on EL
+  become: true  # root: dnf package install + repo/GPG-key configuration
   when: ansible_os_family == "RedHat"
   block:
     - name: Install Docker CE dnf prerequisites
@@ -66,6 +67,7 @@
         state: present
 
 - name: Install Docker CE on Debian/Ubuntu
+  become: true  # root: apt package install + repo/GPG-key configuration
   when: ansible_os_family == "Debian"
   block:
     - name: Install Docker CE apt prerequisites

@@ -43,7 +43,7 @@ Tiny copy-pasteable minimal example (DRS cluster, Vault-backed credentials):
 # group_vars/vmware_vms.yml — the shared minimum
 vsphere_vm_server: "vcenter.example.com"
 vsphere_vm_datacenter: "Datacenter"
-vsphere_vm_vault_secret: "secret/data/vsphere/vcenter"   # holds the vCenter password
+vsphere_vm_vault_secret: "kv-ops/platform/vsphere/runtime"   # holds the vCenter password
 # vsphere_vm_username / vsphere_vm_password_field default to administrator@vsphere.local / password
 vsphere_vm_cluster: "Cluster"          # or: vsphere_vm_esxi_host + vsphere_vm_resource_pool
 vsphere_vm_datastore: "datastore1"
@@ -106,14 +106,14 @@ phase handles this automatically:
    whichever pass lands just after the async guest customization finishes makes
    the reconnect stick;
 3. the total wait is **bounded** — `connect_passes × connect_pass_retries ×
-   connect_pass_delay` seconds (default 8 × 5 × 10 = ~400 s max) — and reports a
+   connect_pass_delay` seconds (default 8 × 10 × 10 = ~800 s max) — and reports a
    clear message instead of hanging if a NIC is genuinely misconfigured.
 
 | Var | Default | Purpose |
 |---|---|---|
 | `vsphere_vm_connect_nics` | `true` | reconnect NICs after build |
 | `vsphere_vm_connect_passes` | `8` | reconnect+poll cycles before giving up |
-| `vsphere_vm_connect_pass_retries` | `5` | IP polls per pass |
+| `vsphere_vm_connect_pass_retries` | `10` | IP polls per pass |
 | `vsphere_vm_connect_pass_delay` | `10` | seconds between polls within a pass |
 | `vsphere_vm_create_retries` | `3` | retry transient vCenter errors |
 | `vsphere_vm_create_delay` | `15` | seconds between create retries |
@@ -136,7 +136,7 @@ phase handles this automatically:
 ```yaml
 # group_vars / play vars
 vsphere_vm_server: "vcenter.example.com"
-vsphere_vm_vault_secret: "secret/data/vsphere/vcenter"
+vsphere_vm_vault_secret: "kv/data/platform/vsphere/vcenter/runtime"
 vsphere_vm_datacenter: "Datacenter"
 vsphere_vm_esxi_host: "192.0.2.11"
 vsphere_vm_resource_pool: "/Datacenter/host/192.0.2.11/Resources"
@@ -368,8 +368,8 @@ but **not sufficient** — GOSC reverts it after the clone returns. That is why 
 bounded **multi-pass** reconnect over all managed VMs (the pass that lands just after customization
 finishes makes it stick). If you still see a disconnected NIC: `govc device.connect -vm <name> ethernet-0`.
 
-**Root cause + permanent fix:** a vSphere GOSC customization spec races the NIC's
-"Connect at power on" flag on a freshly cloned VM, leaving the interface disconnected.
+**Root cause + permanent fix (documented once, cross-environment):** knowledge base →
+`60-Domains/Infrastructure/vSphere — Cloned VM NIC Disconnects Under GOSC; Use cloud-init GuestInfo.md`.
 The durable cure — **now implemented** as `vsphere_vm_provision_via_guestinfo` (see next section) —
 is to stop using GOSC and drive first-boot config via the cloud-init VMware GuestInfo datasource.
 
@@ -412,7 +412,7 @@ the static hostname + network. Verified end-to-end (NIC `Connected: true` throug
 
 **Requires a GuestInfo-ready template** (Packer-baked): cloud-init with `datasource_list: [VMware, OVF,
 None]`, `allow_raw_data: true`, and `disable_vmware_customization: true`. Verify on a built host with
-`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every homelab VLAN has
+`cloud-init query platform` → must return `vmware` (else it silently DHCPs — and every lab VLAN has
 DHCP, so that means an IP-conflict risk; pick target IPs not already allocated in inventory).
 
 **Multi-NIC** — every entry in a guest's `networks` becomes its own cloud-init ethernet, keyed by an
@@ -423,7 +423,7 @@ The first NIC with a gateway (else NIC 0) carries the resolvers.
 ```yaml
 # host_vars/monster-01.yml — a (deliberately gnarly) 3-NIC guest
 vsphere_vm_networks:
-  - {name: "VLAN10-APP",     interface: ens192, ip: 10.0.0.60, netmask: 255.255.255.0, gateway: 10.0.0.1}
+  - {name: "VLAN10-MGT",     interface: ens192, ip: 10.0.10.60, netmask: 255.255.255.0, gateway: 10.0.10.1}
   - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.60,    netmask: 255.255.255.0}   # data plane, no gateway
   - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.60,    netmask: 255.255.255.0}   # ingress plane
 ```

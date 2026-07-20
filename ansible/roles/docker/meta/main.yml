@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: docker
-  author: longy
+  author: lab
   description: >-
     Install and configure Docker CE on EL (RHEL/AlmaLinux) and Debian/Ubuntu —
     internet-connected or air-gapped (Artifactory / custom mirror). Renders a

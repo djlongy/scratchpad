@@ -11,14 +11,7 @@ Install and configure **Docker CE** on EL (RHEL/AlmaLinux 8/9) and Debian/Ubuntu
 - Ensures `/etc/docker` and the data-root directory exist with correct permissions
 - Enables and starts the `docker` systemd service
 - Optionally adds users to the `docker` group for unprivileged socket access
-
-## TL;DR
-
-**Most common: re-converge a host.** Set the repo/registry vars in group_vars (air-gap) or accept the defaults, then run the role — every phase is idempotent.
-
-```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml [--tags configure] [--limit docker_hosts]
-```
+- Optionally provisions a dedicated service account (e.g. `svc-docker`), owns the data-root with it, and grants the docker group write ACLs on a shared path (e.g. `/opt`)
 
 ## Tagging model
 
@@ -28,7 +21,7 @@ Follows the **refinement** model: a no-tag run executes every phase. Tags narrow
 |---|---|
 | `install` | Repo config, GPG key import, package install |
 | `configure` | `daemon.json`, data-root directory, service enable/start |
-| `users` | Add `docker_users` to the docker group |
+| `users` | Docker-group members, optional service account, optional shared-path ACLs |
 
 ## Minimal usage
 
@@ -126,7 +119,31 @@ Rendered daemon.json:
 | `docker_live_restore` | `true` | Keep containers running during daemon restart. Set `false` in swarm mode. |
 | `docker_default_ulimits` | `{}` | Default ulimits for all containers. Empty = omitted. |
 | `docker_extra_daemon_options` | `{}` | Arbitrary extra daemon.json keys merged last (wins over all others). |
-| `docker_users` | `[]` | Users to add to the `docker` group. Phase skipped when empty. |
+| `docker_users` | `[]` | Users to add to the `docker` group. |
+| `docker_service_user` | `""` | Optional service account (e.g. `svc-docker`). Empty = none created. |
+| `docker_service_user_shell` | `/bin/bash` | Login shell for the service account. |
+| `docker_service_user_system` | `true` | Create the service account as a system user. |
+| `docker_service_user_groups` | `[docker, systemd-journal, adm]` | Supplementary groups for the service account. |
+| `docker_manage_data_dir_owner` | `false` | Recursively chown `docker_data_root` to the service account. |
+| `docker_data_dir_mode` | `0775` | Mode for `docker_data_root` when ownership is managed. |
+| `docker_manage_opt_acl` | `false` | Apply docker-group ACLs on `docker_opt_acl_path`. |
+| `docker_opt_acl_path` | `/opt` | Shared path to receive docker-group ACLs. |
+
+> The `users` phase runs when **any** of `docker_users`, `docker_service_user`, or
+> `docker_manage_opt_acl` is set; otherwise it is skipped. This absorbs the former
+> standalone `docker_user` role — set `docker_service_user: svc-docker` +
+> `docker_manage_opt_acl: true` to reproduce its behaviour.
+
+## Service account + shared /opt example
+
+```yaml
+# inventories/<env>/group_vars/docker_hosts.yml
+docker_service_user: svc-docker            # hyphenated, matches Vault entity naming
+docker_manage_data_dir_owner: true         # svc-docker owns /opt/docker
+docker_manage_opt_acl: true                # docker group gets rwx ACLs on /opt
+docker_users:
+  - ansible                                # automation user gets socket access
+```
 
 ## Relationship to docker_swarm
 

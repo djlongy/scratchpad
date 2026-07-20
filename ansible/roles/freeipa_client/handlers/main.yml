@@ -4,3 +4,13 @@
     name: sssd
     state: restarted
   become: true
+
+# fapolicyd caches its trust db in memory, so a newly trusted file is not
+# executable until the daemon picks it up. The unit reports CanReload=no, and a
+# restart would briefly drop enforcement on a security daemon, so notify the
+# running daemon to refresh in place instead.
+- name: Update the fapolicyd trust database
+  ansible.builtin.command:
+    cmd: fapolicyd-cli --update
+  changed_when: true
+  become: true

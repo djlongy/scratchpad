@@ -3,6 +3,7 @@
 # Render daemon.json, ensure /etc/docker and data-root exist, enable service.
 
 - name: Ensure /etc/docker directory exists
+  become: true  # root: creates system config dir /etc/docker
   ansible.builtin.file:
     path: /etc/docker
     state: directory
@@ -11,6 +12,7 @@
     mode: "0755"
 
 - name: Ensure Docker data-root directory exists
+  become: true  # root: creates the docker data-root
   ansible.builtin.file:
     path: "{{ docker_data_root }}"
     state: directory
@@ -19,6 +21,7 @@
     mode: "0710"
 
 - name: Render /etc/docker/daemon.json
+  become: true  # root: writes /etc/docker/daemon.json
   ansible.builtin.template:
     src: daemon.json.j2
     dest: /etc/docker/daemon.json
@@ -29,6 +32,7 @@
   notify: Restart docker
 
 - name: Enable and start docker service
+  become: true  # root: manages the docker systemd unit
   ansible.builtin.systemd:
     name: docker
     state: started

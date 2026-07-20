@@ -25,7 +25,13 @@ vsphere_vm_validate_certs: false               # labs use self-signed vCenter ce
 # vsphere_vm_cluster: "Cluster"               # OR vsphere_vm_esxi_host for standalone
 # vsphere_vm_esxi_host: "192.0.2.11"          # standalone host (no DRS cluster)
 # vsphere_vm_resource_pool: "Resources"       # pool NAME (not a path); standalone host default is "Resources"
-vsphere_vm_folder: "/vm"                       # inventory folder for new VMs
+# Inventory folder for new VMs, RELATIVE to this datacenter's VM root — the path
+# you see under "VMs and Templates", with no leading slash and no /<DC>/vm prefix.
+# Empty = the VM root itself. Nested paths are created whole ("swarm/alma").
+# The datacenter is NOT repeated here; it comes from vsphere_vm_datacenter, and
+# spec.yml derives both the absolute and relative forms the two vSphere modules
+# want. See spec.yml for why both exist.
+vsphere_vm_folder: ""                          # e.g. "swarm/alma"; "" = DC VM root
 vsphere_vm_datastore: ""                       # default datastore for clones
 
 # ── Per-VM hardware defaults (override per host/group) ───────────────────────
@@ -89,11 +95,11 @@ vsphere_vm_ssh_timeout: 300                       # max seconds to wait for gues
 vsphere_vm_connect_nics: true                    # false = trust vCenter, skip the whole phase
 vsphere_vm_create_retries: 3                     # retry transient vCenter create/gather errors
 vsphere_vm_create_delay: 15
-# Multi-pass reconnect cadence. Default: 8 passes x (5 polls x 10s) = up to 400s
-# total, re-asserting every disconnected NIC about once per ~60s — tight enough
+# Multi-pass reconnect cadence. Default: 8 passes x (10 polls x 10s) = up to 800s
+# total, re-asserting every disconnected NIC about once per ~100s — tight enough
 # to catch the customization re-disconnect quickly.
 vsphere_vm_connect_passes: 8                     # reconnect+wait cycles before giving up
-vsphere_vm_connect_pass_retries: 5               # IP polls per pass
+vsphere_vm_connect_pass_retries: 10              # IP polls per pass
 vsphere_vm_connect_pass_delay: 10                # seconds between polls within a pass
 
 # ── Provisioning mode: GOSC (default) vs cloud-init GuestInfo ─────────────────
@@ -106,7 +112,8 @@ vsphere_vm_connect_pass_delay: 10                # seconds between polls within 
 # setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
 # becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
 # (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the role README for the NIC-disconnect root cause and fix.
+# no new inventory. See the knowledge base note "vSphere — Cloned VM NIC Disconnects
+# Under GOSC; Use cloud-init GuestInfo" and the role README.
 #
 # REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
 # (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
@@ -121,7 +128,7 @@ vsphere_vm_provision_via_guestinfo: false
 # so a single-NIC guest needs nothing extra. Override per NIC with `interface:`
 # when the template uses different names (eth0, ens160, …):
 #   networks:
-#     - {name: "VLAN10-APP",     interface: ens192, ip: 192.0.2.10,  netmask: 255.255.255.0, gateway: 192.0.2.1}
+#     - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.10,  netmask: 255.255.255.0, gateway: 192.0.2.1}
 #     - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.10,  netmask: 255.255.255.0}   # no gateway
 #     - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.10,  netmask: 255.255.255.0}
 # The primary NIC (first one with a gateway; else NIC 0) carries the resolvers.
@@ -186,8 +193,8 @@ vsphere_vm_dns: []                            # DNS servers for guest customizat
 # each category + tag exists, then associates them. Set vsphere_vm_tags per
 # host/group.
 #   vsphere_vm_tags: {Tenant: prod, Environment: alma}
-# The VM folder (vsphere_vm_folder / item.folder) may be a NESTED path — e.g.
-# /Datacenter/vm/prod/alma — the role creates the whole tree first (one call).
+# The VM folder (vsphere_vm_folder) may be a NESTED path — e.g. prod/alma — the
+# role creates the whole tree first (one call).
 vsphere_vm_tags: {}
 
 # ── Destroy safety ───────────────────────────────────────────────────────────

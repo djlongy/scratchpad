@@ -1,0 +1,32 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# SIGHUP the Vault container so it re-reads the published listener cert.
+# Invoked by vault-tls-reload.path when vault.crt is rewritten. Runs as
+# systemd (init_t), NOT as a certmonger child — certmonger_t cannot talk to
+# the docker socket under SELinux enforcing.
+#
+# Reload, never restart: a restart seals Vault when auto-unseal is off.
+
+set -euo pipefail
+
+CONTAINER="{{ hashicorp_vault_name }}"
+
+log() { logger -t vault-tls-reload -s -- "$*"; }
+
+if ! command -v docker >/dev/null 2>&1; then
+  log "docker not on PATH; cannot SIGHUP $CONTAINER"
+  exit 0
+fi
+
+# docker inspect format string must not be expanded by this shell OR by Jinja.
+# shellcheck disable=SC2016
+{% raw %}
+running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)"
+{% endraw %}
+if [ "$running" = "true" ]; then
+  docker kill --signal=HUP "$CONTAINER" >/dev/null
+  log "sent SIGHUP to $CONTAINER"
+else
+  log "$CONTAINER not running, skipped SIGHUP"
+fi

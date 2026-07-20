@@ -153,3 +153,12 @@ freeipa_client_offline_resilient: true
 freeipa_client_service_certs: []
 # ipa-getcert ships with ipa-client (installed at enrol); certmonger is the daemon.
 freeipa_client_cert_packages: [certmonger, ipa-client]
+
+# certmonger runs a `postsave` hook immediately on first issue — usually BEFORE
+# the role that owns that hook has run, since that role is typically the one
+# consuming the cert this role issues. When true, a no-op placeholder is seeded
+# at each absolute postsave command path so that first execution cannot fail.
+# Never overwrites an existing file, so the real hook wins once installed and
+# genuine post-save failures stay loud. Set false if you require the first
+# post-save to fail hard when its command is missing.
+freeipa_client_seed_postsave_stub: true

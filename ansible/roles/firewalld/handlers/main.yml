@@ -4,3 +4,18 @@
   ansible.builtin.command: firewall-cmd --reload
   changed_when: true
   when: firewalld_reload | default(true)
+  notify: Reconnect after firewalld reload
+
+# `firewall-cmd --reload` rebuilds the ruleset and flushes connection tracking,
+# which kills the ESTABLISHED SSH session Ansible is running over. The host stays
+# healthy and accepts NEW connections instantly, so the play dies later with the
+# misleading "UNREACHABLE: Data could not be sent to remote host" on whatever
+# task happens to be running when the master is finally declared dead.
+#
+# Chained off the reload handler rather than sitting in tasks/main.yml so the
+# reconnect happens ONLY when the reload actually fired. `when:` cannot gate this
+# directly — ansible-core ignores conditionals on `meta: reset_connection` (see
+# strategy/__init__.py: "These don't support 'when' conditionals") — so a
+# task-level reset runs on every converge, including no-change runs.
+- name: Reconnect after firewalld reload
+  ansible.builtin.meta: reset_connection

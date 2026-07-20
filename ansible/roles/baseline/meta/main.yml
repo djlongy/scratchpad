@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: baseline
-  author: user
+  author: lab
   description: >-
     Distro-agnostic SOE Linux baseline, ordered for speed and idempotence:
     identity, storage (via the storage role), CA trust, outbound proxy (Squid

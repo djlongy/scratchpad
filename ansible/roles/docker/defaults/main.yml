@@ -126,3 +126,31 @@ docker_extra_daemon_options: {}
 #     - deploy
 #     - ansible
 docker_users: []
+
+# Optional dedicated service account for owning/running Docker workloads.
+# Empty (the default) = no service account is created — existing hosts unaffected.
+# Set to a name to have the role create a system user in the docker group.
+# Service-account names are hyphenated by convention (e.g. svc-docker), matching
+# the Vault entity naming scheme.
+#   docker_service_user: svc-docker
+docker_service_user: ""
+docker_service_user_shell: /bin/bash
+docker_service_user_system: true
+
+# Supplementary groups the service account joins (each must already exist on the
+# host; `docker` is created by the Docker install).
+docker_service_user_groups:
+  - docker
+  - systemd-journal
+  - adm
+
+# Recursively chown docker_data_root to the service account so it can manage
+# volumes and bind mounts there. Only applies when docker_service_user is set.
+docker_manage_data_dir_owner: false
+docker_data_dir_mode: "0775"
+
+# Apply recursive + default group ACLs so the docker group can write under a
+# shared path (typically /opt) without recursively chowning the parent.
+# Off by default; set true (and optionally override the path) to enable.
+docker_manage_opt_acl: false
+docker_opt_acl_path: /opt

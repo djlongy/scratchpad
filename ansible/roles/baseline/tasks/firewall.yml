@@ -51,7 +51,10 @@
 
 - name: Firewall | Resolve the interface to bind
   ansible.builtin.set_fact:
-    _baseline_fw_iface: "{{ baseline_firewall_interface | default(ansible_default_ipv4.interface, true) }}"
+    _baseline_fw_iface: >-
+      {{ baseline_firewall_interface
+         | default(primary_interface, true)
+         | default(ansible_default_ipv4.interface, true) }}
 
 - name: Firewall | Assign the primary interface to its zone
   become: true  # root: firewalld module reconfigures the firewall

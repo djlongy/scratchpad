@@ -171,4 +171,54 @@ argument_specs:
         default: []
         description: >-
           Users to add to the docker group (grants unprivileged socket access).
-          The users phase is skipped entirely when this list is empty.
+
+      docker_service_user:
+        type: str
+        default: ""
+        description: >-
+          Optional dedicated service account for owning/running Docker
+          workloads. Empty (default) creates no account. When set, the role
+          creates a system user in the docker group. Names are hyphenated by
+          convention (e.g. svc-docker), matching the Vault entity scheme.
+
+      docker_service_user_shell:
+        type: str
+        default: "/bin/bash"
+        description: "Login shell for the service account (docker_service_user)."
+
+      docker_service_user_system:
+        type: bool
+        default: true
+        description: "Create the service account as a system user (UID < 1000)."
+
+      docker_service_user_groups:
+        type: list
+        elements: str
+        default: [docker, systemd-journal, adm]
+        description: >-
+          Supplementary groups the service account joins. Each must already
+          exist on the host; `docker` is created by the Docker install.
+
+      docker_manage_data_dir_owner:
+        type: bool
+        default: false
+        description: >-
+          Recursively chown docker_data_root to the service account. Only
+          applies when docker_service_user is set.
+
+      docker_data_dir_mode:
+        type: str
+        default: "0775"
+        description: "Mode for docker_data_root when docker_manage_data_dir_owner is enabled."
+
+      docker_manage_opt_acl:
+        type: bool
+        default: false
+        description: >-
+          Apply recursive + default docker-group ACLs on a shared path so the
+          group can write under it without recursively chowning the parent.
+
+      docker_opt_acl_path:
+        type: str
+        default: "/opt"
+        description: "Shared path to receive docker-group ACLs when docker_manage_opt_acl is true."

@@ -2,6 +2,7 @@
 # roles/docker/handlers/main.yml
 
 - name: Restart docker
+  become: true  # root: manages the docker systemd unit
   ansible.builtin.systemd:
     name: docker
     state: restarted

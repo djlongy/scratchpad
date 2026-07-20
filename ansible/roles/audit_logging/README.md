@@ -43,6 +43,22 @@ multi-play plays use `accumulate`; the final inclusion uses `ship` with backends
 `allow_duplicates: true` is set so the same play can list the role more than once
 (e.g. mid-list accumulate + final ship).
 
+## Homelab environment wiring
+
+This repo enables Splunk HEC by default for every playbook that lists the role:
+
+| Var (in `playbooks/group_vars/all/audit_logging.yml`) | Value |
+|---|---|
+| `audit_logging_backends` | `[splunk]` |
+| `audit_logging_splunk_hec_url` | `http://splunk.mgt.example.com:8088` |
+| `audit_logging_splunk_hec_token` | Vault `kv-ops/apps/splunk/runtime:hec_token` |
+| `audit_logging_splunk_validate_certs` | `false` (HTTP HEC) |
+| `audit_logging_splunk_index` | `main` |
+| `audit_logging_splunk_sourcetype` | `ansible:audit` |
+
+Playbooks accumulate per intermediate play and ship once on the final play.
+HEC path is `{{ hec_url }}/services/collector/event`.
+
 ## Usage
 
 ### Single-play — inline under `roles:` (preferred)

@@ -14,4 +14,7 @@
 - name: Import users phase
   ansible.builtin.import_tasks: users.yml
   tags: [users]
-  when: docker_users | length > 0
+  when: >-
+    docker_users | length > 0
+    or docker_service_user | length > 0
+    or docker_manage_opt_acl | bool

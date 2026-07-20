@@ -1,0 +1,144 @@
+---
+# roles/hashicorp_vault_container/tasks/renew_drill.yml
+#
+# Prove the certificate-renewal path TODAY instead of discovering it broken at
+# the first real renewal ~90 days out. Opt-in: --tags renew_drill.
+#
+# This is the acceptance test for the whole tls_onhost design, because it is the
+# ONLY check that exercises the hook the way a real renewal does — as a child of
+# certmonger, in certmonger's own security context (certmonger_t under SELinux,
+# and under fapolicyd's trust db). Ansible invoking the same script proves
+# nothing about that path: Ansible runs it as unconfined root over sshd.
+#
+# Forces a real re-issue, then asserts in one pass:
+#   1. certmonger issued a genuinely NEW certificate (serial changed)
+#   2. the post-save hook published it (served fingerprint == on-disk)
+#   3. Vault reloaded via SIGHUP WITHOUT sealing (health still unsealed)
+#
+# A restart would also update the served cert — and seal Vault, since
+# auto-unseal is off by default. Asserting sealed=false is what distinguishes
+# "reloaded" from "restarted", so do not relax it.
+
+- name: "Drill | Assert this host uses certmonger-issued TLS"
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_tls_onhost | bool
+    fail_msg: >-
+      renew_drill only applies to hashicorp_vault_tls_onhost (certmonger) mode.
+      A self-signed deployment has no renewal path to exercise.
+    quiet: true
+
+# Probe the published address, NOT 127.0.0.1. Docker publishes the listener via
+# docker-proxy on 0.0.0.0, and loopback is not reachable through it here — a
+# 127.0.0.1 probe gets ECONNREFUSED even though Vault is healthy. Using the FQDN
+# also exercises SNI and hostname matching against the certificate, which a bare
+# IP would not. Prefer canonical_fqdn (OS/cert identity) over inventory_hostname
+# (vCenter object name) — same rule as verify.yml.
+- name: "Drill | Resolve the address to probe"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_probe_host: >-
+      {{ canonical_fqdn
+         if (canonical_fqdn is defined and (canonical_fqdn | string | length) > 0)
+         else ((inventory_hostname ~ '.' ~ hashicorp_vault_domain)
+               if (hashicorp_vault_domain | length > 0)
+               else ansible_host) }}
+
+- name: "Drill | Record the serial Vault serves BEFORE renewal"
+  become: true  # root: queries the local listener
+  ansible.builtin.shell:
+    cmd: >-
+      echo | openssl s_client -connect {{ _hashicorp_vault_probe_host }}:{{ hashicorp_vault_api_port }} 2>/dev/null
+      | openssl x509 -noout -serial
+  register: _hashicorp_vault_drill_serial_before
+  changed_when: false
+
+- name: "Drill | Force certmonger to re-issue the certificate"
+  become: true  # root: certmonger's tracking db
+  ansible.builtin.command:
+    cmd: "getcert resubmit -f {{ hashicorp_vault_tls_onhost_cert }} -w"
+  changed_when: true
+
+# -w should block until issuance, but poll anyway: the post-save hook runs
+# asynchronously after the cert lands, and the drill must not race it.
+- name: "Drill | Wait for certmonger to return to MONITORING"
+  become: true  # root: certmonger's tracking db
+  ansible.builtin.command:
+    cmd: "getcert list -f {{ hashicorp_vault_tls_onhost_cert }}"
+  register: _hashicorp_vault_drill_status
+  until: "'status: MONITORING' in _hashicorp_vault_drill_status.stdout"
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: "Drill | Fingerprint + serial of the freshly issued certificate"
+  become: true  # root: reads the root-owned on-host cert
+  ansible.builtin.command:
+    cmd: "openssl x509 -in {{ hashicorp_vault_tls_onhost_cert }} -noout -fingerprint -sha256 -serial"
+  register: _hashicorp_vault_drill_disk
+  changed_when: false
+
+# Serial ALONE, so it can be compared like-for-like against the pre-renewal
+# serial. Comparing the combined fingerprint+serial blob against a serial-only
+# string silently always passes — a broken renewal then reports success, which
+# is the exact failure this drill exists to catch.
+- name: "Drill | Serial of the freshly issued certificate (comparable form)"
+  become: true  # root: reads the root-owned on-host cert
+  ansible.builtin.command:
+    cmd: "openssl x509 -in {{ hashicorp_vault_tls_onhost_cert }} -noout -serial"
+  register: _hashicorp_vault_drill_serial_after
+  changed_when: false
+
+- name: "Drill | Fingerprint + serial of what Vault now SERVES"
+  become: true  # root: queries the local listener
+  ansible.builtin.shell:
+    cmd: >-
+      echo | openssl s_client -connect {{ _hashicorp_vault_probe_host }}:{{ hashicorp_vault_api_port }} 2>/dev/null
+      | openssl x509 -noout -fingerprint -sha256 -serial
+  register: _hashicorp_vault_drill_served
+  until: "(_hashicorp_vault_drill_served.stdout | trim) == (_hashicorp_vault_drill_disk.stdout | trim)"
+  retries: 12
+  delay: 5
+  changed_when: false
+  failed_when: false
+
+- name: "Drill | Read Vault health after the reload"
+  become: true  # root: queries the local listener
+  ansible.builtin.uri:
+    url: "https://{{ _hashicorp_vault_probe_host }}:{{ hashicorp_vault_api_port }}/v1/sys/health"
+    validate_certs: false
+    status_code: [200, 429, 473, 501, 503]
+  register: _hashicorp_vault_drill_health
+
+- name: "Drill | Assert the renewal propagated and Vault never sealed"
+  ansible.builtin.assert:
+    that:
+      # 1. a genuinely NEW certificate — strict inequality on the serial alone.
+      #    Anything looser (substring/membership across differently-shaped
+      #    strings) passes even when the certificate never changed.
+      - (_hashicorp_vault_drill_serial_after.stdout | trim) != (_hashicorp_vault_drill_serial_before.stdout | trim)
+      # 2. the post-save hook published it to the container certs dir
+      - (_hashicorp_vault_drill_served.stdout | trim) == (_hashicorp_vault_drill_disk.stdout | trim)
+      # 3. SIGHUP reloaded in place — a restart would have sealed it
+      - not (_hashicorp_vault_drill_health.json.sealed | bool)
+      - _hashicorp_vault_drill_health.json.initialized | bool
+    fail_msg: >-
+      RENEWAL PATH BROKEN — this is the failure that would otherwise appear ~90
+      days from now with no warning.
+        before (served): {{ _hashicorp_vault_drill_serial_before.stdout | trim }}
+        after  (serial): {{ _hashicorp_vault_drill_serial_after.stdout | trim }}
+        after  (disk):   {{ _hashicorp_vault_drill_disk.stdout | trim }}
+        after  (served): {{ _hashicorp_vault_drill_served.stdout | trim }}
+        sealed:          {{ _hashicorp_vault_drill_health.json.sealed | default('unknown') }}
+      If the serial did NOT change, certmonger did not actually re-issue —
+      check whether the CA returned the existing certificate rather than
+      minting a new one, and inspect `getcert list` CA-error output.
+      If disk changed but served did not, certmonger's post-save hook did not
+      publish — check `journalctl -t vault-tls-sync` and for AVC denials
+      (`ausearch -m avc -ts recent`): the hook runs as certmonger_t at renewal,
+      not as unconfined root the way Ansible runs it.
+      If sealed is true, the container RESTARTED instead of reloading; SIGHUP is
+      required precisely because a restart seals Vault when auto-unseal is off.
+    success_msg: >-
+      Renewal proven end to end: certmonger re-issued, the post-save hook
+      published the new chain, and Vault reloaded via SIGHUP without sealing.
+    quiet: true

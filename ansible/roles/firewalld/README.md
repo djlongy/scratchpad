@@ -67,7 +67,7 @@ firewalld_zones:
     services: [http, https]
 
 firewalld_source_zone_bindings:
-  - { zone: trusted-mgmt, source: 10.0.0.0/24 }
+  - { zone: trusted-mgmt, source: 10.0.10.0/24 }
   - { zone: dmz-ingress,  source: 0.0.0.0/0 }
 ```
 
@@ -118,24 +118,27 @@ Full schema in `defaults/main.yml`. Key options:
 | `firewalld_reload` | `true` | Reload after XML changes |
 | `firewall_rules` | `[]` | **Legacy** — accepts `"22/tcp/ssh"` or `{port,protocol,service}` |
 
-## Back-compat with `firewall_rules`
+## Back-compat with `firewall_rules` (role only — inventory migrated)
 
-Several inventories (`prod/group_vars/all.yml`, multiple `host_vars/*.yml`) still
-use the old `firewall_rules` variable. Both formats are supported transparently:
+Inventory and service roles use `firewalld_services` / `firewalld_zones` /
+`firewalld_source_zone_bindings`. The legacy `firewall_rules` list remains
+supported **inside this role only** for transitional callers; do not reintroduce
+it in group_vars or host_vars.
+
+Legacy formats still accepted by the role (when `firewall_rules` is non-empty):
 
 ```yaml
-# String form (older — appears in group_vars)
+# String form
 firewall_rules:
   - "22/tcp/ssh"
   - "5000-5100/tcp/elasticsearch"
 
-# Dict form (newer — appears in host_vars)
+# Dict form
 firewall_rules:
   - { port: 22, protocol: tcp, service: ssh }
 ```
 
-All entries are opened in `firewalld_default_zone` (or `public` if unset). New
-code should prefer `firewalld_services` + `firewalld_zones`.
+Entries open in `firewalld_default_zone` (or `public` if unset).
 
 ## Notes on the L2 vs L3 segregation debate
 

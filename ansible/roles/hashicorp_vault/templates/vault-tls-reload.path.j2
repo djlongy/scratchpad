@@ -1,0 +1,15 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=hashicorp_vault_container — watch published TLS cert for reloads
+Documentation=man:systemd.path(5)
+
+[Path]
+# Fires when vault-tls-sync atomically renames a new vault.crt into place.
+# That script is certmonger's post-save hook AND the role's deploy publisher;
+# certmonger_t cannot talk to the docker socket under SELinux enforcing, so
+# the SIGHUP must run as a systemd unit (init_t), not as a child of certmonger.
+PathModified={{ hashicorp_vault_certs_dir }}/vault.crt
+Unit=vault-tls-reload.service
+
+[Install]
+WantedBy=multi-user.target

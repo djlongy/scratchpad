@@ -32,6 +32,6 @@
 
 - name: Ensure the timezone is set
   community.general.timezone:
-    name: "{{ baseline_timezone | default('Australia/Sydney') }}"
+    name: "{{ baseline_timezone | default('UTC') }}"
   # root: rewrites /etc/localtime via timedatectl.
   become: true

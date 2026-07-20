@@ -30,7 +30,17 @@
         {{ {'num_cpus': vsphere_vm_cpu | int, 'memory_mb': vsphere_vm_memory | int}
            | combine(vsphere_vm_hardware) }}
       disk: "{{ vsphere_vm_disk }}"
-      folder: "{{ vsphere_vm_folder }}"
+      # The two vSphere modules want different dialects of the SAME location:
+      #   folder      → community.vmware.vmware_guest `folder:`      — ABSOLUTE
+      #                 inventory path, datacenter included
+      #   folder_path → vmware.vmware.folder `relative_path:`        — RELATIVE
+      #                 to this datacenter's VM root
+      # Both are BUILT here by concatenation from the one declared
+      # vsphere_vm_folder, never by parsing one back out of the other: a prefix
+      # strip half-matches when vsphere_vm_datacenter and the declared path
+      # disagree, and silently creates a junk nested folder tree.
+      folder: "/{{ vsphere_vm_datacenter }}/vm{{ ('/' ~ vsphere_vm_folder) if vsphere_vm_folder else '' }}"
+      folder_path: "{{ vsphere_vm_folder }}"
       datastore: "{{ vsphere_vm_datastore }}"
       state: "{{ vsphere_vm_state }}"
       networks: "{{ vsphere_vm_networks | default([_derived_nic]) }}"

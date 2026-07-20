@@ -86,7 +86,7 @@ firewalld_zones_remove: []
 
 # Bind source CIDRs to zones (L3 segregation pattern — preferred).
 # Schema:
-#   - { zone: trusted-mgmt, source: 10.0.0.0/24 }
+#   - { zone: trusted-mgmt, source: 10.0.10.0/24 }
 #   - { zone: dmz-ingress,  source: 10.0.40.0/24 }
 firewalld_source_zone_bindings: []
 
@@ -97,7 +97,7 @@ firewalld_source_zone_bindings: []
 # For the PRIMARY NIC, do NOT hardcode the name (it varies by distro on ESXi:
 # eth0 / ens192 / ens160…). Use the fleet-wide derived var instead:
 #   - { zone: internal, interface: "{{ primary_interface }}" }
-# (primary_interface is defined in inventories/global/group_vars/all/main.yml.)
+# (primary_interface is defined in playbooks/group_vars/all/all.yml.)
 firewalld_interface_zone_bindings: []
 
 # ── Back-compat: legacy firewall_rules variable ──────────────────────────────

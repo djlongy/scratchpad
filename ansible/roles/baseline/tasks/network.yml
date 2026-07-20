@@ -12,9 +12,12 @@
 
 - name: Network | Resolve the interface to configure
   ansible.builtin.set_fact:
+    # Prefer explicit overrides, then environment primary_interface (IP/facts), then default route.
     _baseline_net_iface: >-
       {{ baseline_network_interface
-         | default(connection_name | default(ansible_default_ipv4.interface, true), true) }}
+         | default(connection_name, true)
+         | default(primary_interface, true)
+         | default(ansible_default_ipv4.interface, true) }}
 
 - name: Network | Configure IPv4 address, gateway, DNS via NetworkManager
   become: true  # root: nmcli reconfigures NetworkManager connections

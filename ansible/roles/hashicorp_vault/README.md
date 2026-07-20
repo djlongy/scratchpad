@@ -1,5 +1,9 @@
 # hashicorp_vault
 
+> **Note:** This is the same role as `hashicorp_vault_container`.
+> The longer name is preferred for clarity; this directory remains as a
+> drop-in alias for older docs and inventories.
+
 Self-contained, **auto-scaling** containerized HashiCorp Vault. Runs Vault as a
 Docker container with **all state on a persistent second disk**, and derives its
 topology from the hosts in the play:
@@ -51,14 +55,13 @@ Docker, wire these ahead of it (it asserts both and fails fast otherwise):
 ## Minimal usage
 
 ```yaml
-# playbooks/vault_cluster.yml
 - name: Deploy containerized HashiCorp Vault (auto-scaling)
   hosts: vault_container          # 1 host -> standalone; 3 hosts -> Raft HA
   become: true
   roles:
     - role: storage               # provision + mount the second disk
     - role: docker                # container engine + compose plugin
-    - role: hashicorp_vault
+    - role: hashicorp_vault_container
 ```
 
 ```yaml
@@ -83,9 +86,6 @@ hashicorp_vault_tls_extra_sans:
 Run everything, or a single phase for fast iteration:
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml
-ansible-playbook ... playbooks/vault_cluster.yml --tags deploy
-ansible-playbook ... playbooks/vault_cluster.yml --list-tags
 ```
 
 > **Do not `--limit` a subset during deploy/init.** Topology is derived from the
@@ -136,7 +136,6 @@ quorum. Removal is a deliberate, `never`-gated step:
 # 1. Drop the retiring hosts from the group (survivors only in the play).
 # 2. While the cluster STILL HAS A LEADER (before powering the old nodes off):
 ansible-playbook -i inventories/<env>/hosts.yml \
-  playbooks/vault_cluster.yml --tags remove_peers
 # 3. Decommission the retired VMs. A normal run now verifies clean.
 ```
 
@@ -199,7 +198,6 @@ unit must already be deployed (`--tags backup` once first).
 ```bash
 # force a snapshot NOW and fail the play on error
 ansible-playbook -i inventories/<env>/hosts.yml \
-  playbooks/vault_cluster.yml --tags backup_now
 ```
 
 ```yaml
@@ -207,7 +205,6 @@ ansible-playbook -i inventories/<env>/hosts.yml \
 vault-backup:
   script:
     - ansible-playbook -i inventories/$ENV/hosts.yml
-        playbooks/vault_cluster.yml --tags backup_now
 ```
 
 Under the hood you can still trigger it directly with
@@ -223,9 +220,7 @@ role (the L0_lab E2E playbook also carries vsphere_vm/baseline/storage, whose
 ```bash
 # newest snapshot ACROSS ALL NODES:
 ansible-playbook -i inventories/<env>/hosts.yml \
-  playbooks/vault_cluster.yml --tags restore
 # a specific snapshot (absolute path on the leader):
-ansible-playbook ... playbooks/vault_cluster.yml --tags restore \
   -e hashicorp_vault_restore_snapshot=/opt/vault/backups/vault-snapshot-20260707-020000.snap
 ```
 
@@ -284,11 +279,11 @@ passed to Vault over stdin (never argv).
 
 ```yaml
 hashicorp_vault_ldap_enabled: true
-hashicorp_vault_ldap_url: "ldaps://10.0.0.11"
-hashicorp_vault_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=example,dc=com"
-hashicorp_vault_ldap_bindpass_vault_path: "secret/data/platform/freeipa/runtime:admin_password"
-hashicorp_vault_ldap_userdn:  "cn=users,cn=accounts,dc=example,dc=com"
-hashicorp_vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
+hashicorp_vault_ldap_url: "ldaps://10.0.10.11"
+hashicorp_vault_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=example,dc=au"
+hashicorp_vault_ldap_bindpass_vault_path: "kv-ops/data/platform/freeipa/runtime:admin_password"
+hashicorp_vault_ldap_userdn:  "cn=users,cn=accounts,dc=example,dc=au"
+hashicorp_vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=au"
 ```
 
 Result: `vault login -method=ldap username=<user>` gives a token carrying only
@@ -322,29 +317,99 @@ hashicorp_vault_audit_enabled: true
 / `tenant`. Everything else keeps Vault's own field names (`policies`,
 `token_ttl`, …) so each dict maps 1:1 to what lands in Vault.
 
-## GitLab SSO/CI & Transit signing (optional)
+## Human SSO: LDAP / FreeIPA (not GitLab OIDC)
 
-Three more off-by-default, data-driven phases (same idiom: idempotent, run once
-from the leader via `docker exec`, secrets over stdin) cover the GitLab and
-image-signing integrations:
+Human login for this role is **LDAP against FreeIPA** (`--tags ldap`). GitLab
+OIDC was intentionally removed — do not reintroduce it. Operators log in with:
+
+```bash
+vault login -method=ldap username=<uid>
+```
+
+See the **Multi-tenant policies & LDAP** section above for FreeIPA bind/group
+config (`hashicorp_vault_ldap_*`). Use `hashicorp_vault_ldap_users` and/or
+group mappings (`hashicorp_vault_ldap_extra_groups`, tenant groups) for RBAC.
+
+## PKI secrets engine (`--tags pki`)
+
+**Enabled by default** (`hashicorp_vault_pki_enabled: true`). Converge-safe:
+
+1. enable `pki/` if the mount is absent
+2. tune `max_lease_ttl` only on drift (default 87600h = 10y)
+3. upsert `hashicorp_vault_pki_roles` (full-replace per role; empty = mount only)
 
 ```yaml
-# GitLab UI/CLI SSO (--tags gitlab_oidc). client_id/secret resolve declared-var-first,
-# HC-Vault fallback; the secret goes to Vault over stdin. Roles are data.
-hashicorp_vault_gitlab_oidc_enabled: true
-hashicorp_vault_gitlab_base_url: "https://gitlab.example.com"
-hashicorp_vault_gitlab_oidc_client_id_vault_path: "secret/data/platform/vault/runtime:oidc_app_id"
-hashicorp_vault_gitlab_oidc_client_secret_vault_path: "secret/data/platform/vault/runtime:oidc_secret"
-hashicorp_vault_gitlab_oidc_roles:
-  - name: gitlab
-    user_claim: sub
-    groups_claim: groups_direct
-    allowed_redirect_uris: ["https://vault.example.com:8200/ui/vault/auth/oidc/oidc/callback"]
-    oidc_scopes: [openid, profile, email]
-    policies: [ops-admin]
-    bound_claims: {groups_direct: ["infra/platform-admins"]}
+hashicorp_vault_pki_enabled: true
+hashicorp_vault_pki_mount: "pki"
+hashicorp_vault_pki_max_lease_ttl_hours: 87600
+hashicorp_vault_pki_roles:
+  - name: int-example-org
+    config:
+      allowed_domains: ["int.example.org"]
+      allow_subdomains: true
+      allow_wildcard_certificates: true
+      max_ttl: "8760h"
+```
 
+**Not included here:** intermediate issuer lifecycle
+(`intermediate/generate/internal` → external cold-root sign → `set-signed`).
+That path can re-key the mount if mis-gated and is owned by
+[`vault_pki`](../vault_pki/README.md) + [`playbooks/25_plat_pki.yml`](../../playbooks/25_plat_pki.yml)
+(`--tags vault_intermediate`). Use this role to get the engine online; use
+`vault_pki` when you have a cold root ready to sign the intermediate CSR.
+
+### Import a pre-signed issuing CA (`--tags pki_issuer`)
+
+**Off by default** (`hashicorp_vault_pki_issuer_import: false`). When an offline
+ceremony has **already signed** an issuing CA against your cold root, this phase
+*adopts* that issuer into the `pki/` mount — no CSR round-trip, no re-key. It runs
+**after** the `pki` phase (the mount must exist) and is idempotent + drift-only, so
+it is safe on every converge once enabled.
+
+The escrow (issuing cert, its **private key**, and the public **root** cert) is
+produced elsewhere and stored **Ansible-Vault-encrypted** in inventory. Map it onto
+these role-prefixed vars — the role never references the ceremony's own names:
+
+```yaml
+hashicorp_vault_pki_issuer_import: true
+hashicorp_vault_pki_issuer_cert: "{{ vaulted_issuing_ca_cert }}"   # issuing CA PEM cert
+hashicorp_vault_pki_issuer_key:  "{{ vaulted_issuing_ca_key }}"    # issuing CA PEM key (unencrypted)
+hashicorp_vault_pki_root_cert:   "{{ vaulted_root_ca_cert }}"      # public root PEM cert
+# optional AIA / CRL distribution points (drift only; only the keys you set are touched):
+hashicorp_vault_pki_urls:
+  issuing_certificates:    ["https://vault.{{ env }}.{{ domain }}:8200/v1/pki/ca"]
+  crl_distribution_points: ["https://vault.{{ env }}.{{ domain }}:8200/v1/pki/crl"]
+```
+
+What it does, in order:
+
+1. **import the issuing CA** (cert **+** key) as one `pem_bundle` → the mount gains a
+   signer. The key is passed to Vault **only over stdin** (`docker exec -i`,
+   `pem_bundle=-`), never on argv, under `no_log`.
+2. **import the root CA** (cert only) as a `pem_bundle` → the mount can build the full
+   `ca_chain` up to the root.
+3. **set the default issuer** to the imported issuing CA — **only when it differs**
+   (drift-only write).
+4. **configure AIA/CRL URLs** from `hashicorp_vault_pki_urls` — **only on drift**, and
+   only for the keys you declare.
+5. **self-verify** — read the default issuer's certificate back and assert its
+   **sha256 fingerprint** equals the fingerprint of `hashicorp_vault_pki_issuer_cert`;
+   fails with an actionable message otherwise.
+
+Idempotency comes from the import responses: `imported_issuers` / `imported_keys`
+being **empty** means the bundle was already present, so a re-run reports no change.
+Enabling the toggle with any of cert/key/root empty **fails fast**, naming the
+missing var.
+
+## GitLab CI JWT & Transit signing (optional)
+
+Off-by-default, data-driven phases (same idiom: idempotent, run once from the
+leader via `docker exec`, secrets over stdin) cover **CI** and image-signing —
+not human SSO:
+
+```yaml
 # GitLab CI JWT->token exchange (--tags gitlab_jwt). Roles are data.
+hashicorp_vault_gitlab_base_url: "https://gitlab.mgt.example.com"
 hashicorp_vault_gitlab_jwt_enabled: true
 hashicorp_vault_gitlab_jwt_roles:
   - {name: myproject, bound_claims: {project_id: "42", ref: main}, policies: [svc-ci-prod]}
@@ -355,14 +420,12 @@ hashicorp_vault_transit_enabled: true
 hashicorp_vault_transit_keys:
   - name: cosign
     type: ecdsa-p256
-    export_public_key: {mount: secret, path: platform/cosign/runtime}
+    export_public_key: {mount: kv-ops, path: platform/cosign/runtime}
 ```
 
-The **GitLab OAuth application** backing OIDC is created out of band (GitLab
-instance *Applications* — scope `openid profile email`, the redirect URI above);
-this role only configures Vault's side. `bound_claims` is passed as single-quoted
-JSON so the CLI parses it per-key. The Transit public-key export is a **full PUT**
-of a dedicated KV path (`public_key`/`key_type`/`key_version`/`transit_path`).
+`bound_claims` is passed as single-quoted JSON so the CLI parses it per-key.
+The Transit public-key export is a **full PUT** of a dedicated KV path
+(`public_key`/`key_type`/`key_version`/`transit_path`).
 
 ### RBAC tiers & identity groups (scalable, optional)
 
@@ -370,34 +433,35 @@ Three policy tiers, least-privilege by default:
 
 ```yaml
 hashicorp_vault_tenants:
-  - {tenant: acme, env: prod}              # tier-1: acme-prod  -> kv-acme-prod/*
-  - {tenant: acme, env: dev, wide: true}   # tier-2: + acme      -> kv-acme-*  (all envs)
+  - {tenant: example, env: prod}              # tier-1: example-prod  -> kv-example-prod/*
+  - {tenant: example, env: dev, wide: true}   # tier-2: + example     -> kv-example-*  (all envs)
 hashicorp_vault_policies:
   - {policy_name: vault-superadmin, template: all-kv.hcl.j2}   # tier-3: kv-* (every mount)
 ```
 
-**Identity groups** (`--tags identity`) are the cross-auth-method layer: an
-**external** group maps an LDAP group (and later an OIDC group) to policies, so
-the same access applies however you log in; an **internal** group can **nest**
-others for indirect membership (an "admin-all" that inherits every tenant group):
+**Identity groups** (`--tags identity`) are the RBAC layer over LDAP: an
+**external** group maps a FreeIPA LDAP group to policies; an **internal** group
+can **nest** others for indirect membership (an "admin-all" that inherits every
+tenant group):
 
 ```yaml
 hashicorp_vault_identity_groups:
-  - {identity_group_name: acme-prod-admins, ldap_group: vault-acme-prod, policies: [acme-prod]}
+  - {identity_group_name: example-prod-admins, ldap_group: vault-example-prod, policies: [example-prod]}
   - identity_group_name: platform-superadmins        # internal, nests the tenant groups
     type: internal
     policies: [vault-superadmin]
-    member_group_names: [acme-prod-admins]
+    member_group_names: [example-prod-admins]
 ```
 
 Named policies referenced above are supplied through `hashicorp_vault_policies`
 (templates under `templates/policies/`) — bundled: `admin.hcl.j2` (CRUD on
 `_admin_kv_mounts`) and `all-kv.hcl.j2` (tier-3 `kv-*`).
 
-> Deferred to the production-parity effort (needs live validation): GitLab
-> SSO/OIDC, GitLab CI JWT, and the Transit/Cosign signing engine. Until then this
-> role covers deploy + HA + TLS + backup + policies + LDAP + userpass + approle +
-> audit — a complete standalone Vault for new deployments.
+> Deferred to the production-parity effort (needs live validation): GitLab CI
+> JWT, Transit/Cosign, and PKI intermediate import (engine mount is enabled by
+> default; issuer lifecycle stays on `vault_pki`). Until then this role covers
+> deploy + HA + TLS + backup + policies + LDAP/FreeIPA + userpass + approle +
+> pki mount + audit — a complete standalone Vault for new deployments.
 
 ## Notes
 
@@ -411,7 +475,6 @@ Named policies referenced above are supplied through `hashicorp_vault_policies`
 
   ```bash
   ansible-playbook -i inventories/<env>/hosts.yml \
-    playbooks/vault_cluster.yml --tags unseal
   ```
 
   For hands-off recovery, set **`hashicorp_vault_auto_unseal: true`** — the role ships a

@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: ssh_agent_key
-  author: djlongy
+  author: lab
   description: >-
     Unlocks/locks a private SSH key in ssh-agent straight from memory — the
     key is fed to ssh-add over stdin and never touches disk. unlock at the

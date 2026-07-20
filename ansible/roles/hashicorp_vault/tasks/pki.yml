@@ -1,0 +1,150 @@
+---
+# PKI secrets engine — mount + tune + issuing roles (converge-safe, OPTIONAL).
+# Mirrors the no-tag surface of roles/vault_pki (mount + roles) but uses this
+# role's bootstrap path: docker exec on the first node with the root token.
+#
+# What this phase does NOT do: intermediate issuer lifecycle
+# (generate/internal CSR + external coldca sign + set-signed). That re-keys on
+# every bare generate/internal call and lives in roles/vault_pki +
+# playbooks/25_plat_pki.yml under never-tagged opt-in tags. Enable the engine
+# here, then wire issuer + roles environment-wide via vault_pki when you have a cold
+# root.
+#
+# Issuing roles are DATA (hashicorp_vault_pki_roles):
+#   - name: int-example-org
+#     config:
+#       allowed_domains: ["int.example.org"]
+#       allow_subdomains: true
+#       allow_wildcard_certificates: true
+#       max_ttl: "8760h"
+# config is a FULL REPLACE of the role (undeclared params reset to engine defaults).
+
+- name: "PKI | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_pki_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "PKI | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_pki_token: "{{ _hashicorp_vault_pki_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+- name: "PKI | List existing secret mounts"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault secrets list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+  register: _hashicorp_vault_pki_mounts
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# shell so -description with spaces is one argv to vault (command splits on spaces).
+- name: "PKI | Enable the PKI secrets engine (absent only)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec -e VAULT_TOKEN="$VAULT_TOKEN" {{ hashicorp_vault_name | quote }} \
+      vault secrets enable \
+      -path={{ hashicorp_vault_pki_mount | quote }} \
+      -description={{ hashicorp_vault_pki_mount_description | quote }} \
+      pki
+  args:
+    executable: /bin/bash
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+  when: >-
+    (hashicorp_vault_pki_mount ~ '/') not in (_hashicorp_vault_pki_mounts.stdout | from_json).keys()
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "PKI | Read the mount tuning"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault read -format=json sys/mounts/{{ hashicorp_vault_pki_mount }}/tune
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+  register: _hashicorp_vault_pki_tune
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Vault reports max_lease_ttl in seconds; the desired value is declared in hours.
+- name: "PKI | Tune max_lease_ttl (drift only)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault secrets tune
+      -max-lease-ttl={{ hashicorp_vault_pki_max_lease_ttl_hours }}h
+      {{ hashicorp_vault_pki_mount }}/
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+  when: >-
+    (_hashicorp_vault_pki_tune.stdout | from_json).data.max_lease_ttl | int
+    != ((hashicorp_vault_pki_max_lease_ttl_hours | int) * 3600)
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "PKI | Assert every issuing-role entry declares a name and config"
+  ansible.builtin.assert:
+    that:
+      - item.name | default('') | length > 0
+      - item.config | default({}) | length > 0
+    fail_msg: >-
+      Every hashicorp_vault_pki_roles entry needs `name` and a non-empty `config`
+      dict (full-replace write to {{ hashicorp_vault_pki_mount }}/roles/<name>).
+    quiet: true
+  loop: "{{ hashicorp_vault_pki_roles }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+  run_once: true
+  when: hashicorp_vault_pki_roles | length > 0
+
+# vault write <path> key=value … — lists become comma-joined, bools lowercased.
+# shell (not command) so the dynamic arg list expands correctly.
+- name: "PKI | Upsert each issuing role (full-replace, declarative)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell: |
+    set -euo pipefail
+    args=()
+    {% for key, value in item.config.items() %}
+    {% if value is sameas true or value is sameas false %}
+    args+=( {{ (key ~ '=' ~ (value | string | lower)) | quote }} )
+    {% elif value is string or value is number %}
+    args+=( {{ (key ~ '=' ~ (value | string)) | quote }} )
+    {% elif value is mapping %}
+    args+=( {{ (key ~ '=' ~ (value | to_json)) | quote }} )
+    {% elif value is sequence %}
+    args+=( {{ (key ~ '=' ~ (value | map('string') | join(','))) | quote }} )
+    {% else %}
+    args+=( {{ (key ~ '=' ~ (value | string)) | quote }} )
+    {% endif %}
+    {% endfor %}
+    docker exec -e VAULT_TOKEN="$VAULT_TOKEN" {{ hashicorp_vault_name | quote }} \
+      vault write {{ (hashicorp_vault_pki_mount ~ '/roles/' ~ item.name) | quote }} \
+      "${args[@]}"
+  args:
+    executable: /bin/bash
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+  loop: "{{ hashicorp_vault_pki_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: hashicorp_vault_pki_roles | length > 0

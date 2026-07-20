@@ -1,0 +1,20 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=hashicorp_vault_container — SIGHUP Vault after cert publish
+After=docker.service
+# Path unit can fire before the container exists (first certmonger issue during
+# freeipa_client certs, ahead of this role's compose up). The script exits 0
+# either way so the unit is never left failed.
+Documentation=man:systemd.path(5)
+
+[Service]
+Type=oneshot
+ExecStart={{ hashicorp_vault_tls_reload_script }}
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vault-tls-reload
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

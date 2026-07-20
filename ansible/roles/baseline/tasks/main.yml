@@ -247,8 +247,25 @@
   become: true  # root: reboots the host
   ansible.builtin.reboot:
     msg: "Rebooting the system to apply changes."
-    reboot_timeout: 300
+    # Matches the notified reboot handler's budget: this is the run that
+    # finishes a FIPS enable or a SELinux state change, and a first autorelabel
+    # boot can take minutes plus one automatic follow-up reboot. A 300s cap
+    # would time out on exactly the case this task exists for.
+    reboot_timeout: 900
+    post_reboot_delay: 30
   # Guard against tag cascade: a co-tag inherited from the caller can defeat
   # `never`, so only reboot when `reboot` was explicitly passed via --tags.
   when: "'reboot' in ansible_run_tags"
   tags: [never, reboot]
+
+# Flush HERE so the FIPS/SELinux reboot happens at a deliberate seam — the end
+# of hardening — rather than wherever the next role first calls flush_handlers.
+# `meta: flush_handlers` flushes every pending notification PLAY-WIDE, so in a
+# daisy-chained play baseline's reboot would otherwise fire inside a later role
+# (observed: mid-firewalld, between zone rendering and runtime bindings). That
+# is deterministic handler mechanics, not flakiness, but it puts a reboot in an
+# arbitrary place. Flushing here gives the intended shape: harden -> reboot once
+# -> configure services on an already-hardened host.
+- name: Apply pending baseline changes (reboot) before later roles run
+  ansible.builtin.meta: flush_handlers
+  tags: [baseline]

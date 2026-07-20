@@ -1,0 +1,107 @@
+---
+# Policies — multi-tenant, environment-scoped ACL policies (+ optional extras).
+# Idempotent. All writes go via `docker exec` on the first node with the root
+# token in the process env (never argv); writes forward to the active leader.
+
+- name: "Policies | Read the root token from the first node"
+  become: true  # root: reads the root-only root_token.txt
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_pol_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+
+- name: "Policies | Set the root token fact"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_pol_token: "{{ _hashicorp_vault_pol_slurp.content | b64decode | trim }}"
+  run_once: true
+  no_log: true
+
+# ── Ensure each tenant's KV v2 mount exists (kv-<tenant>-<env>, or kv-<env>) ──
+# The mount IS the isolation domain: one mount per {tenant, env} slot, so a
+# tenant is offboarded with a single `vault secrets disable <mount>`. A slot with
+# no tenant collapses to a plain kv-<env> (see preflight for the slot derivation).
+- name: "Policies | List existing secret mounts"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault secrets list -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pol_token }}"
+  register: _hashicorp_vault_mounts
+  changed_when: false
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Policies | Enable each tenant mount ({{ hashicorp_vault_kv_mount_prefix }}-…)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault secrets enable -path={{ item.mount }} kv-v2
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pol_token }}"
+  loop: "{{ _hashicorp_vault_tenant_slots }}"
+  loop_control:
+    label: "{{ item.mount }}"
+  when: >-
+    (item.mount ~ '/') not in (_hashicorp_vault_mounts.stdout | from_json).keys()
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# ── Write one scoped policy per slot (grants that slot's whole mount) ─────────
+- name: "Policies | Write each tenant policy (<tenant>-<env> or <env>)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault policy write {{ item.policy }} -
+    stdin: "{{ lookup('template', 'policies/tenant.hcl.j2') }}"
+  vars:
+    _t: "{{ item }}"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pol_token }}"
+  loop: "{{ _hashicorp_vault_tenant_slots }}"
+  loop_control:
+    label: "{{ item.policy }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# ── Write the tenant-WIDE policies (<tenant> -> kv-<tenant>-*), opt-in ────────
+- name: "Policies | Write each tenant-wide policy (<tenant> -> kv-<tenant>-*)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault policy write {{ item }} -
+    stdin: "{{ lookup('template', 'policies/tenant_wide.hcl.j2') }}"
+  vars:
+    _t: {tenant: "{{ item }}"}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pol_token }}"
+  loop: "{{ _hashicorp_vault_wide_tenants | default([]) }}"
+  loop_control:
+    label: "{{ item }} -> {{ hashicorp_vault_kv_mount_prefix }}-{{ item }}-*"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# ── Write any extra (non-tenant) policies ────────────────────────────────────
+- name: "Policies | Write extra policies"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.shell:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault policy write {{ item.policy_name }} -
+    stdin: "{{ lookup('template', 'policies/' + item.template) }}"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_pol_token }}"
+  loop: "{{ hashicorp_vault_policies }}"
+  loop_control:
+    label: "{{ item.policy_name }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"

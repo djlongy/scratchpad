@@ -1,16 +1,16 @@
 ---
 # baseline defaults
 # Override these in inventory group_vars or host_vars as needed.
-# Production values are in inventories/<env>/group_vars/all.yml.
+# Production values are in inventories/prod/group_vars/all.yml.
 
 # Task display name used in include_tasks banners
 base_task_name: "Configure OS"
 
-# System timezone (override per estate). The OS hostname uses canonical_hostname
+# System timezone (override per environment). The OS hostname uses canonical_hostname
 # when the canonical-name group_vars pattern is in play, else inventory_hostname.
-baseline_timezone: "Australia/Sydney"
+baseline_timezone: "UTC"
 
-# Data-disk LVM names for the /opt mount (EL). Override per estate.
+# Data-disk LVM names for the /opt mount (EL). Override per environment.
 baseline_opt_vg: "vg_data"
 baseline_opt_lv: "lv_opt"
 # /opt directory mode. 0755 root:root is the distro default and CIS-compliant
@@ -21,7 +21,7 @@ baseline_opt_lv: "lv_opt"
 #
 # Volumes managed on baselined hosts. The /var entry is grow-only (never
 # created — only resized when the root disk grows); /opt is provisioned from
-# the first blank data disk and grown thereafter. Override per estate.
+# the first blank data disk and grown thereafter. Override per environment.
 baseline_storage_volumes: []
   # - name: var
   #   lvm: true
@@ -60,7 +60,7 @@ baseline_crb_enabled: true             # enable CodeReady Builder / crb on EL
 
 # ── Outbound proxy (Squid client) — configured before repos/packages ────────
 # Point the host's package managers + environment at a Squid proxy for general
-# internet egress. Internal mirrors (Artifactory) + the estate domain should be
+# internet egress. Internal mirrors (Artifactory) + the environment domain should be
 # in no_proxy so they bypass it. Empty url = proxy step skipped.
 baseline_proxy_url: ""                  # e.g. "http://squid.example.com:3128"
 baseline_proxy_no_proxy: "localhost,127.0.0.1,::1"   # add Artifactory host + ".{{ domain }}"
@@ -148,7 +148,7 @@ baseline_banner_enabled: true
 baseline_banner_env_label: "{{ env | default('UNKNOWN') | upper }}"
 baseline_banner_message: ""            # optional extra notice line
 # Host line is the intended FQDN (not the short name, not a fragile hostname -f).
-# Preference: canonical_fqdn → freeipa_server_fqdn → inventory_hostname.<ipa|estate domain>.
+# Preference: canonical_fqdn → freeipa_server_fqdn → inventory_hostname.<ipa|environment domain>.
 baseline_banner_fqdn: >-
   {{ canonical_fqdn
      | default(freeipa_server_fqdn
@@ -234,10 +234,12 @@ baseline_fail2ban_destemail: "root@localhost"
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── Network (IP/DNS via NetworkManager; opt-in) ──────────────────────────────
-# Off by default; the homelab's RedHat path (tasks/redhat.yml) still handles
+# Off by default; the lab's RedHat path (tasks/redhat.yml) still handles
 # network where used. Enable for the portable, distro-agnostic path.
 baseline_network_manage: false
-# baseline_network_interface: "ens192"      # default: host's primary interface
+# Device/profile resolution (do not hardcode ens192):
+#   baseline_network_interface → connection_name → primary_interface → default IPv4
+# baseline_network_interface: ""            # optional explicit override
 # baseline_network_ip4: "192.0.2.50/24"     # default: {{ ansible_host }}/prefix
 baseline_network_prefix: 24
 # baseline_network_gateway: "192.0.2.1"     # default: .1 of the host's /24
@@ -248,7 +250,7 @@ baseline_network_prefix: 24
 baseline_firewall_manage: false
 baseline_firewall_zone: "public"
 baseline_firewall_bind_interface: false     # bind the primary iface to the zone
-# baseline_firewall_interface: "ens192"     # default: host's primary interface
+# baseline_firewall_interface: ""           # default: primary_interface → default IPv4
 baseline_firewall_services: ["ssh"]
 baseline_firewall_ports: []                 # e.g. ["8080/tcp"]
 # Custom firewalld service/zone XML (same schema as the firewalld role's

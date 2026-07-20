@@ -28,7 +28,7 @@
 
     - name: Set timezone via symlink
       ansible.builtin.file:
-        src: /usr/share/zoneinfo/Australia/Sydney
+        src: /usr/share/zoneinfo/UTC
         dest: /etc/localtime
         state: link
         force: true

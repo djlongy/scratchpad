@@ -1,0 +1,102 @@
+#!/bin/bash
+# {{ ansible_managed }}
+#
+# Publish the certmonger-issued TLS material into Vault's container certs dir,
+# then tell the running Vault to reload it.
+#
+# Called from TWO places, and that is the whole point:
+#   1. Ansible, during the role's tls phase (initial deploy)
+#   2. certmonger, as the `-C` post-save hook on EVERY renewal
+# One code path means the deploy-time and renewal-time results cannot drift.
+# certmonger issues a LEAF only, so the served cert is assembled here as
+# leaf + CA; a leaf-only tls_cert_file makes clients see no chain.
+#
+# Separation of duties (deliberate — do NOT bind-mount the certmonger dir):
+#   certmonger owns its own output directory and its SELinux labels
+#   Vault owns {{ hashicorp_vault_certs_dir }} (relabelled container_file_t by the :Z mount)
+# Mounting certmonger's directory with :Z would relabel it out of cert_t and
+# risk denying certmonger's own renewal writes under SELinux enforcing — a
+# failure that only surfaces at the first renewal, ~90 days after deploy.
+
+set -euo pipefail
+
+LEAF="{{ hashicorp_vault_tls_onhost_cert }}"
+KEY="{{ hashicorp_vault_tls_onhost_key }}"
+CA="{{ hashicorp_vault_tls_onhost_ca }}"
+DEST="{{ hashicorp_vault_certs_dir }}"
+OWNER="{{ hashicorp_vault_uid }}:{{ hashicorp_vault_gid }}"
+CONTAINER="{{ hashicorp_vault_name }}"
+
+log() { logger -t vault-tls-sync -s -- "$*"; }
+
+for f in "$LEAF" "$KEY" "$CA"; do
+  [ -r "$f" ] || { log "FATAL: missing or unreadable: $f"; exit 1; }
+done
+[ -d "$DEST" ] || { log "FATAL: certs dir absent: $DEST"; exit 1; }
+
+umask 077
+tmp_crt="$(mktemp "${DEST}/.vault.crt.XXXXXX")"
+tmp_key="$(mktemp "${DEST}/.vault.key.XXXXXX")"
+tmp_ca="$(mktemp "${DEST}/.ca.crt.XXXXXX")"
+trap 'rm -f "$tmp_crt" "$tmp_key" "$tmp_ca"' EXIT
+
+# `awk 1` re-emits every record with a trailing newline, so a leaf whose file
+# lacks one cannot end up glued to the CA's BEGIN line — which would produce a
+# fullchain that parses as a single bad PEM block.
+awk 1 "$LEAF" "$CA" > "$tmp_crt"
+awk 1 "$CA" > "$tmp_ca"
+cat "$KEY" > "$tmp_key"
+
+chown "$OWNER" "$tmp_crt" "$tmp_key" "$tmp_ca"
+chmod 0644 "$tmp_crt" "$tmp_ca"
+chmod 0600 "$tmp_key"
+
+# No-op when the published material already matches. Keeps the Ansible task
+# honestly idempotent and, more importantly, stops a SIGHUP firing on every
+# playbook run when nothing about the certificate has actually changed.
+if cmp -s "$tmp_crt" "${DEST}/vault.crt" \
+   && cmp -s "$tmp_key" "${DEST}/vault.key" \
+   && cmp -s "$tmp_ca" "${DEST}/ca.crt"; then
+  echo "vault-tls-sync: unchanged"
+  exit 0
+fi
+
+# Atomic publish: Vault can never read a half-written fullchain. mv within the
+# same filesystem is a rename(2), so each file swaps in whole or not at all.
+mv -f "$tmp_crt" "${DEST}/vault.crt"
+mv -f "$tmp_key" "${DEST}/vault.key"
+mv -f "$tmp_ca"  "${DEST}/ca.crt"
+trap - EXIT
+
+# SELinux: do NOT restorecon here. The :Z container label is applied by the
+# runtime at container start and is NOT recorded in file_contexts, so restorecon
+# would RESET these files to the policy default for /opt (usr_t/default_t),
+# stripping container_file_t. SIGHUP does not restart the container, so nothing
+# would re-label them — Vault's reload would then be denied and it would keep
+# serving the OLD cert. That is precisely the silent staleness this script
+# exists to prevent. Files created here inherit the directory's type, which is
+# already correct.
+
+# Reload, never restart: SIGHUP makes Vault re-read its listener certificate
+# in place. A restart would SEAL Vault, requiring a manual unseal — the exact
+# outage this hook exists to avoid.
+#
+# TWO delivery paths for the SIGHUP (both required):
+#   1. Best-effort docker kill here — works when Ansible runs this script as
+#      unconfined root. Immediate, so deploy-time verification sees the new cert.
+#   2. vault-tls-reload.path (systemd PathModified on vault.crt) — the
+#      load-bearing path for certmonger renewals. certmonger_t cannot execute
+#      docker or open docker.sock under SELinux enforcing, so a docker kill
+#      from this script as a certmonger post-save child ALWAYS falls through
+#      to the else branch. The path unit runs as init_t and is what actually
+#      reloads Vault after a real renewal. Do not remove it "to simplify".
+{% raw %}
+if command -v docker >/dev/null 2>&1 \
+   && [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" = "true" ]; then
+  docker kill --signal=HUP "$CONTAINER" >/dev/null
+  log "published fullchain and sent SIGHUP to $CONTAINER"
+else
+  log "published fullchain; docker HUP unavailable (expected under certmonger_t) — vault-tls-reload.path owns the SIGHUP"
+fi
+{% endraw %}
+echo "vault-tls-sync: published"

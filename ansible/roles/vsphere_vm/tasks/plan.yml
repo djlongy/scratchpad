@@ -54,7 +54,8 @@
       {%-   endfor -%}
       {%-   set _ = L.append('    placement       : dc=' ~ hostvars[h].vsphere_vm_datacenter ~
               ' · host=' ~ tgt ~ ' · ds=' ~ (g.datastore | default('(template default)'))) -%}
-      {%-   set _ = L.append('    folder          : ' ~ g.folder) -%}
+      {%-   set _ = L.append('    folder          : ' ~ g.folder ~
+              ' (vsphere_vm_folder=' ~ (g.folder_path or '(DC VM root)') ~ ')') -%}
       {%-   set _ = L.append('    hardware        : ' ~ (g.hardware.num_cpus | default('(template)')) ~
               ' vCPU / ' ~ (g.hardware.memory_mb | default('(template)')) ~ ' MB') -%}
       {%-   set _ = L.append('    disks           : ' ~

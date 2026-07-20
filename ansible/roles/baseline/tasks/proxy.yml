@@ -2,7 +2,7 @@
 # roles/baseline/tasks/proxy.yml
 # Outbound HTTP(S) proxy CLIENT config (e.g. a Squid proxy for general internet
 # egress). Applied early — before repos/packages — so upstream fetches succeed.
-# Internal destinations (Artifactory, the estate domain) must be listed in
+# Internal destinations (Artifactory, the environment domain) must be listed in
 # baseline_proxy_no_proxy so they bypass the proxy.
 #
 # This configures the host to USE a proxy. The Squid SERVER itself is a separate

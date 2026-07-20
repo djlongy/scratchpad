@@ -1,0 +1,97 @@
+---
+# Auto-unseal — OPTIONAL systemd unit that unseals Vault on boot.
+#   hashicorp_vault_auto_unseal: true  -> distribute the unseal keys to each node and
+#                                   install + enable the boot unit (self-healing
+#                                   after a reboot; matches the package role).
+#   hashicorp_vault_auto_unseal: false -> disable + remove the unit, script AND the
+#                                   on-disk unseal keys, so turning it off truly
+#                                   takes the automation (and keys) away again.
+#
+# Security note: enabling this places the unseal key(s) on every node so a boot
+# can self-unseal. The root/init material already lives on node 1's disk, but
+# this spreads the unseal key wider — leave it off for a stricter posture, or
+# move to transit/KMS auto-unseal for keys that never touch the node.
+
+# ── Enabled: distribute keys + install the boot unit ─────────────────────────
+- name: "Auto-unseal | Read the unseal keys from the first node"
+  become: true  # root: reads the root-only vault_init.json
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+  register: _hashicorp_vault_au_slurp
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  run_once: true
+  no_log: true
+  when: hashicorp_vault_auto_unseal | bool
+
+- name: "Auto-unseal | Extract the threshold unseal keys"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_au_keys: >-
+      {{ (_hashicorp_vault_au_slurp.content | b64decode | from_json).unseal_keys_b64[:hashicorp_vault_key_threshold | int] }}
+  run_once: true
+  no_log: true
+  when: hashicorp_vault_auto_unseal | bool
+
+- name: "Auto-unseal | Distribute the unseal keys to each node"
+  become: true  # root: writes the root-only unseal keys file
+  ansible.builtin.copy:
+    content: "{{ _hashicorp_vault_au_keys | join('\n') }}\n"
+    dest: "{{ hashicorp_vault_autounseal_keys_file }}"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+  when: hashicorp_vault_auto_unseal | bool
+
+- name: "Auto-unseal | Install the boot script"
+  become: true  # root: writes the root-owned boot script
+  ansible.builtin.template:
+    src: vault-unseal.sh.j2
+    dest: "{{ hashicorp_vault_autounseal_script_path }}"
+    owner: root
+    group: root
+    mode: "0750"
+  when: hashicorp_vault_auto_unseal | bool
+
+- name: "Auto-unseal | Install the systemd unit"
+  become: true  # root: writes /etc/systemd/system
+  ansible.builtin.template:
+    src: vault-unseal.service.j2
+    dest: /etc/systemd/system/vault-container-unseal.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+  when: hashicorp_vault_auto_unseal | bool
+
+- name: "Auto-unseal | Reload systemd so the unit is visible"
+  ansible.builtin.meta: flush_handlers
+
+- name: "Auto-unseal | Enable the boot unit"
+  become: true  # root: manages the systemd unit
+  ansible.builtin.systemd_service:
+    name: vault-container-unseal.service
+    enabled: true
+  when: hashicorp_vault_auto_unseal | bool
+
+# ── Disabled: remove the unit, script AND the on-disk keys ───────────────────
+- name: "Auto-unseal | Disable + remove when off"
+  when: not (hashicorp_vault_auto_unseal | bool)
+  block:
+    - name: "Auto-unseal | Disable the boot unit (if present)"
+      become: true  # root: manages the systemd unit
+      ansible.builtin.systemd_service:
+        name: vault-container-unseal.service
+        enabled: false
+        state: stopped
+      failed_when: false
+
+    - name: "Auto-unseal | Remove the unit, script and on-disk unseal keys"
+      become: true  # root: removes root-owned unit, script and key files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/vault-container-unseal.service
+        - "{{ hashicorp_vault_autounseal_script_path }}"
+        - "{{ hashicorp_vault_autounseal_keys_file }}"
+      notify: Reload systemd

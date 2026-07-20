@@ -2,7 +2,7 @@
 # roles/freeipa_client/tasks/certs.yml
 # Request FreeIPA-issued (Dogtag CA) service certificates via certmonger, so a
 # service on this enrolled host (e.g. Vault) can serve a cert that chains to the
-# estate CA — auto-renewing, no self-signed trust.
+# environment CA — auto-renewing, no self-signed trust.
 #
 # Uses this host's OWN Kerberos identity (host/<fqdn>@REALM in /etc/krb5.keytab,
 # created at enrolment) — so NO server-side admin is needed here (a host may
@@ -35,6 +35,80 @@
     label: "{{ item.cert_path | dirname }}"
   become: true
 
+# ── postsave placeholders ────────────────────────────────────────────────────
+# certmonger records the -C hook at REQUEST time and runs it immediately on
+# first issue. When the hook is installed by a role that necessarily runs LATER
+# (it usually consumes the cert this role issues), that first post-save execs a
+# command that does not exist yet, and whether a failed -C drops the request out
+# of MONITORING is version-dependent — which would fail the verify task below.
+#
+# Seeding a no-op placeholder removes the question. force: false means the real
+# hook, once installed, is never reverted; from then on post-save failures are
+# meant to be LOUD, so only the missing-command case is softened.
+# Only absolute commands are seeded — a bare `systemctl reload foo` needs no
+# placeholder. The executable is item.split()[0]; a regex backref is avoided
+# deliberately, since '\1' arrives literal through YAML+Jinja in this repo.
+- name: "Certs | Resolve postsave hook commands"
+  ansible.builtin.set_fact:
+    _freeipa_client_postsave_bins: >-
+      {{ freeipa_client_service_certs
+         | selectattr('postsave', 'defined')
+         | map(attribute='postsave')
+         | map('trim')
+         | select('match', '^/')
+         | list | unique }}
+  when: freeipa_client_seed_postsave_stub | bool
+
+- name: "Certs | Seed a no-op placeholder for each postsave hook"
+  become: true  # root: writes an executable under a system path
+  ansible.builtin.copy:
+    dest: "{{ item.split()[0] }}"
+    force: false
+    owner: root
+    group: root
+    mode: "0750"
+    content: |
+      #!/bin/sh
+      # Placeholder seeded by the freeipa_client role so certmonger's FIRST
+      # post-save has something to execute. The owning role replaces this with
+      # the real hook; this file surviving means that role has not run yet.
+      logger -t certmonger-postsave "placeholder hook ran for $0; real hook not installed yet"
+      exit 0
+  loop: "{{ _freeipa_client_postsave_bins | default([]) }}"
+  loop_control:
+    label: "{{ item.split()[0] }}"
+  when: freeipa_client_seed_postsave_stub | bool
+  register: _freeipa_client_stub_seeded
+
+- name: "Certs | Check whether fapolicyd manages this host"
+  become: false  # read-only probe of a world-readable path
+  ansible.builtin.stat:
+    path: /usr/sbin/fapolicyd-cli
+  register: _freeipa_client_fapolicyd_cli
+
+# fapolicyd blocks execution of anything absent from its trust db. On a hardened
+# build it is already enforcing by the time certmonger fires the first post-save,
+# so an untrusted stub is denied — which defeats the stub's entire purpose. Trust
+# by hash, then notify the daemon (the unit reports CanReload=no, so `--update`
+# refreshes the db in place rather than restarting a security daemon).
+- name: "Certs | Trust each seeded post-save stub in fapolicyd"
+  become: true  # root: updates the fapolicyd trust database
+  ansible.builtin.shell:
+    cmd: >-
+      fapolicyd-cli --file update {{ item.split()[0] }}
+      || fapolicyd-cli --file add {{ item.split()[0] }}
+  loop: "{{ _freeipa_client_postsave_bins | default([]) }}"
+  loop_control:
+    label: "{{ item.split()[0] }}"
+  register: _freeipa_client_stub_trust
+  changed_when: _freeipa_client_stub_trust.rc == 0
+  failed_when: false
+  when:
+    - freeipa_client_seed_postsave_stub | bool
+    - _freeipa_client_fapolicyd_cli.stat.exists
+    - _freeipa_client_stub_seeded is changed
+  notify: Update the fapolicyd trust database
+
 # certmonger tracks by request; getcert list -f <cert> is non-zero/empty when the
 # cert is not yet tracked. This is the idempotency probe (never changes state).
 - name: "Certs | Check which certs certmonger already tracks"
@@ -48,6 +122,58 @@
   failed_when: false
   become: true
 
+# Tracking is keyed only by cert_path. After a host rename (inventory_hostname /
+# freeipa_client_fqdn changes), the same path stays MONITORING under the OLD
+# principal + SAN, so request is skipped forever and the served cert never
+# matches the new host identity. Detect that drift, drop tracking, AND remove
+# the on-disk cert+key — certmonger otherwise rebuilds a CSR from the old
+# material (subject stays the previous hostname) while -K uses the new
+# principal, and FreeIPA rejects with "hostname in subject does not match
+# principal".
+- name: "Certs | Stop tracking certs whose DNS/principal drifted from inventory"
+  ansible.builtin.command:
+    cmd: "getcert stop-tracking -f {{ item.item.cert_path }}"
+  loop: "{{ _freeipa_client_getcert_list.results }}"
+  loop_control:
+    label: "{{ item.item.cert_path }}"
+  vars:
+    _desired_dns: "{{ item.item.dnsname | default(freeipa_client_fqdn) }}"
+    _desired_principal: >-
+      {{ item.item.principal
+         | default('host/' ~ freeipa_client_fqdn ~ '@' ~ freeipa_client_realm) }}
+  when:
+    - item.rc == 0
+    - item.stdout | default('') | length > 0
+    - "'No request found' not in (item.stdout | default('') ~ item.stderr | default(''))"
+    - >-
+      ('dns: ' ~ _desired_dns) not in item.stdout
+      or ('principal name: ' ~ _desired_principal) not in item.stdout
+  register: _freeipa_client_getcert_untrack
+  changed_when: _freeipa_client_getcert_untrack.rc == 0
+  become: true
+
+- name: "Certs | Collect drifted cert/key paths to wipe"
+  ansible.builtin.set_fact:
+    _freeipa_client_drift_paths: >-
+      {{
+        (_freeipa_client_getcert_untrack.results | default([])
+          | selectattr('changed', 'defined') | selectattr('changed')
+          | map(attribute='item.item.cert_path') | list)
+        +
+        (_freeipa_client_getcert_untrack.results | default([])
+          | selectattr('changed', 'defined') | selectattr('changed')
+          | map(attribute='item.item.key_path') | list)
+      }}
+  when: _freeipa_client_getcert_untrack is changed
+
+- name: "Certs | Remove drifted cert/key material so the CSR is rebuilt clean"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ _freeipa_client_drift_paths | default([]) }}"
+  when: (_freeipa_client_drift_paths | default([]) | length) > 0
+  become: true
+
 # -w waits for issuance so the cert EXISTS on return (before any consumer starts).
 # -K uses this host's principal by default (self-managed; no admin needed).
 - name: "Certs | Request each service certificate via ipa-getcert"
@@ -59,14 +185,27 @@
       -K {{ item.item.principal | default('host/' ~ freeipa_client_fqdn ~ '@' ~ freeipa_client_realm) }}
       -D {{ item.item.dnsname | default(freeipa_client_fqdn) }}
       -N CN={{ item.item.dnsname | default(freeipa_client_fqdn) }}
-      {{ ('-C ' ~ item.item.postsave) if (item.item.postsave | default('')) else '' }}
+      {{ ("-C '" ~ item.item.postsave ~ "'") if (item.item.postsave | default('')) else '' }}
   loop: "{{ _freeipa_client_getcert_list.results }}"
   loop_control:
     label: "{{ item.item.cert_path }}"
-  when: >-
-    item.rc != 0
-    or ('No request found' in (item.stdout | default('') ~ item.stderr | default('')))
-    or (item.stdout | default('') | trim | length == 0)
+  vars:
+    _desired_dns: "{{ item.item.dnsname | default(freeipa_client_fqdn) }}"
+    _desired_principal: >-
+      {{ item.item.principal
+         | default('host/' ~ freeipa_client_fqdn ~ '@' ~ freeipa_client_realm) }}
+    _was_untracked: >-
+      {{ item.rc != 0
+         or ('No request found' in (item.stdout | default('') ~ item.stderr | default('')))
+         or (item.stdout | default('') | trim | length == 0) }}
+    _identity_drifted: >-
+      {{ item.rc == 0
+         and (item.stdout | default('') | length > 0)
+         and (
+           ('dns: ' ~ _desired_dns) not in item.stdout
+           or ('principal name: ' ~ _desired_principal) not in item.stdout
+         ) }}
+  when: _was_untracked | bool or _identity_drifted | bool
   register: _freeipa_client_getcert_req
   changed_when: "'New signing request' in (_freeipa_client_getcert_req.stdout | default(''))
                  or 'Submitting' in (_freeipa_client_getcert_req.stdout | default(''))"
@@ -80,7 +219,39 @@
     label: "{{ item.cert_path }}"
   register: _freeipa_client_getcert_verify
   changed_when: false
+  # MONITORING alone is not enough: a failed re-issue can leave MONITORING with
+  # a ca-error and the OLD leaf still on disk (host-rename drift). Require the
+  # tracked identity to match inventory and no ca-error line.
   failed_when: >-
     _freeipa_client_getcert_verify.rc != 0
     or 'status: MONITORING' not in _freeipa_client_getcert_verify.stdout
+    or 'ca-error:' in _freeipa_client_getcert_verify.stdout
+    or (
+      ('dns: ' ~ (item.dnsname | default(freeipa_client_fqdn)))
+      not in _freeipa_client_getcert_verify.stdout
+    )
+  become: true
+
+# CONVERGENCE, not just creation. `ipa-getcert request -C` above only runs for an
+# UNTRACKED cert, so a cert already tracked never picks up a new/changed postsave
+# — the host was enrolled before the hook existed, or the hook path changed, and
+# certmonger keeps its original (or empty) command. Inventory then claims
+# renewals are wired while nothing runs at renewal, and every playbook run stays
+# green. That is the same silent-staleness failure the hook exists to prevent, so
+# reconcile the tracked command against the declared one on every run.
+- name: "Certs | Reconcile the tracked post-save command (drift)"
+  ansible.builtin.command:
+    cmd: >-
+      getcert start-tracking -f {{ item.item.cert_path }}
+      -k {{ item.item.key_path }}
+      -C '{{ item.item.postsave }}'
+  loop: "{{ _freeipa_client_getcert_verify.results }}"
+  loop_control:
+    label: "{{ item.item.cert_path }}"
+  when:
+    - item.item.postsave | default('') | length > 0
+    # Single-quoted: the expression contains ": " which YAML would otherwise
+    # read as a mapping key inside a plain scalar.
+    - '("post-save command: " ~ item.item.postsave) not in (item.stdout | default(""))'
+  changed_when: true
   become: true
