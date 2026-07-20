@@ -72,7 +72,21 @@ vsphere_vm_ssh_timeout: 300                       # max seconds to wait for gues
 # just after customization finishes makes the reconnect stick — so recovery is
 # ~one pass-interval, not a single long timeout. Bounded total =
 # connect_passes * connect_pass_retries * connect_pass_delay seconds.
-vsphere_vm_connect_nics: true                    # force NICs connected post-build
+#
+# Set vsphere_vm_connect_nics: false for "trust vCenter" mode — the entire
+# reconnect phase is skipped as a single task, so a run that does not need the
+# reconcile stays quiet instead of emitting a poll pass per VM. Use it when the
+# NIC-disconnect bug does not apply: GuestInfo provisioning (no GOSC, see below),
+# a template that does not disconnect, or when the guest is simply left to come
+# good on its own and nothing in the same play needs its IP.
+#
+# Two consequences when it is false, both by design:
+#   * No IP is ever waited for — vsphere_vm_wait_for_ip only takes effect inside
+#     this phase, so the run finishes as soon as the VM is defined.
+#   * vsphere_vm_wait_for_ssh (handoff) has nothing to guarantee the NIC is up,
+#     so it will burn its full vsphere_vm_ssh_timeout if the NIC really is
+#     disconnected. Keep the reconnect enabled when handing off to on-guest roles.
+vsphere_vm_connect_nics: true                    # false = trust vCenter, skip the whole phase
 vsphere_vm_create_retries: 3                     # retry transient vCenter create/gather errors
 vsphere_vm_create_delay: 15
 # Multi-pass reconnect cadence. Default: 8 passes x (5 polls x 10s) = up to 400s

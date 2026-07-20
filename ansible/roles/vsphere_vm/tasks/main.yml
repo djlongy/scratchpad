@@ -69,11 +69,22 @@
 # present). Its own phase — not buried in create — so `--tags connect` can heal
 # a disconnected NIC on an existing VM without creating anything, and a full
 # create run (--tags create) still reconnects what it builds.
+#
+# include_tasks (not import) so vsphere_vm_connect_nics: false costs ONE skipped
+# task instead of a skip line per task in the file — the whole phase disappears
+# from the run output. `apply:` carries the tags to the included tasks, which a
+# bare dynamic include would not do. module_defaults cannot ride a TaskInclude
+# (Ansible rejects it), so the vCenter connection is set on the block inside
+# connect.yml instead of via the *vcenter_connection anchor here.
 - name: Reconnect and verify this host's VM NICs
-  ansible.builtin.import_tasks: connect.yml
-  when: _vsphere_desired_present | bool
+  ansible.builtin.include_tasks:
+    file: connect.yml
+    apply:
+      tags: [vsphere_vm, create, connect, redeploy]
+  when:
+    - _vsphere_desired_present | bool
+    - vsphere_vm_connect_nics | bool
   tags: [vsphere_vm, create, connect, redeploy]
-  module_defaults: *vcenter_connection
 
 # OPT-IN handoff to on-guest roles in the SAME play (vsphere_vm_wait_for_ssh):
 # wait until the freshly-built guest answers SSH, then gather its facts. No

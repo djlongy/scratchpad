@@ -83,7 +83,16 @@ argument_specs:
       vsphere_vm_wait_for_ip:
         type: bool
         required: false
-        description: Wait for the guest to report an IP after power-on.
+        description: >-
+          Wait for the guest to report an IP after power-on. Only takes effect while
+          vsphere_vm_connect_nics is true — the wait lives inside the reconnect phase.
+      vsphere_vm_connect_nics:
+        type: bool
+        required: false
+        description: >-
+          Run the post-build NIC reconnect phase (bounded multi-pass reconnect plus IP
+          wait) that heals the clone+customize NIC-disconnect. Set false to trust vCenter
+          to settle the NIC on its own; the whole phase is then skipped as a single task.
       vsphere_vm_scsi_type:
         type: str
         required: false

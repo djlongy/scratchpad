@@ -17,10 +17,20 @@
 # has an IP or vsphere_vm_connect_passes is exhausted. Whichever pass lands just
 # after customization finishes makes the reconnect stick, so recovery is ~one
 # pass-interval rather than a single long timeout. Every pass is idempotent and
-# bounded; gated by vsphere_vm_connect_nics.
+# bounded.
+#
+# vsphere_vm_connect_nics gates this whole phase from main.yml, which includes
+# this file dynamically — set it false to skip the reconnect entirely and let
+# vCenter settle the NIC on its own. The vCenter connection is set on the block
+# below because module_defaults cannot ride a TaskInclude.
 
 - name: Connect | Reconnect this VM's NICs (bounded multi-pass)
-  when: vsphere_vm_connect_nics | bool
+  module_defaults:
+    group/community.vmware.vmware:
+      hostname: "{{ vsphere_vm_server }}"
+      username: "{{ vsphere_vm_username }}"
+      password: "{{ vsphere_vm_password }}"
+      validate_certs: "{{ vsphere_vm_validate_certs }}"
   block:
     # POLL-IP-FIRST short-circuit. A VM that ALREADY reports an IPv4 is demonstrably
     # past the one-time customization NIC-disconnect window (has IP ⇒ NIC connected),
