@@ -109,8 +109,27 @@ need them individually.
 - Phase 2 says the chain does not verify — confirm Step 2 imported BOTH bundles
   (issuing cert+key AND the root cert); `curl $VAULT_ADDR/v1/pki/ca_chain`
   should return two certificates, issuing CA first.
+- Phase 1 fails at `openssl verify` with `asn1 … wrong tag` / `no certificate
+  found` — a multi-PEM chain file was corrupted. The shipped
+  `vault_pki` `sign_external` phase joins PEMs via shell with forced newlines
+  (never Jinja `~ '\n' ~` under YAML `>-`, never bare `cat a b`). Confirm the
+  chain file has no literal backslash-n and no glued
+  `-----END CERTIFICATE----------BEGIN CERTIFICATE-----` junctions.
+- FreeIPA rejects the signed CA subject — Vault must sign with
+  `use_csr_values: true` so `O=<REALM>` is preserved (the role already does this).
 - A second run of the wrapper on a converged server re-signs nothing: the
   replay guard sees the existing cert and skips `sign-intermediate`.
+
+## Inventory snippets (example env)
+
+Sanitised copies live under `inventories/example/group_vars/all/`:
+
+- `vault_pki.yml` — `vault_pki_addr` / mount (and optional default signer)
+- `offline_ca_import.yml.example` — map escrow vars onto `pki_issuer` role vars
+
+Copy the example import file, place your **encrypted** `offline_ca.yml` beside
+it, enable `hashicorp_vault_pki_issuer_import`, and run `--tags pki,pki_issuer`.
+Never commit a plaintext escrow.
 
 Next step if you are starting fresh: run Step 1 now — it is two minutes and
 everything else hangs off it.

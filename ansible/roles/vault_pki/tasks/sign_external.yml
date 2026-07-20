@@ -1,20 +1,28 @@
 ---
 # roles/vault_pki/tasks/sign_external.yml
-# Sign a fetched FreeIPA external-ca CSR off a Vault PKI root, through
-# <mount>/root/sign-intermediate. It lets Vault act as the online signer in the signed-install
-# flow: the mount here acts as the SIGNER (its issuing/root key stays inside Vault), and the
-# only on-disk artifacts are the signed IPA CA cert and the assembled chain, written to the
-# SAME pki/ipa/ exchange paths phase 1a fetched to and phase 2 reads back.
+# Sign a fetched FreeIPA external-ca CSR off a Vault PKI issuing CA, through
+# <mount>/root/sign-intermediate. The mount acts as the online SIGNER (its key
+# stays inside Vault); the only on-disk artifacts are the signed IPA CA cert and
+# the assembled chain, written to the same pki/ipa/ exchange paths phase 1a
+# fetched to and phase 2 reads back.
 #
-# REPLAY GUARD (decides sign-vs-skip): sign-intermediate mints a
-# NEW cert on EVERY call. Before signing, an existing cert-out that (a) carries the CSR's
-# public key AND (b) chains to the mount's CA is treated as an already-signed replay — the
-# sign call is SKIPPED (changed=false) and only the chain file is (re)assembled. A fresh
-# signature is written only when that guard misses.
+# REPLAY GUARD: sign-intermediate mints a NEW cert on EVERY call. Before signing,
+# an existing cert-out that (a) carries the CSR's public key AND (b) chains to the
+# mount's CA is treated as an already-signed replay — the sign call is SKIPPED
+# (changed=false) and only the chain file is (re)assembled. A fresh signature is
+# written only when that guard misses.
 #
-# Control node only (the caller applies delegate_to: localhost / run_once). The Vault token
-# rides under no_log on the one authenticated call; every cert/CSR is public, so the openssl
-# probes are logged normally. The CA-chain read is Vault's unauthenticated raw endpoint.
+# PEM handling never uses Jinja string concatenation for certificate bodies.
+# Folded YAML (`>-`) + `~ '\n' ~` has been observed to emit a *literal*
+# backslash-n between PEM blocks, which openssl rejects with asn1 "wrong tag" /
+# "no certificate found". Bare `cat a b` also glues END to BEGIN when the first
+# file lacks a trailing newline. All PEM joins and root isolation go through
+# shell/openssl so newlines stay real bytes.
+#
+# Control node only (the caller applies delegate_to: localhost / run_once). The
+# Vault token rides under no_log on the one authenticated call; every cert/CSR is
+# public, so the openssl probes are logged normally. The CA-chain read is Vault's
+# unauthenticated raw endpoint.
 
 - name: Vault PKI sign-external | Resolve the Vault token
   ansible.builtin.include_tasks: resolve_token.yml
@@ -67,13 +75,6 @@
   register: _vault_pki_ext_ca_chain
   changed_when: false
 
-- name: Vault PKI sign-external | Isolate the root anchor (last cert in the mount CA chain)
-  ansible.builtin.set_fact:
-    _vault_pki_ext_root_pem: >-
-      {{ (_vault_pki_ext_ca_chain.content.split('-----END CERTIFICATE-----')
-          | map('trim') | select('search', 'BEGIN CERTIFICATE') | list | last)
-         ~ '\n-----END CERTIFICATE-----\n' }}
-
 - name: Vault PKI sign-external | Create the trust-anchor and intermediates temp files
   ansible.builtin.tempfile:
     state: file
@@ -88,17 +89,28 @@
   register: _vault_pki_ext_tmp_chain
   changed_when: false
 
-- name: Vault PKI sign-external | Write the root anchor (openssl verify -CAfile)
-  ansible.builtin.copy:
-    content: "{{ _vault_pki_ext_root_pem }}"
-    dest: "{{ _vault_pki_ext_tmp_root.path }}"
-    mode: "0600"
-  changed_when: false
-
 - name: Vault PKI sign-external | Write the mount CA chain (openssl verify -untrusted)
   ansible.builtin.copy:
     content: "{{ _vault_pki_ext_ca_chain.content }}"
     dest: "{{ _vault_pki_ext_tmp_chain.path }}"
+    mode: "0600"
+  changed_when: false
+
+# Isolate the LAST PEM block as the root trust anchor. awk keeps real newlines —
+# never reassemble PEMs with Jinja concatenation (literal \n hazard).
+- name: Vault PKI sign-external | Isolate the root anchor (last cert in the mount CA chain)
+  ansible.builtin.command:
+    argv:
+      - awk
+      - BEGIN{n=0} /BEGIN CERTIFICATE/{n++;buf=""} {buf=buf $0 ORS} /END CERTIFICATE/{certs[n]=buf} END{if(n<1) exit 1; printf "%s", certs[n]}
+      - "{{ _vault_pki_ext_tmp_chain.path }}"
+  register: _vault_pki_ext_root_extract
+  changed_when: false
+
+- name: Vault PKI sign-external | Write the root anchor (openssl verify -CAfile)
+  ansible.builtin.copy:
+    content: "{{ _vault_pki_ext_root_extract.stdout }}"
+    dest: "{{ _vault_pki_ext_tmp_root.path }}"
     mode: "0600"
   changed_when: false
 
@@ -171,6 +183,8 @@
   when: not (_vault_pki_ext_need_sign | bool)
 
 # ── Sign (only on a guard miss) ──────────────────────────────────────────────
+# use_csr_values=true keeps FreeIPA's external-ca subject (CN=Certificate Authority,
+# O=<REALM>) byte-for-byte; without it Vault mints CN-only and phase 2 can reject the cert.
 - name: Vault PKI sign-external | Sign the CSR off the mount root (sign-intermediate)
   community.hashi_vault.vault_write:
     url: "{{ vault_pki_addr }}"
@@ -179,6 +193,7 @@
     data:
       csr: "{{ lookup('ansible.builtin.file', vault_pki_sign_external_csr_path) }}"
       ttl: "{{ vault_pki_sign_external_ttl }}"
+      use_csr_values: true
   register: _vault_pki_ext_sign
   when: _vault_pki_ext_need_sign | bool
   # The signed cert is public, but the request carries the token — no_log keeps it (and any
@@ -194,13 +209,26 @@
 
 # Chain order is IPA CA cert, then the mount CA chain (issuing CA then root) — exactly what
 # phase 2 pushes back as the trust chain. Reassembled every run so a replay-skip still
-# refreshes it; the copy is idempotent when nothing changed.
+# refreshes it. Force a real newline between PEMs: files from Vault/openssl often lack a
+# trailing newline, and bare `cat a b` glues END CERTIFICATE to BEGIN CERTIFICATE.
 - name: Vault PKI sign-external | Assemble the chain (IPA CA, then issuing CA, then root)
-  ansible.builtin.copy:
-    content: >-
-      {{ lookup('ansible.builtin.file', vault_pki_sign_external_cert_out)
-         ~ '\n' ~ _vault_pki_ext_ca_chain.content }}
-    dest: "{{ vault_pki_sign_external_chain_out }}"
+  # shell:| keeps real newlines between PEM blocks. Do not use Jinja ~ '\n' ~ under
+  # YAML >- (emits a literal backslash-n) or bare cat a b (glues END to BEGIN when
+  # the first file has no trailing newline).
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {
+      cat -- "{{ vault_pki_sign_external_cert_out }}"
+      printf '\n'
+      cat -- "{{ _vault_pki_ext_tmp_chain.path }}"
+      printf '\n'
+    } > "{{ vault_pki_sign_external_chain_out }}"
+  args:
+    executable: /bin/sh
+
+- name: Vault PKI sign-external | Enforce chain mode 0644
+  ansible.builtin.file:
+    path: "{{ vault_pki_sign_external_chain_out }}"
     mode: "0644"
 
 # ── Self-verify (loud) ───────────────────────────────────────────────────────

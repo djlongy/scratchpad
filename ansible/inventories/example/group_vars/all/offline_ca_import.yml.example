@@ -1,0 +1,18 @@
+---
+# Example: map offline-ca escrow vars (from an ansible-vault-encrypted
+# offline_ca.yml produced by scripts/offline-ca.sh emit/setup) onto the
+# hashicorp_vault_container pki_issuer role vars.
+#
+# 1. Copy this file to offline_ca_import.yml (or merge into an existing vars file).
+# 2. Place the encrypted escrow beside it as offline_ca.yml (contains
+#    pki_root_ca_cert, pki_issuing_ca_cert, pki_issuing_ca_key, …).
+# 3. Enable the import and run --tags pki,pki_issuer.
+#
+# Do NOT commit a plaintext escrow. The encrypted bundle is the disaster-recovery
+# copy; the ceremony work tree (./offline-ca/) is gitignored.
+
+hashicorp_vault_pki_enabled: true
+hashicorp_vault_pki_issuer_import: true
+hashicorp_vault_pki_issuer_cert: "{{ pki_issuing_ca_cert }}"
+hashicorp_vault_pki_issuer_key: "{{ pki_issuing_ca_key }}"
+hashicorp_vault_pki_root_cert: "{{ pki_root_ca_cert }}"
