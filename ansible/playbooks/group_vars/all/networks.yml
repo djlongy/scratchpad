@@ -1,0 +1,388 @@
+---
+# ── Estate network catalog (single source of truth) ─────────────────────────
+# Loaded for every play under playbooks/ (playbook-adjacent group_vars/all).
+# Do NOT redeclare these roots in inventory group_vars/all — they drift.
+# Inventory only *selects* which underlay segment is this env's primary:
+#
+#   network_gateway:    "{{ underlay.mgt.gateway }}"
+#   vsphere_vm_network: "{{ underlay.mgt.portgroup }}"
+#   vsphere_vm_gateway: "{{ underlay.mgt.gateway }}"
+#   vsphere_vm_dns:     "{{ underlay.mgt.dns }}"
+#
+# Roots:
+#   underlay.<segment>     L2/L3 estate segment (VLAN + subnet + portgroup)
+#   vcenter.portgroups     dvPortGroup / ESXi port-group list
+#   dell.vlans / .trunks   switch VLAN objects + trunk allowed-lists
+#   palo.zones / .ifaces   firewall zones + L3 subinterfaces
+#   docker_swarm.<stack>   Swarm encrypted overlay per app stack
+#
+# All addresses below are lab/mock RFC1918 examples — replace for production.
+
+underlay_netmask: "255.255.255.0"
+network_netmask: "{{ underlay_netmask }}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. underlay — L2/L3 segments
+# ═══════════════════════════════════════════════════════════════════════════
+# Schema: vlan_id, portgroup, name, subnet, cidr, gateway, dns, site, zone
+
+underlay: &underlay
+  # ── Site infrastructure ──────────────────────────────────────────────────
+  infra:
+    vlan_id: 0
+    portgroup: "VLAN00-INFRA"
+    name: "VLAN00-INFRA"
+    subnet: "192.168.0.0/24"
+    cidr: "192.168.0.0/24"
+    gateway: "192.168.0.1"
+    dns: ["192.168.0.1"]
+    site: site-a
+    zone: infra
+
+  site_b:
+    vlan_id: 1
+    portgroup: "VLAN01-SITE-B"
+    name: "VLAN01-SITE-B"
+    subnet: "192.168.1.0/24"
+    cidr: "192.168.1.0/24"
+    gateway: "192.168.1.1"
+    dns: ["192.168.1.1"]
+    site: site-b
+    zone: infra
+
+  # ── DMZ ──────────────────────────────────────────────────────────────────
+  dmz:
+    vlan_id: 9
+    portgroup: "VLAN09-DMZ"
+    name: "VLAN09-DMZ"
+    subnet: "192.168.9.0/24"
+    cidr: "192.168.9.0/24"
+    gateway: "192.168.9.1"
+    dns: ["192.168.9.1"]
+    site: site-a
+    zone: dmz
+
+  # ── Management control plane ─────────────────────────────────────────────
+  mgt:
+    vlan_id: 10
+    portgroup: "VLAN10-MGT-SVC"
+    name: "VLAN10-MGT-SVC"
+    subnet: "192.168.10.0/24"
+    cidr: "192.168.10.0/24"
+    gateway: "192.168.10.1"
+    dns: ["192.168.10.1"]
+    site: site-a
+    zone: mgt
+
+  mgt_k3s:
+    vlan_id: 11
+    portgroup: "VLAN11-MGT-K3S"
+    name: "VLAN11-MGT-K3S"
+    subnet: "192.168.11.0/24"
+    cidr: "192.168.11.0/24"
+    gateway: "192.168.11.1"
+    dns: ["192.168.11.1"]
+    site: site-a
+    zone: mgt
+
+  # ── Dev ──────────────────────────────────────────────────────────────────
+  dev:
+    vlan_id: 20
+    portgroup: "VLAN20-DEV-SVC"
+    name: "VLAN20-DEV-SVC"
+    subnet: "192.168.20.0/24"
+    cidr: "192.168.20.0/24"
+    gateway: "192.168.20.1"
+    dns: ["192.168.20.1"]
+    site: site-a
+    zone: dev
+
+  # Lab cluster (swarm / vault labs share this L2)
+  dev_cluster:
+    vlan_id: 21
+    portgroup: "VLAN21-DEV-CLUSTER"
+    name: "VLAN21-DEV-CLUSTER"
+    subnet: "192.168.21.0/24"
+    cidr: "192.168.21.0/24"
+    gateway: "192.168.21.1"
+    dns: ["192.168.21.1"]
+    site: site-a
+    zone: dev
+
+  # ── Production ───────────────────────────────────────────────────────────
+  prod:
+    vlan_id: 30
+    portgroup: "VLAN30-PROD-SVC"
+    name: "VLAN30-PROD-SVC"
+    subnet: "192.168.30.0/24"
+    cidr: "192.168.30.0/24"
+    gateway: "192.168.30.1"
+    dns: ["192.168.30.1"]
+    site: site-a
+    zone: prod
+
+  prod_k3s:
+    vlan_id: 31
+    portgroup: "VLAN31-PROD-K3S"
+    name: "VLAN31-PROD-K3S"
+    subnet: "192.168.31.0/24"
+    cidr: "192.168.31.0/24"
+    gateway: "192.168.31.1"
+    dns: ["192.168.31.1"]
+    site: site-a
+    zone: prod
+
+  # ── Other ────────────────────────────────────────────────────────────────
+  iot:
+    vlan_id: 40
+    portgroup: "VLAN40-IOT"
+    name: "VLAN40-IOT"
+    subnet: "192.168.40.0/24"
+    cidr: "192.168.40.0/24"
+    gateway: "192.168.40.1"
+    dns: ["192.168.40.1"]
+    site: site-a
+    zone: iot
+
+  tenants:
+    vlan_id: 50
+    portgroup: "VLAN50-TENANTS"
+    name: "VLAN50-TENANTS"
+    subnet: "192.168.50.0/24"
+    cidr: "192.168.50.0/24"
+    gateway: "192.168.50.1"
+    dns: ["192.168.50.1"]
+    site: site-a
+    zone: tenant
+
+  lab:
+    vlan_id: 120
+    portgroup: "VLAN120-LAB"
+    name: "VLAN120-LAB"
+    subnet: "192.168.120.0/24"
+    cidr: "192.168.120.0/24"
+    gateway: "192.168.120.1"
+    dns: ["192.168.120.1"]
+    site: site-b
+    zone: lab
+
+# Legacy alias — prefer underlay.* in new code.
+networks: *underlay
+
+underlay_admin_cidrs:
+  - "{{ underlay.mgt.subnet }}"
+  - "{{ underlay.infra.subnet }}"
+  - "{{ underlay.site_b.subnet }}"
+network_admin_cidrs: "{{ underlay_admin_cidrs }}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. vcenter — port-groups (hypervisor L2 plane)
+# ═══════════════════════════════════════════════════════════════════════════
+vcenter:
+  vds_name: "vDS-Lab"
+  portgroups:
+    - { name: TRUNK, vlan_id: "0-4094", trunk: true, description: "edge router VLAN trunk" }
+
+    # Site infrastructure
+    - { name: VLAN00-INFRA, vlan_id: 0 }
+    - { name: VLAN01-SITE-B, vlan_id: 1 }
+
+    # Mock residential / tenant L2 (names only — no underlay L3 entries)
+    - { name: VLAN02-RES-A, vlan_id: 2 }
+    - { name: VLAN03-RES-B, vlan_id: 3 }
+    - { name: VLAN04-RES-C, vlan_id: 4 }
+    - { name: VLAN05-SHARED, vlan_id: 5 }
+    - { name: VLAN06-TENANT1, vlan_id: 6 }
+    - { name: VLAN07-TENANT2, vlan_id: 7 }
+    - { name: VLAN08-RES-IOT, vlan_id: 8 }
+
+    # DMZ + management + K3s planes
+    - { name: VLAN09-DMZ, vlan_id: 9 }
+    - { name: VLAN10-MGT-SVC, vlan_id: 10 }
+    - { name: VLAN11-MGT-K3S-CP, vlan_id: 11 }
+    - { name: VLAN12-MGT-K3S-WKR, vlan_id: 12 }
+    - { name: VLAN13-MGT-K3S-LB, vlan_id: 13 }
+
+    # Development + cluster lab + K3s planes
+    - { name: VLAN20-DEV-SVC, vlan_id: 20 }
+    - { name: VLAN21-DEV-CLUSTER, vlan_id: 21 }
+    - { name: VLAN21-DEV-K3S-CP, vlan_id: 21 }
+    - { name: VLAN22-DEV-K3S-WKR, vlan_id: 22 }
+    - { name: VLAN23-DEV-K3S-LB, vlan_id: 23 }
+
+    # Production + K3s planes
+    - { name: VLAN30-PROD-SVC, vlan_id: 30 }
+    - { name: VLAN31-PROD-K3S, vlan_id: 31 }
+    - { name: VLAN31-PROD-K3S-CP, vlan_id: 31 }
+    - { name: VLAN32-PROD-K3S-WKR, vlan_id: 32 }
+    - { name: VLAN33-PROD-K3S-LB, vlan_id: 33 }
+
+    # IoT / tenants / lab
+    - { name: VLAN40-IOT, vlan_id: 40 }
+    - { name: VLAN50-TENANTS, vlan_id: 50 }
+    - { name: VLAN120-LAB, vlan_id: 120 }
+
+    # Mock PoC sandboxes (trunk range 500-599)
+    - { name: VLAN501-SANDBOX01-INSIDE, vlan_id: 501 }
+    - { name: VLAN502-SANDBOX02-INSIDE, vlan_id: 502 }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. dell — switch VLANs + trunks (physical L2 plane)
+# ═══════════════════════════════════════════════════════════════════════════
+dell:
+  vlans:
+    - { id: 0, name: INFRA }
+    - { id: 1, name: SITE-B }
+    - { id: 2, name: RES-A }
+    - { id: 3, name: RES-B }
+    - { id: 4, name: RES-C }
+    - { id: 5, name: SHARED }
+    - { id: 6, name: TENANT1 }
+    - { id: 7, name: TENANT2 }
+    - { id: 8, name: RES-IOT }
+    - { id: 9, name: DMZ }
+    - { id: 10, name: MGT-SVC }
+    - { id: 11, name: MGT-K3S-CP }
+    - { id: 12, name: MGT-K3S-WKR }
+    - { id: 13, name: MGT-K3S-LB }
+    - { id: 20, name: DEV-SVC }
+    - { id: 21, name: DEV-CLUSTER }
+    - { id: 22, name: DEV-K3S-WKR }
+    - { id: 23, name: DEV-K3S-LB }
+    - { id: 30, name: PROD-SVC }
+    - { id: 31, name: PROD-K3S }
+    - { id: 32, name: PROD-K3S-WKR }
+    - { id: 33, name: PROD-K3S-LB }
+    - { id: 40, name: IOT }
+    - { id: 50, name: TENANTS }
+    - { id: 120, name: LAB }
+    - { id: 501, name: SANDBOX01 }
+    - { id: 502, name: SANDBOX02 }
+
+  trunks:
+    - name: esxi-01
+      description: "ESXi-01 uplink(s)"
+      interfaces: []
+      mode: trunk
+      native_vlan: 0
+      allowed_vlans: all
+      peer: "192.168.0.11"
+
+    - name: esxi-02
+      description: "ESXi-02 uplink(s)"
+      interfaces: []
+      mode: trunk
+      native_vlan: 0
+      allowed_vlans: all
+      peer: "192.168.0.12"
+
+    - name: edge-trunk
+      description: "Edge firewall VLAN trunk"
+      interfaces: []
+      mode: trunk
+      native_vlan: 0
+      allowed_vlans: all
+      peer: edge-fw
+
+    - name: esxi-poc-sandbox-range
+      description: "Extra allowed range for PoC sandboxes"
+      interfaces: []
+      mode: trunk
+      native_vlan: 0
+      allowed_vlans: "500-599"
+      peer: esxi-all
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. palo — zones + subinterfaces (security plane scaffold)
+# ═══════════════════════════════════════════════════════════════════════════
+palo:
+  device_group: "lab"
+  vsys: "vsys1"
+  template: "lab-template"
+
+  zones:
+    infra: { name: "infra", mode: layer3 }
+    dmz: { name: "dmz", mode: layer3 }
+    mgt: { name: "mgt", mode: layer3 }
+    dev: { name: "dev", mode: layer3 }
+    prod: { name: "prod", mode: layer3 }
+    iot: { name: "iot", mode: layer3 }
+    tenant: { name: "tenant", mode: layer3 }
+    lab: { name: "lab", mode: layer3 }
+    edge: { name: "edge", mode: layer3 }
+
+  interfaces:
+    - name: ethernet1/1.10
+      vlan_id: "{{ underlay.mgt.vlan_id }}"
+      subnet: "{{ underlay.mgt.subnet }}"
+      zone: mgt
+      ip: ""
+    - name: ethernet1/1.11
+      vlan_id: "{{ underlay.mgt_k3s.vlan_id }}"
+      subnet: "{{ underlay.mgt_k3s.subnet }}"
+      zone: mgt
+      ip: ""
+    - name: ethernet1/1.20
+      vlan_id: "{{ underlay.dev.vlan_id }}"
+      subnet: "{{ underlay.dev.subnet }}"
+      zone: dev
+      ip: ""
+    - name: ethernet1/1.21
+      vlan_id: "{{ underlay.dev_cluster.vlan_id }}"
+      subnet: "{{ underlay.dev_cluster.subnet }}"
+      zone: dev
+      ip: ""
+    - name: ethernet1/1.30
+      vlan_id: "{{ underlay.prod.vlan_id }}"
+      subnet: "{{ underlay.prod.subnet }}"
+      zone: prod
+      ip: ""
+    - name: ethernet1/1.31
+      vlan_id: "{{ underlay.prod_k3s.vlan_id }}"
+      subnet: "{{ underlay.prod_k3s.subnet }}"
+      zone: prod
+      ip: ""
+    - name: ethernet1/1.9
+      vlan_id: "{{ underlay.dmz.vlan_id }}"
+      subnet: "{{ underlay.dmz.subnet }}"
+      zone: dmz
+      ip: ""
+    - name: ethernet1/1.50
+      vlan_id: "{{ underlay.tenants.vlan_id }}"
+      subnet: "{{ underlay.tenants.subnet }}"
+      zone: tenant
+      ip: ""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. docker_swarm — encrypted overlay subnets (east-west app plane)
+# ═══════════════════════════════════════════════════════════════════════════
+# Isolated from underlay RFC1918 (192.168.x). Mock pool 10.40.0.0/16, /24 per stack.
+
+docker_swarm:
+  default_addr_pool: "10.40.0.0/16"
+  default_addr_pool_subnet_size: 24
+
+  mattermost:
+    subnet: "10.40.10.0/24"
+    name: "mm_overlay"
+    encrypted: true
+    attachable: true
+
+  splunk:
+    subnet: "10.40.11.0/24"
+    name: "splunk_overlay"
+    encrypted: true
+    attachable: true
+
+  elk:
+    subnet: "10.40.12.0/24"
+    name: "elk_overlay"
+    encrypted: true
+    attachable: true
+
+  # next free: 10.40.13.0/24
+
+swarm_overlay_subnets:
+  mattermost: "{{ docker_swarm.mattermost.subnet }}"
+  splunk: "{{ docker_swarm.splunk.subnet }}"
+  elk: "{{ docker_swarm.elk.subnet }}"

@@ -1,0 +1,16 @@
+---
+# group_vars/vault/main.yml — non-secret Vault role inputs
+#
+# Secrets: copy vault.yml.example → vault.yml and encrypt:
+#   ansible-vault encrypt inventories/example/group_vars/vault/vault.yml
+#
+# Multi-file group_vars match the inventory group name (`vault/`).
+
+# Topology: 1 host = standalone Raft; odd N ≥ 3 = HA (matches hosts.yml).
+# vault_cluster_name / API URL use estate identity formulas.
+vault_api_addr: "https://vault.{{ env }}.{{ domain }}:8200"
+
+vsphere_vm_cpu: 4
+vsphere_vm_memory: 8192
+vsphere_vm_disk:
+  - { size_gb: 80, type: thin }

@@ -1,4 +1,0 @@
----
-# Example NFS client config. Must match the server's security mode.
-nfs_client_server: nfs01.example.com
-nfs_client_kerberos: true

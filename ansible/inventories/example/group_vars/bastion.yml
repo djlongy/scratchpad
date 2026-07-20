@@ -1,0 +1,15 @@
+---
+# group_vars/bastion.yml — jump host only
+#
+# VM name/hostname come from group_vars/all (vsphere_vm_name_*).
+# Only put bastion-specific policy and sizing here.
+
+bastion_client_cidrs: "{{ network_admin_cidrs }}"
+bastion_destination_cidrs:
+  - "{{ underlay.prod.cidr }}"
+  - "{{ underlay.prod_k3s.cidr }}"
+
+vsphere_vm_cpu: 2
+vsphere_vm_memory: 2048
+vsphere_vm_disk:
+  - { size_gb: 40, type: thin }

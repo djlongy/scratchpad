@@ -1,0 +1,14 @@
+---
+# group_vars/freeipa/main.yml — IdM inputs (only if you enable freeipa in hosts.yml)
+#
+# freeipa_server_domain is the REALM DNS name — separate from estate `domain`.
+# Example estate domain:  example.com
+# Example FreeIPA zone:   ipa.prod.example.com
+
+freeipa_server_domain: "ipa.{{ env }}.{{ domain }}"
+# freeipa_realm: "{{ freeipa_server_domain | upper }}"
+
+vsphere_vm_cpu: 4
+vsphere_vm_memory: 8192
+vsphere_vm_disk:
+  - { size_gb: 60, type: thin }

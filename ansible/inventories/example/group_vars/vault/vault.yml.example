@@ -1,0 +1,12 @@
+---
+# EXAMPLE — rename to vault.yml and:
+#   ansible-vault encrypt inventories/example/group_vars/vault/vault.yml
+#
+# Never commit the encrypted file's passphrase; never commit plaintext secrets.
+# Prefer HashiCorp Vault lookups for day-2 secrets when the platform is up.
+
+# Break-glass userpass (bootstrap only).
+vault_userpass_admin_password: "REPLACE-ME"
+
+# LDAP bind for Vault → FreeIPA (service account, not directory admin).
+vault_ldap_bindpass: "REPLACE-ME"

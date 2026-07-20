@@ -1,0 +1,39 @@
+---
+# inventories/example/group_vars/all/main.yml
+#
+# Everything that is true for EVERY host in THIS inventory.
+# Estate constants (domain, canonical_*, underlay catalog, primary_interface)
+# live in playbooks/group_vars/all/ — do not redeclare them here.
+#
+# When you copy this inventory for another env, change the four blocks below.
+
+# ── 1. Identity ─────────────────────────────────────────────────────────────
+# env      → DNS subdomain + trust label:  mgt | dev | prod
+# tenancy  → org/customer (override estate default if multi-tenant)
+# vault_kv_env → HashiCorp KV mount selector (usually == env)
+env: "prod"
+tenancy: "example"
+vault_kv_env: "prod"
+
+# ── 2. Primary underlay segment ─────────────────────────────────────────────
+# Pick one key from playbooks/group_vars/all/networks.yml → underlay.*
+#   mgt → underlay.mgt          (VLAN10)
+#   dev → underlay.dev          (VLAN20)
+#   prod → underlay.prod        (VLAN30)
+#   labs → underlay.dev_cluster (VLAN21)
+network_gateway: "{{ underlay.prod.gateway }}"
+vsphere_vm_network: "{{ underlay.prod.portgroup }}"
+vsphere_vm_gateway: "{{ underlay.prod.gateway }}"
+vsphere_vm_dns: "{{ underlay.prod.dns }}"
+
+# ── 3. VM naming (inherited by every group unless overridden) ───────────────
+# Prefix = ${env}${distro_letter}  →  mgta | deva | proda
+# Prefer short inventory keys (vault-01); put env only in the prefix.
+vsphere_vm_name_prefix: "proda"
+vsphere_vm_name: "{{ vsphere_vm_name_prefix }}-{{ canonical_hostname }}"
+vsphere_vm_hostname: "{{ vsphere_vm_name }}"
+
+# ── 4. Optional host-level network identity (baseline / NetworkManager) ─────
+connection_name: "{{ primary_interface }}"
+dns_nameserver: "{{ network_gateway }}"
+search_domain: "{{ canonical_domain }}"

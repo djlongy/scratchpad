@@ -1,0 +1,3 @@
+# Encrypted secrets — never commit unencrypted; encrypt before git if needed
+group_vars/**/vault.yml
+group_vars/all/local.yml

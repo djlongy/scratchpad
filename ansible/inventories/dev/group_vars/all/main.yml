@@ -1,9 +1,0 @@
----
-# Runs the artifactory role as the 'dev' environment — state is captured to/read
-# from roles/artifactory/files/state/dev/.
-artifactory_env: dev
-
-# The real Artifactory URL is supplied by the gitignored group_vars/all/local.yml
-# (or pass -e artifactory_url=...). The dev and prod sim inventories deliberately
-# point at the SAME instance, so promoting dev->prod reconciles it against itself.
-# artifactory_url: https://artifactory.example.com

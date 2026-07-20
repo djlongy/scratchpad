@@ -1,0 +1,44 @@
+---
+# Offline-CA escrow bundle TEMPLATE — do not store live PEMs in git unencrypted.
+# After offline-ca.sh setup, encrypt with:
+#   ansible-vault encrypt offline-ca/bundle/offline_ca.yml
+#
+# Field names match what automation expects; fill from ceremony output.
+
+# Public root certificate (trust anchor).
+pki_root_ca_cert: |
+  -----BEGIN CERTIFICATE-----
+  # paste root.crt
+  -----END CERTIFICATE-----
+
+# Root private key (PKCS#8, encrypted with CA passphrase).
+# Prefer leaving this offline-only; only escrow if policy requires.
+# pki_root_ca_key: |
+#   -----BEGIN ENCRYPTED PRIVATE KEY-----
+#   ...
+#   -----END ENCRYPTED PRIVATE KEY-----
+
+# Issuing intermediate certificate (imported into Vault PKI).
+pki_issuing_ca_cert: |
+  -----BEGIN CERTIFICATE-----
+  # paste intermediate.crt
+  -----END CERTIFICATE-----
+
+# Issuing intermediate private key (often plaintext for Vault import).
+# ENCRYPT THIS FILE before commit.
+pki_issuing_ca_key: |
+  -----BEGIN PRIVATE KEY-----
+  # paste intermediate.key
+  -----END PRIVATE KEY-----
+
+# Optional: chain (issuing + root).
+# pki_ca_chain: |
+#   -----BEGIN CERTIFICATE-----
+#   (issuing)
+#   -----END CERTIFICATE-----
+#   -----BEGIN CERTIFICATE-----
+#   (root)
+#   -----END CERTIFICATE-----
+
+# Passphrase for encrypted root key (if escrowed) — vault this separately.
+# pki_root_ca_passphrase: "CHANGE_ME"

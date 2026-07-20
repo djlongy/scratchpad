@@ -30,11 +30,12 @@ ansible/
 │   ├── audit_multi_logger.yml
 │   ├── audit_multi_play.yml
 │   └── audit_semaphore.yml
-├── inventories/             # one subdir per environment / source
-│   ├── vaultsolo/               # single-node Vault E2E lab inventory
-│   ├── vault/                   # 3-node vault cluster lab inventory
-│   ├── swarm/                   # docker swarm bootstrap inventory
-│   └── vmware/                  # vSphere dynamic inventory configs
+├── inventories/             # clone example/ once per env (see inventories/README.md)
+│   ├── example/                 # THE reference inventory (identity + naming + groups)
+│   ├── README.md                # identity, canonical FQDN, VM naming, copy recipe
+│   └── vmware/                  # vSphere dynamic inventory configs (optional)
+├── playbooks/group_vars/all/    # estate-wide: domain, canonical_*, networks.yml
+├── offline-ca/ + scripts/offline-ca.sh  # offline root/issuing CA toolkit
 ├── plugins/
 │   └── action/                  # action plugins (e.g. get_cli_args)
 ├── files/                   # reference assets (not Jinja-templated)
@@ -71,8 +72,9 @@ not Ansible-specific.
 - Per-role README at `roles/<name>/README.md`.
 - Defaults in `roles/<name>/defaults/main.yml` are the source of truth
   for variable shapes; READMEs explain the contract and gotchas.
-- Inventories are split by environment under `inventories/<env>/` with
-  `hosts.yml` + `group_vars/<group>/{main.yml,vault.yml}`.
+- Start from `inventories/example/` — copy the folder per environment.
+  `group_vars/all/main.yml` holds env + underlay + VM prefix; large
+  groups use `group_vars/<group>/{main.yml,vault.yml}`.
   `vault.yml.example` is the unencrypted template; the real `vault.yml`
   is `ansible-vault encrypt`'d.
 - Playbooks are thin — they declare hosts and apply roles. All logic

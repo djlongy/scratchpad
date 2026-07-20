@@ -1,0 +1,104 @@
+---
+# ── Estate-wide standards (playbook-adjacent group_vars/all) ─────────────────
+# Facts true for every inventory. Do NOT redeclare these in inventory
+# group_vars/all — they drift. Env-specific *selection* lives in the single
+# inventory you clone (see inventories/example/):
+#
+#   networks.yml:  underlay.*, vcenter.*, dell.*, palo.*, docker_swarm.*
+#   this file:     domain, tenancy (default), vault path formulas, canonical_*
+#   inventory:     env, tenancy (override), vault_kv_env, network_gateway,
+#                  vsphere_vm_* segment selection + name prefix
+#
+# Precedence:
+#   inventory group_vars/all  <  THIS DIR  <  inventory group_vars/<group>
+#                                          <  inventory host_vars/<host>
+
+# ── Identity contract ───────────────────────────────────────────────────────
+#   env       — one of: mgt | dev | prod   (set per inventory)
+#   tenancy   — org/customer label (example | acme | …)
+#   domain    — DNS base zone (ALWAYS set here; never redeclare in inventory)
+#
+# Host FQDN:    {{ canonical_hostname }}.{{ env }}.{{ domain }}
+#                 e.g. vault-01.prod.example.com
+# Service URL:  <service>.{{ env }}.{{ domain }}
+#                 e.g. vault.prod.example.com
+# FreeIPA realm domains use freeipa_server_domain — never overload `domain`.
+
+domain: "example.com"
+tenancy: "example"
+
+# ── HashiCorp Vault connection + path formulas ──────────────────────────────
+vault_addr: "https://vault.mgt.example.com:8200"
+vault_token_file: "~/.vault-token"
+vault_kv_mount: "kv-{{ vault_kv_env }}"
+vault_apps_runtime_base: "{{ vault_kv_mount }}/data/apps"
+vault_platform_runtime_base: "{{ vault_kv_mount }}/data/platform"
+vault_ops_runtime_base: "{{ vault_kv_mount }}/data/ops"
+
+# ── vCenter placement (override per estate) ─────────────────────────────────
+vsphere_vm_server: "vcenter.example.com"
+vsphere_vm_datacenter: "Datacenter"
+vsphere_vm_vault_secret: "kv-mgt/data/platform/vsphere/vcenter/runtime"
+vsphere_vm_password_field: "admin_password"
+vsphere_vm_validate_certs: false
+vsphere_vm_esxi_host: "192.168.0.12"          # template host (override)
+vsphere_vm_resource_pool: "Resources"
+vsphere_vm_datastore: "datastore01"
+vsphere_vm_template: "linux-almalinux-9"
+vsphere_vm_netmask: "{{ network_netmask }}"
+vsphere_vm_folder: ""
+vsphere_vm_connect_pass_retries: 10
+
+# ── Primary NIC (facts-derived; never hardcode ens192) ──────────────────────
+primary_interface: >-
+  {{ ((ansible_facts.interfaces | default([]))
+      | map('extract', ansible_facts)
+      | selectattr('ipv4.address', 'defined')
+      | selectattr('ipv4.address', 'eq', ansible_host | default(''))
+      | map(attribute='device') | first)
+      | default(ansible_default_ipv4.interface | default(omit), true) }}
+
+# ── Canonical hostnames ─────────────────────────────────────────────────────
+# Preferred inventory keys are already clean service names (vault-01).
+# Tokens below still strip accidental env/prefix noise if present.
+#
+#   inventory key:  vault-01          (preferred)  or  proda-vault-01
+#   OS short name:  vault-01          ← canonical_hostname
+#   vCenter name:   proda-vault-01    ← set vsphere_vm_name in inventory all/
+#   FQDN:           vault-01.prod.example.com
+#
+canonical_env_tokens:
+  - "{{ env | default('') }}"
+  - mgt
+  - prod
+  - dev
+  - swarm
+  - infra
+  - mgmt
+  - management
+  - mgta
+  - proda
+  - deva
+  - swarma
+  - infraa
+  - dmza
+
+_canonical_hostname_sanitized: >-
+  {{ inventory_hostname | lower
+     | regex_replace('[^a-z0-9]+', '-')
+     | regex_replace('^-+', '') | regex_replace('-+$', '') }}
+
+_canonical_hostname_stripped: >-
+  {{ _canonical_hostname_sanitized
+     | regex_replace('^(' ~ (canonical_env_tokens | reject('equalto', '') | unique | join('|')) ~ ')-', '')
+     | regex_replace('-(' ~ (canonical_env_tokens | reject('equalto', '') | unique | join('|')) ~ ')$', '')
+     | regex_replace('^-+', '') | regex_replace('-+$', '') }}
+
+# Never strip down to digits-only (Kerberos/cert principal footgun).
+canonical_hostname: >-
+  {{ _canonical_hostname_stripped
+     if (_canonical_hostname_stripped | regex_search('[a-z]'))
+     else _canonical_hostname_sanitized }}
+
+canonical_domain: "{{ env }}.{{ domain }}"
+canonical_fqdn: "{{ canonical_hostname }}.{{ canonical_domain }}"
