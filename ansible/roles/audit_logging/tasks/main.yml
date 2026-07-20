@@ -3,41 +3,62 @@
 #
 # Portable Ansible Audit Logging.
 # Collects execution metadata and routes one structured record to every
-# backend listed in `audit_logging_backends`.
+# backend listed in `audit_logging_backends` (when mode is `ship`).
 #
-# ── Ships exactly once per run ───────────────────────────────────────────
+# ── Mode (audit_logging_mode) ────────────────────────────────────────────
+#   ship       — buffer this play, then ship one consolidated record (default)
+#   accumulate — buffer this play only; do not ship
+#
+# Always buffers first (via accumulate.yml), then ships only when mode is
+# `ship`. That means intermediate multi-play plays and final ship inclusions
+# share one code path — list the role under `roles:` with a mode/backends
+# var, no post_tasks or tasks_from required.
+#
+# ── Ships exactly once per play host-loop ────────────────────────────────
 # The body runs for the FIRST host of the whole play only
 # (ansible_play_hosts_all | first) — stable across `serial:` batches and the
 # `free` strategy, where `run_once` fires once *per batch* and over-ships — and
-# a run-global sentinel (__audit_sent__) prevents a second ship if the role is
-# included again in a later play. All work is delegated to the control node.
+# all work is delegated to the control node.
 #
-# ── Single-play playbooks ────────────────────────────────────────────────
-#   post_tasks:
-#     - name: Write audit log
-#       ansible.builtin.include_role:
-#         name: audit_logging
+# ── Single-play (inline roles:) ──────────────────────────────────────────
+#   roles:
+#     - nginx
+#     - role: audit_logging
 #       vars:
 #         audit_logging_backends: [splunk]
 #
-# ── Multi-play (monolithic) playbooks ────────────────────────────────────
-# Call `tasks_from: accumulate` in EACH play's post_tasks to park per-play
-# metadata into a cross-play buffer, then call this role (default entrypoint)
-# only in the FINAL play's post_tasks to write one consolidated record.
+# ── Multi-play (inline roles:) ───────────────────────────────────────────
+#   - hosts: db
+#     roles:
+#       - postgresql
+#       - { role: audit_logging, vars: { audit_logging_mode: accumulate } }
+#   - hosts: web
+#     roles:
+#       - nginx
+#       - { role: audit_logging, vars: { audit_logging_backends: [splunk] } }
+#
+# Legacy: tasks_from: accumulate still works; mode=accumulate is preferred.
+#
+# Do NOT use meta: end_host for accumulate mode — that would skip later roles
+# on the first host of the play.
 
-- name: Ansible audit logging
+- name: Ansible audit logging — buffer this play
+  ansible.builtin.include_tasks: accumulate.yml
+  # accumulate.yml self-gates to first host of the play.
+
+- name: Ansible audit logging — ship consolidated record
   delegate_to: localhost
   become: false
   # Exactly-once gate: only the FIRST host of the whole play enters. Unlike
   # run_once (which fires once per serial batch and is unreliable under the
   # free strategy), ansible_play_hosts_all is the stable full play host list,
-  # so this ships exactly once under linear, serial, and free alike. For a
-  # consolidated once-per-RUN record across multiple plays, use the accumulate
-  # entrypoint (see tasks/accumulate.yml).
-  when: inventory_hostname == (ansible_play_hosts_all | first)
+  # so this ships exactly once under linear, serial, and free alike.
+  when:
+    - inventory_hostname == (ansible_play_hosts_all | first)
+    - (audit_logging_mode | default('ship')) == 'ship'
   block:
 
-    # ── Gather audit metadata ──────────────────────────────────────────────
+    # ── Gather ship-time metadata ────────────────────────────────────────
 
     - name: Get ansible-playbook CLI arguments and git state
       get_cli_args:
@@ -84,37 +105,15 @@
         _audit_hostname: "{{ (_audit_hostname_primary.stdout | default('') | trim)
           or (_audit_hostname_fallback.stdout | default('') | trim) or 'unknown' }}"
 
-    # ── Resolve multi-play buffer (if present) ─────────────────────────────
-    # When accumulate.yml has been called per play, the localhost buffer facts
-    # hold the accumulated history. Empty for single-play playbooks, so this
-    # works transparently in both modes.
+    # ── Resolve multi-play buffer ────────────────────────────────────────
+    # Buffer always includes the current play (we accumulate above). Use it
+    # as the sole source so ship never double-appends the current play.
     - name: Resolve accumulated play buffer
       ansible.builtin.set_fact:
-        _audit_buffer:
-          audit_plays: "{{ hostvars['localhost']['audit_logging_buffer_plays'] | default([]) }}"
-          audit_roles_all: "{{ hostvars['localhost']['audit_logging_buffer_roles'] | default([]) }}"
-        _audit_current_play:
-          play_name: "{{ ansible_play_name | default('unnamed') }}"
-          hosts: "{{ ansible_play_hosts_all | default([]) }}"
-          # unique: some Ansible/Semaphore versions list an include_role'd role
-          # once per host — dedupe so audit_logging isn't repeated N times.
-          roles: "{{ ansible_play_role_names | default([]) | unique }}"
-
-    - name: Build consolidated plays list
-      ansible.builtin.set_fact:
-        _audit_plays: >-
-          {{
-            ((_audit_buffer.audit_plays | default([])) + [_audit_current_play])
-            if (_audit_buffer.audit_plays | default([]) | length > 0)
-            else [_audit_current_play]
-          }}
-
-    - name: Build consolidated roles list
-      ansible.builtin.set_fact:
+        _audit_plays: "{{ hostvars['localhost']['audit_logging_buffer_plays'] | default([]) }}"
         _audit_roles_all: >-
           {{
-            ((_audit_buffer.audit_roles_all | default([]))
-            | union(ansible_play_role_names | default([])))
+            (hostvars['localhost']['audit_logging_buffer_roles'] | default([]))
             | unique | sort
           }}
 
@@ -139,7 +138,7 @@
           user: "{{ _audit_user }}"
           control_node: "{{ _audit_hostname }}"
           # playbook: name of the first (or single) play
-          playbook: "{{ _audit_plays[0].play_name | default('unnamed') }}"
+          playbook: "{{ (_audit_plays | default([{}]))[0].play_name | default('unnamed') }}"
           # plays: full per-play breakdown — name, hosts, roles for each play
           plays: "{{ _audit_plays }}"
           play_count: "{{ _audit_plays | length }}"

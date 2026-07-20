@@ -11,9 +11,33 @@
 # URL) ship empty and are validated at runtime only for the backends you
 # actually enable — see meta/argument_specs.yml for the full contract.
 
+# ── Mode ──────────────────────────────────────────────────────────────────
+# How this role inclusion behaves when listed under `roles:` (or included):
+#   ship       — buffer this play's metadata, then ship one consolidated record
+#                to audit_logging_backends (default; final / only inclusion)
+#   accumulate — buffer this play's metadata only; do not ship
+#                (intermediate multi-play plays, or a mid-list checkpoint)
+#
+# Inline multi-play example (no post_tasks / tasks_from needed):
+#   - hosts: db
+#     roles:
+#       - postgresql
+#       - { role: audit_logging, vars: { audit_logging_mode: accumulate } }
+#   - hosts: web
+#     roles:
+#       - nginx
+#       - { role: audit_logging, vars: { audit_logging_backends: [splunk] } }
+#
+# Same-play mid-list accumulate + final ship also works (meta allow_duplicates).
+# The accumulate buffer is idempotent per play_name so double inclusion does
+# not double-count the play.
+audit_logging_mode: ship
+# Valid: ship | accumulate
+
 # ── Backend selection ─────────────────────────────────────────────────────
 # Which backends to ship each audit record to. Empty = capture only, ship
 # nowhere (useful for a dry run). Order is irrelevant; each is independent.
+# Only consulted when audit_logging_mode is `ship`.
 audit_logging_backends: []
 #   - file
 #   - syslog

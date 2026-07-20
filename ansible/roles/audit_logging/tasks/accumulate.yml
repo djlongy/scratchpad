@@ -1,22 +1,28 @@
 ---
 # roles/audit_logging/tasks/accumulate.yml
 #
-# Buffers one play's metadata so a later play can emit a single consolidated
-# record for the whole run. Call in EACH play's post_tasks of a multi-play
-# monolithic playbook, then call the default entrypoint only in the FINAL play.
-# For single-play playbooks, skip this — tasks/main.yml handles both modes.
+# Buffers one play's metadata so a later inclusion can emit a single
+# consolidated record for the whole run.
 #
-#   post_tasks:
-#     - name: Accumulate audit data for this play
-#       ansible.builtin.include_role:
-#         name: audit_logging
-#         tasks_from: accumulate
+# Prefer the default entrypoint with mode=accumulate when listing under roles:
+#
+#   roles:
+#     - postgresql
+#     - role: audit_logging
+#       vars:
+#         audit_logging_mode: accumulate
+#
+# Legacy (still supported): tasks_from: accumulate in post_tasks.
 #
 # The buffer is kept as facts on localhost (not add_host): set_fact preserves
 # native types (lists stay lists) and works under the free strategy, whereas
 # add_host stringifies values and bypasses the host loop (errors under free).
 # Gated to the first host of the play so it accumulates exactly once per play,
 # not once per host / per serial batch.
+#
+# Idempotent: if the last buffered play has the same play_name as the current
+# play, this is a no-op. That lets the same play list the role twice
+# (mid-list accumulate + final ship) without double-counting.
 
 - name: Audit accumulate — buffer this play's metadata
   delegate_to: localhost
@@ -34,6 +40,10 @@
           }}
       delegate_to: localhost
       delegate_facts: true
+      when: >-
+        (hostvars['localhost']['audit_logging_buffer_plays'] | default([])
+         | map(attribute='play_name') | list | last | default(''))
+        != (_audit_this_play.play_name)
       vars:
         _audit_this_play:
           play_name: "{{ ansible_play_name | default('unnamed') }}"

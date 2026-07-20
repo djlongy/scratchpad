@@ -10,16 +10,6 @@ role-local action plugin, so the role works dropped into any repo with no extra
 plugin path wiring. Every option is exposed in `defaults/main.yml`; nothing is
 hardcoded.
 
-## TL;DR
-
-**Most common: wire it into a play's `post_tasks`.** Include the role after your roles and name the backend(s); it ships one JSON audit record per run.
-
-```yaml
-post_tasks:
-  - ansible.builtin.include_role: { name: audit_logging }
-    vars: { audit_logging_backends: [splunk] }
-```
-
 ## Backends
 
 | `audit_logging_backends` entry | Ships to | Transport |
@@ -40,30 +30,79 @@ under the **linear, `free`, and `serial:` (any batch size)** strategies alike.
 unreliable under `free`, which over-ships.) Every backend is best-effort
 (`ignore_errors`) so audit logging never fails the play.
 
-For a single consolidated record across a **multi-play** run, use the `accumulate`
-entrypoint per play + the default entrypoint in the final play (below).
+## Mode
+
+| `audit_logging_mode` | Behaviour |
+|---|---|
+| `ship` (default) | Buffer this play's metadata, then ship one consolidated record |
+| `accumulate` | Buffer only — do not ship |
+
+Every inclusion always buffers first (idempotent per play name). Intermediate
+multi-play plays use `accumulate`; the final inclusion uses `ship` with backends.
+
+`allow_duplicates: true` is set so the same play can list the role more than once
+(e.g. mid-list accumulate + final ship).
 
 ## Usage
 
-### Single-play playbook
+### Single-play — inline under `roles:` (preferred)
 
 ```yaml
 - hosts: webservers
   roles:
     - role: nginx
-  post_tasks:
-    - name: Write audit log
-      ansible.builtin.include_role:
-        name: audit_logging
+    - role: audit_logging
       vars:
         audit_logging_backends: [splunk, file]
         audit_logging_splunk_hec_url: "https://splunk.example.com:8088"
         audit_logging_splunk_hec_token: "{{ vault_splunk_hec_token }}"
 ```
 
-### Multi-play (monolithic) playbook
+### Multi-play — inline under `roles:` (preferred)
 
-Buffer each play, write once at the end:
+```yaml
+- hosts: db
+  roles:
+    - postgresql
+    - role: audit_logging
+      vars:
+        audit_logging_mode: accumulate
+
+- hosts: web
+  roles:
+    - nginx
+    - role: audit_logging
+      vars:
+        audit_logging_backends: [splunk]
+```
+
+### Same play — mid-list accumulate + final ship
+
+```yaml
+- hosts: idm
+  roles:
+    - role: vsphere_vm
+      vars:
+        vsphere_vm_wait_for_ssh: true
+    - role: storage
+      vars:
+        storage_provision: true
+    - role: freeipa_server
+      tags: [freeipa]
+    - role: audit_logging
+      vars:
+        audit_logging_mode: accumulate
+    - role: another_role
+    - role: audit_logging
+      vars:
+        audit_logging_backends: [splunk]
+```
+
+Mid-list accumulate is optional in a single play (role names for the whole play
+are already known when ship runs). It is harmless — the buffer is idempotent —
+and useful if you want an explicit checkpoint style.
+
+### Multi-play — legacy `post_tasks` + `tasks_from` (still supported)
 
 ```yaml
 - hosts: db
@@ -84,9 +123,11 @@ Buffer each play, write once at the end:
         audit_logging_backends: [splunk]
 ```
 
+Prefer the inline `roles:` form above; this path remains for existing playbooks.
+
 ### Recording failed runs
 
-Wrap the play body so a failure still emits an audited record:
+Wrap so a failure still emits an audited record:
 
 ```yaml
   post_tasks:
@@ -107,7 +148,8 @@ full contract.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `audit_logging_backends` | `[]` | Which backends to ship to |
+| `audit_logging_mode` | `ship` | `ship` (buffer + ship) or `accumulate` (buffer only) |
+| `audit_logging_backends` | `[]` | Which backends to ship to (mode `ship` only) |
 | `audit_logging_status` | `success` | Run status stamped into the record |
 | `audit_logging_hostname_command` | `hostname` | Binary to read the hostname (falls back to `uname -n`) |
 | `audit_logging_whoami_command` | `whoami` | Binary to read the username (falls back to `id -un`) |
@@ -143,14 +185,13 @@ The role is included per target host but its body runs only for the first
 skip that by gating the include at the call site to the same first host:
 
 ```yaml
-post_tasks:
-  - name: Write audit log
-    ansible.builtin.include_role:
-      name: audit_logging
-    when: inventory_hostname == ansible_play_hosts_all | first   # include once
+roles:
+  - role: audit_logging
+    when: inventory_hostname == ansible_play_hosts_all | first
     vars: { audit_logging_backends: [splunk] }
 ```
 
+Note: role-level `when:` on entries in `roles:` is supported in Ansible 2.x.
 Use `when:` (not `run_once:` — that fires once *per serial batch*). The role is
 correct either way; this just avoids the per-host include overhead. The `roles`
 field in the record is de-duplicated regardless of how many hosts ran.

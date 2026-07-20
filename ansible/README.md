@@ -47,7 +47,8 @@ not Ansible-specific.
 
 | Role | What it does |
 |---|---|
-| [`common`](roles/common/) | Function-like task helpers callable as `tasks_from:` — passphrase generation, vault-backed secret bootstrapping, audit-log shipping (rsyslog/splunk/fluentd/elasticsearch/file/cloudwatch/syslog), fapolicyd rule deploy. |
+| [`audit_logging`](roles/audit_logging/) | Portable run-audit logging for `ansible-playbook`. Buffers play metadata (`accumulate`) and ships one JSON record to file / syslog / rsyslog / Fluentd / Elasticsearch / Splunk HEC / CloudWatch. List under `roles:` with `audit_logging_mode` — no `post_tasks` required. |
+| [`common`](roles/common/) | Function-like task helpers callable as `tasks_from:` — passphrase generation, vault-backed secret bootstrapping, fapolicyd rule deploy. (Legacy audit helpers still present; prefer the standalone `audit_logging` role.) |
 | [`vault_container`](roles/vault_container/) | 3-node HashiCorp Vault Raft HA cluster as a Docker container. Self-signed TLS, Shamir unseal, KV v2 mounts, ACL policies, optional FreeIPA LDAP auth. |
 | [`swarm_stack`](roles/swarm_stack/) | Generic engine for deploying any application stack onto an existing Docker Swarm. Encrypted overlays, NFS volumes, content-versioned secrets/configs, redeploy + teardown via tags. |
 | [`mattermost_swarm`](roles/mattermost_swarm/) | Wrapper over `swarm_stack` for Mattermost (postgres + app), with optional FreeIPA-backed LDAP/SSO. Worked example of the wrapper pattern. LDAP off = a minimal Mattermost deploy. |

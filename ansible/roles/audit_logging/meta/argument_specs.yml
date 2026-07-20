@@ -1,20 +1,32 @@
 ---
 argument_specs:
   main:
-    short_description: Capture run metadata and ship one JSON audit record to selected backends.
+    short_description: Capture run metadata and optionally ship one JSON audit record to selected backends.
     description:
-      - Default entrypoint. Gathers execution metadata for the current run and
-        POSTs/writes a single structured JSON record to every backend named in
-        C(audit_logging_backends).
+      - Default entrypoint. Always buffers the current play's metadata. When
+        C(audit_logging_mode) is C(ship) (default), also POSTs/writes a single
+        structured JSON record to every backend named in C(audit_logging_backends).
+      - Use C(audit_logging_mode=accumulate) for intermediate multi-play plays
+        (list the role under C(roles:) with no backends). Prefer that over
+        C(tasks_from=accumulate).
       - Connection vars are validated at runtime only for the backends you
         actually enable.
     options:
+      audit_logging_mode:
+        type: str
+        default: ship
+        choices: [ship, accumulate]
+        description: >-
+          C(ship) buffers this play then ships one consolidated record.
+          C(accumulate) buffers only (for multi-play intermediate plays or a
+          mid-list checkpoint). Safe to list the role twice in one play —
+          C(allow_duplicates) is set and the buffer is idempotent per play name.
       audit_logging_backends:
         type: list
         elements: str
         default: []
         choices: [file, syslog, rsyslog, fluentd, elasticsearch, splunk, cloudwatch]
-        description: Which logging backends to ship the audit record to. Empty ships nowhere.
+        description: Which logging backends to ship the audit record to. Empty ships nowhere. Only used when mode is C(ship).
       audit_logging_status:
         type: str
         default: success
@@ -135,6 +147,8 @@ argument_specs:
   accumulate:
     short_description: Buffer one play's metadata for multi-play (monolithic) playbooks.
     description:
-      - Call in EACH play's post_tasks of a multi-play playbook, then call the
-        default entrypoint in the final play to write the consolidated record.
+      - Legacy entrypoint. Prefer listing the role under C(roles:) with
+        C(audit_logging_mode=accumulate) instead of C(tasks_from=accumulate).
+      - Call in each intermediate play, then call the default entrypoint
+        (mode C(ship)) in the final play to write the consolidated record.
     options: {}

@@ -1,4 +1,9 @@
 ---
+# allow_duplicates: the same play may list this role more than once under
+# roles: (e.g. mid-list accumulate + final ship with backends). Without this,
+# Ansible skips every inclusion after the first.
+allow_duplicates: true
+
 galaxy_info:
   role_name: audit_logging
   author: automation
