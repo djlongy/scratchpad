@@ -1,0 +1,248 @@
+---
+# roles/vault_pki/tasks/sign_external.yml
+# Sign a fetched FreeIPA external-ca CSR off a Vault PKI root, through
+# <mount>/root/sign-intermediate. It lets Vault act as the online signer in the signed-install
+# flow: the mount here acts as the SIGNER (its issuing/root key stays inside Vault), and the
+# only on-disk artifacts are the signed IPA CA cert and the assembled chain, written to the
+# SAME pki/ipa/ exchange paths phase 1a fetched to and phase 2 reads back.
+#
+# REPLAY GUARD (decides sign-vs-skip): sign-intermediate mints a
+# NEW cert on EVERY call. Before signing, an existing cert-out that (a) carries the CSR's
+# public key AND (b) chains to the mount's CA is treated as an already-signed replay — the
+# sign call is SKIPPED (changed=false) and only the chain file is (re)assembled. A fresh
+# signature is written only when that guard misses.
+#
+# Control node only (the caller applies delegate_to: localhost / run_once). The Vault token
+# rides under no_log on the one authenticated call; every cert/CSR is public, so the openssl
+# probes are logged normally. The CA-chain read is Vault's unauthenticated raw endpoint.
+
+- name: Vault PKI sign-external | Resolve the Vault token
+  ansible.builtin.include_tasks: resolve_token.yml
+
+- name: Vault PKI sign-external | Assert the mount, TTL, and I/O exchange paths are configured
+  ansible.builtin.assert:
+    that:
+      - vault_pki_mount | default('') | length > 0
+      - vault_pki_sign_external_ttl | default('') | length > 0
+      - vault_pki_sign_external_csr_path | default('') | length > 0
+      - vault_pki_sign_external_cert_out | default('') | length > 0
+      - vault_pki_sign_external_chain_out | default('') | length > 0
+    fail_msg: >-
+      vault_pki sign_external needs vault_pki_mount, vault_pki_sign_external_ttl,
+      vault_pki_sign_external_csr_path, vault_pki_sign_external_cert_out and
+      vault_pki_sign_external_chain_out set. The freeipa_signed_install playbook wires the
+      csr/cert/chain paths; the mount and TTL come from inventory (or the role defaults).
+    quiet: true
+
+- name: Vault PKI sign-external | Stat the fetched CSR
+  ansible.builtin.stat:
+    path: "{{ vault_pki_sign_external_csr_path }}"
+  register: _vault_pki_ext_csr_stat
+
+- name: Vault PKI sign-external | Fail fast if the CSR is missing
+  ansible.builtin.assert:
+    that:
+      - _vault_pki_ext_csr_stat.stat.exists
+    fail_msg: >-
+      No CSR at {{ vault_pki_sign_external_csr_path }} — phase 1a fetches
+      the IPA CSR there before this signer runs.
+    quiet: true
+
+- name: Vault PKI sign-external | Ensure the exchange output directory exists
+  ansible.builtin.file:
+    path: "{{ vault_pki_sign_external_cert_out | dirname }}"
+    state: directory
+    mode: "0755"
+
+# The mount's CA chain (issuing CA .. root, leaf-first) is Vault's unauthenticated raw
+# endpoint — no token rides here. It is needed both to verify an existing cert (replay
+# guard) and to assemble the output chain, so it is fetched before the sign decision.
+- name: Vault PKI sign-external | Fetch the mount CA chain (raw PEM, issuing CA then root)
+  ansible.builtin.uri:
+    url: "{{ vault_pki_addr }}/v1/{{ vault_pki_mount }}/ca_chain"
+    method: GET
+    return_content: true
+    status_code: [200]
+    validate_certs: true
+  register: _vault_pki_ext_ca_chain
+  changed_when: false
+
+- name: Vault PKI sign-external | Isolate the root anchor (last cert in the mount CA chain)
+  ansible.builtin.set_fact:
+    _vault_pki_ext_root_pem: >-
+      {{ (_vault_pki_ext_ca_chain.content.split('-----END CERTIFICATE-----')
+          | map('trim') | select('search', 'BEGIN CERTIFICATE') | list | last)
+         ~ '\n-----END CERTIFICATE-----\n' }}
+
+- name: Vault PKI sign-external | Create the trust-anchor and intermediates temp files
+  ansible.builtin.tempfile:
+    state: file
+    prefix: "vault_pki_ext_root_"
+  register: _vault_pki_ext_tmp_root
+  changed_when: false
+
+- name: Vault PKI sign-external | Create the intermediates temp file
+  ansible.builtin.tempfile:
+    state: file
+    prefix: "vault_pki_ext_chain_"
+  register: _vault_pki_ext_tmp_chain
+  changed_when: false
+
+- name: Vault PKI sign-external | Write the root anchor (openssl verify -CAfile)
+  ansible.builtin.copy:
+    content: "{{ _vault_pki_ext_root_pem }}"
+    dest: "{{ _vault_pki_ext_tmp_root.path }}"
+    mode: "0600"
+  changed_when: false
+
+- name: Vault PKI sign-external | Write the mount CA chain (openssl verify -untrusted)
+  ansible.builtin.copy:
+    content: "{{ _vault_pki_ext_ca_chain.content }}"
+    dest: "{{ _vault_pki_ext_tmp_chain.path }}"
+    mode: "0600"
+  changed_when: false
+
+- name: Vault PKI sign-external | Extract the CSR public key
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - req
+      - -in
+      - "{{ vault_pki_sign_external_csr_path }}"
+      - -noout
+      - -pubkey
+  register: _vault_pki_ext_csr_pubkey
+  changed_when: false
+
+# ── Replay guard ─────────────────────────────────────────────────────────────
+# An existing cert-out counts as an already-signed replay only when it carries the CSR's
+# public key AND chains to the mount CA. Both probes are non-failing (they decide skip-vs-sign,
+# not correctness) — the loud self-verify below re-asserts the result after the fact.
+- name: Vault PKI sign-external | Stat any existing signed cert
+  ansible.builtin.stat:
+    path: "{{ vault_pki_sign_external_cert_out }}"
+  register: _vault_pki_ext_cert_stat
+
+- name: Vault PKI sign-external | Read the existing cert public key (replay probe)
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ vault_pki_sign_external_cert_out }}"
+      - -noout
+      - -pubkey
+  register: _vault_pki_ext_replay_pubkey
+  changed_when: false
+  # Non-failing: a corrupt/partial cert from an interrupted run leaves stdout empty (no key
+  # match) so the decision below falls through to re-sign, rather than hard-failing the play.
+  failed_when: false
+  when: _vault_pki_ext_cert_stat.stat.exists
+
+- name: Vault PKI sign-external | Verify the existing cert against the mount CA (replay probe)
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - verify
+      - -CAfile
+      - "{{ _vault_pki_ext_tmp_root.path }}"
+      - -untrusted
+      - "{{ _vault_pki_ext_tmp_chain.path }}"
+      - "{{ vault_pki_sign_external_cert_out }}"
+  register: _vault_pki_ext_replay_verify
+  changed_when: false
+  failed_when: false
+  when: _vault_pki_ext_cert_stat.stat.exists
+
+- name: Vault PKI sign-external | Decide whether a fresh signature is needed
+  ansible.builtin.set_fact:
+    _vault_pki_ext_need_sign: >-
+      {{ not (_vault_pki_ext_cert_stat.stat.exists
+              and (_vault_pki_ext_replay_pubkey.stdout | default('')
+                   == _vault_pki_ext_csr_pubkey.stdout)
+              and ((_vault_pki_ext_replay_verify.rc | default(1)) == 0)) }}
+
+- name: Vault PKI sign-external | Announce the replay skip when a valid cert already exists
+  ansible.builtin.debug:
+    msg: >-
+      A signed cert at {{ vault_pki_sign_external_cert_out }} already carries the CSR key and
+      chains to mount '{{ vault_pki_mount }}' — sign-intermediate is SKIPPED (it mints a new
+      cert on every call). Only the chain file is (re)assembled.
+  when: not (_vault_pki_ext_need_sign | bool)
+
+# ── Sign (only on a guard miss) ──────────────────────────────────────────────
+- name: Vault PKI sign-external | Sign the CSR off the mount root (sign-intermediate)
+  community.hashi_vault.vault_write:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "{{ vault_pki_mount }}/root/sign-intermediate"
+    data:
+      csr: "{{ lookup('ansible.builtin.file', vault_pki_sign_external_csr_path) }}"
+      ttl: "{{ vault_pki_sign_external_ttl }}"
+  register: _vault_pki_ext_sign
+  when: _vault_pki_ext_need_sign | bool
+  # The signed cert is public, but the request carries the token — no_log keeps it (and any
+  # response-shape surprise) out of output.
+  no_log: true
+
+- name: Vault PKI sign-external | Write the signed IPA CA cert to the exchange path
+  ansible.builtin.copy:
+    content: "{{ _vault_pki_ext_sign.data.data.certificate }}"
+    dest: "{{ vault_pki_sign_external_cert_out }}"
+    mode: "0644"
+  when: _vault_pki_ext_need_sign | bool
+
+# Chain order is IPA CA cert, then the mount CA chain (issuing CA then root) — exactly what
+# phase 2 pushes back as the trust chain. Reassembled every run so a replay-skip still
+# refreshes it; the copy is idempotent when nothing changed.
+- name: Vault PKI sign-external | Assemble the chain (IPA CA, then issuing CA, then root)
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.file', vault_pki_sign_external_cert_out)
+         ~ '\n' ~ _vault_pki_ext_ca_chain.content }}
+    dest: "{{ vault_pki_sign_external_chain_out }}"
+    mode: "0644"
+
+# ── Self-verify (loud) ───────────────────────────────────────────────────────
+- name: Vault PKI sign-external | Read the signed cert public key
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ vault_pki_sign_external_cert_out }}"
+      - -noout
+      - -pubkey
+  register: _vault_pki_ext_cert_pubkey
+  changed_when: false
+
+- name: Vault PKI sign-external | Assert the signed cert carries the CSR public key
+  ansible.builtin.assert:
+    that:
+      - _vault_pki_ext_cert_pubkey.stdout == _vault_pki_ext_csr_pubkey.stdout
+    fail_msg: >-
+      The signed cert at {{ vault_pki_sign_external_cert_out }} does not carry the CSR's
+      public key — sign-intermediate signed the wrong request. Refusing to hand it back.
+    quiet: true
+
+- name: Vault PKI sign-external | Verify the signed cert chains to the mount root
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - verify
+      - -CAfile
+      - "{{ _vault_pki_ext_tmp_root.path }}"
+      - -untrusted
+      - "{{ _vault_pki_ext_tmp_chain.path }}"
+      - "{{ vault_pki_sign_external_cert_out }}"
+  register: _vault_pki_ext_verify
+  changed_when: false
+
+- name: Vault PKI sign-external | Remove the transient trust-material temp files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ _vault_pki_ext_tmp_root.path }}"
+    - "{{ _vault_pki_ext_tmp_chain.path }}"
+  changed_when: false

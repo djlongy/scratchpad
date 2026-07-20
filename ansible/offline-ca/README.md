@@ -1,15 +1,17 @@
 # Offline CA
 
-Port of the estate offline root + issuing CA toolkit. **No estate-specific
-secrets** — uses system `openssl` only.
+Offline root + issuing CA toolkit — bash + system `openssl` only, no other
+dependencies. End-to-end walkthrough: `docs/offline-root-vault-freeipa.md`.
 
 ## Script
 
 ```bash
 # From ansible/ (or any dir; state defaults to ./offline-ca)
 export CA_PASSPHRASE='…'   # or prompt
-../scripts/offline-ca.sh setup
-../scripts/offline-ca.sh help
+./scripts/offline-ca.sh setup \
+  --root-subject    "CN=Example Root CA R1,O=Example,C=AU" \
+  --issuing-subject "CN=Example Vault Issuing CA R1,O=Example,C=AU"
+./scripts/offline-ca.sh help
 ```
 
 State directory: `CA_DIR` (default `./offline-ca`).

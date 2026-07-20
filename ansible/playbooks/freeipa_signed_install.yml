@@ -186,6 +186,14 @@
     - name: Phase 1 — sign the fetched CSR off the org root
       when: (freeipa_signed_install_phase | default('') | int) == 1
       block:
+        # Signer selection: freeipa_signed_install_signer defaults to
+        # certificate_authority (community.crypto, file-based root on the control
+        # node); 'vault' signs off a HashiCorp Vault PKI issuing CA instead
+        # (<mount>/root/sign-intermediate — see roles/vault_pki). Mutually
+        # exclusive; the rest of the flow is identical. Phase 2's trust
+        # distribution reads the ROOT cert at
+        # <certificate_authority_pki_dir>/root/root.crt REGARDLESS of signer, so
+        # a vault run must still have the public root cert at that path.
         - name: Sign the FreeIPA CA certificate off the root (certificate_authority sign_ipa)
           ansible.builtin.include_role:
             name: certificate_authority
@@ -199,6 +207,25 @@
           vars:
             certificate_authority_ipa_csr_path: "{{ _ipa_csr_control_path }}"
             certificate_authority_ipa_name: "{{ env | default('ipa') }}"
+          when: (freeipa_signed_install_signer | default('certificate_authority')) != 'vault'
+
+        - name: Sign the FreeIPA CA certificate off the Vault PKI issuing CA (vault_pki sign_external)
+          ansible.builtin.include_role:
+            name: vault_pki
+            tasks_from: sign_external
+            # Same apply: trick — the Vault API calls run on the control node even
+            # though this play targets the freeipa host.
+            apply:
+              delegate_to: localhost
+              run_once: true
+          vars:
+            # Wire the SAME pki/ipa/ paths phase 1a fetched to and phase 2 reads
+            # back, so nothing downstream changes. The signer mount and address
+            # (vault_pki_addr / vault_pki_mount) come from inventory.
+            vault_pki_sign_external_csr_path: "{{ _ipa_csr_control_path }}"
+            vault_pki_sign_external_cert_out: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa-ca.crt"
+            vault_pki_sign_external_chain_out: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-chain.crt"
+          when: (freeipa_signed_install_signer | default('certificate_authority')) == 'vault'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 2 — push the signed cert + chain back, complete install, distribute root

@@ -1,0 +1,41 @@
+---
+# roles/vault_pki/defaults/main.yml
+#
+# Minimal HashiCorp Vault PKI signer role: `sign_external` signs an EXTERNAL
+# subordinate-CA CSR (e.g. FreeIPA's external-ca CSR) through
+# <mount>/root/sign-intermediate. The signing key never leaves Vault; the only
+# on-disk artifacts are the signed cert and the assembled chain. There is no
+# tasks/main.yml — invoke phases explicitly via
+#   include_role: { name: vault_pki, tasks_from: sign_external }
+#
+# Every value below is generic. Environment-specific data (the Vault address,
+# exchange paths, TTLs) belongs in inventory group_vars — never here. Each
+# phase fails fast with an actionable assert when a required value is unset.
+
+# Vault API address — inventory MUST set it, e.g.:
+# vault_pki_addr: "https://vault.example.com:8200"
+vault_pki_addr: ""
+
+# Token resolution: an explicitly declared token wins; when empty the role
+# reads vault_pki_token_file (the `vault login` sink). Resolution is cached per
+# play and every task that touches the token value is no_log.
+vault_pki_token: ""
+vault_pki_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.vault-token"
+
+# The PKI mount that holds the issuing CA (imported from the offline-CA escrow
+# by the hashicorp_vault_container `pki_issuer` phase).
+vault_pki_mount: "pki"
+
+# ── External signing (this mount acts as the SIGNER) ─────────────────────────
+# Control-node exchange paths: the fetched CSR to sign, and where the signed
+# cert + chain are written. The freeipa_signed_install playbook wires these to
+# the same paths its phase 2 reads back.
+vault_pki_sign_external_csr_path: ""
+vault_pki_sign_external_cert_out: ""
+vault_pki_sign_external_chain_out: ""
+# TTL requested for the signed child cert. sign-intermediate mints a NEW cert
+# on every call, so the replay guard skips re-signing an already-valid cert.
+# CONSTRAINT: a child must not outlive its issuer — Vault caps this at the
+# signer's remaining validity and the mount's max_lease_ttl regardless of what
+# is requested here. 87600h = 10y.
+vault_pki_sign_external_ttl: "87600h"
