@@ -1,23 +1,9 @@
 ---
 # roles/vsphere_vm/tasks/destroy.yml
 # DESTRUCTIVE: remove THIS host's VM when the plan marked it to-destroy
-# (state: absent). Opt-in (main.yml when:):
-#   • vsphere_vm_destroy=true on a normal untagged play, OR
-#   • --tags destroy (vsphere-only pass)
-# Both paths also require vsphere_vm_allow_destroy=true (safety).
-
-- name: Destroy | Refuse unless vsphere_vm_allow_destroy is true
-  ansible.builtin.assert:
-    that:
-      - vsphere_vm_allow_destroy | bool
-    fail_msg: >-
-      Refusing to destroy {{ _vsphere_guest.name }}. Set BOTH
-      vsphere_vm_destroy=true (or --tags destroy) AND
-      vsphere_vm_allow_destroy=true to remove guests marked state: absent.
-    quiet: true
-  when: _vsphere_to_destroy | bool
-  delegate_to: localhost
-  become: false
+# (state: absent). Opt-in via a single gate on main.yml:
+#   vsphere_vm_force_destroy=true
+# Optional --tags destroy scopes the run to vsphere phases only.
 
 - name: Destroy | Remove {{ _vsphere_guest.name }}
   community.vmware.vmware_guest:
@@ -31,8 +17,5 @@
     # match.
     state: absent
     force: true
-  when:
-    - _vsphere_to_destroy | bool
-    - vsphere_vm_allow_destroy | bool
   delegate_to: localhost
   become: false

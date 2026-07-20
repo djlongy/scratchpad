@@ -11,19 +11,19 @@
 #   spec      → build THIS host's guest spec from its own vars
 #   plan      → derive create/destroy purely from the declared state (no vCenter read)
 #   redeploy  → DELETE this host's VM BEFORE create (delete → create). Opt-in via
-#               vsphere_vm_redeploy=true (full play continues) OR --tags redeploy
-#               (vsphere-only pass). Always requires vsphere_vm_allow_redeploy.
+#               vsphere_vm_force_redeploy=true (full play continues). Optional
+#               --tags redeploy scopes to vsphere-only (later roles skipped).
 #   create    → ensure this host's VM (idempotent — reconciles an existing VM)
 #   connect   → NIC reconnect + bounded IP wait for this host's VM
 #   destroy   → remove this host's VM when state=absent. Opt-in via
-#               vsphere_vm_destroy=true OR --tags destroy; needs allow_destroy.
+#               vsphere_vm_force_destroy=true (optional --tags destroy to scope).
 #
 # We deliberately do NOT gather vCenter's inventory to test existence first: the
 # vmware modules are idempotent, so going straight to create lets each module do a
 # cheap per-VM reconcile instead of a slow whole-inventory vmware_vm_info gather.
-# Destructive phases are when:-gated (not never-tagged) so a normal untagged run
-# can wipe-and-rebuild then continue the rest of the play — same pattern as
-# audit_logging_mode / ssh_agent_key vars.
+# Destructive phases are when:-gated on a single allow_* var (not never-tagged)
+# so a normal untagged run can wipe-and-rebuild then continue the rest of the
+# play — same pattern as audit_logging_mode / ssh_agent_key vars.
 
 - name: Run vSphere VM preflight (inputs + credentials)
   ansible.builtin.import_tasks: preflight.yml
@@ -48,14 +48,11 @@
 # the first vCenter phase in file order — and aliased by create/connect/destroy.
 - name: Redeploy | Delete this host's VM first so create rebuilds it (opt-in)
   ansible.builtin.import_tasks: redeploy.yml
-  # Two ways in (both also need vsphere_vm_allow_redeploy inside redeploy.yml):
-  #   1. vsphere_vm_redeploy=true on a normal untagged play → wipe, rebuild, CONTINUE
-  #   2. --tags redeploy → vsphere-only pass (later roles skipped by the tag filter)
+  # DESTRUCTIVE gate: vsphere_vm_force_redeploy=true. Untagged play continues
+  # the daisy chain after rebuild; --tags redeploy is optional vsphere-only scope.
   when:
     - _vsphere_desired_present | bool
-    - >-
-      (vsphere_vm_redeploy | default(false) | bool)
-      or ('redeploy' in ansible_run_tags)
+    - vsphere_vm_force_redeploy | default(false) | bool
   tags: [vsphere_vm, redeploy]
   module_defaults: &vcenter_connection
     group/community.vmware.vmware:
@@ -105,10 +102,10 @@
 
 - name: Destroy this host's VM when marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml
-  # Same pattern as redeploy: var gate for a full-play destroy, or --tags destroy
-  # for a vsphere-only pass. destroy.yml still requires allow_destroy + state:absent.
-  when: >-
-    (vsphere_vm_destroy | default(false) | bool)
-    or ('destroy' in ansible_run_tags)
+  # DESTRUCTIVE gate: vsphere_vm_force_destroy=true (state must already be absent).
+  # Optional --tags destroy scopes to vsphere-only.
+  when:
+    - _vsphere_to_destroy | bool
+    - vsphere_vm_force_destroy | default(false) | bool
   tags: [vsphere_vm, destroy]
   module_defaults: *vcenter_connection

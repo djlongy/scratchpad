@@ -18,9 +18,9 @@ Hosts build in parallel for free.
 ```bash
 # ensure / create
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --limit <newhost>
-# wipe + rebuild, then CONTINUE the rest of the play (preferred)
+# wipe + rebuild, then CONTINUE the rest of the play
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml \
-  -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true --limit <newhost>
+  -e vsphere_vm_force_redeploy=true --limit <newhost>
 ```
 
 ## Minimum required variables
@@ -71,33 +71,32 @@ default — see the sections below to tune it.
 
 ## Phases (tags)
 
-| Tag / var | Runs |
+| Gate | Runs |
 |---|---|
-| (no tags) | create/ensure present guests |
-| `vsphere_vm_redeploy=true` + `vsphere_vm_allow_redeploy=true` | **delete → rebuild**, then the **rest of the play continues** |
-| `--tags redeploy` + `vsphere_vm_allow_redeploy=true` | same wipe+rebuild, but **vsphere-only** (later roles are tag-skipped) |
-| `vsphere_vm_destroy=true` + `vsphere_vm_allow_destroy=true` | remove guests with `state: absent` on a full play |
-| `--tags destroy` + `vsphere_vm_allow_destroy=true` | same remove, vsphere-only pass |
+| (default) | create/ensure present guests |
+| `-e vsphere_vm_force_redeploy=true` | **delete → rebuild**, then the **rest of the play continues** |
+| same + `--tags redeploy` | wipe+rebuild **vsphere-only** (later roles tag-skipped) |
+| `-e vsphere_vm_force_destroy=true` (with `state: absent`) | remove the guest on a full play |
+| same + `--tags destroy` | remove, vsphere-only pass |
 
-A no-tag / no-var run only creates/ensures. Destructive phases are **var-gated**
-(same idea as `audit_logging_mode` / ssh-agent unlock vars), not `never`-tagged,
-so a daisy-chain play can wipe the VM and keep going.
+One opt-in var per destructive action (default false). Not `never`-tagged, so a
+daisy-chain play can wipe the VM and keep going — same idea as
+`audit_logging_mode` / ssh-agent unlock vars.
 
-**Redeploy (preferred — full play continues):**
+**Redeploy (full play continues):**
 
 ```bash
 # delete → create → connect → then storage / baseline / freeipa / docker / vault …
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
-  -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true
-# scope with --limit
-ansible-playbook ... -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true --limit web01
+  -e vsphere_vm_force_redeploy=true
+ansible-playbook ... -e vsphere_vm_force_redeploy=true --limit web01
 ```
 
-**Redeploy (legacy tag path — stops after vsphere phases):**
+**Redeploy (vsphere-only scope):**
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
-  --tags redeploy -e vsphere_vm_allow_redeploy=true
+  --tags redeploy -e vsphere_vm_force_redeploy=true
 ```
 
 The delete is by name and idempotent, so redeploy also works on a host whose VM
@@ -164,12 +163,11 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml
 Destroy (set `vsphere_vm_state: absent` on the host, then):
 
 ```bash
-# full play (preferred when other roles follow)
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
-  -e vsphere_vm_destroy=true -e vsphere_vm_allow_destroy=true
-# vsphere-only
+  -e vsphere_vm_force_destroy=true
+# vsphere-only scope
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
-  --tags destroy -e vsphere_vm_allow_destroy=true
+  --tags destroy -e vsphere_vm_force_destroy=true
 ```
 
 ## Chaining on-guest roles in the same play (`vsphere_vm_wait_for_ssh`)

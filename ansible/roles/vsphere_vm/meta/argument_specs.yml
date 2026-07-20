@@ -113,30 +113,21 @@ argument_specs:
         type: int
         required: false
         description: Max seconds to wait for the fresh guest to answer SSH (vsphere_vm_wait_for_ssh).
-      vsphere_vm_redeploy:
+      vsphere_vm_force_destroy:
         type: bool
         required: false
         description: >-
-          Action gate — when true on a normal (untagged) play, delete this host's
-          VM before create so the guest is rebuilt from the template, then the
-          rest of the play continues. Requires vsphere_vm_allow_redeploy=true.
-          Alternative: --tags redeploy (vsphere-only; later roles are skipped).
-      vsphere_vm_destroy:
+          DESTRUCTIVE. When true and state is absent, delete the VM (and its
+          disks). On a normal untagged play other roles continue; --tags destroy
+          is optional scoping only. Default false.
+      vsphere_vm_force_redeploy:
         type: bool
         required: false
         description: >-
-          Action gate — when true, honour state:absent and remove the VM without
-          requiring --tags destroy. Requires vsphere_vm_allow_destroy=true.
-      vsphere_vm_allow_destroy:
-        type: bool
-        required: false
-        description: Safety guard — destroy is refused unless true (pair with vsphere_vm_destroy or --tags destroy).
-      vsphere_vm_allow_redeploy:
-        type: bool
-        required: false
-        description: >-
-          Safety guard — redeploy (delete + rebuild) is refused unless true.
-          Pair with vsphere_vm_redeploy=true on a full play, or --tags redeploy.
+          DESTRUCTIVE. When true, wipe this host's VM (and disks) then rebuild
+          from the template before create. On a normal untagged play the rest of
+          the daisy chain continues; --tags redeploy is optional scoping only.
+          Default false.
       vsphere_vm_hostname:
         type: str
         required: false

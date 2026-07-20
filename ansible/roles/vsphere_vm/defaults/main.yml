@@ -197,25 +197,18 @@ vsphere_vm_dns: []                            # DNS servers for guest customizat
 # role creates the whole tree first (one call).
 vsphere_vm_tags: {}
 
-# ── Destroy / redeploy action gates (var-driven, like audit_logging_mode) ────
-# Destructive phases used to be `never`-tagged so they only ran under
-# `--tags redeploy|destroy`. That works for a tag-isolated vsphere-only pass,
-# but a tagged run SKIPS every later role in the play (baseline, docker, Vault…)
-# unless those roles also carry the tag — so you cannot "wipe the VM then finish
-# the daisy chain" with tags alone.
+# ── Force destroy / force redeploy (DESTRUCTIVE — single var each) ───────────
+# These wipe real VMs and disks. Default false. Pass via -e for an intentional
+# run; never leave them true in inventory. Not soft "permission" flags — they
+# *are* the redeploy/destroy action.
 #
-# These vars flip the same phases ON during a normal (untagged) play. Pair each
-# action gate with its allow_* safety flag (double guard, like before):
+#   # Full play: delete guest+disks → rebuild from template → continue daisy chain
+#   ansible-playbook ... -e vsphere_vm_force_redeploy=true
 #
-#   # Full play: delete → rebuild → continue storage/baseline/…/vault
-#   ansible-playbook ... -e vsphere_vm_redeploy=true -e vsphere_vm_allow_redeploy=true
+#   # Full play: delete guests whose state is absent
+#   ansible-playbook ... -e vsphere_vm_state=absent -e vsphere_vm_force_destroy=true
 #
-#   # Full play: remove guests whose state is absent
-#   ansible-playbook ... -e vsphere_vm_destroy=true -e vsphere_vm_allow_destroy=true
-#
-# Tag paths still work (`--tags redeploy` / `--tags destroy`) for a vsphere-only
-# pass that deliberately does NOT continue the rest of the play.
-vsphere_vm_redeploy: false                       # action: delete then create this run
-vsphere_vm_destroy: false                        # action: honour state:absent this run
-vsphere_vm_allow_destroy: false                  # safety: refuse destroy unless true
-vsphere_vm_allow_redeploy: false                 # safety: refuse redeploy unless true
+# Optional --tags redeploy|destroy only narrows *which* roles run (vsphere-only
+# pass). The force_* var is still what arms the destructive phase.
+vsphere_vm_force_redeploy: false   # DESTRUCTIVE: wipe guest + disks, rebuild from template
+vsphere_vm_force_destroy: false    # DESTRUCTIVE: delete guest when state is absent

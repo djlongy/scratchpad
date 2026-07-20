@@ -10,11 +10,11 @@
 #   ansible-playbook site.yml
 #
 #   # recreate the VM from scratch (delete + rebuild), then re-run everything:
-#   ansible-playbook site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true
+#   ansible-playbook site.yml --tags redeploy -e vsphere_vm_force_redeploy=true
 #   # grow disks after bumping vsphere_vm_disk sizes:
 #   ansible-playbook site.yml --tags create,grow
 #   # tear the VM down:
-#   ansible-playbook site.yml -e vsphere_vm_state=absent --tags destroy -e vsphere_vm_allow_destroy=true
+#   ansible-playbook site.yml -e vsphere_vm_state=absent --tags destroy -e vsphere_vm_force_destroy=true
 
 # ── Play 1 — unlock the ansible SSH key into the controller's ssh-agent ─────────
 # Loads the vaulted private key straight into ssh-agent (never on disk), so play 2

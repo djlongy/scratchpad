@@ -73,12 +73,11 @@
   ansible.builtin.debug:
     msg: >-
       {{ _vsphere_guest.name }} is marked state:absent. It is removed ONLY when you
-      set vsphere_vm_destroy=true AND vsphere_vm_allow_destroy=true (full play),
-      or run with --tags destroy AND vsphere_vm_allow_destroy=true (vsphere-only).
-      A normal ensure run leaves it untouched (changed=0) by design.
+      set vsphere_vm_force_destroy=true (full play continues; optional --tags destroy
+      for a vsphere-only pass). A normal ensure run leaves it untouched (changed=0)
+      by design.
   when:
     - _vsphere_to_destroy | bool
-    - not (vsphere_vm_destroy | default(false) | bool)
-    - "'destroy' not in ansible_run_tags"
+    - not (vsphere_vm_force_destroy | default(false) | bool)
   delegate_to: localhost
   become: false

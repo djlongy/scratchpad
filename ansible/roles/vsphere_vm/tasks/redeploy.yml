@@ -2,30 +2,14 @@
 # roles/vsphere_vm/tasks/redeploy.yml
 # DESTRUCTIVE from-scratch rebuild. Deletes THIS host's VM so the create phase
 # (which follows in main.yml) rebuilds it fresh from the template — delete → create
-# in one pass. Opt-in (main.yml when:):
-#   • vsphere_vm_redeploy=true on a normal untagged play (then the rest of the play
-#     continues — storage, baseline, Vault, …), OR
-#   • --tags redeploy (vsphere-only pass; later roles are tag-skipped)
-# Both paths also require vsphere_vm_allow_redeploy=true (safety). Only for
-# desired-present hosts (state:absent is the destroy phase).
+# in one pass. Opt-in via a single gate on main.yml:
+#   vsphere_vm_force_redeploy=true
+# On a normal untagged play the rest of the daisy chain continues after rebuild.
+# Optional --tags redeploy scopes the run to vsphere phases only.
 #
 # Idempotent delete: state:absent by NAME (folder-drift-proof, matches destroy.yml),
 # force:true; a no-op if the VM is already gone (so redeploy also works as a plain
 # create on a host that doesn't exist yet).
-
-- name: Redeploy | Refuse unless vsphere_vm_allow_redeploy is true
-  ansible.builtin.assert:
-    that:
-      - vsphere_vm_allow_redeploy | bool
-    fail_msg: >-
-      Refusing to redeploy {{ _vsphere_guest.name }}. Set BOTH
-      vsphere_vm_redeploy=true (or --tags redeploy) AND
-      vsphere_vm_allow_redeploy=true to DELETE the VM and rebuild it from the
-      template (this destroys the guest and its disks). Prefer the vars on a
-      full untagged play so later roles continue after the rebuild.
-    quiet: true
-  delegate_to: localhost
-  become: false
 
 - name: Redeploy | Delete the VM so create rebuilds it from scratch — {{ _vsphere_guest.name }}
   community.vmware.vmware_guest:

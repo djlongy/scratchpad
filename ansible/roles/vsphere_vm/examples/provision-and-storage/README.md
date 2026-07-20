@@ -23,14 +23,14 @@ ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i inventory.yml site.yml
 
 ```bash
 # recreate from scratch (delete VM + disks, rebuild)
-ansible-playbook -i inventory.yml site.yml --tags redeploy -e vsphere_vm_allow_redeploy=true
+ansible-playbook -i inventory.yml site.yml --tags redeploy -e vsphere_vm_force_redeploy=true
 
 # grow: bump the vsphere_vm_disk sizes (and the by-size: selectors), then
 ansible-playbook -i inventory.yml site.yml --tags create,grow
 
 # destroy
 ansible-playbook -i inventory.yml site.yml -e vsphere_vm_state=absent \
-  --tags destroy -e vsphere_vm_allow_destroy=true
+  --tags destroy -e vsphere_vm_force_destroy=true
 ```
 
 ## What it demonstrates
