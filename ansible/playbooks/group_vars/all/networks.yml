@@ -2,12 +2,26 @@
 # ── Estate network catalog (single source of truth) ─────────────────────────
 # Loaded for every play under playbooks/ (playbook-adjacent group_vars/all).
 # Do NOT redeclare these roots in inventory group_vars/all — they drift.
-# Inventory only *selects* which underlay segment is this env's primary:
 #
-#   network_gateway:    "{{ underlay.mgt.gateway }}"
-#   vsphere_vm_network: "{{ underlay.mgt.portgroup }}"
-#   vsphere_vm_gateway: "{{ underlay.mgt.gateway }}"
-#   vsphere_vm_dns:     "{{ underlay.mgt.dns }}"
+# Hybrid multi-tenancy:
+#   • Global catalog — platform sees ALL tenants × ALL envs (fabric SoT).
+#   • Inventory selects identity (tenancy × env) + one segment key.
+#   • Soft isolation (default): share platform env segments (mgt/dev/prod);
+#     tenancy lives in IAM/Vault/tags, not L2.
+#   • Hard isolation: dedicated underlay.<tenancy>_<env> with scope: tenant.
+#
+# Inventory selection pattern:
+#
+#   env: prod
+#   tenancy: acme                    # soft or hard — always set
+#   network_segment: prod            # soft share  OR  acme_prod for hard L2
+#   network_gateway:    "{{ underlay[network_segment].gateway }}"
+#   network_netmask:    "{{ underlay[network_segment].netmask }}"
+#   vsphere_vm_network: "{{ underlay[network_segment].portgroup }}"
+#   vsphere_vm_gateway: "{{ underlay[network_segment].gateway }}"
+#   vsphere_vm_dns:     "{{ underlay[network_segment].dns }}"
+#
+# Legacy direct keys still work (e.g. underlay.mgt.gateway).
 #
 # Roots:
 #   underlay.<segment>     L2/L3 estate segment (VLAN + subnet + portgroup)
@@ -17,85 +31,134 @@
 #   docker_swarm.<stack>   Swarm encrypted overlay per app stack
 #
 # All addresses below are lab/mock RFC1918 examples — replace for production.
+# Query anywhere: underlay.<seg>.subnet (CIDR) + underlay.<seg>.netmask (dotted).
+# Supports non-/24 ranges (/25 /26 /27) — keep subnet and netmask in lockstep.
 
+# Fallback only — inventory should set network_netmask from underlay.<seg>.netmask.
 underlay_netmask: "255.255.255.0"
 network_netmask: "{{ underlay_netmask }}"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. underlay — L2/L3 segments
 # ═══════════════════════════════════════════════════════════════════════════
-# Schema: vlan_id, portgroup, name, subnet, cidr, gateway, dns, site, zone
+# Schema (every segment):
+#   Fabric:    vlan_id, portgroup, name, subnet, netmask, gateway, dns
+#   Placement: site, zone
+#   Ownership: scope (platform|tenant), env (mgt|dev|prod|null), tenancy (str|null)
+#   Ops:       purpose (string), admin (bool → candidate for underlay_admin_cidrs)
+#
+#   subnet   — network prefix in CIDR form (e.g. 192.168.10.0/26)
+#   netmask  — dotted mask for that prefix (e.g. 255.255.255.192)
+#   scope    — platform = shared/operator fabric; tenant = hard-isolated customer L2
+#   env      — environment this segment serves; null = not env-scoped
+#   tenancy  — owning org; null = shared (platform segments only)
+#   admin    — true → operator/admin source CIDR candidate
+#
+# Rules:
+#   scope:platform + tenancy:null  → soft multi-tenancy underlay (default)
+#   scope:tenant   + tenancy:<org> → hard L2 isolation for that org
+#   Key convention hard: <tenancy>_<env>  (e.g. acme_prod)
 
 underlay: &underlay
-  # ── Site infrastructure ──────────────────────────────────────────────────
+  # ── Site infrastructure (platform, not env-scoped) ───────────────────────
   infra:
     vlan_id: 0
     portgroup: "VLAN00-INFRA"
     name: "VLAN00-INFRA"
     subnet: "192.168.0.0/24"
-    cidr: "192.168.0.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.0.1"
     dns: ["192.168.0.1"]
     site: site-a
     zone: infra
+    scope: platform
+    env: null
+    tenancy: null
+    purpose: "site infrastructure / ESXi mgmt adjacency"
+    admin: true
 
   site_b:
     vlan_id: 1
     portgroup: "VLAN01-SITE-B"
     name: "VLAN01-SITE-B"
     subnet: "192.168.1.0/24"
-    cidr: "192.168.1.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.1.1"
     dns: ["192.168.1.1"]
     site: site-b
     zone: infra
+    scope: platform
+    env: null
+    tenancy: null
+    purpose: "site-b infrastructure"
+    admin: true
 
-  # ── DMZ ──────────────────────────────────────────────────────────────────
+  # ── DMZ (platform, not env-scoped) ───────────────────────────────────────
   dmz:
     vlan_id: 9
     portgroup: "VLAN09-DMZ"
     name: "VLAN09-DMZ"
     subnet: "192.168.9.0/24"
-    cidr: "192.168.9.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.9.1"
     dns: ["192.168.9.1"]
     site: site-a
     zone: dmz
+    scope: platform
+    env: null
+    tenancy: null
+    purpose: "edge / public-facing"
+    admin: false
 
-  # ── Management control plane ─────────────────────────────────────────────
+  # ── Management control plane (platform env — soft multi-tenant default) ──
   mgt:
     vlan_id: 10
     portgroup: "VLAN10-MGT-SVC"
     name: "VLAN10-MGT-SVC"
     subnet: "192.168.10.0/24"
-    cidr: "192.168.10.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.10.1"
     dns: ["192.168.10.1"]
     site: site-a
     zone: mgt
+    scope: platform
+    env: mgt
+    tenancy: null
+    purpose: "shared management control plane"
+    admin: true
 
   mgt_k3s:
     vlan_id: 11
     portgroup: "VLAN11-MGT-K3S"
     name: "VLAN11-MGT-K3S"
     subnet: "192.168.11.0/24"
-    cidr: "192.168.11.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.11.1"
     dns: ["192.168.11.1"]
     site: site-a
     zone: mgt
+    scope: platform
+    env: mgt
+    tenancy: null
+    purpose: "mgt k3s plane"
+    admin: true
 
-  # ── Dev ──────────────────────────────────────────────────────────────────
+  # ── Dev (platform env — soft multi-tenant default) ───────────────────────
   dev:
     vlan_id: 20
     portgroup: "VLAN20-DEV-SVC"
     name: "VLAN20-DEV-SVC"
     subnet: "192.168.20.0/24"
-    cidr: "192.168.20.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.20.1"
     dns: ["192.168.20.1"]
     site: site-a
     zone: dev
+    scope: platform
+    env: dev
+    tenancy: null
+    purpose: "shared dev workloads (soft multi-tenant)"
+    admin: false
 
   # Lab cluster (swarm / vault labs share this L2)
   dev_cluster:
@@ -103,72 +166,140 @@ underlay: &underlay
     portgroup: "VLAN21-DEV-CLUSTER"
     name: "VLAN21-DEV-CLUSTER"
     subnet: "192.168.21.0/24"
-    cidr: "192.168.21.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.21.1"
     dns: ["192.168.21.1"]
     site: site-a
     zone: dev
+    scope: platform
+    env: dev
+    tenancy: null
+    purpose: "lab/swarm/cluster on dev L2"
+    admin: false
 
-  # ── Production ───────────────────────────────────────────────────────────
+  # ── Production (platform env — soft multi-tenant default) ────────────────
   prod:
     vlan_id: 30
     portgroup: "VLAN30-PROD-SVC"
     name: "VLAN30-PROD-SVC"
     subnet: "192.168.30.0/24"
-    cidr: "192.168.30.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.30.1"
     dns: ["192.168.30.1"]
     site: site-a
     zone: prod
+    scope: platform
+    env: prod
+    tenancy: null
+    purpose: "shared prod workloads (soft multi-tenant)"
+    admin: false
 
   prod_k3s:
     vlan_id: 31
     portgroup: "VLAN31-PROD-K3S"
     name: "VLAN31-PROD-K3S"
     subnet: "192.168.31.0/24"
-    cidr: "192.168.31.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.31.1"
     dns: ["192.168.31.1"]
     site: site-a
     zone: prod
+    scope: platform
+    env: prod
+    tenancy: null
+    purpose: "prod k3s plane"
+    admin: false
 
-  # ── Other ────────────────────────────────────────────────────────────────
+  # ── Other platform zones ─────────────────────────────────────────────────
   iot:
     vlan_id: 40
     portgroup: "VLAN40-IOT"
     name: "VLAN40-IOT"
     subnet: "192.168.40.0/24"
-    cidr: "192.168.40.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.40.1"
     dns: ["192.168.40.1"]
     site: site-a
     zone: iot
+    scope: platform
+    env: null
+    tenancy: null
+    purpose: "IoT / constrained devices"
+    admin: false
 
+  # Legacy multi-tenant parking L2 (shared fabric, not one customer).
+  # Prefer named hard-tenant segments (acme_prod / acme_dev) for real isolation.
   tenants:
     vlan_id: 50
     portgroup: "VLAN50-TENANTS"
     name: "VLAN50-TENANTS"
     subnet: "192.168.50.0/24"
-    cidr: "192.168.50.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.50.1"
     dns: ["192.168.50.1"]
     site: site-a
     zone: tenant
+    scope: platform
+    env: null
+    tenancy: null
+    purpose: "legacy multi-tenant parking L2 (prefer hard segments)"
+    admin: false
 
   lab:
     vlan_id: 120
     portgroup: "VLAN120-LAB"
     name: "VLAN120-LAB"
     subnet: "192.168.120.0/24"
-    cidr: "192.168.120.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.120.1"
     dns: ["192.168.120.1"]
     site: site-b
     zone: lab
+    scope: platform
+    env: null
+    tenancy: null
+    purpose: "scratch / throwaway lab"
+    admin: false
+
+  # ── Hard-tenant examples (scope: tenant) ─────────────────────────────────
+  # Only for L2 isolation. Soft path: tenancy=acme + network_segment=prod.
+  # Inventory hard path: tenancy=acme, env=prod, network_segment=acme_prod
+  acme_prod:
+    vlan_id: 60
+    portgroup: "VLAN60-ACME-PROD"
+    name: "VLAN60-ACME-PROD"
+    subnet: "192.168.60.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.60.1"
+    dns: ["192.168.60.1"]
+    site: site-a
+    zone: tenant
+    scope: tenant
+    env: prod
+    tenancy: acme
+    purpose: "acme production hard isolation"
+    admin: false
+
+  acme_dev:
+    vlan_id: 61
+    portgroup: "VLAN61-ACME-DEV"
+    name: "VLAN61-ACME-DEV"
+    subnet: "192.168.61.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.61.1"
+    dns: ["192.168.61.1"]
+    site: site-a
+    zone: tenant
+    scope: tenant
+    env: dev
+    tenancy: acme
+    purpose: "acme development hard isolation"
+    admin: false
 
 # Legacy alias — prefer underlay.* in new code.
 networks: *underlay
 
+# Segments with admin: true (operator/admin source CIDRs).
 underlay_admin_cidrs:
   - "{{ underlay.mgt.subnet }}"
   - "{{ underlay.infra.subnet }}"
@@ -222,6 +353,10 @@ vcenter:
     - { name: VLAN50-TENANTS, vlan_id: 50 }
     - { name: VLAN120-LAB, vlan_id: 120 }
 
+    # Hard-tenant examples (underlay.acme_prod / underlay.acme_dev)
+    - { name: VLAN60-ACME-PROD, vlan_id: 60 }
+    - { name: VLAN61-ACME-DEV, vlan_id: 61 }
+
     # Mock PoC sandboxes (trunk range 500-599)
     - { name: VLAN501-SANDBOX01-INSIDE, vlan_id: 501 }
     - { name: VLAN502-SANDBOX02-INSIDE, vlan_id: 502 }
@@ -255,6 +390,8 @@ dell:
     - { id: 33, name: PROD-K3S-LB }
     - { id: 40, name: IOT }
     - { id: 50, name: TENANTS }
+    - { id: 60, name: ACME-PROD }
+    - { id: 61, name: ACME-DEV }
     - { id: 120, name: LAB }
     - { id: 501, name: SANDBOX01 }
     - { id: 502, name: SANDBOX02 }
@@ -352,6 +489,16 @@ palo:
       subnet: "{{ underlay.tenants.subnet }}"
       zone: tenant
       ip: ""
+    - name: ethernet1/1.60
+      vlan_id: "{{ underlay.acme_prod.vlan_id }}"
+      subnet: "{{ underlay.acme_prod.subnet }}"
+      zone: tenant
+      ip: ""
+    - name: ethernet1/1.61
+      vlan_id: "{{ underlay.acme_dev.vlan_id }}"
+      subnet: "{{ underlay.acme_dev.subnet }}"
+      zone: tenant
+      ip: ""
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. docker_swarm — encrypted overlay subnets (east-west app plane)
@@ -364,18 +511,21 @@ docker_swarm:
 
   mattermost:
     subnet: "10.40.10.0/24"
+    netmask: "255.255.255.0"
     name: "mm_overlay"
     encrypted: true
     attachable: true
 
   splunk:
     subnet: "10.40.11.0/24"
+    netmask: "255.255.255.0"
     name: "splunk_overlay"
     encrypted: true
     attachable: true
 
   elk:
     subnet: "10.40.12.0/24"
+    netmask: "255.255.255.0"
     name: "elk_overlay"
     encrypted: true
     attachable: true
