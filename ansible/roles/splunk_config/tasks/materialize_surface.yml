@@ -1,0 +1,45 @@
+---
+# Build the operator-facing surface JSON that Python engines consume.
+# Source of truth: defaults/main.yml lists (+ *_extra append lists).
+# Edit those vars — not the .py files — to harvest/apply more conf types.
+
+- name: Surface | Merge base lists with operator extras
+  ansible.builtin.set_fact:
+    _splunk_surface:
+      version: 1
+      conf_files: "{{ (splunk_config_api_conf_files | default([])) + (splunk_config_api_conf_files_extra | default([])) }}"
+      stock_conf_files: "{{ (splunk_config_api_stock_conf_files | default([])) + (splunk_config_api_stock_conf_files_extra | default([])) }}"
+      stock_app_names: "{{ (splunk_config_stock_app_names | default([])) + (splunk_config_stock_app_names_extra | default([])) }}"
+      stock_app_prefixes: "{{ (splunk_config_stock_app_prefixes | default([])) + (splunk_config_stock_app_prefixes_extra | default([])) }}"
+      apply_forbidden_keys: "{{ (splunk_config_api_apply_forbidden_keys | default([])) + (splunk_config_api_apply_forbidden_keys_extra | default([])) }}"
+      capture_views_for_custom_apps: "{{ splunk_config_api_capture_views_custom | default(true) | bool }}"
+      capture_views_for_stock_apps: "{{ splunk_config_api_capture_views_stock | default(false) | bool }}"
+      _how_to_extend: >-
+        Edit splunk_config_api_conf_files / _extra in role defaults or
+        inventory group_vars. Re-run export. Do not edit the Python engines
+        to add conf types.
+
+- name: Surface | Stat parent dir for surface JSON
+  ansible.builtin.stat:
+    path: "{{ splunk_config_surface_json | dirname }}"
+  delegate_to: localhost
+  become: false
+  register: _surface_parent
+
+# Only create when missing — never "ensure" /tmp (macOS /private/tmp + mode fights).
+- name: Surface | Create parent dir when absent
+  ansible.builtin.file:
+    path: "{{ splunk_config_surface_json | dirname }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  become: false
+  when: not (_surface_parent.stat.exists | default(false))
+
+- name: Surface | Write surface JSON for Python engines
+  ansible.builtin.copy:
+    dest: "{{ splunk_config_surface_json }}"
+    mode: "0640"
+    content: "{{ _splunk_surface | to_nice_json }}\n"
+  delegate_to: localhost
+  become: false

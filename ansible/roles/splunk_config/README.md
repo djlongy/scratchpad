@@ -125,6 +125,32 @@ Or merge the scrubbed tree into `$SPLUNK_HOME/etc` by hand using `RECREATE.md`.
 - Secret-looking values become `<SCRUBBED:secrets>` in the snapshot.
 - Secrets default to **flat files** under `files/secrets/` (gitignored). Vault is optional.
 
+## Extending the capture surface
+
+**You do not edit Python to harvest another conf type.** The engines under
+`files/*.py` only speak REST / scrub conf. The *what* is declared in
+`defaults/main.yml` (and inventory overrides).
+
+| Want to… | Edit |
+|---|---|
+| API-export another conf (e.g. `multikv`, `datalake`) | Append to `splunk_config_api_conf_files` or `splunk_config_api_conf_files_extra` |
+| Harvest more confs from stock apps | `splunk_config_api_stock_conf_files` / `_extra` |
+| Treat an app as stock (or un-stock) | `splunk_config_stock_app_names` / `_prefixes` / their `_extra` lists |
+| Stop apply from POSTing a key name | `splunk_config_api_apply_forbidden_keys` / `_extra` |
+| Capture views on stock apps | `splunk_config_api_capture_views_stock: true` |
+| Container-export extra `etc/` paths | `splunk_config_capture_paths` |
+
+```yaml
+# inventories/…/group_vars/all/main.yml  — append without forking the role
+splunk_config_api_conf_files_extra:
+  - multikv
+  - datalake
+```
+
+Ansible writes a merged JSON surface (`splunk_config_surface_json`) and passes
+`--surface` into the Python engines. Open that JSON after a run to see exactly
+what the engines received. The surface includes `_how_to_extend` as a breadcrumb.
+
 ## Out of scope
 
 - Index bucket data and kvstore data (definitions only)

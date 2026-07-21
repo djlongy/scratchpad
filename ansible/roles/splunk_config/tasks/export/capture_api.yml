@@ -74,22 +74,27 @@
   delegate_to: localhost
   become: false
 
+- name: API capture | Materialise capture surface (conf lists from defaults)
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/materialize_surface.yml"
+
 - name: API capture | Run REST exporter
   ansible.builtin.command:
-    argv: >-
-      {{
+    argv: "{{ _api_export_argv }}"
+  vars:
+    _api_export_argv: "{{ (
         [
           ansible_playbook_python | default('/usr/bin/python3'),
           role_path ~ '/files/splunk_config_api_export.py',
           '--url', splunk_config_api_url,
-          '--user', splunk_config_api_user,
+          '--user', splunk_config_api_user | default('admin'),
           '--password', _splunk_api_password,
           '--raw-inst', _api_raw_inst,
-          '--label', splunk_config_api_label,
+          '--label', splunk_config_api_label | default('standalone'),
+          '--surface', splunk_config_surface_json,
         ]
-        + (['--verify-tls'] if (splunk_config_api_verify_tls | bool) else [])
-        + (['--include-disabled-apps'] if (splunk_config_api_include_disabled_apps | bool) else [])
-      }}
+        + (['--verify-tls'] if (splunk_config_api_verify_tls | default(false) | bool) else [])
+        + (['--include-disabled-apps'] if (splunk_config_api_include_disabled_apps | default(false) | bool) else [])
+      ) }}"
   delegate_to: localhost
   become: false
   no_log: true

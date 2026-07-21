@@ -35,7 +35,9 @@ def test_filter_props_skips_scrubbed_and_forbidden(saa):
         "SHOULD_LINEMERGE": "true",
         "blank": "",
     }
-    kept, skipped = saa.filter_props(props, skip_forbidden=True)
+    kept, skipped = saa.filter_props(
+        props, skip_forbidden=True, forbidden_keys={"password", "token"},
+    )
     assert kept == {"SHOULD_LINEMERGE": "true"}
     assert skipped == 3
 
@@ -44,3 +46,22 @@ def test_is_stock_app(saa):
     assert saa.is_stock_app("search")
     assert saa.is_stock_app("splunk_httpinput")
     assert not saa.is_stock_app("ansible_audit")
+
+
+def test_surface_loader_accepts_extra_conf(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[5] / "ansible" / "roles" / "splunk_config" / "files" / "splunk_config_surface.py"
+    spec = importlib.util.spec_from_file_location("surface", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    surface_path = tmp_path / "s.json"
+    surface_path.write_text(
+        '{"conf_files": ["server", "multikv"], "stock_conf_files": ["props"]}',
+        encoding="utf-8",
+    )
+    s = mod.load_surface(str(surface_path))
+    assert "multikv" in s["conf_files"]
+    assert s["stock_conf_files"] == ["props"]
+    # missing keys filled from default
+    assert "apply_forbidden_keys" in s

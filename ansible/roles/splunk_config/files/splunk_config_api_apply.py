@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib.util
 import json
 import os
 import re
@@ -31,35 +32,32 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-# Keep aligned with export/scrub stock-app rules.
-STOCK_APP_NAMES = frozenset({
-    "search", "launcher", "learned", "legacy", "sample_app", "framework",
-    "gettingstarted", "introspection_generator_addon", "appsbrowser",
-    "user-prefs", "alert_logevent", "alert_webhook", "splunk_httpinput",
-    "SplunkForwarder", "SplunkLightForwarder", "splunk_gdi",
-    "splunk_enterprise_on_docker", "journald_input", "audit_trail",
-    "splunk_archiver", "splunk_ingest_actions", "splunk_internal_metrics",
-})
-STOCK_APP_PREFIXES = (
-    "splunk_", "Splunk_", "DA-ITSI-", "SA-", "TA-",
-    "splunk-", "SplunkDeployment",
-)
-
 SCRUB_RE = re.compile(r"^<SCRUBBED")
 CONF_SECTION_RE = re.compile(r"^\[([^\]]+)\]\s*$")
-# Keys that should never be POSTed even if present unscrubbed in a bad snapshot.
-FORBIDDEN_KEYS = frozenset({
-    "sslPassword", "pass4SymmKey", "password", "auth_password",
-    "bindDNpassword", "secret", "token", "accessKey", "secret_key",
-})
+
+# Surface (stock apps, forbidden keys) from Ansible defaults — not this file.
+_SURFACE_MOD = None
+
+
+def _surface_mod():
+    global _SURFACE_MOD
+    if _SURFACE_MOD is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "splunk_config_surface.py")
+        spec = importlib.util.spec_from_file_location("splunk_config_surface", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        _SURFACE_MOD = mod
+    return _SURFACE_MOD
 
 
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
-def is_stock_app(name: str) -> bool:
-    return name in STOCK_APP_NAMES or name.startswith(STOCK_APP_PREFIXES)
+def is_stock_app(name: str, surface: dict[str, Any] | None = None) -> bool:
+    surf = surface or _surface_mod().load_surface(None)
+    return _surface_mod().is_stock_app(name, surf)
 
 
 def is_scrubbed(val: str) -> bool:
@@ -148,8 +146,14 @@ def parse_conf(text: str) -> dict[str, dict[str, str]]:
     return stanzas
 
 
-def filter_props(props: dict[str, str], *, skip_forbidden: bool) -> tuple[dict[str, str], int]:
+def filter_props(
+    props: dict[str, str],
+    *,
+    skip_forbidden: bool,
+    forbidden_keys: set[str] | frozenset[str] | None = None,
+) -> tuple[dict[str, str], int]:
     """Drop scrubbed / empty / forbidden keys. Returns (kept, skipped_count)."""
+    blocked = forbidden_keys or set()
     kept: dict[str, str] = {}
     skipped = 0
     for key, val in props.items():
@@ -159,7 +163,7 @@ def filter_props(props: dict[str, str], *, skip_forbidden: bool) -> tuple[dict[s
         if is_scrubbed(str(val)):
             skipped += 1
             continue
-        if skip_forbidden and key in FORBIDDEN_KEYS:
+        if skip_forbidden and key in blocked:
             skipped += 1
             continue
         kept[key] = str(val)
@@ -257,13 +261,13 @@ def discover_instance_dirs(snapshot_dir: str) -> list[str]:
     return out
 
 
-def should_include_app(app: str, scope: str) -> bool:
+def should_include_app(app: str, scope: str, surface: dict[str, Any]) -> bool:
     if scope == "all":
         return True
     if scope == "system":
         return False
     if scope == "custom_apps":
-        return not is_stock_app(app)
+        return not is_stock_app(app, surface)
     return True
 
 
@@ -274,6 +278,7 @@ def apply_conf_file(
     *,
     dry_run: bool,
     skip_forbidden: bool,
+    forbidden_keys: set[str],
     stats: dict[str, int],
     errors: list[str],
 ) -> None:
@@ -281,7 +286,9 @@ def apply_conf_file(
     text = open(conf_path, encoding="utf-8", errors="replace").read()
     stanzas = parse_conf(text)
     for stanza, props in stanzas.items():
-        kept, skipped = filter_props(props, skip_forbidden=skip_forbidden)
+        kept, skipped = filter_props(
+            props, skip_forbidden=skip_forbidden, forbidden_keys=forbidden_keys,
+        )
         stats["keys_skipped"] += skipped
         if not kept:
             stats["stanzas_empty"] += 1
@@ -331,7 +338,10 @@ def apply_snapshot(
     dry_run: bool,
     skip_forbidden: bool,
     max_errors: int,
+    surface: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    surface = surface or _surface_mod().load_surface(None)
+    forbidden = set(surface.get("apply_forbidden_keys") or [])
     stats: dict[str, int] = {
         "stanzas_ok": 0,
         "stanzas_empty": 0,
@@ -364,6 +374,7 @@ def apply_snapshot(
                 apply_conf_file(
                     client, "system", os.path.join(sys_local, fname),
                     dry_run=dry_run, skip_forbidden=skip_forbidden,
+                    forbidden_keys=forbidden,
                     stats=stats, errors=errors,
                 )
                 if stats["errors"] >= max_errors:
@@ -372,7 +383,7 @@ def apply_snapshot(
         apps_root = os.path.join(inst, "apps")
         if scope != "system" and os.path.isdir(apps_root):
             for app in sorted(os.listdir(apps_root)):
-                if not should_include_app(app, scope):
+                if not should_include_app(app, scope, surface):
                     continue
                 app_dir = os.path.join(apps_root, app)
                 local = os.path.join(app_dir, "local")
@@ -392,6 +403,7 @@ def apply_snapshot(
                         apply_conf_file(
                             client, app, os.path.join(root, fname),
                             dry_run=dry_run, skip_forbidden=skip_forbidden,
+                            forbidden_keys=forbidden,
                             stats=stats, errors=errors,
                         )
                         if stats["errors"] >= max_errors:
@@ -448,8 +460,15 @@ def main() -> None:
         help="Do not skip forbidden secret key names (still skips <SCRUBBED> values)",
     )
     parser.add_argument("--max-errors", type=int, default=50)
+    parser.add_argument(
+        "--surface",
+        default=None,
+        help="JSON surface from Ansible (stock apps, forbidden keys). "
+             "Omit only for unit tests — role always passes this.",
+    )
     args = parser.parse_args()
 
+    surface = _surface_mod().load_surface(args.surface)
     client = SplunkClient(args.url, args.user, args.password, args.verify_tls)
     info = server_info(client)
     version = info.get("version") or "unknown"
@@ -462,6 +481,7 @@ def main() -> None:
         dry_run=args.dry_run,
         skip_forbidden=not args.allow_secret_keys,
         max_errors=args.max_errors,
+        surface=surface,
     )
     result["target"] = {"url": args.url, "version": version}
     json.dump(result, sys.stdout, indent=2)

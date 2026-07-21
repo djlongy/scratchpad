@@ -56,12 +56,8 @@ splunk_config_capture_paths:
   - auth/splunk.secret
   - passwd
 
-# Stock-app globs: for these apps only `local/` + `metadata/` are captured, never
-# `default/` (that ships with Splunk / the app and is not operator state). Custom
-# apps are captured whole. Applied at CAPTURE time so the tarball stays small —
-# skipping every stock TA's multi-hundred-MB default/ that would just be
-# discarded later. Kept ALIGNED with STOCK_APP_* in files/splunk_config_export.py
-# (the scrubber re-enforces scope authoritatively on whatever was captured).
+# Stock-app globs for CONTAINER capture (docker tar). API/scrub stock rules live
+# in the surface lists below (splunk_config_stock_app_names / _prefixes).
 splunk_config_stock_app_globs:
   - "splunk_*"
   - "Splunk_*"
@@ -110,6 +106,113 @@ splunk_config_api_password_file: ""
 splunk_config_api_verify_tls: false
 splunk_config_api_label: standalone
 splunk_config_api_include_disabled_apps: false
+
+# ── Capture / apply SURFACE (edit here — not the Python engines) ─────────────
+# Python under files/ only does HTTP + conf I/O. The *what* to pull or push is
+# these lists. Materialised to JSON (splunk_config_surface_json) before scripts
+# run. To add a conf type for API export/apply:
+#   1. Append the conf base name (no .conf) to the right list or its _extra list
+#   2. Re-run export / apply
+# See README → "Extending the capture surface".
+#
+# conf_files: system/local + custom apps (full knowledge + settings surface)
+splunk_config_api_conf_files:
+  - server
+  - web
+  - indexes
+  - inputs
+  - outputs
+  - props
+  - transforms
+  - authentication
+  - authorize
+  - limits
+  - distsearch
+  - collections
+  - alert_actions
+  - savedsearches
+  - eventtypes
+  - tags
+  - fields
+  - macros
+  - workflow_actions
+  - health
+  - serverclass
+  - ui-prefs
+  - app
+  - audit
+# Operator append-only (inventory / -e); never edit Python to add confs.
+splunk_config_api_conf_files_extra: []
+
+# stock_conf_files: knowledge objects only for Splunk-shipped apps
+splunk_config_api_stock_conf_files:
+  - savedsearches
+  - eventtypes
+  - tags
+  - macros
+  - props
+  - transforms
+  - inputs
+  - indexes
+  - app
+  - ui-prefs
+  - workflow_actions
+splunk_config_api_stock_conf_files_extra: []
+
+# Apps treated as stock (local/ only in scrubber; limited conf set on API export)
+splunk_config_stock_app_names:
+  - search
+  - launcher
+  - learned
+  - legacy
+  - sample_app
+  - framework
+  - gettingstarted
+  - introspection_generator_addon
+  - appsbrowser
+  - user-prefs
+  - alert_logevent
+  - alert_webhook
+  - splunk_httpinput
+  - SplunkForwarder
+  - SplunkLightForwarder
+  - splunk_gdi
+  - splunk_enterprise_on_docker
+  - journald_input
+  - audit_trail
+  - splunk_archiver
+  - splunk_ingest_actions
+  - splunk_internal_metrics
+splunk_config_stock_app_names_extra: []
+
+splunk_config_stock_app_prefixes:
+  - "splunk_"
+  - "Splunk_"
+  - "DA-ITSI-"
+  - "SA-"
+  - "TA-"
+  - "splunk-"
+  - "SplunkDeployment"
+splunk_config_stock_app_prefixes_extra: []
+
+# Apply via API: never POST these key names (scrubbed values are also skipped).
+splunk_config_api_apply_forbidden_keys:
+  - sslPassword
+  - pass4SymmKey
+  - password
+  - auth_password
+  - bindDNpassword
+  - secret
+  - token
+  - accessKey
+  - secret_key
+splunk_config_api_apply_forbidden_keys_extra: []
+
+splunk_config_api_capture_views_custom: true
+splunk_config_api_capture_views_stock: false
+
+# Where Ansible writes the merged surface JSON for Python (--surface).
+splunk_config_surface_json: "/tmp/splunk_config_surface_{{ splunk_config_stack | default('splunk') }}.json"
 
 # ── Docker storage root (host-side volume paths) ─────────────────────────────
 # Docker's data-root. Named volumes (including local-driver + type=nfs) appear

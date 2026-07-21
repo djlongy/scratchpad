@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import importlib.util
 import json
 import os
 import ssl
@@ -38,49 +39,31 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-# Align with files/splunk_config_export.py stock-app rules.
-STOCK_APP_NAMES = frozenset({
-    "search", "launcher", "learned", "legacy", "sample_app", "framework",
-    "gettingstarted", "introspection_generator_addon", "appsbrowser",
-    "user-prefs", "alert_logevent", "alert_webhook", "splunk_httpinput",
-    "SplunkForwarder", "SplunkLightForwarder", "splunk_gdi",
-    "splunk_enterprise_on_docker", "journald_input", "audit_trail",
-    "splunk_archiver", "splunk_ingest_actions", "splunk_internal_metrics",
-})
-STOCK_APP_PREFIXES = (
-    "splunk_", "Splunk_", "DA-ITSI-", "SA-", "TA-",
-    "splunk-", "SplunkDeployment",
-)
-
-# Conf files harvested for system (acl.app=system only) and custom apps.
-# Omit product bulk catalogues (messages, restmap, times) — pure defaults.
-SYSTEM_CONF_FILES = (
-    "server", "web", "indexes", "inputs", "outputs", "props", "transforms",
-    "authentication", "authorize", "limits", "distsearch", "collections",
-    "alert_actions", "savedsearches", "eventtypes", "tags", "fields",
-    "macros", "workflow_actions", "health", "serverclass", "ui-prefs",
-    "app", "audit",
-)
-
-# Knowledge-object confs for stock apps (only stanzas whose acl.app matches).
-STOCK_APP_CONF_FILES = (
-    "savedsearches", "eventtypes", "tags", "macros", "props", "transforms",
-    "inputs", "indexes", "app", "ui-prefs", "workflow_actions",
-)
-
 # Content keys that are REST metadata, never conf settings.
 META_KEYS = frozenset({
     "disabled", "eai:type", "eai:acl", "eai:attributes", "eai:userName",
     "eai:appName", "eai:digest", "eai:data",
 })
 
+# Surface (conf lists / stock apps) lives in Ansible defaults — see
+# roles/splunk_config/defaults/main.yml and README "Extending the capture surface".
+_SURFACE_MOD = None
+
+
+def _surface_mod():
+    global _SURFACE_MOD
+    if _SURFACE_MOD is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "splunk_config_surface.py")
+        spec = importlib.util.spec_from_file_location("splunk_config_surface", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        _SURFACE_MOD = mod
+    return _SURFACE_MOD
+
 
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr)
-
-
-def is_stock_app(name: str) -> bool:
-    return name in STOCK_APP_NAMES or name.startswith(STOCK_APP_PREFIXES)
 
 
 class SplunkClient:
@@ -420,11 +403,20 @@ def export_api(
     label: str,
     verify_tls: bool,
     include_disabled_apps: bool,
+    surface: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    surf_mod = _surface_mod()
+    surface = surface or surf_mod.load_surface(None)
+    conf_files = list(surface.get("conf_files") or [])
+    stock_conf_files = list(surface.get("stock_conf_files") or [])
+    views_custom = bool(surface.get("capture_views_for_custom_apps", True))
+    views_stock = bool(surface.get("capture_views_for_stock_apps", False))
+
     client = SplunkClient(base_url, username, password, verify_tls)
     info = server_info(client)
     version = info.get("version") or "unknown"
     _log(f"connected to {base_url} (splunk {version})")
+    _log(f"surface: {len(conf_files)} conf_files, {len(stock_conf_files)} stock_conf_files")
 
     etc = os.path.join(raw_inst_dir, "etc")
     os.makedirs(etc, exist_ok=True)
@@ -432,7 +424,7 @@ def export_api(
     # ── system/local (only ACL-owned by system) ─────────────────────────────
     sys_local = os.path.join(etc, "system", "local")
     sys_files = 0
-    for conf_name in SYSTEM_CONF_FILES:
+    for conf_name in conf_files:
         stanzas = harvest_conf(
             client, "nobody", "system", conf_name, owner_app="system",
         )
@@ -450,10 +442,9 @@ def export_api(
         name = app["name"]
         if app["disabled"] and not include_disabled_apps:
             continue
-        stock = is_stock_app(name)
-        # Stock apps: knowledge-object confs only, no product UI views.
-        # Custom apps: full conf set + app-owned views.
-        conf_names = STOCK_APP_CONF_FILES if stock else SYSTEM_CONF_FILES
+        stock = surf_mod.is_stock_app(name, surface)
+        # Stock apps: knowledge-object confs only; custom: full surface conf set.
+        conf_names = stock_conf_files if stock else conf_files
         app_dir = os.path.join(etc, "apps", name)
         local_dir = os.path.join(app_dir, "local")
         files_written = 0
@@ -469,7 +460,8 @@ def export_api(
             n = _write_conf(os.path.join(local_dir, f"{conf_name}.conf"), stanzas)
             if n:
                 files_written += 1
-        if not stock:
+        want_views = views_stock if stock else views_custom
+        if want_views:
             views = harvest_views(client, "nobody", name, app_dir)
             if views:
                 files_written += views
@@ -520,13 +512,21 @@ def main() -> None:
     parser.add_argument("--label", default="standalone")
     parser.add_argument("--verify-tls", action="store_true", default=False)
     parser.add_argument("--include-disabled-apps", action="store_true", default=False)
+    parser.add_argument(
+        "--surface",
+        default=None,
+        help="JSON surface from Ansible (conf_files, stock apps). "
+             "Omit only for unit tests — role always passes this.",
+    )
     args = parser.parse_args()
+    surface = _surface_mod().load_surface(args.surface)
     meta = export_api(
         args.url,
         args.user,
         args.password,
         args.raw_inst,
         label=args.label,
+        surface=surface,
         verify_tls=args.verify_tls,
         include_disabled_apps=args.include_disabled_apps,
     )

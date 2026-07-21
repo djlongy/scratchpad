@@ -19,6 +19,11 @@
   delegate_to: localhost
   become: false
 
+# Surface drives stock-app classification in the scrubber (same lists as API).
+- name: Scrub | Materialise surface when not already present
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/materialize_surface.yml"
+  when: _splunk_surface is not defined
+
 - name: Scrub | Run the scrubber/classifier over the raw capture
   ansible.builtin.command:
     argv:
@@ -30,6 +35,8 @@
       - "{{ splunk_config_snapshot_dir }}"
       - "--source-stack"
       - "{{ splunk_config_stack }}"
+      - "--surface"
+      - "{{ splunk_config_surface_json }}"
   delegate_to: localhost
   become: false
   register: _scrub

@@ -21,6 +21,7 @@ result (sections absent on this estate are simply omitted, never faked).
 """
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -37,16 +38,28 @@ SRC_SECRETS = "secrets"  # re-seeded from secrets backend (file by default)
 CONF_SUFFIX = ".conf"
 UI_VIEWS = os.path.join("local", "data", "ui", "views")
 
-# Splunk-shipped apps: capture only their `local/` overrides, never `default/`
-# (that ships with Splunk / the app and is not the operator's declarative state).
-# Genuinely custom / third-party apps (not matched here) are captured WHOLE.
-STOCK_APP_NAMES = frozenset({
-    "search", "launcher", "learned", "legacy", "sample_app", "framework",
-    "gettingstarted", "introspection_generator_addon", "appsbrowser",
-    "user-prefs", "alert_logevent", "alert_webhook", "splunk_httpinput",
-    "SplunkForwarder", "SplunkLightForwarder", "splunk_gdi",
-})
-STOCK_APP_PREFIXES = ("splunk_", "Splunk_", "DA-ITSI-", "SA-", "TA-")
+# Stock-app rules come from the Ansible surface (defaults/main.yml). Fallback
+# inside splunk_config_surface.py is used only when --surface is omitted.
+_SURFACE = None
+_SURFACE_MOD = None
+
+
+def _surface_mod():
+    global _SURFACE_MOD
+    if _SURFACE_MOD is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "splunk_config_surface.py")
+        spec = importlib.util.spec_from_file_location("splunk_config_surface", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        _SURFACE_MOD = mod
+    return _SURFACE_MOD
+
+
+def set_surface(surface: dict | None) -> None:
+    """Install surface used by is_stock_app (call once from main/run)."""
+    global _SURFACE
+    _SURFACE = surface
 
 # Conf keys whose VALUE is always a secret → redacted (case-insensitive match).
 SECRET_KEYS = frozenset({
@@ -78,7 +91,8 @@ def _log(msg: str) -> None:
 
 def is_stock_app(name: str) -> bool:
     """True when the app ships with Splunk (capture local/ only, skip default/)."""
-    return name in STOCK_APP_NAMES or name.startswith(STOCK_APP_PREFIXES)
+    surf = _SURFACE if _SURFACE is not None else _surface_mod().load_surface(None)
+    return _surface_mod().is_stock_app(name, surf)
 
 
 def _read_text(path: str) -> str:
@@ -439,8 +453,19 @@ def _version_from_raw(raw_dir: str) -> str:
     return ""
 
 
-def run(raw_dir: str, out_dir: str, source_stack: str, splunk_version: str) -> dict:
+def run(
+    raw_dir: str,
+    out_dir: str,
+    source_stack: str,
+    splunk_version: str,
+    *,
+    surface: dict | None = None,
+) -> dict:
     """Capture every instance under raw_dir into out_dir; return the manifest."""
+    if surface is not None:
+        set_surface(surface)
+    elif _SURFACE is None:
+        set_surface(_surface_mod().load_surface(None))
     version = (splunk_version or "").strip()
     if not version or version.lower() == "unknown":
         version = _version_from_raw(raw_dir) or "unknown"
@@ -467,8 +492,16 @@ def main() -> None:
     parser.add_argument("--out", required=True, help="snapshot output directory")
     parser.add_argument("--source-stack", default="splunk", help="stack name for the manifest")
     parser.add_argument("--splunk-version", default="unknown", help="Splunk version for the manifest")
+    parser.add_argument(
+        "--surface",
+        default=None,
+        help="JSON surface from Ansible (stock-app rules). Role always passes this.",
+    )
     args = parser.parse_args()
-    manifest = run(args.raw, args.out, args.source_stack, args.splunk_version)
+    surface = _surface_mod().load_surface(args.surface)
+    manifest = run(
+        args.raw, args.out, args.source_stack, args.splunk_version, surface=surface,
+    )
     json.dump(manifest, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
 

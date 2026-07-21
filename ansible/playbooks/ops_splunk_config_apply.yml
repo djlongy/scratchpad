@@ -25,7 +25,8 @@
     splunk_config_apply_transport: api
     splunk_config_secrets_backend: file
     # Prefer custom apps on a live box; override with -e for system/all.
-    splunk_config_api_apply_scope: "{{ splunk_config_api_apply_scope | default('custom_apps') }}"
+    # (Do not self-reference this var — recursion breaks argv templating.)
+    splunk_config_api_apply_scope: custom_apps
   tasks:
     - name: Run splunk_config apply (API transport)
       ansible.builtin.import_role:

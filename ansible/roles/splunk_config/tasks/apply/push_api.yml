@@ -54,30 +54,34 @@
       password via splunk_config_api_password, splunk_config_api_password_file,
       or {{ splunk_config_secrets_dir }}/api_password.
 
+- name: API apply | Materialise surface (stock-app rules + forbidden keys)
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/materialize_surface.yml"
+
 - name: API apply | Push snapshot via REST
   ansible.builtin.command:
-    argv: >-
-      {{
+    argv: "{{ _api_apply_argv }}"
+  vars:
+    _api_apply_argv: "{{ (
         [
           ansible_playbook_python | default('/usr/bin/python3'),
           role_path ~ '/files/splunk_config_api_apply.py',
           '--url', splunk_config_api_url,
-          '--user', splunk_config_api_user,
+          '--user', splunk_config_api_user | default('admin'),
           '--password', _splunk_api_password,
           '--snapshot', splunk_config_snapshot_dir,
           '--scope', splunk_config_api_apply_scope | default('custom_apps'),
           '--max-errors', (splunk_config_api_apply_max_errors | default(50) | string),
+          '--surface', splunk_config_surface_json,
         ]
-        + (['--verify-tls'] if (splunk_config_api_verify_tls | bool) else [])
+        + (['--verify-tls'] if (splunk_config_api_verify_tls | default(false) | bool) else [])
         + (['--dry-run'] if (splunk_config_api_apply_dry_run | default(false) | bool) else [])
         + (['--allow-secret-keys'] if (splunk_config_api_apply_allow_secret_keys | default(false) | bool) else [])
-      }}
+      ) }}"
   delegate_to: localhost
   become: false
   no_log: true
   register: _api_apply
-  changed_when: >-
-    not (splunk_config_api_apply_dry_run | default(false) | bool)
+  changed_when: not (splunk_config_api_apply_dry_run | default(false) | bool)
   # Script exits 0 on success, 2 when some stanza POSTs failed (JSON still printed).
   failed_when: (_api_apply.rc | default(1) | int) not in [0, 2]
 
