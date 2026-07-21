@@ -101,10 +101,10 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags redeploy -e vsphere_vm_force_redeploy=true
 ```
 
-The delete is by name and idempotent, so redeploy also works on a host whose VM
-doesn't exist yet (it just builds it). The vsphere-only scope rebuilds the VM but
-tag-skips every later role — the guest comes back a bare template until a full
-(or config) run follows.
+The delete is idempotent, so redeploy also works on a host whose VM doesn't exist
+yet (it just builds it — see *How a delete is targeted* below). The vsphere-only
+scope rebuilds the VM but tag-skips every later role — the guest comes back a
+bare template until a full (or config) run follows.
 
 ## Robust spin-up (NIC reconnect + bounded waits)
 
@@ -170,6 +170,33 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
 ansible-playbook -i inventories/<env>/hosts.yml playbook.yml \
   --tags destroy -e vsphere_vm_force_destroy=true
 ```
+
+### How a delete is targeted
+
+Both destructive phases (`destroy`, `redeploy`) run `identify.yml` first: it looks
+the VM up with `community.vmware.vmware_guest_info` using **name + folder** (the
+same placement create used), records the **vCenter instance UUID**, optionally
+verifies **resource pool** when `vsphere_vm_resource_pool` is set, then the delete
+runs `vmware_guest` with `uuid` + `use_instance_uuid: true` — never by bare name.
+
+- **Name + folder (required for multi-tenant safety).** Tenants can share display
+  names. Lookup is scoped to `_vsphere_guest.folder` (`/<DC>/vm/…` from
+  `vsphere_vm_folder`). A same-named VM under another folder cannot be selected.
+- **Instance UUID, not BIOS UUID** — the BIOS UUID (`hw_product_uuid`) can be
+  duplicated across VMs by clones and imports; the instance UUID is unique within
+  a vCenter. Delete is pinned to that UUID after identify.
+- **Resource pool (when declared).** `vmware_guest_info` has no pool filter; if
+  inventory sets `vsphere_vm_resource_pool`, identify re-reads the pinned UUID and
+  **fails** if the live pool name does not match (exact or basename for full paths).
+- **Not found at that placement → no delete.** Empty UUID skips the delete
+  (idempotent destroy; redeploy doubles as create). A VM *moved* out of its
+  inventory folder is treated as missing — update `vsphere_vm_folder` rather than
+  falling back to a global name match (that would re-open wrong-VM risk).
+- **Mismatch → hard fail.** If a result’s name/folder/pool do not match inventory,
+  identify refuses to arm a delete.
+
+This is the only place the role reads live vCenter state; the `plan` phase stays
+strictly inventory-derived.
 
 ## Chaining on-guest roles in the same play (`vsphere_vm_wait_for_ssh`)
 

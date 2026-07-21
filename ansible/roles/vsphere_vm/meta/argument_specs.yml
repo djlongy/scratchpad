@@ -42,11 +42,18 @@ argument_specs:
       vsphere_vm_resource_pool:
         type: str
         required: false
-        description: Resource pool path.
+        description: >-
+          Resource pool path. When set, destroy/redeploy also verify that the VM
+          they resolved actually lives in this pool, and fail rather than delete
+          a guest whose compute placement does not match inventory.
       vsphere_vm_folder:
         type: str
         required: false
-        description: Inventory folder for new VMs.
+        description: >-
+          Inventory folder for new VMs. Also scopes the destroy/redeploy lookup —
+          the VM is resolved by name WITHIN this folder, so a same-named VM
+          elsewhere cannot be deleted. A VM moved out of this folder reads as
+          absent; update this var instead of relying on a datacenter-wide match.
       vsphere_vm_datastore:
         type: str
         required: false

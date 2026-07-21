@@ -4,18 +4,32 @@
 # (state: absent). Opt-in via a single gate on main.yml:
 #   vsphere_vm_force_destroy=true
 # Optional --tags destroy scopes the run to vsphere phases only.
+#
+# Resolve the VM to its instance UUID first (name + folder, optional resource-pool
+# check — see identify.yml), then delete BY UUID. Multi-tenant same-name VMs are
+# disambiguated by the inventory placement folder; a missing/mismatched object
+# either skips the delete or hard-fails rather than deleting the wrong guest.
 
+# include_tasks (not import) so a run where destroy is not armed costs ONE skipped
+# task instead of a skip line per task in identify.yml — the same reason connect.yml
+# is included rather than imported. `apply:` carries this phase's tags to the
+# included tasks, which a bare dynamic include would not do.
+- name: Destroy | Resolve the VM before deleting it
+  ansible.builtin.include_tasks:
+    file: identify.yml
+    apply:
+      tags: [vsphere_vm, destroy]
+
+# The resolved UUID is deliberately NOT in this task's name: names render even for
+# skipped tasks, and the fact is undefined until identify.yml has run. identify.yml
+# prints it on the line above instead.
 - name: Destroy | Remove {{ _vsphere_guest.name }}
   community.vmware.vmware_guest:
     datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ _vsphere_guest.name }}"
-    # Match by NAME across the datacenter — folder omitted. Pinning the CREATE
-    # placement folder meant a VM living anywhere else (moved after build, or at
-    # the datacenter root) silently failed to match: vmware_guest treats it as
-    # already-absent and returns changed=0 instead of deleting it. Names are
-    # unique in this role's model, so name alone is a safe, folder-drift-proof
-    # match.
+    uuid: "{{ _vsphere_existing_uuid }}"
+    use_instance_uuid: true
     state: absent
     force: true
+  when: _vsphere_existing_uuid | length > 0
   delegate_to: localhost
   become: false

@@ -1,0 +1,163 @@
+---
+# roles/vsphere_vm/tasks/identify.yml
+# Resolve THIS host's existing VM to its vCenter INSTANCE UUID, so the destructive
+# phases (redeploy.yml, destroy.yml) delete an object they have positively
+# identified instead of re-resolving a name at delete time.
+#
+# Multi-tenant safety: the same display name can exist under different folders
+# (and occasionally different compute placements). Lookup is therefore scoped by
+# inventory placement — name + folder — not by name across the whole datacenter.
+# When vsphere_vm_resource_pool is set, the resolved object is also checked against
+# that pool before the UUID is accepted for delete.
+#
+# Why instance_uuid and not the BIOS uuid (hw_product_uuid): the BIOS UUID can be
+# duplicated across VMs (clones and imports carry it over), while the instance UUID
+# is unique within a vCenter. vmware_guest reads it only when use_instance_uuid.
+#
+# Scope of the guarantee:
+#   * Name is disambiguated by the CREATE placement folder (_vsphere_guest.folder,
+#     absolute /<DC>/vm/… path from vsphere_vm_folder). That is the tenant boundary
+#     this role already uses for clones.
+#   * A second same-named VM in a different folder cannot be selected.
+#   * A VM that does not exist at that name+folder resolves to '' and the caller
+#     SKIPS the delete entirely (idempotent destroy / redeploy-as-create).
+#   * A VM that was MOVED out of its inventory folder will not be found — update
+#     vsphere_vm_folder (or put it back) rather than falling back to a global
+#     name match, which would re-open the wrong-VM risk.
+#   * Optional resource-pool check is a second gate when the inventory declares a
+#     pool; it is skipped when vsphere_vm_resource_pool is empty/undefined.
+#
+# The vCenter connection is passed EXPLICITLY rather than relying on main.yml's
+# module_defaults: callers reach this file through include_tasks (dynamic), so the
+# module_defaults set on main.yml's phase import are not guaranteed to reach these
+# tasks. Same explicit-args pattern create.yml already uses for the modules that sit
+# outside the community.vmware defaults group.
+
+- name: Identify | Resolve the VM by name + folder — {{ _vsphere_guest.name }}
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    name: "{{ _vsphere_guest.name }}"
+    # Absolute inventory path from spec.yml — scopes the name to THIS tenant's
+    # folder so a same-named VM under another folder cannot be selected.
+    folder: "{{ _vsphere_guest.folder }}"
+  register: _vsphere_existing
+  # The module FAILS ("Unable to gather information for non-existing VM") rather
+  # than returning empty when the VM is absent — which is a normal, expected state
+  # here (destroy is idempotent; redeploy doubles as a plain create). Absorb it and
+  # let the '' UUID below carry the not-found signal.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  delegate_to: localhost
+  become: false
+
+- name: Identify | Record name / folder / instance UUID from the folder-scoped lookup
+  ansible.builtin.set_fact:
+    _vsphere_existing_uuid: "{{ _vsphere_existing.instance.instance_uuid | default('') }}"
+    _vsphere_existing_name: "{{ _vsphere_existing.instance.hw_name | default('') }}"
+    _vsphere_existing_folder: "{{ _vsphere_existing.instance.hw_folder | default('') }}"
+    _vsphere_existing_resource_pool: ""
+  delegate_to: localhost
+  become: false
+
+# Paranoia gate: even with folder on the lookup, refuse a UUID whose returned
+# name/folder do not match inventory. Empty UUID (not found) is allowed through.
+- name: Identify | Refuse a lookup result that does not match inventory name + folder
+  ansible.builtin.assert:
+    that:
+      - _vsphere_existing_name == _vsphere_guest.name
+      - (_vsphere_existing_folder | trim('/') ) == (_vsphere_guest.folder | trim('/') )
+    fail_msg: >-
+      Identify found a VM but it does not match inventory placement — refusing to
+      pin a delete. expected name={{ _vsphere_guest.name }} folder={{ _vsphere_guest.folder }};
+      found name={{ _vsphere_existing_name }} folder={{ _vsphere_existing_folder }}
+      uuid={{ _vsphere_existing_uuid }}. Fix inventory (vsphere_vm_name / vsphere_vm_folder)
+      or the live placement; do not delete by bare name.
+    quiet: true
+  when: _vsphere_existing_uuid | length > 0
+  delegate_to: localhost
+  become: false
+
+# Resource pool is not a filter on vmware_guest_info. When inventory declares one,
+# re-read the resolved object by UUID (unambiguous) and require the pool name to
+# match before the delete is armed. Skipped when no pool is configured.
+- name: Identify | Verify resource pool when inventory declares one
+  when:
+    - _vsphere_existing_uuid | length > 0
+    - (vsphere_vm_resource_pool | default('') | length) > 0
+  delegate_to: localhost
+  become: false
+  block:
+    - name: Identify | Fetch resourcePool.name for the pinned instance UUID
+      community.vmware.vmware_guest_info:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        uuid: "{{ _vsphere_existing_uuid }}"
+        use_instance_uuid: true
+        schema: vsphere
+        properties:
+          - name
+          - config.instanceUuid
+          - resourcePool.name
+      register: _vsphere_existing_pool
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Identify | Extract the live resource pool name
+      ansible.builtin.set_fact:
+        # schema=vsphere nests properties under instance; tolerate missing keys.
+        _vsphere_existing_resource_pool: >-
+          {{ _vsphere_existing_pool.instance['resourcePool.name']
+             | default(_vsphere_existing_pool.instance.resourcePool.name
+                       | default('', true), true) }}
+
+    - name: Identify | Refuse a UUID whose resource pool does not match inventory
+      ansible.builtin.assert:
+        that:
+          # Accept exact name match, or inventory path ending in /Name (some sites
+          # set vsphere_vm_resource_pool to a full path for standalone hosts).
+          - >-
+            (_vsphere_existing_resource_pool | length) > 0
+            and (
+              _vsphere_existing_resource_pool == vsphere_vm_resource_pool
+              or _vsphere_existing_resource_pool == (vsphere_vm_resource_pool | basename)
+              or (vsphere_vm_resource_pool | basename) == _vsphere_existing_resource_pool
+            )
+        fail_msg: >-
+          Identify resolved {{ _vsphere_guest.name }} to instance UUID
+          {{ _vsphere_existing_uuid }} in folder {{ _vsphere_existing_folder }}, but its
+          resource pool is '{{ _vsphere_existing_resource_pool }}' — inventory expects
+          '{{ vsphere_vm_resource_pool }}'. Refusing to delete the wrong compute
+          placement. Align vsphere_vm_resource_pool or the live VM before destroy/redeploy.
+        quiet: true
+
+- name: Identify | Report what the delete will target
+  ansible.builtin.debug:
+    msg: >-
+      {{ _vsphere_guest.name }} resolved to instance UUID {{ _vsphere_existing_uuid }}
+      (folder={{ _vsphere_existing_folder }}{{
+        ', resource_pool=' ~ _vsphere_existing_resource_pool
+        if (_vsphere_existing_resource_pool | length) > 0 else ''
+      }}) — the delete is pinned to this object.
+  when: _vsphere_existing_uuid | length > 0
+  delegate_to: localhost
+  become: false
+
+- name: Identify | Report that there is nothing to delete
+  ansible.builtin.debug:
+    msg: >-
+      {{ _vsphere_guest.name }} not found at folder {{ _vsphere_guest.folder }}
+      in {{ vsphere_vm_datacenter }} — skipping the delete (already in the desired
+      state, or the VM was moved; update vsphere_vm_folder if it still exists
+      elsewhere).
+  when: _vsphere_existing_uuid | length == 0
+  delegate_to: localhost
+  become: false

@@ -7,15 +7,32 @@
 # On a normal untagged play the rest of the daisy chain continues after rebuild.
 # Optional --tags redeploy scopes the run to vsphere phases only.
 #
-# Idempotent delete: state:absent by NAME (folder-drift-proof, matches destroy.yml),
-# force:true; a no-op if the VM is already gone (so redeploy also works as a plain
-# create on a host that doesn't exist yet).
+# Idempotent delete: resolve the VM to its instance UUID via name + folder (optional
+# resource-pool check), then state:absent BY UUID (matches destroy.yml), force:true.
+# Same-name VMs under other folders cannot be selected. A VM already gone at that
+# placement resolves to '' and the delete is skipped, so redeploy still works as a
+# plain create. See identify.yml for the multi-tenant safety model.
 
+# include_tasks (not import) so a run where redeploy is not armed costs ONE skipped
+# task instead of a skip line per task in identify.yml — the same reason connect.yml
+# is included rather than imported. `apply:` carries this phase's tags to the
+# included tasks, which a bare dynamic include would not do.
+- name: Redeploy | Resolve the VM before deleting it
+  ansible.builtin.include_tasks:
+    file: identify.yml
+    apply:
+      tags: [vsphere_vm, redeploy]
+
+# The resolved UUID is deliberately NOT in this task's name: names render even for
+# skipped tasks, and the fact is undefined until identify.yml has run. identify.yml
+# prints it on the line above instead.
 - name: Redeploy | Delete the VM so create rebuilds it from scratch — {{ _vsphere_guest.name }}
   community.vmware.vmware_guest:
     datacenter: "{{ vsphere_vm_datacenter }}"
-    name: "{{ _vsphere_guest.name }}"
+    uuid: "{{ _vsphere_existing_uuid }}"
+    use_instance_uuid: true
     state: absent
     force: true
+  when: _vsphere_existing_uuid | length > 0
   delegate_to: localhost
   become: false
