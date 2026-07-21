@@ -1,0 +1,92 @@
+---
+# Drive Semaphore's REST API so orchestrator state matches semaphore_projects.
+# Idempotent (lookup-then-create/PATCH). Additive only — does not delete
+# objects removed from inventory. No-op when the list is empty (does NOT
+# end_play — that would abort sibling roles in the same play).
+
+- name: Skip reconcile when no projects declared
+  ansible.builtin.debug:
+    msg: "semaphore_projects is empty — nothing to reconcile"
+  when: (semaphore_projects | default([])) | length == 0
+
+- name: Reconcile declared Semaphore projects
+  when: (semaphore_projects | default([])) | length > 0
+  block:
+    - name: Fetch Semaphore admin password from Vault
+      ansible.builtin.set_fact:
+        _semaphore_admin_password: >-
+          {{ lookup('community.hashi_vault.hashi_vault',
+             'secret=' + vault_apps_runtime_base + '/semaphore/runtime:admin_password url=' + vault_addr) }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Login as Semaphore admin
+      become: false  # API on localhost — no host privilege
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ semaphore_server_port }}/api/auth/login"
+        method: POST
+        body_format: json
+        body:
+          auth: "{{ semaphore_admin_username }}"
+          password: "{{ _semaphore_admin_password }}"
+        status_code: [200, 204]
+        return_content: true
+      register: _sem_login
+      no_log: true
+
+    - name: Capture session cookie
+      ansible.builtin.set_fact:
+        _sem_cookie: "{{ _sem_login.cookies_string }}"
+      no_log: true
+
+    # CI API token bootstrap — first install only; skips when Vault already has one.
+    - name: Check if Semaphore CI API token already exists in Vault
+      ansible.builtin.set_fact:
+        _sem_existing_ci_token: >-
+          {{ lookup('community.hashi_vault.hashi_vault',
+             'secret=' + vault_apps_runtime_base + '/semaphore/runtime:api_token_ci',
+             errors='warn') | default('', true) }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Generate Semaphore CI API token (first run only)
+      when: _sem_existing_ci_token | length == 0
+      block:
+        - name: POST /api/user/tokens
+          become: false  # API on localhost — no host privilege
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:{{ semaphore_server_port }}/api/user/tokens"
+            method: POST
+            headers:
+              Cookie: "{{ _sem_cookie }}"
+            body_format: json
+            body: {}
+            status_code: [201]
+            return_content: true
+          register: _sem_new_token
+          no_log: true
+
+        - name: Patch token into Vault (preserves other fields)
+          ansible.builtin.command:
+            argv:
+              - vault
+              - kv
+              - patch
+              - "-mount={{ vault_kv_mount }}"
+              - apps/semaphore/runtime
+              - "api_token_ci={{ _sem_new_token.json.id }}"
+          environment:
+            VAULT_ADDR: "{{ vault_addr }}"
+          delegate_to: localhost
+          become: false
+          no_log: true
+          changed_when: true
+
+    - name: Reconcile each declared project
+      ansible.builtin.include_tasks: reconcile_one_project.yml
+      loop: "{{ semaphore_projects }}"
+      loop_control:
+        loop_var: _sem_project
+        label: "{{ _sem_project.name }}"

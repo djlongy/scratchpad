@@ -1,0 +1,15 @@
+---
+# configure.yml — wait for the stack to come up healthy. No persistent
+# config lives here; the smoke-test phase (smoke_test.yml) does the
+# user/project/template wiring via Semaphore's API.
+
+- name: Wait for Semaphore HTTP to respond
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/ping"
+    status_code: 200
+    follow_redirects: none
+  register: _semaphore_ping
+  retries: 30
+  delay: 5
+  until: _semaphore_ping.status == 200

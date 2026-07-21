@@ -1,47 +1,132 @@
 ---
-# Discover Splunk service containers on this swarm node and build a capture list
+# Discover Splunk service containers on this node and build a capture list
 # with a coarse role_hint (server.conf classification in the scrubber is
 # authoritative; the hint is only a fallback when server.conf is absent).
+#
+# Discovery is intentionally flexible for foreign estates:
+#   * name filters  — stack prefix + optional extra name substrings (OR)
+#   * image filters — optional image-substring matches (OR)
+# Containers matched by either channel are included once (deduped by name).
 
-- name: Detect | List Splunk container names on {{ inventory_hostname }}
-  ansible.builtin.shell:
-    cmd: >-
-      set -o pipefail;
-      docker ps --filter name={{ splunk_config_stack }}
-      --format '{% raw %}{{.Names}}{% endraw %}' || true
-    executable: /bin/bash
+- name: Detect | Build effective filters for {{ inventory_hostname }}
+  ansible.builtin.set_fact:
+    _splunk_name_filters: >-
+      {{ ([splunk_config_stack]
+          + (splunk_config_name_filters | default([])))
+         | select
+         | unique
+         | list }}
+    _splunk_image_filters: "{{ splunk_config_image_filters | default([]) }}"
+
+# Docker data-root (default /var/lib/docker). Named volumes — including
+# local-driver NFS backends — surface under <root>/volumes/<name>/_data.
+- name: Detect | Resolve Docker data-root on {{ inventory_hostname }}
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{% raw %}{{.DockerRootDir}}{% endraw %}"
+  become: true
+  register: _docker_root_probe
+  changed_when: false
+  failed_when: false
+
+- name: Detect | Set Docker data-root fact
+  ansible.builtin.set_fact:
+    _splunk_docker_root: >-
+      {{ (_docker_root_probe.stdout | default('') | trim)
+         if ((_docker_root_probe.rc | default(1)) == 0
+             and (_docker_root_probe.stdout | default('') | trim | length) > 0)
+         else (splunk_config_docker_root | default('/var/lib/docker')) }}
+
+# Host-volume fallback helper — staged once per node, used by capture.
+- name: Detect | Stage etc-host resolver on {{ inventory_hostname }}
+  ansible.builtin.copy:
+    src: resolve_etc_host.py
+    dest: /tmp/splunk_config_resolve_etc_host.py
+    mode: "0755"
+  become: true
+  when: splunk_config_export_host_volume_fallback | bool
+
+# One docker ps of everything; match/filter in Ansible so name + image
+# criteria stay portable. Include stopped containers when enabled so
+# scaled-down tasks can still be retrieved via host volume paths.
+- name: Detect | List containers on {{ inventory_hostname }}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'ps']
+         + (['-a'] if (splunk_config_export_include_stopped | bool) else [])
+         + ['--format', '{% raw %}{{.Names}}\t{{.Image}}\t{{.ID}}\t{{.Status}}{% endraw %}'] }}
   become: true
   register: _docker_ps
   changed_when: false
+  failed_when: false
 
 - name: Detect | Reset this node's container list
   ansible.builtin.set_fact:
     _splunk_containers: []
 
-- name: Detect | Build the container capture list
+- name: Detect | Build the container capture list (name OR image match, deduped)
   ansible.builtin.set_fact:
     _splunk_containers: "{{ _splunk_containers + [_entry] }}"
   vars:
-    _service: "{{ item | regex_replace('\\.[0-9]+\\..*$', '') }}"
+    _name: "{{ item.split('\t')[0] | trim }}"
+    _image: "{{ (item.split('\t')[1] | default('')) | trim }}"
+    _status: "{{ (item.split('\t')[3] | default('')) | trim }}"
+    _service: "{{ _name | regex_replace('\\.[0-9]+\\..*$', '') }}"
     _svc_l: "{{ _service | lower }}"
+    _img_l: "{{ _image | lower }}"
+    # `filter is in haystack` → filter is a substring of the container name/image.
+    _name_hit: >-
+      {{ _splunk_name_filters
+         | select('in', _name)
+         | list
+         | length > 0 }}
+    _image_hit: >-
+      {{ _splunk_image_filters
+         | map('lower')
+         | select('in', _img_l)
+         | list
+         | length > 0 }}
     _entry:
-      name: "{{ item }}"
+      name: "{{ _name }}"
+      image: "{{ _image }}"
+      status: "{{ _status }}"
+      running: "{{ _status is match('^Up') }}"
       service: "{{ _service }}"
       # label == sanitized service. Swarm service names are unique across the
       # stack, so the label is stable across export→apply (matched by service).
       label: "{{ _service | regex_replace('[^A-Za-z0-9_.-]', '_') }}"
       role_hint: >-
-        {{ 'indexer' if ('idx' in _svc_l or 'indexer' in _svc_l)
-           else 'cluster_manager' if ('manager' in _svc_l or '-cm' in _svc_l)
+        {{ 'forwarder' if (
+             'uf' in _svc_l
+             or 'forwarder' in _svc_l
+             or 'universalforwarder' in _img_l
+           )
+           else 'indexer' if ('idx' in _svc_l or 'indexer' in _svc_l)
+           else 'cluster_manager' if ('manager' in _svc_l or '-cm' in _svc_l
+                                      or 'cluster-master' in _svc_l
+                                      or 'clustermaster' in _svc_l)
            else 'shc_deployer' if 'deployer' in _svc_l
            else 'deployment_server' if ('deploy' in _svc_l or _svc_l.endswith('-ds'))
            else 'search_head' if ('search' in _svc_l or '-sh' in _svc_l)
-           else 'forwarder' if ('uf' in _svc_l or 'forwarder' in _svc_l)
            else '' }}
-  loop: "{{ _docker_ps.stdout_lines | select | list }}"
+  loop: >-
+    {{ _docker_ps.stdout_lines | default([])
+       | map('trim') | select | unique | list }}
   loop_control:
-    label: "{{ item }}"
+    label: "{{ item.split('\t')[0] | default(item) }}"
+  when:
+    - (item | trim | length) > 0
+    - (_name_hit | bool) or (_image_hit | bool)
+    - (item.split('\t')[0] | trim) not in (_splunk_containers | map(attribute='name') | list)
 
 - name: Detect | Report discovered containers
   ansible.builtin.debug:
-    msg: "{{ inventory_hostname }}: {{ _splunk_containers | map(attribute='service') | list }}"
+    msg: >-
+      {{ inventory_hostname }}: {{
+        (_splunk_containers | map(attribute='service') | list)
+        if (_splunk_containers | length > 0)
+        else '(none)'
+      }}

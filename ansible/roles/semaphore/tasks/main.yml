@@ -1,0 +1,26 @@
+---
+# semaphore — install → configure → promote LDAP admins → smoke → reconcile.
+# Role is privilege-self-contained: root tasks carry become: true; Vault/API
+# tasks carry become: false. Playbooks must NOT set play-level become for this
+# role.
+
+- name: Install Semaphore stack
+  ansible.builtin.import_tasks: install.yml
+  tags: [install]
+
+- name: Wait for Semaphore HTTP readiness
+  ansible.builtin.import_tasks: configure.yml
+  tags: [install, config]
+
+- name: Promote LDAP-backed admin users
+  ansible.builtin.import_tasks: promote_admins.yml
+  when: semaphore_ldap_enabled | bool
+  tags: [install, ldap]
+
+- name: Smoke-test Semaphore via API
+  ansible.builtin.import_tasks: smoke_test.yml
+  tags: [install, smoke]
+
+- name: Reconcile declarative projects
+  ansible.builtin.import_tasks: reconcile_projects.yml
+  tags: [config, reconcile, projects]

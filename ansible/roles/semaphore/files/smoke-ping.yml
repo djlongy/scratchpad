@@ -1,0 +1,19 @@
+---
+# Smoke-test playbook — feature-parity equivalent of Rundeck's
+# "is the orchestrator actually working" job. Pings localhost via
+# the connection plugin (no SSH, no remote hosts touched), so a
+# successful run only confirms that:
+#   - Semaphore reached its ansible-repo bind-mount
+#   - The bundled ansible-core can parse the playbook + inventory
+#   - The local connection plugin works inside the container
+#
+# Non-destructive by construction — no files changed, no services
+# touched, no remote hosts contacted.
+
+- name: Semaphore smoke ping
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Ping localhost
+      ansible.builtin.ping:

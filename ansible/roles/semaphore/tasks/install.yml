@@ -1,0 +1,310 @@
+---
+# install.yml — fetch or generate every secret Semaphore needs, then
+# render compose + systemd and start the stack.
+
+# ── Firewall ─────────────────────────────────────────────────────────────────
+- name: Allow Semaphore ports through firewalld
+  become: true  # root: firewalld module reconfigures the firewall
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop:
+    - http
+    - https
+
+# ── Directories ──────────────────────────────────────────────────────────────
+- name: Create Semaphore parent directory
+  become: true  # root: creates root-owned data dir
+  ansible.builtin.file:
+    path: "{{ semaphore_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# /etc/semaphore (config), /tmp/semaphore (working), /var/lib/semaphore
+# (data) all need to be writable by the container user, which in
+# semaphoreui/semaphore is uid 1001 (group 1001). The image's
+# entrypoint runs `semaphore setup` and writes config.json into
+# /etc/semaphore on first start — without the right ownership it
+# crashes with "permission denied" and the container restart-loops.
+- name: Create Semaphore data dirs owned by container uid
+  become: true  # root: creates dirs under root-owned data dir
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "1001"
+    group: "1001"
+    mode: "0755"
+  loop:
+    - "{{ semaphore_data_dir }}/config"
+    - "{{ semaphore_data_dir }}/tmp"
+    - "{{ semaphore_data_dir }}/data"
+    - "{{ semaphore_data_dir }}/ansible-repo"
+
+- name: Create PostgreSQL data directory
+  become: true  # root: creates dir under root-owned data dir
+  ansible.builtin.file:
+    path: "{{ semaphore_data_dir }}/postgresql"
+    state: directory
+  register: _pg_dir_created
+
+- name: Set PostgreSQL directory ownership on first create
+  become: true  # root: chowns dir to the postgres container uid
+  ansible.builtin.file:
+    path: "{{ semaphore_data_dir }}/postgresql"
+    owner: "999"
+    group: "999"
+    mode: "0700"
+  when: _pg_dir_created.changed
+
+# ── Vault secrets — fetch-or-generate, then atomically write missing ────────
+#
+# `vault_kv2_write` REPLACES the entire KV v2 secret on each call — there
+# is no merge with existing fields, regardless of `read_before_write`.
+# Three sequential writes for three fields would therefore clobber each
+# other and the path would end up with only the last field set.
+#
+# Pattern: one consolidated write. Fetch each field with errors='ignore'
+# + a generated fallback, assemble all three into one `data:` dict, and
+# write it in a single transaction gated on `read_before_write: true`.
+# On steady state every fetch returns the existing value, the assembled
+# dict matches what's in Vault, and the gate makes the write a no-op.
+#
+# All lookups + the write delegate to localhost so the control node's
+# ~/.vault-token authenticates. no_log keeps secrets out of the journal.
+- name: Fetch or generate Semaphore admin password
+  ansible.builtin.set_fact:
+    _semaphore_admin_password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + vault_apps_runtime_base + '/semaphore/runtime:admin_password url=' + vault_addr,
+         errors='ignore')
+         | default(lookup('password', '/dev/null length=24 chars=ascii_letters,digits'), true) }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Fetch or generate Semaphore DB password
+  ansible.builtin.set_fact:
+    _semaphore_db_password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + vault_apps_runtime_base + '/semaphore/runtime:db_password url=' + vault_addr,
+         errors='ignore')
+         | default(lookup('password', '/dev/null length=32 chars=ascii_letters,digits'), true) }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# SEMAPHORE_ACCESS_KEY_ENCRYPTION — 32 random bytes, base64-encoded.
+# Encrypts every credential Semaphore stores. Rotating this orphans
+# every credential in the DB, so we generate once and never touch it
+# again unless a human explicitly rotates.
+- name: Fetch or generate Semaphore access-key encryption secret
+  ansible.builtin.set_fact:
+    _semaphore_access_key_encryption: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + vault_apps_runtime_base + '/semaphore/runtime:access_key_encryption url=' + vault_addr,
+         errors='ignore')
+         | default((lookup('password', '/dev/null length=32 chars=ascii_letters,digits') | b64encode), true) }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# LDAP bind password — only relevant when ldap_enabled, but we fetch
+# unconditionally so the consolidated vault write keeps a single shape
+# regardless of toggle state. Generated 32-char passphrase on first run.
+- name: Fetch or generate Semaphore LDAP bind password
+  ansible.builtin.set_fact:
+    _semaphore_ldap_bind_password: >-
+      {{ lookup('community.hashi_vault.hashi_vault',
+         'secret=' + vault_apps_runtime_base + '/semaphore/runtime:ldap_bind_password url=' + vault_addr,
+         errors='ignore')
+         | default(lookup('password', '/dev/null length=32 chars=ascii_letters,digits'), true) }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Write all Semaphore secrets to Vault (atomic, no-op when already in sync)
+  community.hashi_vault.vault_kv2_write:
+    url: "{{ vault_addr }}"
+    token: "{{ lookup('file', vault_token_file) }}"
+    engine_mount_point: "{{ vault_kv_mount }}"
+    path: apps/semaphore/runtime
+    data:
+      admin_password: "{{ _semaphore_admin_password }}"
+      db_password: "{{ _semaphore_db_password }}"
+      access_key_encryption: "{{ _semaphore_access_key_encryption }}"
+      ldap_bind_password: "{{ _semaphore_ldap_bind_password }}"
+      ldap_bind_dn: "{{ semaphore_ldap_bind_dn }}"
+    read_before_write: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# ── FreeIPA svc-semaphore + CA cert (only when LDAP is on) ──────────────────
+# Mirrors mattermost_freeipa_prep.yml's pattern: the same bind password
+# we just persisted to Vault gets set on svc-semaphore in FreeIPA, so
+# the directory end and the bind end stay in sync. The CA cert is
+# slurped from groups['freeipa'][0]:/etc/ipa/ca.crt — public, doesn't
+# need to be vaulted — and bind-mounted into the Semaphore container
+# as the SSL_CERT_FILE Go uses for LDAPS verification.
+# Ansible Vault first (semaphore_freeipa_admin_password), HashiCorp Vault fallback
+# (vault_platform_runtime_base). Only needed when LDAP/FreeIPA integration is on.
+- name: Assert a FreeIPA admin password source is configured (declared var or Vault base)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (semaphore_freeipa_admin_password | default('') | length > 0)
+        or (vault_platform_runtime_base | default('') | length > 0)
+    fail_msg: >-
+      No FreeIPA admin password source configured. Set semaphore_freeipa_admin_password
+      (recommended: from an Ansible-Vault-encrypted var) or vault_platform_runtime_base
+      (HashiCorp Vault mount base).
+  when: semaphore_ldap_enabled
+
+- name: Fetch FreeIPA admin password (declared var first, HashiCorp Vault fallback)
+  ansible.builtin.set_fact:
+    _freeipa_admin_password: >-
+      {{ semaphore_freeipa_admin_password
+         if (semaphore_freeipa_admin_password | default('') | length > 0)
+         else lookup('community.hashi_vault.hashi_vault',
+              'secret=' + vault_platform_runtime_base + '/freeipa/runtime:admin_password url=' + vault_addr) }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: semaphore_ldap_enabled
+
+- name: Create / update svc-semaphore FreeIPA user
+  freeipa.ansible_freeipa.ipauser:
+    ipaadmin_principal: admin
+    ipaadmin_password: "{{ _freeipa_admin_password }}"
+    name: "{{ semaphore_ldap_svc_user }}"
+    first: "{{ semaphore_ldap_svc_first }}"
+    last: "{{ semaphore_ldap_svc_last }}"
+    password: "{{ _semaphore_ldap_bind_password }}"
+    update_password: always
+    state: present
+  delegate_to: "{{ groups['freeipa'][0] }}"
+  become: false
+  no_log: true
+  when: semaphore_ldap_enabled
+
+- name: Slurp FreeIPA CA cert
+  ansible.builtin.slurp:
+    src: /etc/ipa/ca.crt
+  delegate_to: "{{ groups['freeipa'][0] }}"
+  become: true
+  register: _freeipa_ca_slurp
+  when: semaphore_ldap_enabled
+
+- name: Write FreeIPA CA cert to the Semaphore data dir
+  become: true  # root: writes into root-owned data dir
+  ansible.builtin.copy:
+    content: "{{ _freeipa_ca_slurp.content | b64decode }}"
+    dest: "{{ semaphore_data_dir }}/freeipa-ca.crt"
+    owner: "1001"
+    group: "1001"
+    mode: "0644"
+  when: semaphore_ldap_enabled
+  notify: Restart semaphore
+
+# ── Render compose + systemd + smoke-test playbook ───────────────────────────
+- name: Render docker-compose
+  become: true  # root: writes into root-owned data dir
+  ansible.builtin.template:
+    src: semaphore-compose.yml.j2
+    dest: "{{ semaphore_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Restart semaphore
+
+- name: Render systemd unit
+  become: true  # root: writes /etc/systemd/system/semaphore.service
+  ansible.builtin.template:
+    src: semaphore.service.j2
+    dest: /etc/systemd/system/semaphore.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart semaphore
+
+- name: Stage smoke-test playbook + inventory inside ansible-repo
+  become: true  # root: writes into root-owned data dir tree
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ semaphore_data_dir }}/ansible-repo/{{ item.dest }}"
+    owner: "1001"
+    group: "1001"
+    mode: "0644"
+  loop:
+    - {src: smoke-ping.yml, dest: smoke-ping.yml}
+    - {src: smoke-inventory.ini, dest: smoke-inventory.ini}
+
+# Semaphore clones repos via git, even when the URL is file://. The
+# ansible-repo bind-mount has to be a real git repo or `git clone
+# file:///tmp/semaphore_repos/ansible-repo` fails with "does not appear
+# to be a git repository". One-shot init + commit on first run keeps
+# the smoke-test fixtures inside a working tree the container can clone.
+- name: Ensure git is installed
+  become: true  # root: package install
+  ansible.builtin.package:
+    name: git
+    state: present
+
+- name: Initialise ansible-repo as a git repo (first run only)  # noqa: command-instead-of-module
+  become: true  # root: git init in root-owned data dir tree
+  ansible.builtin.command:
+    cmd: git init -b master {{ semaphore_data_dir }}/ansible-repo
+    creates: "{{ semaphore_data_dir }}/ansible-repo/.git"
+
+- name: Configure committer identity for the smoke repo
+  become: true  # root: writes .git/config in root-owned data dir tree
+  community.general.git_config:
+    name: "{{ item.k }}"
+    value: "{{ item.v }}"
+    scope: local
+    repo: "{{ semaphore_data_dir }}/ansible-repo"
+  loop:
+    - {k: user.email, v: "ansible@{{ env }}.{{ domain }}"}
+    - {k: user.name, v: "Ansible (semaphore smoke)"}
+
+- name: Stage + commit smoke fixtures (idempotent — no-op when tree clean)
+  become: true  # root: git add/commit in root-owned data dir tree
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      cd {{ semaphore_data_dir }}/ansible-repo
+      git add -A
+      if git diff --cached --quiet; then
+        echo nochange
+      else
+        git -c commit.gpgsign=false commit -m "Refresh smoke-test fixtures from semaphore" >/dev/null
+        echo committed
+      fi
+    executable: /bin/bash
+  register: _semaphore_smoke_repo_commit
+  changed_when: "'committed' in _semaphore_smoke_repo_commit.stdout"
+
+# `git init` + commits run as root above; chown the whole tree back to
+# uid 1001 so the Semaphore container (which runs as that uid) can
+# read .git and the working tree when it clones via file://.
+- name: Restore ansible-repo ownership to container uid
+  become: true  # root: chowns the repo tree back to the container uid
+  ansible.builtin.file:
+    path: "{{ semaphore_data_dir }}/ansible-repo"
+    owner: "1001"
+    group: "1001"
+    recurse: true
+
+- name: Enable + start Semaphore
+  become: true  # root: manages the semaphore systemd unit
+  ansible.builtin.systemd:
+    name: semaphore
+    enabled: true
+    state: started
+    daemon_reload: true

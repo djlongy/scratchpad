@@ -1,6 +1,6 @@
 ---
 # splunk_config — capture a live Splunk estate into a committable, re-appliable
-# snapshot, and apply it back. Reaches Splunk THROUGH the swarm containers
+# snapshot, and apply it back. Reaches Splunk THROUGH the containers
 # (docker exec / docker cp), auto-detects topology, and scrubs every secret
 # before anything is written to the repo. See docs/designs/2026-07-04-splunk-config-iac.md.
 #
@@ -10,13 +10,30 @@
 #   --tags apply    place a snapshot back + reseed secrets + trigger bundle pushes
 # Both modes are `never`-gated (sanctioned enablement exception) so neither fires
 # by accident on a full converge.
+#
+# Export is the bare-minimum path: it must succeed without Vault, without admin
+# credentials, and without an applyable topology. Apply is best-effort on top of
+# a prior export and may skip reseed/push when those inputs are missing.
 
 # ── Discovery ────────────────────────────────────────────────────────────────
-# docker ps name filter that selects the Splunk container set (swarm prefixes
-# service containers with "<stack>_"). Override per estate.
+# Primary docker ps name filter (stack prefix). Swarm prefixes service
+# containers with "<stack>_". Override per estate when the stack is not "splunk".
 splunk_config_stack: splunk
 
-# Path to Splunk's config root INSIDE the container.
+# Extra name filters (OR'd with the stack). Use for foreign estates where
+# containers are not named with the stack prefix (compose project names,
+# short service names, etc.). Empty = stack only.
+splunk_config_name_filters: []
+
+# Optional image-substring filters (OR'd). Match containers whose Image column
+# contains any of these strings — catches estates where the container name is
+# opaque but the image is clearly Splunk. Examples:
+#   ["splunk/splunk", "splunk/universalforwarder"]
+# Empty = name filters only.
+splunk_config_image_filters: []
+
+# Path to Splunk's config root INSIDE the container (used on apply placement).
+# Export auto-detects /opt/splunk/etc vs /opt/splunkforwarder/etc per container.
 splunk_config_container_etc: /opt/splunk/etc
 
 # Splunk binary inside the container (used for bundle-push / reload on apply).
@@ -71,21 +88,54 @@ splunk_config_snapshot_dir: "{{ role_path }}/files/snapshots/{{ splunk_config_st
 splunk_config_raw_dir: "/tmp/splunk_config_raw/{{ splunk_config_stack }}"
 splunk_config_keep_raw: false
 
-# ── Secrets (HashiCorp Vault) ────────────────────────────────────────────────
-# Where splunk.secret (per instance-label field) is stored/read. Dedicated path
-# — a single full PUT of all secret_<label> fields, so no partial-clobber risk.
-# vault_kv_mount is defined per-inventory in group_vars/all.yml (kv-<env>).
-splunk_config_vault_mount: "{{ vault_kv_mount }}"
+# ── Docker storage root (host-side volume paths) ─────────────────────────────
+# Docker's data-root. Named volumes (including local-driver + type=nfs) appear
+# under <root>/volumes/<name>/_data on the node, even when the backend is NFS —
+# you do not need the NFS server path to retrieve config. Export probes
+# `docker info` per node and falls back to this default when the probe fails.
+splunk_config_docker_root: /var/lib/docker
+
+# When true, export also considers stopped containers (docker ps -a) so a
+# scaled-down service can still be retrieved from its volume mountpoints.
+splunk_config_export_include_stopped: true
+
+# When a container is not running (or has no reachable etc), fall back to the
+# host-side volume/bind Source under Docker's data-root (or the bind path).
+splunk_config_export_host_volume_fallback: true
+
+# ── Export resilience (bare-minimum retrieve) ────────────────────────────────
+# When true, a single container capture failure does not abort the export —
+# remaining containers are still scrubbed into the snapshot.
+splunk_config_export_ignore_capture_errors: true
+
+# When true, export fails if no Splunk containers were found on any host.
+# Default false: write an empty snapshot + warn so a dry inventory still produces
+# a usable (empty) artifact rather than a hard fail.
+splunk_config_export_fail_on_empty: false
+
+# When true, fail the export if any secret pattern survives the scrub. Keep true
+# for anything that may land in git. Set false only for private forensics dumps.
+splunk_config_export_fail_on_secret_leak: true
+
+# Record docker mount metadata (type, source, destination, name, driver) into
+# each instance's _capture.json → manifest. Helps identify NFS-backed volumes
+# vs bind mounts. Sources are typically under splunk_config_docker_root.
+splunk_config_export_record_mounts: true
+
+# ── Secrets (HashiCorp Vault) — optional for export ──────────────────────────
+# vault_kv_mount / vault_addr come from inventory when present. Defaults stay
+# empty so export parses and runs on estates with no Vault at all.
+splunk_config_vault_mount: "{{ vault_kv_mount | default('') }}"
 splunk_config_vault_path: apps/splunk/config
 
 # Capture each instance's splunk.secret to Vault on export (restored on apply to
-# keep $7$-encrypted conf values decryptable). Turn off for a portable snapshot
-# destined for a brand-new realm where encrypted values will be re-created.
+# keep $7$-encrypted conf values decryptable). Soft-fails when Vault is
+# unreachable or vault_addr/mount are unset — the snapshot still lands.
 splunk_config_export_push_splunk_secret: true
 
 # ── Apply behaviour ──────────────────────────────────────────────────────────
-# Reseed scrubbed secrets from Vault during apply (splunk.secret restore keeps
-# $7$-encrypted conf values valid). Turn off only for a config-only dry test.
+# Reseed scrubbed secrets from Vault during apply. Soft-skips when Vault is not
+# configured or the path is empty — placement still runs.
 splunk_config_apply_reseed_secrets: true
 
 # Trigger each tier's bundle push after placing config. Off = stage the files
@@ -103,6 +153,6 @@ splunk_config_apply_restart_instances: false
 splunk_config_admin_password: ""
 
 # ── Inventory must provide (no safe defaults) ────────────────────────────────
-# The swarm nodes to scan for Splunk containers are simply the hosts this role
+# The nodes to scan for Splunk containers are simply the hosts this role
 # runs against — target them via the playbook's `hosts:` (e.g. swarm_managers +
 # swarm_workers, or a dedicated splunk group). See README.

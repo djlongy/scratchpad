@@ -1,24 +1,39 @@
 ---
 argument_specs:
   main:
-    short_description: Capture & re-apply a Splunk-on-Swarm estate's configuration as IaC.
+    short_description: Capture & re-apply a Splunk-on-Docker estate's configuration as IaC.
     description:
       - Two-mode tool role. With C(--tags export) it harvests every Splunk
         container's config subtree, scrubs secrets, and writes a snapshot
         (manifest + native app bundles) on the control node. With C(--tags apply)
         it places a snapshot back into the correct tier staging dirs, reseeds
-        secrets from Vault, and triggers each tier's bundle push.
+        secrets from Vault when available, and triggers each tier's bundle push.
+      - Export is the bare-minimum path and does not require Vault, admin
+        credentials, or an applyable topology. Apply is best-effort on top of a
+        prior export.
       - Neither mode runs on a bare converge (both are C(never)-gated). Target the
-        swarm nodes via the playbook's C(hosts:).
+        nodes via the playbook's C(hosts:).
     options:
       splunk_config_stack:
         type: str
         default: splunk
-        description: docker ps name filter selecting the Splunk container set.
+        description: Primary docker ps name filter selecting the Splunk container set.
+      splunk_config_name_filters:
+        type: list
+        elements: str
+        description: Extra name filters OR'd with the stack for foreign estates.
+      splunk_config_image_filters:
+        type: list
+        elements: str
+        description: >-
+          Image-substring filters OR'd with name matches (e.g. C(splunk/splunk),
+          C(splunk/universalforwarder)).
       splunk_config_container_etc:
         type: str
         default: /opt/splunk/etc
-        description: Splunk config root inside the container.
+        description: >-
+          Fallback Splunk config root inside the container. Export and apply
+          auto-detect C(/opt/splunk/etc) vs C(/opt/splunkforwarder/etc).
       splunk_config_container_splunk_bin:
         type: str
         default: /opt/splunk/bin/splunk
@@ -41,16 +56,65 @@ argument_specs:
         type: bool
         default: false
         description: Keep the raw pre-scrub capture (debugging only).
+      splunk_config_export_ignore_capture_errors:
+        type: bool
+        default: true
+        description: Do not abort export when a single container capture fails.
+      splunk_config_export_fail_on_empty:
+        type: bool
+        default: false
+        description: Fail export when no Splunk containers match on any host.
+      splunk_config_export_fail_on_secret_leak:
+        type: bool
+        default: true
+        description: Fail export if secret patterns survive the scrub.
+      splunk_config_docker_root:
+        type: str
+        default: /var/lib/docker
+        description: >-
+          Default Docker data-root. Named volumes live under
+          C(<root>/volumes/<name>/_data). Export probes C(docker info) per node
+          and falls back to this value.
+      splunk_config_export_include_stopped:
+        type: bool
+        default: true
+        description: Include stopped containers in discovery (docker ps -a).
+      splunk_config_export_host_volume_fallback:
+        type: bool
+        default: true
+        description: >-
+          When a container is not running, capture config from the host-side
+          volume path under Docker's data-root.
+      splunk_config_export_record_mounts:
+        type: bool
+        default: true
+        description: Record Docker mount metadata (NFS volume vs bind) into the snapshot.
       splunk_config_vault_path:
         type: str
         description: >-
           HashiCorp Vault KV path holding splunk.secret and local-user
-          credentials (default C(<vault_kv_mount>/apps/splunk/config)).
+          credentials (default C(apps/splunk/config) under the env mount).
+      splunk_config_export_push_splunk_secret:
+        type: bool
+        default: true
+        description: >-
+          Push splunk.secret to Vault on export. Soft-fails when Vault is unset
+          or unreachable so the snapshot still lands.
       splunk_config_apply_reseed_secrets:
         type: bool
         default: true
-        description: Reseed scrubbed secrets from Vault during apply.
+        description: >-
+          Reseed scrubbed secrets from Vault during apply. Soft-skips when Vault
+          is unset or the path is missing.
       splunk_config_apply_push_bundles:
         type: bool
         default: true
         description: Trigger each tier's bundle push after placing config on apply.
+      splunk_config_apply_restart_instances:
+        type: bool
+        default: false
+        description: Restart simple SH/indexers on apply to load config.
+      splunk_config_admin_password:
+        type: str
+        default: ""
+        description: Estate admin credential for CLI pushes; empty skips pushes.

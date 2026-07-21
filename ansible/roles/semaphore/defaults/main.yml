@@ -1,0 +1,56 @@
+---
+# Overridable defaults — set env-specific values in host_vars/group_vars.
+# Role is privilege-self-contained (per-task become); playbooks must not set
+# play-level become for this role.
+
+semaphore_fqdn: ""
+
+# Container DNS resolvers. Empty = Docker inherits the host resolv.conf.
+# Inventory sets estate resolvers when the container must resolve service
+# aliases the host's FreeIPA-only path cannot (e.g. edge + IdM DNS).
+semaphore_dns_servers: []
+
+# ── Credential inputs ────────────────────────────────────────────────────────
+# FreeIPA admin password used to provision svc-semaphore when LDAP is enabled.
+# Empty → HashiCorp Vault at vault_platform_runtime_base/freeipa/runtime.
+# Semaphore admin/db/access-key/ldap-bind passwords and the CI API token are
+# self-managed (fetch-or-generate, written back to Vault) — not role inputs.
+semaphore_freeipa_admin_password: ""
+
+# ── LDAP / FreeIPA integration ─────────────────────────────────────────────
+# When enabled: provisions svc-semaphore in FreeIPA, persists bind password to
+# apps/semaphore/runtime, slurps FreeIPA CA for LDAPS trust in the container.
+semaphore_ldap_enabled: false
+
+semaphore_ldap_host: "{{ groups['freeipa'][0] | default('freeipa-01') }}.{{ domain | default('example.com') }}"
+semaphore_ldap_port: 636
+semaphore_ldap_needtls: true
+
+semaphore_ldap_dn_search: "cn=users,cn=accounts,{{ 'dc=' ~ ((domain | default('example.com')) | replace('.', ',dc=')) }}"
+semaphore_ldap_search_filter: "(uid=%s)"
+
+semaphore_ldap_svc_user: "svc-semaphore"
+semaphore_ldap_svc_first: "Semaphore"
+semaphore_ldap_svc_last: "Service Account"
+semaphore_ldap_bind_dn: "uid={{ semaphore_ldap_svc_user }},cn=users,cn=accounts,{{ 'dc=' ~ ((domain | default('example.com')) | replace('.', ',dc=')) }}"
+
+semaphore_ldap_mapping_dn: "dn"
+semaphore_ldap_mapping_mail: "mail"
+semaphore_ldap_mapping_uid: "uid"
+semaphore_ldap_mapping_cn: "cn"
+
+# LDAP users promoted to Semaphore admin on first install. Must already exist
+# in FreeIPA. Empty default — set in inventory (e.g. host_vars).
+semaphore_ldap_admins: []
+
+# ── Declarative project / template reconciliation ──────────────────────────
+# List of project definitions reconciled via the REST API. Empty = no-op.
+# Schema (per project):
+#   name, alert, max_parallel_tasks
+#   repositories:  [{name, git_url, git_branch, ssh_key_name}]
+#   inventories:   [{name, type, content}]
+#   environments:  [{name, json, env}]
+#   templates:     [{name, playbook, inventory_name, repository_name,
+#                    environment_name, arguments, description,
+#                    schedule: {cron_format}}]
+semaphore_projects: []

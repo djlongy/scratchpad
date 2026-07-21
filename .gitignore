@@ -69,6 +69,9 @@ secring.*
 !**/roles/swarm_stack/tasks/bootstrap_secrets.yml
 !**/roles/swarm_stack/tasks/docker_secrets.yml
 !**/roles/artifactory/tasks/security/tokens.yml
+# splunk_config: scrub/reseed orchestration only — no embedded secret values
+!**/roles/splunk_config/tasks/export/push_splunk_secret.yml
+!**/roles/splunk_config/tasks/apply/reseed_secrets.yml
 
 # Vault / encrypted files
 *.vault

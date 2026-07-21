@@ -1,68 +1,193 @@
 ---
-# Capture one container's config subtree. The CID is re-resolved from the
-# service name (swarm can recreate the task any time, so a frozen CID goes
-# stale). Only the capture paths that actually exist in this container are
-# tarred — a search head has no manager-apps, an indexer no shcluster/apps.
+# Capture one container's config subtree.
+#
+# Prefer docker exec into a running container. When the task is stopped (or
+# etc is not reachable), fall back to the host-side volume/bind path under
+# Docker's data-root (default /var/lib/docker/volumes/<name>/_data) — that is
+# still the right place even when the volume driver opts into NFS; the NFS
+# server path is not required for retrieve.
+#
+# Soft-fail path: when splunk_config_export_ignore_capture_errors is true
+# (default), a total miss records a warning and continues.
 
 - name: Capture | Resolve control-node paths for {{ _container.label }}
   ansible.builtin.set_fact:
     _node_tar: "/tmp/splunk_cfg_{{ _container.label }}.tar"
     _raw_inst: "{{ splunk_config_raw_dir }}/{{ _container.label }}"
+    _capture_ok: false
+    _splunk_docker_root: >-
+      {{ _splunk_docker_root
+         | default(splunk_config_docker_root | default('/var/lib/docker')) }}
 
-# Build a FILTERED file list inside the container, then tar only that. Fixed
-# subtrees (system/local, users, staging dirs) are taken wholesale; each app
-# contributes local/ + metadata/ always, and default/ only when it is not a
-# stock app — so the tarball stays small (no multi-hundred-MB stock TA defaults
-# that the scrubber would discard anyway). SPLUNK_HOME differs by image (full
-# Splunk /opt/splunk vs universal forwarder /opt/splunkforwarder), so the etc
-# dir is detected in-container. The tar is gzipped + world-readable.
-- name: Capture | {{ _container.label }} — tar filtered config out of the container
+- name: Capture | {{ _container.label }} — tar config (container or host volume)
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
-      [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 1; }
-      ETC=$(docker exec "$CID" sh -c 'for e in /opt/splunk/etc /opt/splunkforwarder/etc; do [ -d "$e" ] && echo "$e" && break; done')
-      [ -n "$ETC" ] || { echo "no etc dir in {{ _container.name }}"; exit 0; }
-      # -u 0 (root): splunk.secret / passwd / some confs are root-owned 0400 —
-      # the default splunk user can't read them, and those are exactly the secret
-      # files we must capture to scrub + re-seed. tar as root reads everything.
-      docker exec -e CFG_ETC="$ETC" -u 0 "$CID" sh -c '
-        cd "$CFG_ETC" || exit 1
+      DOCKER_ROOT={{ _splunk_docker_root | quote }}
+      NAME={{ _container.name | quote }}
+      TAR={{ _node_tar | quote }}
+      RESOLVER=/tmp/splunk_config_resolve_etc_host.py
+      CAPTURE_PATHS="{{ splunk_config_capture_paths | reject('equalto', 'apps') | join(' ') }}"
+      HOST_FALLBACK={{ '1' if (splunk_config_export_host_volume_fallback | bool) else '0' }}
+
+      # Prefer a running task; fall back to any matching container (stopped).
+      CID=$(docker ps -q --filter "name=${NAME}" | head -1)
+      STATE=running
+      if [ -z "$CID" ]; then
+        CID=$(docker ps -aq --filter "name=${NAME}" | head -1)
+        STATE=stopped
+      fi
+
+      tar_from_etc() {
+        # $1 = absolute path to etc root on the host.
+        ETC_ROOT="$1"
+        cd "$ETC_ROOT" || return 1
         : > /tmp/cfg_list
-        for p in {{ splunk_config_capture_paths | reject("equalto", "apps") | join(" ") }}; do
-          [ -e "$p" ] && printf "%s\n" "$p" >> /tmp/cfg_list
+        for p in $CAPTURE_PATHS; do
+          [ -e "$p" ] && printf '%s\n' "$p" >> /tmp/cfg_list
         done
         if [ -d apps ]; then
           for a in apps/*/; do
             a=${a%/}; n=$(basename "$a")
-            for s in local metadata; do [ -e "$a/$s" ] && printf "%s\n" "$a/$s" >> /tmp/cfg_list; done
+            for s in local metadata; do
+              [ -e "$a/$s" ] && printf '%s\n' "$a/$s" >> /tmp/cfg_list
+            done
             case "$n" in
               {{ splunk_config_stock_app_globs | join("|") }}) ;;
-              *) [ -e "$a/default" ] && printf "%s\n" "$a/default" >> /tmp/cfg_list;;
+              *) [ -e "$a/default" ] && printf '%s\n' "$a/default" >> /tmp/cfg_list ;;
             esac
           done
         fi
-        [ -s /tmp/cfg_list ] || exit 0
+        [ -s /tmp/cfg_list ] || return 2
         tar -czf /tmp/splunk_cfg.tar -T /tmp/cfg_list
-        rm -f /tmp/cfg_list'
-      docker cp "$CID":/tmp/splunk_cfg.tar {{ _node_tar | quote }} 2>/dev/null \
-        || { echo "nothing captured"; exit 0; }
-      docker exec "$CID" rm -f /tmp/splunk_cfg.tar || true
-      chmod 0644 {{ _node_tar | quote }}
+        rm -f /tmp/cfg_list
+        return 0
+      }
+
+      CAPTURE_VIA=""
+      ETC_HOST=""
+
+      # ── Path A: live container via docker exec ────────────────────────────
+      if [ -n "$CID" ] && [ "$STATE" = running ]; then
+        ETC=$(docker exec "$CID" sh -c 'for e in /opt/splunk/etc /opt/splunkforwarder/etc; do [ -d "$e" ] && echo "$e" && break; done' || true)
+        if [ -n "$ETC" ]; then
+          # -u 0: splunk.secret / passwd are often root-owned 0400.
+          if docker exec -e CFG_ETC="$ETC" -e CAPTURE_PATHS="$CAPTURE_PATHS" -u 0 "$CID" sh -c '
+            cd "$CFG_ETC" || exit 1
+            : > /tmp/cfg_list
+            for p in $CAPTURE_PATHS; do
+              [ -e "$p" ] && printf "%s\n" "$p" >> /tmp/cfg_list
+            done
+            if [ -d apps ]; then
+              for a in apps/*/; do
+                a=${a%/}; n=$(basename "$a")
+                for s in local metadata; do [ -e "$a/$s" ] && printf "%s\n" "$a/$s" >> /tmp/cfg_list; done
+                case "$n" in
+                  {{ splunk_config_stock_app_globs | join("|") }}) ;;
+                  *) [ -e "$a/default" ] && printf "%s\n" "$a/default" >> /tmp/cfg_list;;
+                esac
+              done
+            fi
+            [ -s /tmp/cfg_list ] || exit 0
+            tar -czf /tmp/splunk_cfg.tar -T /tmp/cfg_list
+            rm -f /tmp/cfg_list
+          '; then
+            if docker cp "$CID":/tmp/splunk_cfg.tar "$TAR" 2>/dev/null; then
+              docker exec "$CID" rm -f /tmp/splunk_cfg.tar || true
+              chmod 0644 "$TAR"
+              CAPTURE_VIA=container
+            fi
+          fi
+        fi
+      fi
+
+      # ── Path B: host-side volume under Docker data-root ───────────────────
+      # Used when the container is stopped, or live exec produced nothing.
+      # Mount Source for named volumes is typically:
+      #   <DockerRootDir>/volumes/<name>/_data
+      # even when driver_opts type=nfs points at an NFS export.
+      if [ -z "$CAPTURE_VIA" ] && [ "$HOST_FALLBACK" = 1 ] && [ -n "$CID" ]; then
+        MOUNTS_JSON=$(docker inspect "$CID" --format '{% raw %}{{json .Mounts}}{% endraw %}' 2>/dev/null || echo '[]')
+        ETC_HOST=$(printf '%s' "$MOUNTS_JSON" | python3 "$RESOLVER" "$DOCKER_ROOT" 2>/dev/null || true)
+
+        if [ -n "$ETC_HOST" ] && [ -d "$ETC_HOST" ]; then
+          if tar_from_etc "$ETC_HOST"; then
+            mv -f /tmp/splunk_cfg.tar "$TAR"
+            chmod 0644 "$TAR"
+            CAPTURE_VIA=host_volume
+          fi
+        fi
+
+        # Last resort: walk volume Names under <docker_root>/volumes/<name>/_data.
+        if [ -z "$CAPTURE_VIA" ]; then
+          for vol in $(docker inspect "$CID" --format '{% raw %}{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}{% endraw %}' 2>/dev/null); do
+            for candidate in \
+              "${DOCKER_ROOT}/volumes/${vol}/_data/etc" \
+              "${DOCKER_ROOT}/volumes/${vol}/_data"
+            do
+              if [ -d "$candidate/system" ] || [ -d "$candidate/apps" ]; then
+                if tar_from_etc "$candidate"; then
+                  mv -f /tmp/splunk_cfg.tar "$TAR"
+                  chmod 0644 "$TAR"
+                  CAPTURE_VIA=host_volume
+                  ETC_HOST="$candidate"
+                  break 2
+                fi
+              fi
+            done
+          done
+        fi
+      fi
+
+      if [ -z "$CAPTURE_VIA" ]; then
+        if [ -z "$CID" ]; then
+          echo "no container ${NAME}"
+          exit 2
+        fi
+        echo "nothing captured for ${NAME} (state=${STATE})"
+        exit 0
+      fi
+
+      echo "CAPTURE_VIA=${CAPTURE_VIA}"
+      echo "DOCKER_ROOT=${DOCKER_ROOT}"
+      [ -n "$ETC_HOST" ] && echo "ETC_HOST=${ETC_HOST}"
+      echo "---MOUNTS---"
+      if [ -n "$CID" ]; then
+        docker inspect "$CID" --format '{% raw %}{{json .Mounts}}{% endraw %}'
+      else
+        echo '[]'
+      fi
     executable: /bin/bash
   become: true
+  environment:
+    DOCKER_ROOT: "{{ _splunk_docker_root }}"
   register: _capture
   changed_when: true
+  failed_when: >-
+    (_capture.rc not in [0, 2])
+    or (_capture.rc == 2 and not (splunk_config_export_ignore_capture_errors | bool))
+
+- name: Capture | {{ _container.label }} — warn on soft-failed capture
+  ansible.builtin.debug:
+    msg: >-
+      Capture soft-failed for {{ _container.name }} on {{ inventory_hostname }}
+      (rc={{ _capture.rc }}): {{ _capture.stdout_lines | default([]) | first | default(_capture.stderr | default('unknown')) }}.
+      Continuing — remaining containers still export.
+  when:
+    - splunk_config_export_ignore_capture_errors | bool
+    - _capture.rc | default(0) != 0
 
 - name: Capture | {{ _container.label }} — stat the node tarball
   ansible.builtin.stat:
     path: "{{ _node_tar }}"
   become: true
   register: _cap_stat
+  when: _capture.rc | default(1) == 0
 
 - name: Capture | {{ _container.label }} — bring the capture onto the control node
-  when: _cap_stat.stat.exists
+  when:
+    - _capture.rc | default(1) == 0
+    - _cap_stat.stat.exists | default(false)
   block:
     - name: Capture | {{ _container.label }} — ensure raw instance etc dir
       ansible.builtin.file:
@@ -72,9 +197,6 @@
       delegate_to: localhost
       become: false
 
-    # fetch is fine now: capture-time filtering keeps the tarball small (local
-    # config + custom apps only), so no memory blow-up and no rsync dependency
-    # (the swarm nodes have no rsync).
     - name: Capture | {{ _container.label }} — fetch tarball to control node
       ansible.builtin.fetch:
         src: "{{ _node_tar }}"
@@ -90,12 +212,43 @@
       delegate_to: localhost
       become: false
 
+    - name: Capture | {{ _container.label }} — parse capture trailers
+      ansible.builtin.set_fact:
+        _capture_via: >-
+          {{ (_capture.stdout_lines | default([])
+             | select('match', '^CAPTURE_VIA=') | list | first | default('CAPTURE_VIA=')
+             ).split('=', 1)[1] | default('container') }}
+        _capture_etc_host: >-
+          {{ (_capture.stdout_lines | default([])
+             | select('match', '^ETC_HOST=') | list | first | default('ETC_HOST=')
+             ).split('=', 1)[1] | default('') }}
+        _capture_mounts: >-
+          {{ (_capture.stdout | default('')).split('---MOUNTS---')[1]
+             | default('[]') | trim | from_json
+             if ('---MOUNTS---' in (_capture.stdout | default('')))
+             else [] }}
+      failed_when: false
+
     - name: Capture | {{ _container.label }} — write capture metadata
       ansible.builtin.copy:
         dest: "{{ _raw_inst }}/_capture.json"
         content: >-
-          {{ {'service': _container.service, 'node': inventory_hostname,
-              'role_hint': _container.role_hint} | to_nice_json }}
+          {{ {
+               'service': _container.service,
+               'node': inventory_hostname,
+               'role_hint': _container.role_hint,
+               'image': _container.image | default(''),
+               'container_name': _container.name,
+               'status': _container.status | default(''),
+               'capture_via': _capture_via | default('container'),
+               'docker_root': _splunk_docker_root,
+               'etc_host': _capture_etc_host | default(''),
+               'mounts': (
+                 _capture_mounts | default([])
+                 if (splunk_config_export_record_mounts | bool)
+                 else []
+               ),
+             } | to_nice_json }}
         mode: "0640"
       delegate_to: localhost
       become: false
@@ -112,3 +265,7 @@
         path: "{{ _node_tar }}"
         state: absent
       become: true
+
+    - name: Capture | {{ _container.label }} — mark capture ok
+      ansible.builtin.set_fact:
+        _capture_ok: true

@@ -1,0 +1,98 @@
+---
+# promote_admins.yml — pre-create the LDAP-backed admin users listed
+# in semaphore_ldap_admins as external (LDAP) users with admin=true.
+#
+# Semaphore creates LDAP users automatically on their first login, but
+# they land as regular users. By upserting them via the API ahead of
+# the first login we make sure the operator can land in the UI with
+# full admin rights without an out-of-band promotion step.
+#
+# Re-runnable: existing-by-username users get PUT'd with admin=true;
+# new ones get POST'd.
+
+- name: Log in as Semaphore admin (for admin-promotion API calls)
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      auth: "{{ semaphore_admin_username }}"
+      password: "{{ _semaphore_admin_password }}"
+    status_code: [204, 200]
+    return_content: true
+  register: _semaphore_promote_login
+  no_log: true
+
+- name: Capture admin-session cookie
+  ansible.builtin.set_fact:
+    _semaphore_promote_cookie: "{{ _semaphore_promote_login.cookies_string }}"
+  no_log: true
+
+- name: List existing Semaphore users
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/users"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_promote_cookie }}"
+    return_content: true
+  register: _semaphore_users
+
+# Build {username → existing-id-or-zero} map by looping over the
+# admin list and selectattr'ing the GET /users response per entry.
+- name: Build admin user id map
+  ansible.builtin.set_fact:
+    _semaphore_admin_user_ids: >-
+      {{ _semaphore_admin_user_ids | default({}) | combine({item.username: (_existing_id | int)}) }}
+  vars:
+    _existing_id: >-
+      {{ (_semaphore_users.json
+          | selectattr('username', 'equalto', item.username)
+          | map(attribute='id') | list | first) | default(0) }}
+  loop: "{{ semaphore_ldap_admins }}"
+  loop_control:
+    label: "{{ item.username }} → existing id={{ _existing_id }}"
+
+- name: Create missing LDAP admin users
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/users"
+    method: POST
+    headers:
+      Cookie: "{{ _semaphore_promote_cookie }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      username: "{{ item.username }}"
+      email: "{{ item.email }}"
+      admin: true
+      external: true
+      alert: false
+    status_code: [201, 204]
+    return_content: true
+  loop: "{{ semaphore_ldap_admins }}"
+  loop_control:
+    label: "{{ item.username }}"
+  when: _semaphore_admin_user_ids[item.username] | int == 0
+
+- name: Promote existing LDAP users to admin (idempotent PUT)
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/users/{{ _semaphore_admin_user_ids[item.username] | int }}"
+    method: PUT
+    headers:
+      Cookie: "{{ _semaphore_promote_cookie }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      username: "{{ item.username }}"
+      email: "{{ item.email }}"
+      admin: true
+      external: true
+      alert: false
+    status_code: [204, 200]
+  loop: "{{ semaphore_ldap_admins }}"
+  loop_control:
+    label: "{{ item.username }} (id={{ _semaphore_admin_user_ids[item.username] }})"
+  when: _semaphore_admin_user_ids[item.username] | int > 0

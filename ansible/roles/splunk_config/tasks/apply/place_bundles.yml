@@ -16,18 +16,37 @@
     msg: "no snapshot entry for service {{ _container.service }} — skipping placement"
   when: _entry | length == 0
 
-- name: Apply | {{ _container.label }} — place bundles
+# Resolve /opt/splunk/etc vs /opt/splunkforwarder/etc on the live container so
+# apply works for UF and full images without inventory overrides.
+- name: Apply | {{ _container.label }} — detect in-container etc root
   when: _entry | length > 0
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
+      [ -n "$CID" ] || exit 0
+      docker exec "$CID" sh -c 'for e in /opt/splunk/etc /opt/splunkforwarder/etc; do [ -d "$e" ] && echo "$e" && break; done'
+    executable: /bin/bash
+  become: true
+  register: _etc_probe
+  changed_when: false
+  failed_when: false
+
+- name: Apply | {{ _container.label }} — place bundles
+  when:
+    - _entry | length > 0
+    - (_etc_probe.stdout | default('') | trim | length) > 0
   vars:
     _inst_dir: "{{ splunk_config_snapshot_dir }}/instance-{{ _entry.role }}-{{ _container.service }}"
     _stage_base: "/tmp/splunk_apply/{{ _container.label }}"
+    _etc: "{{ _etc_probe.stdout | trim }}"
   block:
     - name: Apply | {{ _container.label }} — place instance apps
       ansible.builtin.include_tasks: apply/cp_into_container.yml
       vars:
         _cp_name: apps
         _cp_src: "{{ _inst_dir }}/apps"
-        _cp_dest: "{{ splunk_config_container_etc }}/apps"
+        _cp_dest: "{{ _etc }}/apps"
         _cp_stage: "{{ _stage_base }}/apps"
 
     - name: Apply | {{ _container.label }} — place system/local
@@ -35,7 +54,7 @@
       vars:
         _cp_name: system-local
         _cp_src: "{{ _inst_dir }}/system-local"
-        _cp_dest: "{{ splunk_config_container_etc }}/system/local"
+        _cp_dest: "{{ _etc }}/system/local"
         _cp_stage: "{{ _stage_base }}/system-local"
 
     - name: Apply | {{ _container.label }} — place users
@@ -43,7 +62,7 @@
       vars:
         _cp_name: users
         _cp_src: "{{ _inst_dir }}/users"
-        _cp_dest: "{{ splunk_config_container_etc }}/users"
+        _cp_dest: "{{ _etc }}/users"
         _cp_stage: "{{ _stage_base }}/users"
 
     - name: Apply | {{ _container.label }} — place manager-apps (cluster manager)
@@ -51,7 +70,7 @@
       vars:
         _cp_name: manager-apps
         _cp_src: "{{ splunk_config_snapshot_dir }}/manager-apps"
-        _cp_dest: "{{ splunk_config_container_etc }}/manager-apps"
+        _cp_dest: "{{ _etc }}/manager-apps"
         _cp_stage: "{{ _stage_base }}/manager-apps"
       when: _entry.role == 'cluster_manager'
 
@@ -60,7 +79,7 @@
       vars:
         _cp_name: shcluster-apps
         _cp_src: "{{ splunk_config_snapshot_dir }}/shcluster-apps"
-        _cp_dest: "{{ splunk_config_container_etc }}/shcluster/apps"
+        _cp_dest: "{{ _etc }}/shcluster/apps"
         _cp_stage: "{{ _stage_base }}/shcluster-apps"
       when: _entry.role == 'shc_deployer'
 
@@ -69,6 +88,16 @@
       vars:
         _cp_name: deployment-apps
         _cp_src: "{{ splunk_config_snapshot_dir }}/deployment-apps"
-        _cp_dest: "{{ splunk_config_container_etc }}/deployment-apps"
+        _cp_dest: "{{ _etc }}/deployment-apps"
         _cp_stage: "{{ _stage_base }}/deployment-apps"
       when: _entry.role == 'deployment_server'
+
+- name: Apply | {{ _container.label }} — warn when etc root not found
+  ansible.builtin.debug:
+    msg: >-
+      Snapshot entry exists for {{ _container.service }} but no
+      /opt/splunk/etc or /opt/splunkforwarder/etc was found in the container
+      — placement skipped (retrieve-only estate or stopped task).
+  when:
+    - _entry | length > 0
+    - (_etc_probe.stdout | default('') | trim | length) == 0

@@ -19,8 +19,14 @@
 
 - name: Capture the live Splunk estate into a snapshot
   ansible.builtin.import_tasks: export.yml
+  # Guard against tag cascade defeating `never`: only run when `export` was
+  # explicitly requested via --tags.
+  when: "'export' in ansible_run_tags"
   tags: [never, export]
 
 - name: Apply a snapshot back onto the estate
   ansible.builtin.import_tasks: apply.yml
+  # Guard against tag cascade defeating `never`: only run when `apply` was
+  # explicitly requested via --tags.
+  when: "'apply' in ansible_run_tags"
   tags: [never, apply]

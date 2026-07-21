@@ -1,13 +1,21 @@
 ---
 # Run once on the control node after every node's containers are captured.
 # Scrub + classify the raw capture into the committable snapshot, render
-# manifest.yml, push each instance's splunk.secret to Vault, and verify no
-# secret pattern survived the scrub.
+# manifest.yml, optionally push each instance's splunk.secret to Vault, and
+# verify no secret pattern survived the scrub (when enabled).
 
 - name: Scrub | Reset the snapshot dir
   ansible.builtin.file:
     path: "{{ splunk_config_snapshot_dir }}"
     state: absent
+  delegate_to: localhost
+  become: false
+
+- name: Scrub | Ensure raw capture dir exists (empty estate still scrubs cleanly)
+  ansible.builtin.file:
+    path: "{{ splunk_config_raw_dir }}"
+    state: directory
+    mode: "0750"
   delegate_to: localhost
   become: false
 
@@ -29,7 +37,7 @@
 
 - name: Scrub | Parse the emitted manifest
   ansible.builtin.set_fact:
-    _splunk_manifest: "{{ _scrub.stdout[_scrub.stdout.find('{'):] | from_json }}"
+    _splunk_manifest: "{{ _scrub.stdout[_scrub.stdout.find('{') :] | from_json }}"
 
 - name: Scrub | Render manifest.yml
   ansible.builtin.template:
@@ -43,7 +51,7 @@
 # value class [^<[:space:]] requires the FIRST value char to be neither '<' (the
 # scrub token starts '<SCRUBBED') nor whitespace, so a scrubbed line never
 # matches while a real leaked value does. Also catches raw $1$..$7$ encrypted blobs.
-- name: Scrub | Fail if any secret pattern survived the scrub
+- name: Scrub | Scan for secret patterns that survived the scrub
   ansible.builtin.command:
     argv:
       - grep
@@ -54,12 +62,55 @@
   become: false
   register: _secret_scan
   changed_when: false
-  failed_when: _secret_scan.rc == 0
-  # grep rc: 0 = match found (BAD → fail), 1 = clean (good), 2 = error.
+  failed_when: false
+  # grep rc: 0 = match found, 1 = clean, 2 = error (e.g. empty dir).
 
-- name: Scrub | Push each instance splunk.secret to Vault
+- name: Scrub | Fail if any secret pattern survived the scrub
+  ansible.builtin.assert:
+    that:
+      - _secret_scan.rc != 0
+    fail_msg: >-
+      Secret pattern(s) survived the scrub in {{ splunk_config_snapshot_dir }}:
+      {{ _secret_scan.stdout_lines | default([]) | join(', ') }}.
+      Fix the scrubber or set splunk_config_export_fail_on_secret_leak=false
+      only for a private forensics dump that must never land in git.
+  when:
+    - splunk_config_export_fail_on_secret_leak | bool
+    - _secret_scan.rc == 0
+
+- name: Scrub | Warn about residual secret patterns (soft mode)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: secret-like patterns remain in the snapshot
+      ({{ _secret_scan.stdout_lines | default([]) | join(', ') }}).
+      Export continued because splunk_config_export_fail_on_secret_leak=false —
+      do NOT commit this tree.
+  when:
+    - not (splunk_config_export_fail_on_secret_leak | bool)
+    - _secret_scan.rc == 0
+
+- name: Scrub | Push each instance splunk.secret to Vault (optional, soft-fail)
   ansible.builtin.include_tasks: export/push_splunk_secret.yml
-  when: splunk_config_export_push_splunk_secret | bool
+  when:
+    - splunk_config_export_push_splunk_secret | bool
+    - (vault_addr | default('') | length) > 0
+    - (splunk_config_vault_mount | default('') | length) > 0
+
+- name: Scrub | Note that Vault secret push was skipped
+  ansible.builtin.debug:
+    msg: >-
+      Vault push of splunk.secret skipped
+      (export_push={{ splunk_config_export_push_splunk_secret }},
+      vault_addr set={{ (vault_addr | default('') | length) > 0 }},
+      vault_mount set={{ (splunk_config_vault_mount | default('') | length) > 0 }}).
+      Snapshot is still complete for retrieve; apply reseed will need Vault
+      later if you want $7$-encrypted values to decrypt.
+  when: >-
+    (splunk_config_export_push_splunk_secret | bool)
+    and (
+      (vault_addr | default('') | length) == 0
+      or (splunk_config_vault_mount | default('') | length) == 0
+    )
 
 - name: Scrub | Clean the raw capture dir
   ansible.builtin.file:
@@ -73,5 +124,8 @@
   ansible.builtin.debug:
     msg: >-
       Captured {{ _splunk_manifest.meta.counts }} → {{ splunk_config_snapshot_dir }}.
-      Tiers: {{ _splunk_manifest.meta.tiers_detected }}. Review manifest.yml +
-      SECRETS-SCRUBBED.md, then commit the snapshot.
+      Tiers: {{ _splunk_manifest.meta.tiers_detected }}.
+      Review manifest.yml + SECRETS-SCRUBBED.md
+      {{ 'then commit the snapshot.'
+         if (splunk_config_export_fail_on_secret_leak | bool)
+         else '(forensics dump — do not commit unless scrub is clean).' }}

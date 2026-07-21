@@ -1,0 +1,32 @@
+---
+# Non-overridable constants — change in code, not inventory.
+
+# Use the -ansible2.x variant — bundles ansible-core inside the image so
+# Semaphore's `app: ansible` template type runs without us layering
+# anything into the container. The plain tag has no ansible at all and
+# would 500 on every template execution.
+semaphore_version: "v2.18.3-ansible2.16.5"
+semaphore_image: "semaphoreui/semaphore:{{ semaphore_version }}"
+
+semaphore_data_dir: "/opt/semaphore"
+semaphore_server_port: 3000
+
+semaphore_pg_version: "16"
+semaphore_pg_database: "semaphore"
+semaphore_pg_username: "semaphore"
+
+# Admin web user — created by Semaphore on first boot from env vars.
+# Username is fixed; password is fetched-or-generated in install.yml.
+semaphore_admin_username: "admin"
+semaphore_admin_email: "admin@{{ env }}.{{ domain }}"
+semaphore_admin_name: "Semaphore Admin"
+
+# Smoke-test project — a single Semaphore project + template that runs
+# a non-destructive `ansible -m ping localhost` task. Mirrors the Rundeck
+# `lab-smoke` project pattern so the two tools have equivalent
+# "is the orchestrator actually working" surface.
+semaphore_smoke_project_name: "lab-smoke"
+semaphore_smoke_template_name: "smoke-ping-localhost"
+semaphore_smoke_inventory_name: "smoke-localhost"
+semaphore_smoke_repo_name: "smoke-local-fs"
+semaphore_smoke_playbook_path: "smoke-ping.yml"

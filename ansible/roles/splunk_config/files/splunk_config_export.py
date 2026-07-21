@@ -15,7 +15,7 @@ script turns that raw tree into the snapshot the repo actually stores:
   * emits the manifest as ONE JSON object on stdout (the caller renders it to
     <out>/manifest.yml). All diagnostics go to stderr so stdout stays pure JSON.
 
-Design principle: read-only against the source, a
+Design mirrors freeipa_config_export.py: read-only against the source, a
 deliberate skip-list for stock/secret material, and a self-documenting partial
 result (sections absent on this estate are simply omitted, never faked).
 """
@@ -122,15 +122,17 @@ def _copy_file(src: str, dst: str, rel_path: str, scrubbed: list[dict]) -> None:
     The dest is made writable first so a control-plane bundle captured from
     several peers (each carrying the same read-only file) overwrites cleanly."""
     os.makedirs(os.path.dirname(dst), exist_ok=True)
+    # Owner-writable only: snapshot trees may still hold residual secrets after
+    # scrubbing, so never world/group-read the committed export on disk.
     if os.path.exists(dst):
-        os.chmod(dst, 0o644)
+        os.chmod(dst, 0o600)
     if src.endswith(CONF_SUFFIX):
         text = scrub_conf_text(_read_text(src), rel_path, scrubbed)
         with open(dst, "w", encoding="utf-8") as handle:
             handle.write(text)
     else:
         shutil.copyfile(src, dst)
-    os.chmod(dst, 0o644)
+    os.chmod(dst, 0o600)
 
 
 def _copy_tree(src_dir: str, dst_dir: str, rel_base: str, scrubbed: list[dict]) -> int:
@@ -250,15 +252,41 @@ def capture_instance(inst_dir: str, out_dir: str, manifest: dict, scrubbed: list
     apps = capture_apps_dir(os.path.join(etc, APPS_DIR), os.path.join(out_dir, key, APPS_DIR), scrubbed)
     system_local = _capture_system_local(etc, os.path.join(out_dir, key), scrubbed)
     users = _capture_users(etc, os.path.join(out_dir, key, USERS_DIR), scrubbed)
-    manifest["tiers"]["instances"].append({
+    entry = {
         "role": role,
         "service": meta.get("service"),
         "node": meta.get("node"),
+        "image": meta.get("image", ""),
+        "container_name": meta.get("container_name", ""),
+        "capture_via": meta.get("capture_via", ""),
+        "docker_root": meta.get("docker_root", ""),
+        "etc_host": meta.get("etc_host", ""),
         "system_local": system_local,
         "apps": [a["name"] for a in apps],
         "app_detail": apps,
         "users": users,
-    })
+    }
+    # Mount metadata when the capture task recorded it. Named volumes typically
+    # show Source under <docker_root>/volumes/<name>/_data (default
+    # /var/lib/docker), including local-driver NFS backends.
+    mounts = meta.get("mounts") or []
+    if mounts:
+        entry["mounts"] = [
+            {
+                "type": m.get("Type", m.get("type", "")),
+                "name": m.get("Name", m.get("name", "")),
+                "source": m.get("Source", m.get("source", "")),
+                "destination": m.get("Destination", m.get("destination", "")),
+                "driver": m.get("Driver", m.get("driver", "")),
+            }
+            for m in mounts
+            if isinstance(m, dict)
+        ]
+    # Drop empty optional keys so the manifest stays compact.
+    for optional in ("capture_via", "docker_root", "etc_host", "image", "container_name"):
+        if not entry.get(optional):
+            entry.pop(optional, None)
+    manifest["tiers"]["instances"].append(entry)
 
 
 # Well-known secret files that live OUTSIDE the captured config dirs (never

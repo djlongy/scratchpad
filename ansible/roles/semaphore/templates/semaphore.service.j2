@@ -1,0 +1,17 @@
+[Unit]
+Description=Semaphore UI CI/CD Orchestrator
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory={{ semaphore_data_dir }}
+ExecStart=/usr/bin/docker compose -p semaphore up --remove-orphans
+ExecStop=/usr/bin/docker compose -p semaphore down
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

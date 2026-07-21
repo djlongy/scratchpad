@@ -1,0 +1,12 @@
+---
+- name: Reload systemd
+  become: true  # root: systemd daemon-reload
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart semaphore
+  become: true  # root: manages the semaphore systemd unit
+  ansible.builtin.systemd:
+    name: semaphore
+    state: restarted
+    daemon_reload: true

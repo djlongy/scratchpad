@@ -1,0 +1,48 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Semaphore UI as a docker compose + systemd stack.
+    description:
+      - >-
+        Installs Semaphore CE with PostgreSQL, optional FreeIPA LDAP,
+        declarative project reconcile, and an API smoke test.
+      - >-
+        Privilege is self-contained. Root work uses task-level become true;
+        Vault lookups and API calls use become false. Do not set play-level
+        become for this role.
+    options:
+      semaphore_fqdn:
+        type: str
+        required: true
+        description: Public FQDN served in front of the instance (TLS terminates upstream).
+      semaphore_dns_servers:
+        type: list
+        elements: str
+        description: >-
+          DNS resolvers injected into the Semaphore container. Empty inherits
+          the host resolv.conf.
+      semaphore_ldap_enabled:
+        type: bool
+        default: false
+        description: Enable FreeIPA LDAP/SSO and provision the bind service account.
+      semaphore_freeipa_admin_password:
+        type: str
+        default: ""
+        description: >-
+          FreeIPA admin password for svc-semaphore provisioning. Empty falls
+          back to HashiCorp Vault at vault_platform_runtime_base/freeipa/runtime.
+      semaphore_ldap_host:
+        type: str
+        description: LDAPS hostname for FreeIPA.
+      semaphore_ldap_port:
+        type: int
+        default: 636
+        description: LDAPS port.
+      semaphore_ldap_admins:
+        type: list
+        elements: dict
+        description: LDAP users promoted to Semaphore admin (must already exist in FreeIPA).
+      semaphore_projects:
+        type: list
+        elements: dict
+        description: Declarative project/inventory/template definitions reconciled via the REST API.

@@ -1,0 +1,305 @@
+---
+# reconcile_one_project.yml
+# Per-project: ensure the project + its child objects exist with the
+# declared settings. Looped over from reconcile_projects.yml with
+# `_sem_project` set to the current project dict.
+#
+# Strategy: list-then-create. Existing objects are matched by name and
+# their IDs cached for cross-references (a template's inventory_name
+# resolves to inventory_id, etc.). Updates to existing objects are NOT
+# performed in this pass — change a name to "rotate" or edit in the UI
+# for now. This is intentional v1 — most changes are field-additions
+# (new templates), not edits to existing.
+
+# ─── Project ────────────────────────────────────────────────────────────────
+
+- name: "[{{ _sem_project.name }}] List existing projects"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/projects"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_projects_all
+
+- name: "[{{ _sem_project.name }}] Resolve project ID (if exists)"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_project_id: >-
+      {{ (_sem_projects_all.json
+          | selectattr('name', 'equalto', _sem_project.name)
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+- name: "[{{ _sem_project.name }}] Create project"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/projects"
+    method: POST
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    body_format: json
+    body:
+      name: "{{ _sem_project.name }}"
+      alert: "{{ _sem_project.alert | default(false) }}"
+      max_parallel_tasks: "{{ _sem_project.max_parallel_tasks | default(0) }}"
+    status_code: [201]
+    return_content: true
+  register: _sem_project_create
+  when: _sem_project_id == 0
+
+- name: "[{{ _sem_project.name }}] Lock in project ID"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_project_id: >-
+      {{ (_sem_project_create.json.id
+          if (_sem_project_id == 0) else _sem_project_id) | int }}
+
+# ─── Resolve the 'None' SSH key (created automatically per project) ─────────
+- name: "[{{ _sem_project.name }}] List keys for project"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/keys"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_keys
+
+- name: "[{{ _sem_project.name }}] Resolve None-type key ID"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_none_key_id: >-
+      {{ (_sem_keys.json
+          | selectattr('type', 'equalto', 'none')
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+# ─── Repositories ───────────────────────────────────────────────────────────
+- name: "[{{ _sem_project.name }}] List existing repositories"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/repositories"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_repos
+
+- name: "[{{ _sem_project.name }}] Create missing repositories"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/repositories"
+    method: POST
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      project_id: "{{ _sem_project_id | int }}"
+      git_url: "{{ item.git_url }}"
+      git_branch: "{{ item.git_branch | default('main') }}"
+      ssh_key_id: "{{ _sem_none_key_id | int }}"
+    status_code: [201]
+    return_content: true
+  loop: "{{ _sem_project.repositories | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - item.name not in (_sem_repos.json | map(attribute='name') | list)
+    - (item.ssh_key_name | default('none')) == 'none'
+
+- name: "[{{ _sem_project.name }}] Re-list repositories (for ID map)"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/repositories"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_repos_after
+
+- name: "[{{ _sem_project.name }}] Build repo name→id map"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_repo_map: >-
+      {{ dict(_sem_repos_after.json | map(attribute='name') | zip(_sem_repos_after.json | map(attribute='id'))) }}
+
+# ─── Inventories ────────────────────────────────────────────────────────────
+- name: "[{{ _sem_project.name }}] List existing inventories"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/inventory"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_invs
+
+- name: "[{{ _sem_project.name }}] Create missing inventories"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/inventory"
+    method: POST
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      project_id: "{{ _sem_project_id | int }}"
+      type: "{{ item.type | default('static') }}"
+      inventory: "{{ item.content | default('') }}"
+    status_code: [201]
+    return_content: true
+  loop: "{{ _sem_project.inventories | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in (_sem_invs.json | map(attribute='name') | list)
+
+- name: "[{{ _sem_project.name }}] Re-list inventories (for ID map)"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/inventory"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_invs_after
+
+- name: "[{{ _sem_project.name }}] Build inventory name→id map"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_inv_map: >-
+      {{ dict(_sem_invs_after.json | map(attribute='name') | zip(_sem_invs_after.json | map(attribute='id'))) }}
+
+# ─── Environments (extra-vars + secrets bundles) ────────────────────────────
+- name: "[{{ _sem_project.name }}] List existing environments"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/environment"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_envs
+
+- name: "[{{ _sem_project.name }}] Create missing environments"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/environment"
+    method: POST
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      project_id: "{{ _sem_project_id | int }}"
+      json: "{{ item.json | default('{}') }}"
+      env: "{{ item.env | default('{}') }}"
+    status_code: [201]
+    return_content: true
+  loop: "{{ _sem_project.environments | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in (_sem_envs.json | map(attribute='name') | list)
+
+- name: "[{{ _sem_project.name }}] Re-list environments (for ID map)"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/environment"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_envs_after
+
+- name: "[{{ _sem_project.name }}] Build environment name→id map"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_env_map: >-
+      {{ dict(_sem_envs_after.json | map(attribute='name') | zip(_sem_envs_after.json | map(attribute='id'))) }}
+
+# ─── Templates ──────────────────────────────────────────────────────────────
+- name: "[{{ _sem_project.name }}] List existing templates"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/templates"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_tmpls
+
+- name: "[{{ _sem_project.name }}] Create missing templates"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/templates"
+    method: POST
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    body_format: json
+    body:
+      project_id: "{{ _sem_project_id | int }}"
+      name: "{{ item.name }}"
+      app: "{{ item.app | default('ansible') }}"
+      playbook: "{{ item.playbook }}"
+      inventory_id: "{{ (_sem_inv_map[item.inventory_name]) | int }}"
+      repository_id: "{{ (_sem_repo_map[item.repository_name]) | int }}"
+      environment_id: "{{ (_sem_env_map[item.environment_name] | int) if (item.environment_name | default('')) | length > 0 else None }}"
+      arguments: "{{ item.arguments | default('[]') }}"
+      description: "{{ item.description | default('') }}"
+      type: "{{ item.type | default('') }}"
+      allow_override_args_in_task: "{{ item.allow_override_args | default(false) }}"
+    status_code: [201]
+    return_content: true
+  loop: "{{ _sem_project.templates | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in (_sem_tmpls.json | map(attribute='name') | list)
+
+- name: "[{{ _sem_project.name }}] Re-list templates (for ID map)"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/templates"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_tmpls_after
+
+- name: "[{{ _sem_project.name }}] Build template name→id map"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_tmpl_map: >-
+      {{ dict(_sem_tmpls_after.json | map(attribute='name') | zip(_sem_tmpls_after.json | map(attribute='id'))) }}
+
+# ─── Schedules (one optional cron per template) ─────────────────────────────
+- name: "[{{ _sem_project.name }}] List existing schedules"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/schedules"
+    method: GET
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    return_content: true
+  register: _sem_scheds
+  failed_when: false   # endpoint shape varies by version; tolerate 404
+
+- name: "[{{ _sem_project.name }}] Build set of templates that already have a schedule"  # noqa: name[template]
+  ansible.builtin.set_fact:
+    _sem_scheduled_template_ids: >-
+      {{ (_sem_scheds.json | default([]))
+         | map(attribute='template_id') | list | unique }}
+
+- name: "[{{ _sem_project.name }}] Create missing schedules"  # noqa: name[template]
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _sem_project_id }}/schedules"
+    method: POST
+    headers:
+      Cookie: "{{ _sem_cookie }}"
+    body_format: json
+    body:
+      project_id: "{{ _sem_project_id | int }}"
+      template_id: "{{ (_sem_tmpl_map[item.name]) | int }}"
+      cron_format: "{{ item.schedule.cron_format }}"
+      name: "{{ item.schedule.name | default(item.name ~ '-schedule') }}"
+      active: "{{ item.schedule.active | default(true) }}"
+    status_code: [201, 200]
+    return_content: true
+  loop: "{{ _sem_project.templates | default([]) | selectattr('schedule', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }} → {{ item.schedule.cron_format }}"
+  when: (_sem_tmpl_map[item.name] | int) not in _sem_scheduled_template_ids

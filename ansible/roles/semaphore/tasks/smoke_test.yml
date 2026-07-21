@@ -1,0 +1,288 @@
+---
+# smoke_test.yml — wire a non-destructive `ansible.builtin.ping` task
+# into Semaphore via its REST API and execute it. End-to-end check that
+# the orchestrator is wired correctly. Mirrors host-rundeck's
+# `lab-smoke → smoke` job pattern for feature parity.
+#
+# All API calls go to localhost on the manager (the role runs `become:
+# true` on the manager VM itself; the loopback port is reachable inside
+# the play context). status_code lists accept 200 and 201 because
+# Semaphore returns 201 on POST-create and 204 on idempotent re-runs.
+
+- name: Log in as Semaphore admin
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/auth/login"
+    method: POST
+    body_format: json
+    body:
+      auth: "{{ semaphore_admin_username }}"
+      password: "{{ _semaphore_admin_password }}"
+    status_code: [204, 200]
+    return_content: true
+  register: _semaphore_login
+  no_log: true
+
+- name: Capture Semaphore session cookie
+  ansible.builtin.set_fact:
+    _semaphore_cookie: >-
+      {{ _semaphore_login.cookies_string }}
+  no_log: true
+
+# ── Project ──────────────────────────────────────────────────────────────────
+- name: List existing Semaphore projects
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/projects"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    return_content: true
+  register: _semaphore_projects
+
+- name: Resolve smoke project ID (if exists)
+  ansible.builtin.set_fact:
+    _semaphore_smoke_project_id: >-
+      {{ (_semaphore_projects.json
+          | selectattr('name', 'equalto', semaphore_smoke_project_name)
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+- name: Create smoke project (first run only)
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/projects"
+    method: POST
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    body_format: json
+    body:
+      name: "{{ semaphore_smoke_project_name }}"
+      alert: false
+      max_parallel_tasks: 0
+    status_code: [201]
+    return_content: true
+  register: _semaphore_smoke_project_create
+  when: _semaphore_smoke_project_id == 0
+
+- name: Lock in smoke project ID
+  ansible.builtin.set_fact:
+    _semaphore_smoke_project_id: >-
+      {{ (_semaphore_smoke_project_create.json.id
+          if (_semaphore_smoke_project_id == 0)
+          else _semaphore_smoke_project_id) | int }}
+
+# ── Inventory (the Semaphore "inventory" object — pointer at our INI) ────────
+- name: List existing inventories for smoke project
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/inventory"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    return_content: true
+  register: _semaphore_inventories
+
+- name: Resolve smoke inventory ID (if exists)
+  ansible.builtin.set_fact:
+    _semaphore_smoke_inventory_id: >-
+      {{ (_semaphore_inventories.json
+          | selectattr('name', 'equalto', semaphore_smoke_inventory_name)
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+- name: Create smoke inventory (first run only)
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/inventory"
+    method: POST
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    body_format: json
+    body:
+      name: "{{ semaphore_smoke_inventory_name }}"
+      project_id: "{{ _semaphore_smoke_project_id | int }}"
+      type: static
+      inventory: "[local]\nlocalhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3\n"
+    status_code: [201]
+    return_content: true
+  register: _semaphore_smoke_inventory_create
+  when: _semaphore_smoke_inventory_id == 0
+
+- name: Lock in smoke inventory ID
+  ansible.builtin.set_fact:
+    _semaphore_smoke_inventory_id: >-
+      {{ (_semaphore_smoke_inventory_create.json.id
+          if (_semaphore_smoke_inventory_id == 0)
+          else _semaphore_smoke_inventory_id) | int }}
+
+# ── Resolve the "None" SSH key — every project ships with a default
+# key of type "none" that we reuse for the file:// repo. Semaphore
+# rejects POST /repositories with `ssh_key_id: 0` (404), so we have to
+# point at a real key row even when the repo doesn't need auth.
+- name: List Semaphore keys for smoke project
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/keys"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    return_content: true
+  register: _semaphore_keys
+
+- name: Resolve None-type key ID
+  ansible.builtin.set_fact:
+    _semaphore_none_key_id: >-
+      {{ (_semaphore_keys.json
+          | selectattr('type', 'equalto', 'none')
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+- name: Assert None-type key exists
+  ansible.builtin.assert:
+    that:
+      - _semaphore_none_key_id > 0
+    fail_msg: >-
+      No `type: none` SSH key found under project
+      {{ _semaphore_smoke_project_id }}. Semaphore creates one
+      automatically on project create — if it's missing the project
+      itself is in a weird state.
+
+# ── Repository — local FS path that Semaphore reads playbooks from ───────────
+- name: List existing repositories for smoke project
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/repositories"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    return_content: true
+  register: _semaphore_repos
+
+- name: Resolve smoke repo ID (if exists)
+  ansible.builtin.set_fact:
+    _semaphore_smoke_repo_id: >-
+      {{ (_semaphore_repos.json
+          | selectattr('name', 'equalto', semaphore_smoke_repo_name)
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+- name: Create smoke repository (first run only)
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/repositories"
+    method: POST
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    body_format: json
+    body:
+      name: "{{ semaphore_smoke_repo_name }}"
+      project_id: "{{ _semaphore_smoke_project_id | int }}"
+      git_url: "file:///tmp/semaphore_repos/ansible-repo"
+      git_branch: "master"
+      ssh_key_id: "{{ _semaphore_none_key_id | int }}"
+    status_code: [201]
+    return_content: true
+  register: _semaphore_smoke_repo_create
+  when: _semaphore_smoke_repo_id == 0
+
+- name: Lock in smoke repo ID
+  ansible.builtin.set_fact:
+    _semaphore_smoke_repo_id: >-
+      {{ (_semaphore_smoke_repo_create.json.id
+          if (_semaphore_smoke_repo_id == 0)
+          else _semaphore_smoke_repo_id) | int }}
+
+# ── Template (the runnable task definition) ──────────────────────────────────
+- name: List existing templates for smoke project
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/templates"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    return_content: true
+  register: _semaphore_templates
+
+- name: Resolve smoke template ID (if exists)
+  ansible.builtin.set_fact:
+    _semaphore_smoke_template_id: >-
+      {{ (_semaphore_templates.json
+          | selectattr('name', 'equalto', semaphore_smoke_template_name)
+          | map(attribute='id') | list | first) | default(0) | int }}
+
+- name: Create smoke template (first run only)
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/templates"
+    method: POST
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    body_format: json
+    body:
+      project_id: "{{ _semaphore_smoke_project_id | int }}"
+      name: "{{ semaphore_smoke_template_name }}"
+      app: "ansible"
+      playbook: "{{ semaphore_smoke_playbook_path }}"
+      inventory_id: "{{ _semaphore_smoke_inventory_id | int }}"
+      repository_id: "{{ _semaphore_smoke_repo_id | int }}"
+      environment_id: null
+      arguments: "[]"
+      description: "Non-destructive ansible.builtin.ping against localhost — orchestrator smoke test"
+      type: ""
+      allow_override_args_in_task: false
+    status_code: [201]
+    return_content: true
+  register: _semaphore_smoke_template_create
+  when: _semaphore_smoke_template_id == 0
+
+- name: Lock in smoke template ID
+  ansible.builtin.set_fact:
+    _semaphore_smoke_template_id: >-
+      {{ (_semaphore_smoke_template_create.json.id
+          if (_semaphore_smoke_template_id == 0)
+          else _semaphore_smoke_template_id) | int }}
+
+# ── Trigger the template + poll for completion ───────────────────────────────
+- name: Trigger smoke task
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/tasks"
+    method: POST
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    body_format: json
+    body:
+      template_id: "{{ _semaphore_smoke_template_id | int }}"
+      project_id: "{{ _semaphore_smoke_project_id | int }}"
+      debug: false
+      dry_run: false
+    status_code: [201]
+    return_content: true
+  register: _semaphore_smoke_task
+
+- name: Capture smoke task ID
+  ansible.builtin.set_fact:
+    _semaphore_smoke_task_id: "{{ _semaphore_smoke_task.json.id | int }}"
+
+- name: Wait for smoke task to reach a terminal state
+  become: false  # localhost/API — Semaphore HTTP API, no host privilege
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ semaphore_server_port }}/api/project/{{ _semaphore_smoke_project_id }}/tasks/{{ _semaphore_smoke_task_id }}"
+    method: GET
+    headers:
+      Cookie: "{{ _semaphore_cookie }}"
+    return_content: true
+  register: _semaphore_smoke_status
+  retries: 30
+  delay: 5
+  until: _semaphore_smoke_status.json.status in ['success', 'error', 'stopped']
+
+- name: Assert smoke task succeeded
+  ansible.builtin.assert:
+    that:
+      - _semaphore_smoke_status.json.status == 'success'
+    fail_msg: >-
+      Semaphore smoke task #{{ _semaphore_smoke_task_id }} ended in state
+      '{{ _semaphore_smoke_status.json.status }}'. Inspect via the UI at
+      https://{{ semaphore_fqdn }}/project/{{ _semaphore_smoke_project_id }}/history/{{ _semaphore_smoke_task_id }}
+      or `docker logs semaphore` on {{ inventory_hostname }}.
+    success_msg: >-
+      Semaphore smoke task #{{ _semaphore_smoke_task_id }} succeeded —
+      orchestrator has feature parity with host-rundeck lab-smoke.

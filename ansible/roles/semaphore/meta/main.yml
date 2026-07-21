@@ -1,0 +1,25 @@
+---
+# Collections used by this role (also listed in repo requirements.yml):
+#   ansible.posix          — firewalld
+#   community.general      — git_config
+#   community.hashi_vault  — secret fetch/write
+#   freeipa.ansible_freeipa — When LDAP: ipauser for svc-semaphore
+galaxy_info:
+  role_name: semaphore
+  author: operator
+  description: >-
+    Deploy Semaphore UI (Ansible/Terraform web orchestrator) as a docker compose
+    stack — install, configure, LDAP admin promotion, declarative project
+    reconcile, and smoke test. Privilege-self-contained (no play-level become).
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+  galaxy_tags:
+    - semaphore
+    - ansible
+    - orchestration
+    - docker
+dependencies: []

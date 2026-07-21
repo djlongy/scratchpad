@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: splunk_config
-  author: longy
+  author: operator
   description: >-
     Capture the entire live configuration of a Splunk estate running on Docker
     Swarm into a declarative, version-controlled snapshot (manifest + native app

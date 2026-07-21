@@ -31,14 +31,23 @@
         cmd: |
           set -o pipefail
           CID=$(docker ps -q --filter name={{ _container.name | quote }} | head -1)
-          [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 1; }
+          [ -n "$CID" ] || { echo "no container {{ _container.name }}"; exit 2; }
           docker exec "$CID" mkdir -p {{ _cp_dest | quote }}
           docker cp {{ _cp_stage | quote }}/. "$CID":{{ _cp_dest | quote }}/
           docker exec -u 0 "$CID" chown -R {{ splunk_config_container_owner | quote }} \
             {{ _cp_dest | quote }} || true
         executable: /bin/bash
       become: true
-      changed_when: true
+      register: _cp_into
+      changed_when: _cp_into.rc == 0
+      failed_when: _cp_into.rc not in [0, 2]
+
+    - name: Apply | {{ _container.label }} — warn on missing container during {{ _cp_name }} place
+      ansible.builtin.debug:
+        msg: >-
+          Container {{ _container.name }} not running — skipped placing
+          {{ _cp_name }}. Export/retrieve still valid; apply needs a live task.
+      when: (_cp_into.rc | default(0)) == 2
 
     - name: Apply | {{ _container.label }} — clean stage {{ _cp_name }}
       ansible.builtin.file:

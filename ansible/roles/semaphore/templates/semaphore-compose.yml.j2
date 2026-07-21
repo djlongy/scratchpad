@@ -1,0 +1,116 @@
+services:
+  semaphore-db:
+    image: postgres:{{ semaphore_pg_version }}-alpine
+    container_name: semaphore-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "{{ semaphore_pg_database }}"
+      POSTGRES_USER: "{{ semaphore_pg_username }}"
+      POSTGRES_PASSWORD: "{{ _semaphore_db_password }}"
+    volumes:
+      - {{ semaphore_data_dir }}/postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ semaphore_pg_username }} -d {{ semaphore_pg_database }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - semaphore
+
+  semaphore:
+    image: {{ semaphore_image }}
+    container_name: semaphore
+    hostname: "{{ inventory_hostname }}"
+    restart: unless-stopped
+{% if semaphore_dns_servers | default([]) | length > 0 %}
+    # Estate DNS resolvers from inventory (service aliases + IdM).
+    dns:
+{% for ns in semaphore_dns_servers %}
+      - {{ ns }}
+{% endfor %}
+{% endif %}
+    depends_on:
+      semaphore-db:
+        condition: service_healthy
+    environment:
+      # DB — note `SEMAPHORE_DB` is the DB name (no _NAME suffix); the
+      # entrypoint's non-interactive setup falls back to MySQL defaults
+      # if it can't read the dialect, which manifests as a crash loop
+      # writing /etc/semaphore/config.json with the wrong driver.
+      SEMAPHORE_DB_DIALECT: "postgres"
+      SEMAPHORE_DB_HOST: "semaphore-db"
+      SEMAPHORE_DB_PORT: "5432"
+      SEMAPHORE_DB: "{{ semaphore_pg_database }}"
+      SEMAPHORE_DB_USER: "{{ semaphore_pg_username }}"
+      SEMAPHORE_DB_PASS: "{{ _semaphore_db_password }}"
+      SEMAPHORE_PLAYBOOK_PATH: "/tmp/semaphore"
+      # Admin user — Semaphore seeds this on first boot only. Subsequent
+      # restarts honour any changes made via the UI.
+      SEMAPHORE_ADMIN: "{{ semaphore_admin_username }}"
+      SEMAPHORE_ADMIN_NAME: "{{ semaphore_admin_name }}"
+      SEMAPHORE_ADMIN_EMAIL: "{{ semaphore_admin_email }}"
+      SEMAPHORE_ADMIN_PASSWORD: "{{ _semaphore_admin_password }}"
+      # 32-byte b64 — encrypts every credential Semaphore stores. Do
+      # NOT rotate without re-seeding credentials; rotation orphans
+      # everything in the DB.
+      SEMAPHORE_ACCESS_KEY_ENCRYPTION: "{{ _semaphore_access_key_encryption }}"
+      # Tell Semaphore it's behind a TLS-terminating proxy (NPM in
+      # front of port {{ semaphore_server_port }}).
+      SEMAPHORE_WEB_ROOT: "https://{{ semaphore_fqdn }}"
+      # Path that templates resolve playbook references against. The
+      # bind below maps the host's ansible-repo dir into this path.
+      SEMAPHORE_TMP_PATH: "/tmp/semaphore"
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      VAULT_ADDR: "{{ vault_addr }}"
+{% if semaphore_ldap_enabled %}
+      # ── LDAP / FreeIPA ─────────────────────────────────────────────
+      # Semaphore CE config-style env vars. NEEDTLS=yes wraps the
+      # connection in TLS (LDAPS on port 636). The Go ldap client
+      # verifies the server cert against the CA bundle at
+      # SSL_CERT_FILE — we point that at the FreeIPA CA cert
+      # bind-mounted below so the self-signed FreeIPA PKI is trusted.
+      SEMAPHORE_LDAP_ACTIVATED: "yes"
+      SEMAPHORE_LDAP_HOST: "{{ semaphore_ldap_host }}"
+      SEMAPHORE_LDAP_PORT: "{{ semaphore_ldap_port }}"
+      SEMAPHORE_LDAP_NEEDTLS: "{{ 'yes' if semaphore_ldap_needtls else 'no' }}"
+      SEMAPHORE_LDAP_DN_BIND: "{{ semaphore_ldap_bind_dn }}"
+      SEMAPHORE_LDAP_PASSWORD: "{{ _semaphore_ldap_bind_password }}"
+      SEMAPHORE_LDAP_DN_SEARCH: "{{ semaphore_ldap_dn_search }}"
+      SEMAPHORE_LDAP_SEARCH_FILTER: "{{ semaphore_ldap_search_filter }}"
+      SEMAPHORE_LDAP_MAPPING_DN: "{{ semaphore_ldap_mapping_dn }}"
+      SEMAPHORE_LDAP_MAPPING_MAIL: "{{ semaphore_ldap_mapping_mail }}"
+      SEMAPHORE_LDAP_MAPPING_UID: "{{ semaphore_ldap_mapping_uid }}"
+      SEMAPHORE_LDAP_MAPPING_CN: "{{ semaphore_ldap_mapping_cn }}"
+      # Go reads SSL_CERT_FILE on init for its system CA pool. Pointing
+      # at just the FreeIPA CA means LDAPS validates correctly but the
+      # container's outbound TLS to anything ELSE on the public internet
+      # (Webhook alerts, etc) won't trust public CAs. Acceptable here
+      # because the container has no outbound public-TLS path today.
+      SSL_CERT_FILE: "/etc/ssl/certs/freeipa-ca.crt"
+{% endif %}
+    ports:
+      - "{{ semaphore_server_port }}:3000"
+    volumes:
+      - {{ semaphore_data_dir }}/config:/etc/semaphore
+      - {{ semaphore_data_dir }}/data:/var/lib/semaphore
+      - {{ semaphore_data_dir }}/tmp:/tmp/semaphore
+      # Local "git" repo path — Semaphore reads the smoke-test playbook
+      # from here via the file:// repo entry created in smoke_test.yml.
+      - {{ semaphore_data_dir }}/ansible-repo:/tmp/semaphore_repos/ansible-repo:ro
+{% if semaphore_ldap_enabled %}
+      # FreeIPA CA cert for LDAPS verification — slurped from
+      # groups['freeipa'][0]:/etc/ipa/ca.crt at deploy time.
+      - {{ semaphore_data_dir }}/freeipa-ca.crt:/etc/ssl/certs/freeipa-ca.crt:ro
+{% endif %}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - semaphore
+
+networks:
+  semaphore:
+    driver: bridge
