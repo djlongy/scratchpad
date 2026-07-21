@@ -54,26 +54,26 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `vcenter_svc_privilege_action` | `set` | Converge the Role to exactly the entry's privilege list |
 | Optional | `vcenter_svc_password_length` | `20` | Generated password length (capped — vmdir rejects longer) |
 
+## Minimum configuration
+
+```yaml
+# group_vars/vcenter_svc_accounts_hosts.yml
+---
+# Required
+vcenter_svc_hostname: service.example.internal
+vcenter_svc_admin_username: "REPLACE_ME_vcenter_svc_admin_username"
+vcenter_svc_admin_password: "{{ vault_secret_admin_password }}"
+vcenter_svc_vcsa_ssh_password: "{{ vault_secret_vcsa_ssh_password }}"
+vcenter_service_accounts: "REPLACE_ME_vcenter_service_accounts"
+```
+
 ## Usage
 
 ```yaml
-# playbooks/vcenter_svc_accounts.yml
 - hosts: localhost
   gather_facts: false
   roles:
     - vcenter_svc_accounts
-```
-
-```yaml
-# group_vars / play vars — supply credentials from a secret store, never hardcode
-vcenter_svc_hostname: "vcenter.example.com"
-vcenter_svc_admin_username: "administrator@vsphere.local"
-vcenter_svc_admin_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=...') }}"
-vcenter_svc_vcsa_ssh_user: "root"
-vcenter_svc_vcsa_ssh_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=...') }}"
-vcenter_svc_vault_addr: "https://vault.example.com:8200"
-vcenter_svc_vault_mount: "secret"
-vcenter_svc_vault_path_prefix: "vsphere/vcenter"
 ```
 
 Run it:

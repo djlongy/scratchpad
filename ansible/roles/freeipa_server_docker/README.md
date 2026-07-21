@@ -54,6 +54,15 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `freeipa_server_docker_register_container` | `true` | `add_host` the container so a following play can run `freeipa_server` inside it |
 | Optional | `freeipa_server_docker_manage_firewall` | `true` | Open the IPA port set on the host firewall |
 
+## Minimum configuration
+
+```yaml
+# group_vars/freeipa_server_docker_hosts.yml
+---
+# Required
+freeipa_server_docker_domain: example.internal
+```
+
 ## Usage
 
 ```yaml

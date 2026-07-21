@@ -40,6 +40,15 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `nfs_client_network_symlink` | `Network` | Login-time `~/<name>` symlink; `""` disables |
 | Optional | `nfs_client_manage_service` | `true` | Enable/start autofs; disable in CI |
 
+## Minimum configuration
+
+```yaml
+# group_vars/nfs_client_hosts.yml
+---
+# Required
+nfs_client_server: service.example.internal
+```
+
 ## Usage
 
 ```yaml
@@ -48,9 +57,6 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
   become: true
   roles:
     - role: nfs_client
-      vars:
-        nfs_client_server: nfs-01.example.com
-        nfs_client_kerberos: true   # must match the server
 ```
 
 Run it:

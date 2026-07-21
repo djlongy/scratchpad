@@ -55,17 +55,28 @@ Other data-driven, empty-skips-the-phase inputs: `hashicorp_vault_tenants`,
 `hashicorp_vault_transit_keys`, `hashicorp_vault_pki_roles`,
 `hashicorp_vault_audit_enabled`. See `defaults/main.yml` for shapes and examples.
 
+## Minimum configuration
+
+```yaml
+# group_vars/hashicorp_vault_hosts.yml
+---
+# Required
+hashicorp_vault_data_mount: "/opt/hashicorp"
+```
+
 ## Usage
 
 ```yaml
 - name: Deploy HashiCorp Vault
-  hosts: <group>          # 1 host -> standalone; odd N -> Raft HA
+  hosts: vault_servers    # 1 host -> standalone; odd N -> Raft HA
   become: true
   roles:
     - role: storage        # provision + mount the second disk
     - role: docker          # container engine + compose plugin
     - role: hashicorp_vault
 ```
+
+Run:
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml <playbook>.yml

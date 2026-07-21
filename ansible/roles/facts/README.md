@@ -41,12 +41,36 @@ reads state, it never asserts on missing input.
   gather_facts: false          # the role gathers subset=all itself
   roles:
     - role: facts
+      vars:
+        # Call-site values shown next to gathered facts (never secrets).
+        facts_passed:
+          target_url: "{{ target_url | default('') }}"
+          run_mode: "{{ run_mode | default('check') }}"
+          inventory_hostname: "{{ inventory_hostname }}"
+```
+
+Same idea with `import_role`:
+
+```yaml
+- name: Dump facts mid-play
+  ansible.builtin.import_role:
+    name: facts
+  vars:
+    facts_passed:
+      target_url: "{{ target_url }}"
+      run_mode: "{{ run_mode }}"
+    facts_pause: false
 ```
 
 Run it:
 
 ```bash
+# bare (facts_passed stays {})
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/facts.yml --limit myhost
+
+# pass a dict from the CLI
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/facts.yml --limit myhost -v \
+  -e '{"facts_passed": {"target_url": "https://example.com", "run_mode": "check"}}'
 ```
 
 ## Behaviour

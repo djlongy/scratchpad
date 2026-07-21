@@ -183,7 +183,16 @@ inventory expands group members to `IDM\uid` principals.
 ansible-playbook -i inventories/infra playbooks/10_vm_vcenter.yml --tags tenancy
 ```
 
-Inventory: `inventories/infra/group_vars/vcenter/tenancy.yml`.
+Inventory: `inventories/<env>/group_vars/vcenter/tenancy.yml`.
+
+## Minimum configuration
+
+```yaml
+# group_vars/vcenter_hosts.yml
+---
+# Required
+vcenter_hostname: service.example.internal
+```
 
 ## Usage
 
@@ -195,13 +204,12 @@ Inventory: `inventories/infra/group_vars/vcenter/tenancy.yml`.
     - role: vcenter
 ```
 
+Run:
+
 ```bash
 export ANSIBLE_VAULT_PASSWORD=$(cat ~/secrets/vault-password.txt)
-ansible-playbook -i inventories/infra/hosts.yml playbooks/10_vm_vcenter.yml --tags topology
-ansible-playbook playbooks/10_vm_vcenter.yml --tags vds,portgroups
-ansible-playbook playbooks/10_vm_vcenter.yml --tags ntp,dns   # when host_* gates on
-ansible-playbook playbooks/10_vm_vcenter.yml --tags certs     # when manage_certs true
-ansible-playbook playbooks/10_vm_vcenter.yml --tags ldap      # when manage_ldap true
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/10_vm_vcenter.yml --tags topology
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/10_vm_vcenter.yml --tags vds,portgroups
 ```
 
 ## Air-gap / strip ACME + Cloudflare

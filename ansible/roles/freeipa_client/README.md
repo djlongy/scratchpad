@@ -55,6 +55,16 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `freeipa_client_service_certs` | `[]` | certmonger-managed certs chained to the IPA CA (`--tags certs`) |
 | Optional | `freeipa_client_packages` | `[ipa-client, krb5-workstation, chrony, bind-utils]` | Preflight tooling (RedHat family only) |
 
+## Minimum configuration
+
+```yaml
+# group_vars/freeipa_client_hosts.yml
+---
+# Required
+freeipa_client_domain: example.internal
+freeipa_client_realm: "REPLACE_ME_freeipa_client_realm"
+```
+
 ## Usage
 
 ```yaml

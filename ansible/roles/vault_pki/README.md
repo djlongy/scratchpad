@@ -44,6 +44,15 @@ generic; environment-specific data belongs in inventory `group_vars`.
 | Optional | `vault_pki_token_file` | `~/.vault-token` | Token file read when `vault_pki_token` is empty |
 | Optional | `vault_pki_sign_external_ttl` | `87600h` (10y) | Requested TTL for the signed child cert; capped by the signer's remaining validity |
 
+## Minimum configuration
+
+```yaml
+# group_vars/vault_pki_hosts.yml
+---
+# Required
+vault_pki_addr: "https://service.example.internal"
+```
+
 ## Usage
 
 ```yaml
@@ -51,10 +60,6 @@ generic; environment-specific data belongs in inventory `group_vars`.
     name: vault_pki
     tasks_from: sign_external
     apply: { delegate_to: localhost, run_once: true }
-  vars:
-    vault_pki_sign_external_csr_path: "/path/to/ipa.csr"
-    vault_pki_sign_external_cert_out: "/path/to/ipa-ca.crt"
-    vault_pki_sign_external_chain_out: "/path/to/ipa-chain.crt"
 ```
 
 Run it:

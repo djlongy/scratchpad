@@ -34,6 +34,15 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `ssh_agent_key_public` | `""` | Explicit public line to remove/check — skips in-memory derivation, no private key needed for lock |
 | Optional (output) | `ssh_agent_key_sock` | *unset* | Set by unlock only when it spawned an agent — that agent's socket path |
 
+## Minimum configuration
+
+```yaml
+# group_vars/ssh_agent_key_hosts.yml
+---
+# Required
+ssh_agent_key_content: "{{ vault_secret_content }}"
+```
+
 ## Usage
 
 Bracketing one play:
@@ -48,8 +57,8 @@ Bracketing one play:
         name: ssh_agent_key
         tasks_from: unlock
       vars: &deploy_key
-        ssh_agent_key_content: "{{ vault_ssh_private_key }}"
-        ssh_agent_key_passphrase: "{{ vault_ssh_key_passphrase }}"   # only if the key has one
+        ssh_agent_key_content: "{{ ssh_agent_key_content }}"
+        ssh_agent_key_passphrase: "{{ ssh_agent_key_passphrase }}"
     - name: Gather facts now the key is available
       ansible.builtin.setup:
   roles:

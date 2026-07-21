@@ -43,6 +43,7 @@ each entrypoint takes its own input variables directly (no role-level vars). See
 | Optional (per entry) | `vault_field` | `ensure_secrets` | Field within the secret; defaults to `name` |
 | — | *(none)* | `generate_passphrase` | Takes no input; sets the fact `passphrase` |
 
+
 ## Usage
 
 ```yaml
@@ -50,13 +51,6 @@ each entrypoint takes its own input variables directly (no role-level vars). See
   ansible.builtin.import_role:
     name: common
     tasks_from: ensure_secrets
-  vars:
-    managed_secrets:
-      - name: mm_pg_password
-        var: vault_mm_pg_password
-        vault_mount: kv-<env>
-        vault_path: apps/mattermost/runtime
-        vault_field: pg_password
 ```
 
 Run it as part of any playbook that lists a role needing those secrets — no

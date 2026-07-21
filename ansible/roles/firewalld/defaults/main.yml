@@ -71,7 +71,14 @@ firewalld_services_remove: []
 #     masquerade: false
 #     forward: false                     # intra-zone forwarding (firewalld 0.9+)
 #     sources: []                        # CIDRs bound at zone-creation time (also see firewalld_source_zone_bindings)
-#     rich_rules: []                     # raw rich-rule strings
+#     rich_rules: []                     # raw rich-rule strings (firewalld rich language)
+#       # Examples (source-restricted opens — prefer over zone-wide services when only a few clients need access):
+#       # - 'rule family="ipv4" source address="192.168.10.0/24" port port="22" protocol="tcp" accept'
+#       # - 'rule family="ipv4" source address="192.168.50.5" port port="9100" protocol="tcp" accept'
+#       # - 'rule family="ipv4" source address="192.168.10.0/24" service name="https" accept'
+#       # - 'rule protocol value="vrrp" accept'
+#       # - 'rule family="ipv4" source address="192.168.20.0/24" port protocol="tcp" port="5432" accept'
+#       # Renders as <rule>...</rule> in zone.xml.j2; same syntax works with ansible.posix.firewalld rich_rule=
 firewalld_zones: []
 
 # Zones to remove. List of zone short names. Built-in zones (public, trusted,

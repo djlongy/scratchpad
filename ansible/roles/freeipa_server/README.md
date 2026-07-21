@@ -53,25 +53,25 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `freeipa_iam_delete` | `false` | Single hard-delete gate; mock/lab realms only |
 | Optional | `freeipa_server_resilience_enabled` | `true` | Cold-start recovery timer + SSSD self-heal watchdog |
 
+## Minimum configuration
+
+```yaml
+# group_vars/freeipa_server_hosts.yml
+---
+# Required
+freeipa_server_admin_password: "{{ vault_secret_admin_password }}"
+```
+
 ## Usage
 
 ```yaml
-# inventory.yml — a single server needs no special groups
-all:
-  hosts:
-    ipa01: { ansible_host: 10.0.0.10 }
-  vars:
-    domain: example.com
-    freeipa_server_admin_password: "..."   # or freeipa_server_vault_secret
-    freeipa_server_dm_password: "..."
-    freeipa_server_forwarders: ["10.0.0.1"]
-
-# playbooks/freeipa.yml
 - hosts: freeipa
   gather_facts: true
   roles:
     - role: freeipa_server
 ```
+
+Run:
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa.yml            # install + everything

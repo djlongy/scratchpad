@@ -50,6 +50,16 @@ the manifest the wrapper role supplies (`vars/manifest.yml`), not inventory vars
 | Optional | `swarm_stack_keep_rendered` | `true` | Keep the rendered compose file on disk (holds no secrets) |
 | Optional | `swarm_stack_keep_versions` | `2` | Old hashed secret/config versions retained for rollback |
 
+## Minimum configuration
+
+```yaml
+# group_vars/swarm_stack_hosts.yml
+---
+# Required
+swarm_stack_name: "REPLACE_ME_swarm_stack_name"
+swarm_stack_compose_template: /path/to/compose.yml.j2
+```
+
 ## Usage
 
 A wrapper role ships:

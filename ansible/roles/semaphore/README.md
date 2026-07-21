@@ -43,6 +43,15 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 Admin/db/access-key/LDAP-bind passwords and the CI API token are self-managed
 in Vault — not role inputs.
 
+## Minimum configuration
+
+```yaml
+# group_vars/semaphore_hosts.yml
+---
+# Required
+semaphore_fqdn: service.example.internal
+```
+
 ## Usage
 
 ```yaml
@@ -54,9 +63,11 @@ in Vault — not role inputs.
       tags: [semaphore]
 ```
 
+Run:
+
 ```bash
 export ANSIBLE_VAULT_PASSWORD=$(cat ~/secrets/vault-password.txt)
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/apps_container.yml --tags semaphore
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags semaphore
 ```
 
 ## Preconditions

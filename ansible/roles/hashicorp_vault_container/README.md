@@ -50,16 +50,28 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 When a gate is off or a list is empty, leave the related variables unset — the
 phase is skipped.
 
+## Minimum configuration
+
+```yaml
+# group_vars/hashicorp_vault_container_hosts.yml
+---
+# Required
+hashicorp_vault_data_mount: "/opt/hashicorp"
+hashicorp_vault_nodes: "{{ groups['hashicorp_hosts'] }}"
+```
+
 ## Usage
 
 ```yaml
 - name: Deploy containerised HashiCorp Vault cluster
-  hosts: vault                    # 1 host -> standalone; odd N -> Raft HA
+  hosts: vault_servers            # 1 host -> standalone; odd N -> Raft HA
   roles:
     - role: storage                # provision + mount the second disk
     - role: docker                 # container engine + compose plugin
     - role: hashicorp_vault_container
 ```
+
+Run:
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml

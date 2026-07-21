@@ -33,18 +33,23 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | When deployment client | `splunk_forwarder_deployment_server` | `""` | Deployment server address (`hostname:8089`); writes `deploymentclient.conf` when set |
 | When forwarding | `splunk_forwarder_forward_servers` | `[]` | Indexer TCP targets (`hostname:9997`); writes `outputs.conf` when non-empty |
 
+## Minimum configuration
+
+```yaml
+# group_vars/splunk_forwarder_hosts.yml
+---
+# Required
+splunk_forwarder_package_url: "https://service.example.internal"
+```
+
 ## Usage
 
 ```yaml
 - name: Install Splunk Universal Forwarder
-  hosts: <group>
+  hosts: splunk_forwarder_hosts
   become: true
   roles:
     - role: splunk_forwarder
-      vars:
-        splunk_forwarder_package_url: "https://mirror.example.com/splunkforwarder-9.3.0-linux-x86_64.tgz"
-        splunk_forwarder_deployment_server: "deploy.example.com:8089"
-        splunk_forwarder_admin_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=...') }}"
 ```
 
 Run it:

@@ -48,6 +48,17 @@ required/optional below is judged from what each default resolves to and how
 | When LDAP | `mattermost_ldap_enabled` | `false` | Turns on the `MM_LDAPSETTINGS_*` block and the CA-cert docker config |
 | When LDAP | `mattermost_ldap_host` / `mattermost_ldap_base_dn` / `mattermost_ldap_bind_username` | placeholder FreeIPA-style values | Directory connection details |
 
+## Minimum configuration
+
+```yaml
+# group_vars/mattermost_swarm_hosts.yml
+---
+# Required
+mattermost_nfs_host: "REPLACE_ME_mattermost_nfs_host"
+mattermost_nfs_server: service.example.internal
+mattermost_site_url: "https://service.example.internal"
+```
+
 ## Usage
 
 ```yaml

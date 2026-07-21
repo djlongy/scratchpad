@@ -37,17 +37,24 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | When mTLS | `stroom_ca_cert` / `stroom_client_cert` / `stroom_client_key` | `""` | CA bundle / client cert / client key paths for mTLS (`--cacert`/`--cert`/`--key`) |
 | When org binary | `stroom_log_sender_url` / `stroom_log_sender_version` | `""` | Fetch an org-supplied sender binary instead of using the built-in script only |
 
+## Minimum configuration
+
+```yaml
+# group_vars/stroom_agent_hosts.yml
+---
+# Required
+stroom_datafeed_url: "https://service.example.internal"
+stroom_feed_name: "REPLACE_ME_stroom_feed_name"
+```
+
 ## Usage
 
 ```yaml
 - name: Deploy Stroom log agent
-  hosts: <group>
+  hosts: stroom_agent_hosts
   become: true
   roles:
     - role: stroom_agent
-      vars:
-        stroom_datafeed_url: "https://stroom.example.com/stroom/datafeed"
-        stroom_feed_name: "LINUX-AUDIT-EVENTS"
 ```
 
 Run it:

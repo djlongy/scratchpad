@@ -44,10 +44,18 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `certificate_authority_crl_days` | `30` | CRL `nextUpdate` horizon |
 | When distributing trust | `certificate_authority_trust_anchor_dir` | EL default | Target-host directory the root anchor is dropped into (`--tags distribute`) |
 
+## Minimum configuration
+
+```yaml
+# group_vars/certificate_authority_hosts.yml
+---
+# Required
+certificate_authority_root: "REPLACE_ME_certificate_authority_root"
+```
+
 ## Usage
 
 ```yaml
-# a playbook that generates/refreshes the whole hierarchy on the control node
 - hosts: localhost
   gather_facts: false
   roles:

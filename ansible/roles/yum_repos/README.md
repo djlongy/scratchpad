@@ -43,37 +43,28 @@ Per-repo keys: `name`, `baseurl` (required); `file`, `description`, `enabled`,
 `gpgcheck`, `gpgkey`, `sslverify`, `priority`, `module_hotfixes`,
 `metadata_expire`, `state` (optional).
 
+## Minimum configuration
+
+```yaml
+# group_vars/yum_repos_hosts.yml
+---
+# Required
+yum_repos_repos: "REPLACE_ME_yum_repos_repos"
+```
+
 ## Usage
 
 ```yaml
-# playbook
 - hosts: el_hosts
   become: true
   roles:
     - yum_repos
 ```
 
-```yaml
-# group_vars — put env-specific URLs in inventory, not the role
-yum_repos_repos:
-  - name: baseos
-    file: almalinux-nexus
-    description: "AlmaLinux $releasever - BaseOS (via Nexus)"
-    baseurl: "https://nexus.{{ env }}.{{ domain }}/repository/yum-almalinux-proxy/$releasever/BaseOS/$basearch/os/"
-    gpgcheck: true
-    gpgkey: "https://nexus.{{ env }}.{{ domain }}/repository/yum-almalinux-proxy/RPM-GPG-KEY-AlmaLinux-9"
-  - name: epel
-    file: epel-nexus
-    description: "EPEL $releasever (via Nexus)"
-    baseurl: "https://nexus.{{ env }}.{{ domain }}/repository/yum-epel-proxy/$releasever/Everything/$basearch/"
-    gpgcheck: true
-    gpgkey: "https://nexus.{{ env }}.{{ domain }}/repository/yum-epel-proxy/RPM-GPG-KEY-EPEL-$releasever"
-```
-
 Run it:
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_solo_e2e.yml --tags yum_repos
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags yum_repos
 ```
 
 ## Behaviour

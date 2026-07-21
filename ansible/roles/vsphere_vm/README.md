@@ -62,6 +62,17 @@ a working VM — those are marked "When" below.
 | When redeploying | `vsphere_vm_force_redeploy` | `false` | **DESTRUCTIVE** — delete guest + disks, rebuild from template |
 | When destroying | `vsphere_vm_force_destroy` | `false` | **DESTRUCTIVE** — delete guest when state is `absent` |
 
+## Minimum configuration
+
+```yaml
+# group_vars/vsphere_vm_hosts.yml
+---
+# Required
+vsphere_vm_server: service.example.internal
+vsphere_vm_datacenter: DC1
+vsphere_vm_template: /path/to/compose.yml.j2
+```
+
 ## Usage
 
 ```yaml
@@ -72,22 +83,6 @@ a working VM — those are marked "When" below.
   become: false
   roles:
     - role: vsphere_vm
-```
-
-```yaml
-# group_vars — the common spec
-vsphere_vm_server: "vcenter.example.com"
-vsphere_vm_vault_secret: "kv-<env>/data/platform/vsphere/vcenter/runtime"
-vsphere_vm_datacenter: "Datacenter"
-vsphere_vm_esxi_host: "192.0.2.11"
-vsphere_vm_resource_pool: "Resources"
-vsphere_vm_datastore: "datastore1"
-vsphere_vm_template: "linux-almalinux-9-main"
-vsphere_vm_network: "VLAN10-SVC"
-vsphere_vm_dns: [192.0.2.53]
-
-# host_vars/web01.yml — the per-host unique
-ansible_host: 192.0.2.50               # becomes the VM's static IP
 ```
 
 Create / ensure:

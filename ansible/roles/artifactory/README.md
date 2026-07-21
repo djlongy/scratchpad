@@ -46,6 +46,15 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `artifactory_local_repositories` / `_remote_` / `_virtual_` / `_federated_` | `[]` | Desired-state repo definitions (full `/api/repositories` shape) |
 | Optional | `artifactory_groups` / `_users` / `_permissions` / `_projects` | `[]` | Desired-state security + project objects |
 
+## Minimum configuration
+
+```yaml
+# group_vars/artifactory_hosts.yml
+---
+# Required
+artifactory_url: "https://service.example.internal"
+```
+
 ## Usage
 
 ```yaml
@@ -53,26 +62,22 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
   gather_facts: false
   roles:
     - role: artifactory
-      vars:
-        artifactory_url: "https://artifactory.example.com"
-        artifactory_mode: apply
 ```
 
 Run it:
 
 ```bash
-# Apply desired state from an env's group_vars (apply is the default mode)
+# Apply desired state from group_vars (apply is the default mode)
 ansible-playbook playbooks/artifactory.yml -i inventories/<env>
 
-# Capture live config to REFERENCE files (never applied)
+# Capture live config (never applied)
 ansible-playbook playbooks/artifactory.yml -i inventories/<env> -e artifactory_mode=backup
 
 # Drift: live state vs group_vars
 ansible-playbook playbooks/artifactory.yml -i inventories/<env> -e artifactory_mode=compare
 
-# Scope a run to specific sections
+# Scope sections
 ansible-playbook playbooks/artifactory.yml -i inventories/<env> --tags repositories,projects
-ansible-playbook playbooks/artifactory.yml -i inventories/<env> -e artifactory_manage_groups=false -e artifactory_manage_users=false
 ```
 
 ## Preconditions
