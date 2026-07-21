@@ -1,0 +1,42 @@
+---
+# Soft multi-tenancy example: folders + resource pools + principal RBAC.
+# OpenLDAP→vCenter cannot grant to directory *groups*; list user principals.
+# A principal may appear under multiple tenants (Admin on each folder + RP).
+
+vcenter_manage_tenancy: true
+vcenter_manage_folders: true
+vcenter_tenancy_migrate_legacy: false
+vcenter_tenancy_legacy_tenant: corp
+
+# Compute parents that host per-tenant resource pools (cluster or host name).
+vcenter_tenancy_resource_pool_parents:
+  - "10.0.0.11"
+  - "10.0.0.12"
+
+vcenter_platform_admins:
+  - "IDM\\ops.admin"
+
+vcenter_tenants:
+  - name: corp
+    folder: corp
+    resource_pool: corp
+    freeipa_group: corp-admins
+    admin_principals:
+      - "IDM\\ops.admin"
+  - name: acme
+    folder: acme
+    resource_pool: acme
+    freeipa_group: acme-admins
+    admin_principals:
+      - "IDM\\acme-admin-1"
+      # Multi-tenant example: same user on corp + acme
+      # - "IDM\\ops.admin"
+  - name: beta
+    folder: beta
+    resource_pool: beta
+    freeipa_group: beta-admins
+    admin_principals:
+      - "IDM\\beta-admin-1"
+
+vcenter_tenancy_revoke_root_admins:
+  - "IDM\\acme-admin-1"

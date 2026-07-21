@@ -1,0 +1,23 @@
+---
+# ESXi NTP via vCenter API — gated by vcenter_manage_host_ntp.
+
+- name: Configure NTP servers on each managed ESXi host
+  community.vmware.vmware_host_ntp:
+    esxi_hostname: "{{ item.hostname }}"
+    ntp_servers: "{{ item.ntp_servers | default(vcenter_host_ntp_servers) }}"
+    state: present
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: vcenter_esxi_hosts | length > 0
+
+- name: Ensure NTP service is started and enabled on each managed ESXi host
+  community.vmware.vmware_host_service_manager:
+    esxi_hostname: "{{ item.hostname }}"
+    service_name: "{{ vcenter_host_ntp_service_name }}"
+    service_policy: "{{ vcenter_host_ntp_service_policy }}"
+    state: present
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: vcenter_esxi_hosts | length > 0

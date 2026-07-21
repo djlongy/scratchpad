@@ -1,0 +1,93 @@
+---
+# Install Let's Encrypt trust chain into VCSA (same optional package).
+# AIR-GAP: delete entire optional/acme_cloudflare/ — see README.md
+# PEMs live under this package: files/isrg-root-x1.pem, files/lets-encrypt-r11.pem
+
+- name: Read ISRG Root X1 certificate
+  become: false
+  ansible.builtin.slurp:
+    src: "{{ role_path }}/tasks/optional/acme_cloudflare/files/isrg-root-x1.pem"
+  register: vcenter_acme_isrg_root
+  when: vcenter_cert_renewal_needed | bool
+
+- name: Read Let's Encrypt R11 intermediate certificate
+  become: false
+  ansible.builtin.slurp:
+    src: "{{ role_path }}/tasks/optional/acme_cloudflare/files/lets-encrypt-r11.pem"
+  register: vcenter_acme_r11_intermediate
+  when: vcenter_cert_renewal_needed | bool
+
+- name: Authenticate to vCenter REST API for trust root management
+  become: false
+  ansible.builtin.uri:
+    url: "{{ vcenter_api_base }}/session"
+    method: POST
+    url_username: "{{ vcenter_admin_username }}"
+    url_password: "{{ vcenter_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ vcenter_cert_validate_certs }}"
+    status_code: [200, 201]
+  register: vcenter_session_result
+  no_log: true
+  when: vcenter_cert_renewal_needed | bool
+
+- name: Extract session token
+  ansible.builtin.set_fact:
+    vcenter_session_id: "{{ vcenter_session_result.json.value | default(vcenter_session_result.json) }}"
+  no_log: true
+  when: vcenter_cert_renewal_needed | bool
+
+- name: Manage trust root chain in vCenter
+  become: false
+  when: vcenter_cert_renewal_needed | bool
+  block:
+    - name: Get existing trusted root chains
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/trusted-root-chains"
+        method: GET
+        headers:
+          vmware-api-session-id: "{{ vcenter_session_id }}"
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200]
+      register: vcenter_acme_existing_roots
+      no_log: true
+
+    - name: Add Let's Encrypt root chain to vCenter trusted store
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/trusted-root-chains"
+        method: POST
+        headers:
+          vmware-api-session-id: "{{ vcenter_session_id }}"
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        body_format: json
+        body:
+          cert_chain:
+            cert_chain:
+              - "{{ vcenter_acme_r11_intermediate.content | b64decode }}"
+              - "{{ vcenter_acme_isrg_root.content | b64decode }}"
+        status_code: [200, 201]
+        timeout: 60
+      register: vcenter_acme_trust_root_result
+      failed_when: >-
+        vcenter_acme_trust_root_result.status not in [200, 201]
+        and 'ALREADY_EXISTS' not in (vcenter_acme_trust_root_result.json | default({}) | string)
+      no_log: true
+
+    - name: Report trust chain status
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'LE trust chain already present'
+             if 'ALREADY_EXISTS' in (vcenter_acme_trust_root_result.json | default({}) | string)
+             else 'LE trust chain added to vCenter trusted store' }}
+
+  always:
+    - name: Delete trust roots vCenter session
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/session"
+        method: DELETE
+        headers:
+          vmware-api-session-id: "{{ vcenter_session_id }}"
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200, 204]
+      ignore_errors: true
+      no_log: true

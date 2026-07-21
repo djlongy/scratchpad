@@ -1,0 +1,20 @@
+---
+# roles/vcenter/tasks/report.yml
+#
+# End-of-run summary of the applied _vcenter_desired counts. On by default;
+# set vcenter_report: false to silence. Read-only — no vCenter calls, purely
+# a debug over the already-assembled desired-state fact.
+
+- name: Report | Summarise desired-state counts
+  ansible.builtin.debug:
+    msg: >-
+      vcenter_config applied:
+      datacenter={{ (_vcenter_desired.datacenter is defined) | ternary(1, 0) }}
+      clusters={{ _vcenter_desired.clusters | default([]) | length }}
+      hosts={{ _vcenter_desired.hosts | default([]) | length }}
+      vds={{ _vcenter_desired.vds | default([]) | length }}
+      portgroups={{ _vcenter_desired.portgroups | default([]) | length }}
+      vds_hosts={{ _vcenter_desired.vds_hosts | default([]) | length }}
+      resource_pools={{ _vcenter_desired.resource_pools | default([]) | length }}
+      folders={{ _vcenter_desired.folders | default([]) | length }}
+  when: vcenter_report | bool

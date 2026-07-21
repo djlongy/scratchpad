@@ -1,0 +1,47 @@
+---
+# Cloudflare DNS-01 fulfillment for ACME (same optional package).
+# AIR-GAP: delete entire optional/acme_cloudflare/ — see README.md
+
+- name: Create Cloudflare DNS TXT record for ACME challenge
+  community.general.cloudflare_dns:
+    zone: "{{ vcenter_cloudflare_zone }}"
+    record: "{{ vcenter_acme_challenge.challenge_data[vcenter_hostname]['dns-01'].record }}"
+    type: TXT
+    value: "{{ vcenter_acme_challenge.challenge_data[vcenter_hostname]['dns-01'].resource_value }}"
+    api_token: "{{ vcenter_cloudflare_api_token }}"
+    state: present
+    solo: true
+  register: vcenter_acme_dns_record
+  no_log: true
+
+- name: Wait for DNS propagation
+  ansible.builtin.pause:
+    seconds: "{{ vcenter_acme_dns_propagation_wait }}"
+
+- name: Complete ACME certificate order (pass 2 — validate and retrieve)
+  community.crypto.acme_certificate:
+    account_key_src: "{{ vcenter_cert_dir }}/account.key"
+    account_email: "{{ vcenter_acme_email | default(omit, true) }}"
+    csr: "{{ vcenter_cert_dir }}/{{ vcenter_hostname }}.csr"
+    cert: "{{ vcenter_cert_dir }}/{{ vcenter_hostname }}.crt"
+    fullchain: "{{ vcenter_cert_dir }}/{{ vcenter_hostname }}-fullchain.crt"
+    chain: "{{ vcenter_cert_dir }}/{{ vcenter_hostname }}-chain.crt"
+    challenge: dns-01
+    acme_directory: "{{ vcenter_acme_directory }}"
+    acme_version: 2
+    terms_agreed: true
+    remaining_days: "{{ vcenter_cert_remaining_days }}"
+    data: "{{ vcenter_acme_challenge }}"
+  register: vcenter_acme_result
+
+- name: Remove Cloudflare DNS TXT record
+  community.general.cloudflare_dns:
+    zone: "{{ vcenter_cloudflare_zone }}"
+    record: "{{ vcenter_acme_challenge.challenge_data[vcenter_hostname]['dns-01'].record }}"
+    type: TXT
+    value: "{{ vcenter_acme_challenge.challenge_data[vcenter_hostname]['dns-01'].resource_value }}"
+    api_token: "{{ vcenter_cloudflare_api_token }}"
+    state: absent
+  when: vcenter_acme_challenge.challenge_data is defined
+  failed_when: false
+  no_log: true

@@ -1,0 +1,20 @@
+---
+# Minimal declarative topology example (sanitised).
+vcenter_config:
+  datacenter:
+    name: Datacenter
+  clusters:
+    - { name: Cluster, ha_enabled: false, drs_enabled: true, drs_default_behaviour: fullyAutomated }
+  hosts: []
+  vds:
+    - { name: vDS-Lab, version: "8.0.0", mtu: 9000, uplink_quantity: 2 }
+  portgroups:
+    - { name: VLAN10-MGT, vds: vDS-Lab, vlan_id: "10", num_ports: 8, port_binding: ephemeral }
+  resource_pools: []
+  folders:
+    - { name: platform, folder_type: vm }
+    - { name: templates, folder_type: vm, parent: platform }
+    - { name: tenants, folder_type: vm }
+    - { name: corp, folder_type: vm, parent: tenants }
+    - { name: acme, folder_type: vm, parent: tenants }
+    - { name: beta, folder_type: vm, parent: tenants }

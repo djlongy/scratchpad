@@ -1,0 +1,57 @@
+---
+- name: Wait for vCenter REST API to accept sessions after certificate replacement
+  become: false  # localhost/API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ vcenter_api_base }}/session"
+    method: POST
+    url_username: "{{ vcenter_admin_username }}"
+    url_password: "{{ vcenter_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ vcenter_cert_validate_certs }}"
+    status_code: [200, 201]
+    timeout: 30
+  register: vcenter_cert_service_session_result
+  until: vcenter_cert_service_session_result.status in [200, 201]
+  retries: "{{ vcenter_cert_service_restart_retries }}"
+  delay: "{{ vcenter_cert_service_restart_delay }}"
+  failed_when: false
+  no_log: true
+
+- name: Fail if vCenter services did not recover
+  ansible.builtin.fail:
+    msg: >-
+      vCenter services did not recover within {{ vcenter_cert_service_restart_retries * vcenter_cert_service_restart_delay }}s.
+      SSH to VCSA and run: service-control --status --all
+  when: vcenter_cert_service_session_result.status | default(0) not in [200, 201]
+
+- name: Extract wait session token
+  ansible.builtin.set_fact:
+    vcenter_cert_wait_session_id: >-
+      {{ vcenter_cert_service_session_result.json.value | default(vcenter_cert_service_session_result.json) }}
+  no_log: true
+
+- name: Confirm vCenter certificate API is ready
+  become: false  # localhost/API — no host privilege
+  block:
+    - name: Fetch vCenter TLS certificate after service restart
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/tls"
+        method: GET
+        headers:
+          vmware-api-session-id: "{{ vcenter_cert_wait_session_id }}"
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200]
+        timeout: 30
+      register: vcenter_cert_service_check
+      no_log: true
+  always:
+    - name: Delete wait vCenter session
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/session"
+        method: DELETE
+        headers:
+          vmware-api-session-id: "{{ vcenter_cert_wait_session_id }}"
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200, 204]
+      ignore_errors: true
+      no_log: true

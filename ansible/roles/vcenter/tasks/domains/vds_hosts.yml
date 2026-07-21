@@ -1,0 +1,20 @@
+---
+# roles/vcenter/tasks/domains/vds_hosts.yml
+#
+# Moved from roles/vds/tasks/hosts.yml — attaches ESXi host vmnics to a vDS's
+# uplinks (distinct from domains/hosts.yml, which is cluster MEMBERSHIP via
+# vmware_host). Loops _vcenter_desired.vds_hosts; each item is
+# {esxi_hostname, vmnics (list), vds}.
+#
+# NOTE: vds_hosts EXPORT is deferred (best-effort / manual). The Phase-1 export
+# script does not yet read host→uplink membership, so this domain is APPLY-ONLY
+# for now — populate _vcenter_desired.vds_hosts by hand until export lands.
+- name: VDS hosts | Attach ESXi hosts to distributed switch uplinks
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_dvs_host:
+    switch_name: "{{ item.vds }}"
+    esxi_hostname: "{{ item.esxi_hostname }}"
+    vmnics: "{{ item.vmnics }}"
+    state: present
+  loop: "{{ _vcenter_desired.vds_hosts | default([]) }}"
+  loop_control: { label: "{{ item.esxi_hostname }} → {{ item.vmnics | join(', ') }}" }

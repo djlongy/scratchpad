@@ -1,0 +1,50 @@
+---
+# roles/vcenter/tasks/domains/cluster.yml
+#
+# Converge clusters (existence + DRS + HA). vmware_cluster_drs/_ha are
+# deprecated in favour of vmware.vmware.cluster_drs/cluster_ha (removal
+# targeted community.vmware 6.0/7.0) but remain functional in the installed
+# 4.8.6 / 5.10.0 releases; revisit when this repo adopts the vmware.vmware
+# collection.
+- name: Cluster | Converge clusters (HA/DRS/EVC)
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_cluster:
+    datacenter_name: "{{ _vcenter_desired.datacenter.name }}"
+    cluster_name: "{{ item.name }}"
+    state: present
+  loop: "{{ _vcenter_desired.clusters | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }
+  register: _vcenter_apply_cluster
+
+- name: Cluster | Configure DRS
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_cluster_drs:
+    datacenter_name: "{{ _vcenter_desired.datacenter.name }}"
+    cluster_name: "{{ item.name }}"
+    enable: "{{ item.drs_enabled | default(true) }}"
+    drs_default_vm_behavior: "{{ item.drs_default_behaviour | default('fullyAutomated') }}"
+  loop: "{{ _vcenter_desired.clusters | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }
+
+- name: Cluster | Configure HA
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_cluster_ha:
+    datacenter_name: "{{ _vcenter_desired.datacenter.name }}"
+    cluster_name: "{{ item.name }}"
+    enable: "{{ item.ha_enabled | default(true) }}"
+  loop: "{{ _vcenter_desired.clusters | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }
+
+# EVC is converged additively: apply the declared baseline, but an empty
+# evc_mode (the export's value for "no EVC") is a SAFE SKIP, not an implicit
+# disable — disabling EVC is a destructive change we never do automatically.
+- name: Cluster | Configure EVC mode
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_evc_mode:
+    datacenter_name: "{{ _vcenter_desired.datacenter.name }}"
+    cluster_name: "{{ item.name }}"
+    evc_mode: "{{ item.evc_mode }}"
+    state: present
+  loop: "{{ _vcenter_desired.clusters | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }
+  when: item.evc_mode | default('') | length > 0

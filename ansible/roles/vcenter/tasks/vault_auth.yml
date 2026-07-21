@@ -1,0 +1,247 @@
+---
+# Credential resolution — declared vars first; HashiCorp Vault optional fallback.
+# Feature-gated: only assert/resolve secrets required by enabled gates.
+
+- name: Assert a vCenter admin credential source is configured
+  ansible.builtin.assert:
+    that:
+      - vcenter_hostname | length > 0
+      - >-
+        ((vcenter_admin_username | default('') | length > 0) and
+         (vcenter_admin_password | default('') | length > 0))
+        or (vcenter_use_hashicorp_vault | bool)
+    fail_msg: >-
+      vcenter_hostname is required, and admin credentials must come from
+      vcenter_admin_username/password or vcenter_use_hashicorp_vault=true.
+
+- name: Resolve vCenter admin credentials (declared var first, Vault fallback)
+  ansible.builtin.set_fact:
+    vcenter_admin_username: >-
+      {{ vcenter_admin_username
+         if (vcenter_admin_username | default('') | length > 0)
+         else (lookup(
+               'community.hashi_vault.hashi_vault',
+               'secret=' ~ vcenter_vault_mount ~ '/data/'
+               ~ vcenter_vault_secret ~ ':'
+               ~ vcenter_vault_username_field
+             )
+             if vcenter_use_hashicorp_vault | bool else '') }}
+    vcenter_admin_password: >-
+      {{ vcenter_admin_password
+         if (vcenter_admin_password | default('') | length > 0)
+         else (lookup(
+               'community.hashi_vault.hashi_vault',
+               'secret=' ~ vcenter_vault_mount ~ '/data/'
+               ~ vcenter_vault_secret ~ ':'
+               ~ vcenter_vault_password_field
+             )
+             if vcenter_use_hashicorp_vault | bool else '') }}
+  no_log: true
+
+- name: Set vCenter role credential aliases
+  ansible.builtin.set_fact:
+    _vcenter_username: "{{ vcenter_admin_username }}"
+    _vcenter_password: "{{ vcenter_admin_password }}"
+  no_log: true
+
+- name: Assert resolved vCenter admin credentials are non-empty
+  ansible.builtin.assert:
+    that:
+      - _vcenter_username | length > 0
+      - _vcenter_password | length > 0
+    fail_msg: >-
+      Could not resolve vCenter admin credentials
+      ({{ vcenter_vault_mount }}/data/{{ vcenter_vault_secret }}).
+  no_log: true
+
+# ESXi root — only when registering hosts or applying host day-2 settings
+- name: Resolve ESXi root credentials when host features are enabled
+  when: >-
+    vcenter_manage_esxi_register | bool
+    or vcenter_manage_host_ntp | bool
+    or vcenter_manage_host_dns | bool
+    or vcenter_manage_host_syslog | bool
+    or vcenter_manage_host_ssh | bool
+    or vcenter_manage_host_advanced | bool
+    or vcenter_manage_host_vss | bool
+  block:
+    - name: Assert an ESXi root credential source is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((vcenter_esxi_root_username | default('') | length > 0) and
+             (vcenter_esxi_root_password | default('') | length > 0))
+            or (vcenter_use_hashicorp_vault | bool)
+        fail_msg: >-
+          ESXi root credentials required for host registration/day-2.
+          Set vcenter_esxi_root_username/password or enable Vault fallback.
+
+    - name: Resolve ESXi root credentials (declared var first, Vault fallback)
+      ansible.builtin.set_fact:
+        _esxi_root_username: >-
+          {{ vcenter_esxi_root_username
+             if (vcenter_esxi_root_username | default('') | length > 0)
+             else (lookup(
+                   'community.hashi_vault.hashi_vault',
+                   'secret=' ~ vcenter_vault_mount ~ '/data/'
+                   ~ vcenter_esxi_vault_secret ~ ':'
+                   ~ vcenter_esxi_vault_username_field
+                 )
+                 if vcenter_use_hashicorp_vault | bool else '') }}
+        _esxi_root_password: >-
+          {{ vcenter_esxi_root_password
+             if (vcenter_esxi_root_password | default('') | length > 0)
+             else (lookup(
+                   'community.hashi_vault.hashi_vault',
+                   'secret=' ~ vcenter_vault_mount ~ '/data/'
+                   ~ vcenter_esxi_vault_secret ~ ':'
+                   ~ vcenter_esxi_vault_password_field
+                 )
+                 if vcenter_use_hashicorp_vault | bool else '') }}
+      no_log: true
+
+# VCSA SSH — only when a feature that requires appliance shell is on.
+# Default baseline: SSH stays disabled; do not demand credentials otherwise.
+# Cert deploy uses REST by default (vcenter_cert_deploy_method=rest); SSH is
+# only for the explicit vecs_ssh fallback or dir-cli local SSO user create.
+- name: Resolve VCSA SSH credentials when a feature requires appliance shell
+  when: >-
+    (
+      (vcenter_manage_certs | bool)
+      and (vcenter_cert_replace | default(false) | bool)
+      and ((vcenter_cert_deploy_method | default('rest')) == 'vecs_ssh')
+    )
+    or (
+      (vcenter_manage_svc_accounts | bool)
+      and (vcenter_svc_create_local_sso_users | default(false) | bool)
+    )
+    or (vcenter_manage_ldap | default(false) | bool)
+  block:
+    - name: Assert VCSA SSH is intentionally enabled for this feature
+      ansible.builtin.assert:
+        that:
+          - vcenter_vcsa_ssh_enabled | bool
+        fail_msg: >-
+          This feature needs the VCSA bash shell (dir-cli / vecs_ssh cert
+          deploy / sso-config LDAP identity source), but
+          vcenter_vcsa_ssh_enabled is false (SSH-off baseline). Prefer REST
+          cert deploy (vcenter_cert_deploy_method=rest, default). For LDAP:
+          enable a temporary SSH window only while adding the identity source,
+          then grant roles via API. Break-glass: set
+          vcenter_vcsa_ssh_enabled: true and vcenter_vcsa_ssh_user/password.
+
+    - name: Assert a VCSA SSH credential source is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((vcenter_vcsa_ssh_user | default('') | length > 0) and
+             (vcenter_vcsa_ssh_password | default('') | length > 0))
+            or (vcenter_use_hashicorp_vault | bool)
+        fail_msg: >-
+          VCSA SSH credentials required. Set vcenter_vcsa_ssh_user/password
+          (ansible-vault encrypted group_vars) or enable
+          vcenter_use_hashicorp_vault as a fallback.
+
+    - name: Resolve VCSA SSH credentials (Ansible Vault vars first, HashiCorp fallback)
+      ansible.builtin.set_fact:
+        vcenter_vcsa_ssh_user: >-
+          {{ vcenter_vcsa_ssh_user
+             if (vcenter_vcsa_ssh_user | default('') | length > 0)
+             else (lookup(
+                   'community.hashi_vault.hashi_vault',
+                   'secret=' ~ vcenter_vault_mount ~ '/data/'
+                   ~ vcenter_vault_secret ~ ':'
+                   ~ vcenter_vault_appliance_user_field
+                 )
+                 if vcenter_use_hashicorp_vault | bool else '') }}
+        vcenter_vcsa_ssh_password: >-
+          {{ vcenter_vcsa_ssh_password
+             if (vcenter_vcsa_ssh_password | default('') | length > 0)
+             else (lookup(
+                   'community.hashi_vault.hashi_vault',
+                   'secret=' ~ vcenter_vault_mount ~ '/data/'
+                   ~ vcenter_vault_secret ~ ':'
+                   ~ vcenter_vault_appliance_pass_field
+                 )
+                 if vcenter_use_hashicorp_vault | bool else '') }}
+      no_log: true
+
+# LDAP bind password — only when identity-source management is gated on
+- name: Resolve LDAP bind password when manage_ldap is enabled
+  when: vcenter_manage_ldap | default(false) | bool
+  block:
+    - name: Assert an LDAP bind password source is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            (vcenter_ldap_bind_password | default('') | length > 0)
+            or (vcenter_use_hashicorp_vault | bool)
+        fail_msg: >-
+          LDAP bind password required when vcenter_manage_ldap=true. Set
+          vcenter_ldap_bind_password (ansible-vault) or enable
+          vcenter_use_hashicorp_vault and vcenter_ldap_vault_secret fields.
+
+    - name: Resolve LDAP bind password (declared var first, Vault fallback)
+      ansible.builtin.set_fact:
+        vcenter_ldap_bind_password: >-
+          {{ vcenter_ldap_bind_password
+             if (vcenter_ldap_bind_password | default('') | length > 0)
+             else (lookup(
+                   'community.hashi_vault.hashi_vault',
+                   'secret=' ~ vcenter_vault_mount ~ '/data/'
+                   ~ vcenter_ldap_vault_secret ~ ':'
+                   ~ vcenter_ldap_vault_password_field
+                 )
+                 if vcenter_use_hashicorp_vault | bool else '') }}
+      no_log: true
+
+    - name: Assert resolved LDAP bind password is non-empty
+      ansible.builtin.assert:
+        that:
+          - vcenter_ldap_bind_password | length > 0
+        fail_msg: >-
+          Could not resolve LDAP bind password
+          ({{ vcenter_vault_mount }}/data/{{ vcenter_ldap_vault_secret }}:{{
+          vcenter_ldap_vault_password_field }}).
+      no_log: true
+
+# ═══════════════════════════════════════════════════════════════════════════
+# >>> BEGIN OPTIONAL ACME + CLOUDFLARE <<<
+# Air-gap: delete this whole block + tasks/optional/acme_cloudflare/ + the
+# matching blocks in defaults/main.yml and certs_main.yml.
+# ═══════════════════════════════════════════════════════════════════════════
+- name: Resolve Cloudflare ACME DNS-01 token when ACME package is enabled
+  when:
+    - vcenter_manage_certs | bool
+    - vcenter_cert_replace | default(false) | bool
+    - vcenter_cert_issue_acme | default(false) | bool
+    - (vcenter_acme_dns_provider | default('cloudflare')) == 'cloudflare'
+  block:
+    - name: Assert a Cloudflare API token source is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            (vcenter_cloudflare_api_token | default('') | length > 0)
+            or (vcenter_use_hashicorp_vault | bool)
+        fail_msg: >-
+          Cloudflare API token required when vcenter_cert_issue_acme and
+          DNS-01 provider is cloudflare. Set vcenter_cloudflare_api_token or
+          enable Vault fallback. Air-gap: strip tasks/optional/acme_cloudflare/
+          and set vcenter_cert_issue_acme=false (see defaults markers).
+
+    - name: Resolve Cloudflare API token (declared var first, Vault fallback)
+      ansible.builtin.set_fact:
+        vcenter_cloudflare_api_token: >-
+          {{ vcenter_cloudflare_api_token
+             if (vcenter_cloudflare_api_token | default('') | length > 0)
+             else (lookup(
+                   'community.hashi_vault.hashi_vault',
+                   'secret=' ~ vcenter_vault_mount ~ '/data/'
+                   ~ vcenter_cloudflare_vault_secret ~ ':'
+                   ~ vcenter_cloudflare_vault_token_field
+                 )
+                 if vcenter_use_hashicorp_vault | bool else '') }}
+      no_log: true
+# ═══════════════════════════════════════════════════════════════════════════
+# >>> END OPTIONAL ACME + CLOUDFLARE <<<
+# ═══════════════════════════════════════════════════════════════════════════

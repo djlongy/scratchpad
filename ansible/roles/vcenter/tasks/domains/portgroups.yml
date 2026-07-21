@@ -1,0 +1,28 @@
+---
+# roles/vcenter/tasks/domains/portgroups.yml
+#
+# Moved from roles/vds/tasks/portgroups.yml, re-parameterised onto
+# _vcenter_desired.portgroups. vcenter_config's portgroup schema
+# (shape_portgroup) does not carry vlan_trunk/port_allocation/security
+# fields, so the item.* lookups below fall back to the old role's defaults
+# (vlan_trunk false, port_allocation omitted, network_policy inherited) —
+# preserved for forward-compatibility if a later schema version adds these
+# keys; functionally a no-op today since desired never sets item.security.
+- name: Portgroups | Converge distributed portgroups
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_dvs_portgroup:
+    switch_name: "{{ item.vds }}"
+    portgroup_name: "{{ item.name }}"
+    vlan_id: "{{ item.vlan_id }}"
+    vlan_trunk: "{{ item.vlan_trunk | default(false) }}"
+    num_ports: "{{ item.num_ports | default(8) }}"
+    port_binding: "{{ item.port_binding | default('static') }}"
+    port_allocation: "{{ item.port_allocation | default(omit) }}"
+    network_policy:
+      inherited: "{{ item.security is not defined }}"
+      promiscuous: "{{ item.security.allow_promiscuous | default(false) }}"
+      forged_transmits: "{{ item.security.allow_forged_transmits | default(false) }}"
+      mac_changes: "{{ item.security.allow_mac_change | default(false) }}"
+    state: present
+  loop: "{{ _vcenter_desired.portgroups | default([]) }}"
+  loop_control: { label: "{{ item.name }} (VLAN {{ item.vlan_id }})" }

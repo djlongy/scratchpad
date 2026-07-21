@@ -1,0 +1,502 @@
+---
+# roles/vcenter/defaults/main.yml
+#
+# Feature gates first. Every capability is opt-in/out via a boolean so the same
+# role ships to air-gapped estates without Cloudflare, ACME, or host day-2 bloat.
+# Inventory enables only what that site needs.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Feature gates
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Legacy imperative bootstrap (datacenter.yml / hosts.yml / service_accounts.yml)
+vcenter_manage_datacenter: true
+vcenter_manage_esxi_register: true
+vcenter_manage_svc_accounts: true
+
+# Config-as-code topology (vcenter_config → domains/*)
+vcenter_manage_topology: true
+vcenter_manage_topology_datacenter: true
+vcenter_manage_topology_cluster: true
+vcenter_manage_topology_hosts: true
+vcenter_manage_vds: true
+vcenter_manage_portgroups: true
+vcenter_manage_vds_hosts: true
+vcenter_manage_resource_pools: true
+# Off by default — inventory folders are created when VMs land
+# (roles/vsphere_vm folder path). Enable only to pre-create empty trees.
+vcenter_manage_folders: false
+
+# ESXi host day-2 via vCenter API (same surface as roles/esxi, cluster-wide loop)
+vcenter_manage_host_ntp: false
+vcenter_manage_host_dns: false
+vcenter_manage_host_syslog: false
+vcenter_manage_host_ssh: false
+vcenter_manage_host_advanced: false
+vcenter_manage_host_vss: false          # standard vSwitch (complement to VDS)
+
+# FreeIPA / OpenLDAP (or AD-over-LDAP) SSO identity source — OFF by default.
+# Adds the directory via VCSA sso-config.sh (no community.vmware module). Needs
+# a temporary VCSA SSH window (vcenter_vcsa_ssh_enabled + appliance creds).
+# After the source exists, grant roles with vcenter_service_accounts principal/group.
+vcenter_manage_ldap: false
+
+# Soft multi-tenancy: folder tree + per-tenant principal grants (no root Admin
+# for tenants). FreeIPA OpenLDAP identity source does not resolve IDM groups
+# for permission grants — inventory lists user principals (expanded from IDM
+# groups offline). See tasks/tenancy.yml.
+vcenter_manage_tenancy: false
+
+# TLS for VCSA — dual opt-in (work-safe defaults).
+#   manage_certs=false  → cert phase not loaded (topology/export never touch TLS)
+#   cert_replace=false  → even if manage_certs is true, only report; no PUT/VECS/ACME
+# Existing self-signed / manual Machine SSL is never changed unless BOTH are true
+# and material is supplied. Missing ACME/Cloudflare/PEM vars do not fail the run
+# unless cert_replace is true.
+vcenter_manage_certs: false
+vcenter_cert_replace: false
+# When manage_certs and not replace: GET current Machine SSL for the log only.
+vcenter_cert_report: true
+# When replace is true: also replace even if not near expiry (explicit only).
+vcenter_cert_force_replace: false
+
+# Read-only report at end of topology runs
+vcenter_report: true
+
+# ═══════════════════════════════════════════════════════════════════════════
+# vCenter target (env-specific — set in inventory)
+# ═══════════════════════════════════════════════════════════════════════════
+# vcenter_hostname: "vcenter.example.com"
+# vcenter_datacenter: "<datacenter-name>"
+# vcenter_cluster: "<cluster-name>"
+vcenter_hostname: ""
+vcenter_datacenter: ""
+vcenter_cluster: ""
+vcenter_validate_certs: false
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Credentials — Ansible Vault FIRST, HashiCorp Vault optional fallback
+# ═══════════════════════════════════════════════════════════════════════════
+# Order of resolution for every secret:
+#   1. Declared role/inventory var (typically from ansible-vault encrypted
+#      group_vars, e.g. inventories/<env>/group_vars/vcenter/vault.yml)
+#   2. HashiCorp Vault lookup — ONLY if the declared var is empty AND
+#      vcenter_use_hashicorp_vault is true (lazy Jinja: lookup never runs
+#      when the var is already set; community.hashi_vault need not be installed)
+#
+# Work / air-gap default is false — set true only where HashiCorp Vault exists.
+vcenter_use_hashicorp_vault: false
+
+# Admin SSO (vSphere Client / API)
+# Set in ansible-vault encrypted inventory, e.g.:
+#   vcenter_admin_username: "administrator@vsphere.local"
+#   vcenter_admin_password: "..."
+vcenter_admin_username: ""
+vcenter_admin_password: ""
+
+# ESXi root (host registration / day-2)
+vcenter_esxi_root_username: ""
+vcenter_esxi_root_password: ""
+
+# HashiCorp Vault paths (ignored when vcenter_use_hashicorp_vault is false)
+vcenter_vault_mount: "kv-{{ vault_kv_env | default('mgt') }}"
+vcenter_vault_secret: "platform/vsphere/vcenter/runtime"
+vcenter_vault_username_field: "admin_username"
+vcenter_vault_password_field: "admin_password"
+vcenter_vault_appliance_user_field: "appliance_username"
+vcenter_vault_appliance_pass_field: "appliance_password"
+vcenter_esxi_vault_secret: "platform/vsphere/esxi/runtime"
+vcenter_esxi_vault_username_field: "username"
+vcenter_esxi_vault_password_field: "password"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ESXi host registration + day-2 settings (via vCenter API)
+# ═══════════════════════════════════════════════════════════════════════════
+# Registration list (also used as host-settings targets when host_* gates are on).
+# vcenter_esxi_hosts:
+#   - hostname: "192.0.2.11"     # name as registered / reachable in vCenter
+#     ssl_thumbprint: "..."      # optional
+vcenter_esxi_hosts: []
+
+# Shared day-2 knobs (override per site in inventory). Applied to every entry
+# in vcenter_esxi_hosts when the matching gate is true.
+vcenter_host_ntp_servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+vcenter_host_ntp_service_name: ntpd
+vcenter_host_ntp_service_policy: "on"
+
+vcenter_host_dns_servers: []
+vcenter_host_dns_search: []
+vcenter_host_domain: "{{ domain | default('') }}"
+# Short name written by DNS phase; default strips non-alnum from inventory key
+# of each host entry — set explicitly when needed:
+# vcenter_host_hostname: "esxi-01"
+
+vcenter_host_syslog_target: ""
+vcenter_host_syslog_port: 514
+vcenter_host_syslog_protocol: udp
+
+# ESXi host SSH — OFF by default (security baseline). Only enable temporarily
+# for break-glass; prefer API-only management via vCenter.
+vcenter_host_ssh_enabled: false
+vcenter_host_ssh_service_name: TSM-SSH
+# Used when vcenter_host_ssh_enabled is true; when false, policy is forced off.
+vcenter_host_ssh_service_policy: "off"
+vcenter_host_shell_timeout: 0
+
+vcenter_host_advanced_settings: {}
+
+# Standard vSwitch desired state (NOT distributed switch — see vcenter_config.vds).
+# vcenter_host_vswitches:
+#   - name: vSwitch0
+#     nics: [vmnic0]
+#     mtu: 1500
+# vcenter_host_portgroups:
+#   - name: VLAN10-MGT-SVC
+#     vswitch: vSwitch0
+#     vlan_id: 10
+vcenter_host_vswitches: []
+vcenter_host_portgroups: []
+vcenter_host_vswitch0_active_uplink: ""
+vcenter_host_vswitch0_standby_uplink: ""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TLS certificate phase for VCSA (shared cert knobs)
+# Loaded only when vcenter_manage_certs. Mutations only when vcenter_cert_replace.
+# Core path: REST deploy (files | csr). ACME+Cloudflare is a separate package.
+#
+# Naming: all knobs use vcenter_* / vcenter_cert_* (not the old vcle_* prefix,
+# which meant "vCenter Let's Encrypt" and wrongly implied LE-only).
+# ═══════════════════════════════════════════════════════════════════════════
+vcenter_api_base: "https://{{ vcenter_hostname }}/api"
+
+# Deploy path (vCenter 8.0.3+): REST is primary; VECS/SSH is explicit fallback.
+#   rest      — PUT /api/vcenter/certificate-management/vcenter/tls (no SSH)
+#   vecs_ssh  — vecs-cli over appliancesh (needs vcenter_vcsa_ssh_enabled)
+vcenter_cert_deploy_method: rest
+
+# How certificate material is supplied when replace is enabled:
+#   files — PEM cert + key on the controller (FreeIPA / pre-issued / ACME output)
+#   csr   — POST tls-csr on VCSA (key stays on appliance), then PUT signed cert
+vcenter_cert_provider: files
+
+# PEM paths for provider=files (override for FreeIPA or ACME layout).
+vcenter_cert_file: ""
+vcenter_cert_key_file: ""
+# Root/issuer CA PEM. FreeIPA: IDM CA. Empty = omit root_cert on REST PUT
+# (ACME package sets LE root via its own trust_roots task).
+vcenter_cert_root_file: ""
+
+# CSR provider knobs (provider=csr). Sign the CSR externally, then set
+# vcenter_cert_signed_file + vcenter_cert_root_file and re-run --tags deploy.
+vcenter_cert_csr_output: ""
+vcenter_cert_signed_file: ""
+vcenter_cert_csr_spec: {}
+
+# Shared cert workspace + API knobs (used by core deploy and optional ACME).
+vcenter_cert_remaining_days: 30
+vcenter_cert_key_size: 3072
+vcenter_cert_dir: "/tmp/vcenter-certs"
+vcenter_cert_validate_certs: false
+vcenter_cert_service_restart_retries: 90
+vcenter_cert_service_restart_delay: 10
+
+vcenter_vcsa_hostname: "{{ vcenter_hostname }}"
+# VCSA bash shell / SSH — OFF by default (same baseline as ESXi). Features that
+# need it (local SSO user create via dir-cli, cert deploy_method=vecs_ssh,
+# manage_ldap identity-source add) are opt-in and assert for credentials only
+# when enabled.
+vcenter_vcsa_ssh_enabled: false
+vcenter_vcsa_ssh_user: ""
+vcenter_vcsa_ssh_password: ""
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FreeIPA / OpenLDAP identity source (tag: ldap) — gated by vcenter_manage_ldap
+# ═══════════════════════════════════════════════════════════════════════════
+# Mechanism: /opt/vmware/bin/sso-config.sh -add_identity_source over VCSA SSH.
+# FreeIPA is configured as type=openldap (not AD). See Broadcom KB 319662.
+#
+# Minimal FreeIPA example (inventory):
+#   vcenter_manage_ldap: true
+#   vcenter_vcsa_ssh_enabled: true          # temporary window only
+#   vcenter_ldap_domain: "idm.example.com"
+#   vcenter_ldap_alias: "IDM"
+#   vcenter_ldap_primary_url: "ldaps://idm.example.com:636"
+#   vcenter_ldap_use_ssl: true
+#   vcenter_ldap_ssl_cert_files: ["/path/to/ipa-ca.crt"]
+#   vcenter_ldap_bind_username: >-
+#     uid=svc-vcenter,cn=users,cn=accounts,dc=ipa,dc=mgt,dc=platform,dc=au
+#   vcenter_ldap_bind_password: "..."       # or Vault fields below
+# Empty base DNs use FreeIPA layout derived from domain:
+#   cn=users,cn=accounts,dc=…  /  cn=groups,cn=accounts,dc=…
+vcenter_ldap_type: openldap                 # openldap | adldap
+vcenter_ldap_domain: ""
+vcenter_ldap_alias: ""
+vcenter_ldap_base_user_dn: ""
+vcenter_ldap_base_group_dn: ""
+vcenter_ldap_primary_url: ""
+vcenter_ldap_secondary_url: ""              # optional failover LDAP(S) URL
+vcenter_ldap_bind_username: ""              # full bind DN
+vcenter_ldap_bind_password: ""
+vcenter_ldap_use_ssl: false
+# Controller-local cert PEMs (or DER) for -sslCert when use_ssl is true
+vcenter_ldap_ssl_cert_files: []
+vcenter_ldap_ssl_cert_remote_dir: "/tmp/vcenter-ldap-certs"
+# If domain already exists: skip (default). true = delete_identity_source then re-add.
+vcenter_ldap_force_recreate: false
+# After add/skip: API probe that the domain is searchable (needs source present)
+vcenter_ldap_validate: true
+vcenter_ldap_validate_search: ""            # empty string lists broadly; or a uid/cn
+# HashiCorp Vault fallback for bind password (when declared password empty)
+vcenter_ldap_vault_secret: "platform/vsphere/vcenter/ldap"
+vcenter_ldap_vault_password_field: "bind_password"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# >>> BEGIN OPTIONAL ACME + CLOUDFLARE <<<
+# ACME issuance and Cloudflare DNS-01 are ONE package — strip together.
+# Air-gap strip (delete all of these in one pass):
+#   1. this whole BEGIN/END block
+#   2. tasks/optional/acme_cloudflare/          (entire directory)
+#   3. the matching BEGIN/END block in tasks/certs_main.yml
+#   4. the matching BEGIN/END block in tasks/vault_auth.yml
+# Core certs (files/csr + REST) remain. See optional/acme_cloudflare/README.md.
+# ═══════════════════════════════════════════════════════════════════════════
+# Gate: when true (and manage_certs + cert_replace), run ACME before deploy.
+vcenter_cert_issue_acme: false
+vcenter_acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+vcenter_acme_email: ""
+vcenter_acme_account_key_size: 4096
+# DNS-01 provider for this package — only "cloudflare" is implemented here.
+vcenter_acme_dns_provider: "cloudflare"
+vcenter_cloudflare_zone: ""
+vcenter_cloudflare_api_token: ""
+vcenter_acme_dns_propagation_wait: 30
+vcenter_cloudflare_vault_secret: "platform/cloudflare/runtime"
+vcenter_cloudflare_vault_token_field: "api_token"
+# ═══════════════════════════════════════════════════════════════════════════
+# >>> END OPTIONAL ACME + CLOUDFLARE <<<
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Service accounts + RBAC (tag: svc_accounts) — gated by manage_svc_accounts
+# ═══════════════════════════════════════════════════════════════════════════
+vcenter_sso_domain: "vsphere.local"
+# Create local SSO users via dir-cli (requires VCSA SSH). Default false — work
+# estates use LDAP principals + role grants without appliance SSH.
+# When true: also set vcenter_vcsa_ssh_enabled: true and provide VCSA SSH creds
+# (brief enable window only).
+vcenter_svc_create_local_sso_users: false
+vcenter_svc_vault_addr: "{{ vault_addr | default('') }}"
+vcenter_svc_vault_mount: "{{ vault_kv_mount | default(vcenter_vault_mount) }}"
+vcenter_svc_vault_path_prefix: "platform/vsphere/vcenter"
+# When HashiCorp is off, generated svc passwords are written here (mode 0600)
+# for the operator to ansible-vault encrypt and load as inventory.
+vcenter_svc_credential_dir: "{{ playbook_dir | default('.') }}/../inventories/svc_credentials"
+vcenter_svc_permission_object: "rootFolder"
+vcenter_svc_permission_recursive: true
+vcenter_svc_privilege_action: "set"
+vcenter_svc_password_length: 20
+
+vcenter_service_accounts:
+  - account: svc-ansible
+    role_name: svc-automation
+    description: "Ansible VM lifecycle + network automation (provisioning)"
+    privileges: "{{ vcenter_priv_automation }}"
+  - account: svc-inventory
+    role_name: svc-readonly-inventory
+    description: "Least-priv read-only for dynamic vSphere inventory export"
+    privileges: "{{ vcenter_priv_inventory }}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Soft multi-tenancy (tag: tenancy) — gated by vcenter_manage_tenancy
+# ═══════════════════════════════════════════════════════════════════════════
+# Folder layout (also declare under vcenter_config.folders when manage_folders):
+#   platform/          — shared templates / platform-only
+#   tenants/<name>/    — one folder per FreeIPA tenancy
+#
+# FreeIPA OpenLDAP → vCenter cannot grant to IDM *groups* (UserNotFound).
+# List user principals here (domain\uid). FreeIPA groups remain the IAM source;
+# keep members in sync when you change IDM.
+#
+# vcenter_platform_admins:
+#   - "IDM\\long"
+# vcenter_tenants:
+#   - name: acme
+#     folder: acme                 # inventory folder name (unique under DC)
+#     resource_pool: acme          # RP name under each parent (default: name)
+#     admin_principals: ["IDM\\acme-admin-1", "IDM\\long"]  # multi-tenant OK
+#     freeipa_group: acme-admins   # documentation only
+vcenter_platform_admins: []
+vcenter_tenants: []
+# Built-in role name for platform root + tenant folder/RP admins
+vcenter_tenancy_admin_role: Admin
+# Compute parents for per-tenant resource pools (cluster or standalone host name
+# as shown in vCenter inventory). Empty = skip RP create/grant (folders only).
+# Work pattern: one RP per tenant under each listed parent; a user listed under
+# multiple tenants receives Admin on each of those RPs.
+vcenter_tenancy_resource_pool_parents: []
+# Move legacy top-level env folders (mgt/prod/…) under tenants/platform once
+vcenter_tenancy_migrate_legacy: false
+vcenter_tenancy_legacy_tenant: platform
+vcenter_tenancy_legacy_folders:
+  - mgt
+  - prod
+  - dev
+  - dmz
+  - infra
+  - swarm
+# Principals that must NOT keep root Admin after tenancy apply
+# (tenant users wrongly granted full-VC during LDAP bring-up)
+vcenter_tenancy_revoke_root_admins: []
+# Domain prefix for IDM principals (alias from sso-config)
+vcenter_ldap_principal_domain: "IDM"
+
+vcenter_priv_automation:
+  - Datastore.AllocateSpace
+  - Datastore.Browse
+  - Datastore.FileManagement
+  - Datastore.DeleteFile
+  - Network.Assign
+  - DVSwitch.Create
+  - DVSwitch.Modify
+  - DVSwitch.Delete
+  - DVSwitch.PortConfig
+  - DVSwitch.PortSetting
+  - DVPortgroup.Create
+  - DVPortgroup.Modify
+  - DVPortgroup.Delete
+  - DVPortgroup.PolicyOp
+  - DVPortgroup.ScopeOp
+  - Resource.AssignVMToPool
+  - Resource.ColdMigrate
+  - Resource.HotMigrate
+  - Resource.CreatePool
+  - Resource.DeletePool
+  - Resource.RenamePool
+  - Resource.MovePool
+  - Resource.EditPool
+  - Folder.Create
+  - Folder.Delete
+  - Folder.Move
+  - Folder.Rename
+  - VirtualMachine.Inventory.Create
+  - VirtualMachine.Inventory.CreateFromExisting
+  - VirtualMachine.Inventory.Register
+  - VirtualMachine.Inventory.Delete
+  - VirtualMachine.Inventory.Unregister
+  - VirtualMachine.Inventory.Move
+  - VirtualMachine.Interact.PowerOn
+  - VirtualMachine.Interact.PowerOff
+  - VirtualMachine.Interact.Suspend
+  - VirtualMachine.Interact.Reset
+  - VirtualMachine.Interact.ConsoleInteract
+  - VirtualMachine.Interact.DeviceConnection
+  - VirtualMachine.Interact.SetCDMedia
+  - VirtualMachine.Interact.SetFloppyMedia
+  - VirtualMachine.Interact.ToolsInstall
+  - VirtualMachine.Interact.GuestControl
+  - VirtualMachine.Interact.AnswerQuestion
+  - VirtualMachine.Config.AddExistingDisk
+  - VirtualMachine.Config.AddNewDisk
+  - VirtualMachine.Config.RemoveDisk
+  - VirtualMachine.Config.AddRemoveDevice
+  - VirtualMachine.Config.EditDevice
+  - VirtualMachine.Config.CPUCount
+  - VirtualMachine.Config.Memory
+  - VirtualMachine.Config.Settings
+  - VirtualMachine.Config.Rename
+  - VirtualMachine.Config.Annotation
+  - VirtualMachine.Config.AdvancedConfig
+  - VirtualMachine.Config.ResetGuestInfo
+  - VirtualMachine.Config.DiskLease
+  - VirtualMachine.Config.DiskExtend
+  - VirtualMachine.Config.ChangeTracking
+  - VirtualMachine.Config.HostUSBDevice
+  - VirtualMachine.Config.RawDevice
+  - VirtualMachine.Config.ManagedBy
+  - VirtualMachine.Config.SwapPlacement
+  - VirtualMachine.Config.Resource
+  - VirtualMachine.Config.UpgradeVirtualHardware
+  - VirtualMachine.Config.ReloadFromPath
+  - VirtualMachine.Config.MksControl
+  - VirtualMachine.Provisioning.Clone
+  - VirtualMachine.Provisioning.CloneTemplate
+  - VirtualMachine.Provisioning.CreateTemplateFromVM
+  - VirtualMachine.Provisioning.DeployTemplate
+  - VirtualMachine.Provisioning.Customize
+  - VirtualMachine.Provisioning.ReadCustSpecs
+  - VirtualMachine.Provisioning.ModifyCustSpecs
+  - VirtualMachine.Provisioning.MarkAsTemplate
+  - VirtualMachine.Provisioning.MarkAsVM
+  - VirtualMachine.Provisioning.PromoteDisks
+  - VirtualMachine.Provisioning.DiskRandomAccess
+  - VirtualMachine.Provisioning.DiskRandomRead
+  - VirtualMachine.Provisioning.FileRandomAccess
+  - VirtualMachine.Provisioning.GetVmFiles
+  - VirtualMachine.Provisioning.PutVmFiles
+  - VirtualMachine.State.CreateSnapshot
+  - VirtualMachine.State.RevertToSnapshot
+  - VirtualMachine.State.RemoveSnapshot
+  - VirtualMachine.State.RenameSnapshot
+  - VirtualMachine.GuestOperations.Query
+  - VirtualMachine.GuestOperations.Modify
+  - VirtualMachine.GuestOperations.Execute
+  - VApp.Import
+  - VApp.Export
+  - VApp.ApplicationConfig
+  - VApp.InstanceConfig
+
+vcenter_priv_inventory:
+  - VirtualMachine.GuestOperations.Query
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Config-as-code engine (vDS, dvPortGroups, folders, …)
+# ═══════════════════════════════════════════════════════════════════════════
+vcenter_config: {}
+
+# ── Export (--tags export) — full re-importable multi-dict snapshot ────────
+# Bundles (separate dicts = separate blast radius on re-import):
+#   vcenter_config      → group_vars + --tags topology
+#   vcenter_esxi_hosts  → group_vars host list for day-2 gates
+#   esxi_host_configs   → host_vars / roles/esxi (vSS, NTP, DNS, SSH state)
+#
+# Serialisation (same contract as roles/artifactory + freeipa_server):
+#   vcenter_export_format      yaml | json
+#   vcenter_export_list_style  block | json | yaml_flow   (yaml only; cosmetic)
+#   vcenter_export_pretty_gap_depth  — blank-line gaps for list_style=block
+#   vcenter_export_omit_empty        — drop null/''/[]/{} keys (lossless for apply)
+#   vcenter_export_split             — false (default): one file only; true adds
+#                                      .topology.yml + .esxi.yml beside it
+#   vcenter_export_topology_only     — skip per-host ESXi walk (faster)
+vcenter_export_output: "{{ playbook_dir }}/../vcenter.config.snapshot.yml"
+vcenter_export_format: yaml
+vcenter_export_list_style: block
+vcenter_export_pretty_gap_depth: 2
+vcenter_export_pretty_gap_blocks_only: true
+vcenter_export_omit_empty: true
+vcenter_export_include_stock: false
+vcenter_export_split: false
+vcenter_export_topology_only: false
+
+vcenter_authoritative: false
+vcenter_reconcile_scope: ""
+
+vcenter_builtin_roles:
+  - Admin
+  - ReadOnly
+  - NoAccess
+  - NoCryptographyAdmin
+  - View
+  - Anonymous
+  - VirtualMachinePowerUser
+  - VirtualMachineUser
+  - ResourcePoolAdministrator
+  - DatastoreConsumer
+  - NetworkAdministrator
+  - Tagging Admin
+vcenter_builtin_portgroups: []
+vcenter_builtin_clusters: []
+vcenter_builtin_vds: []
+vcenter_builtin_resource_pools:
+  - Resources

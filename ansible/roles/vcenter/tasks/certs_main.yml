@@ -1,0 +1,68 @@
+---
+# roles/vcenter/tasks/certs_main.yml
+#
+# Work-safe dual gate (defaults both false at role level; parent also requires
+# vcenter_manage_certs to load this file):
+#   manage_certs  — load this phase
+#   cert_replace  — allow Machine SSL mutation (PUT/VECS/ACME/trust)
+#
+# With cert_replace=false: preflight reports only; existing self-signed /
+# manual certs are never modified; missing ACME/PEM vars never fail the run.
+#
+# ACME + Cloudflare live in optional/acme_cloudflare/ (deletable as a unit).
+
+- name: Preflight — report or decide whether replacement runs
+  ansible.builtin.import_tasks: certs_preflight.yml
+  tags: [certs, letsencrypt, preflight]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# >>> BEGIN OPTIONAL ACME + CLOUDFLARE <<<
+# Air-gap: delete this whole block + tasks/optional/acme_cloudflare/ + the
+# matching defaults and vault_auth blocks (search OPTIONAL ACME + CLOUDFLARE).
+# ═══════════════════════════════════════════════════════════════════════════
+- name: Issue certificate via ACME DNS-01 (optional package)
+  ansible.builtin.import_tasks: optional/acme_cloudflare/issue.yml
+  when:
+    - vcenter_cert_replace | default(false) | bool
+    - vcenter_cert_renewal_needed | default(false) | bool
+    - (vcenter_cert_provider | default('files')) == 'files'
+    - vcenter_cert_issue_acme | default(false) | bool
+  tags: [certs, letsencrypt, issue]
+
+- name: Install Let's Encrypt roots into VCSA trust store (optional package)
+  ansible.builtin.import_tasks: optional/acme_cloudflare/trust_roots.yml
+  when:
+    - vcenter_cert_replace | default(false) | bool
+    - vcenter_cert_renewal_needed | default(false) | bool
+    - (vcenter_cert_provider | default('files')) == 'files'
+    - vcenter_cert_issue_acme | default(false) | bool
+  tags: [certs, letsencrypt, trust_roots]
+
+- name: Print acme.sh reference commands (optional package, informational)
+  ansible.builtin.import_tasks: optional/acme_cloudflare/shell_reference.yml
+  when: ansible_run_tags | intersect(['acme_shell', 'reference', 'certs', 'letsencrypt']) | length > 0
+  tags: [certs, letsencrypt, reference, never]
+# ═══════════════════════════════════════════════════════════════════════════
+# >>> END OPTIONAL ACME + CLOUDFLARE <<<
+# ═══════════════════════════════════════════════════════════════════════════
+
+- name: Deploy certificate to VCSA (REST or VECS fallback)
+  ansible.builtin.import_tasks: certs_deploy.yml
+  when:
+    - vcenter_cert_replace | default(false) | bool
+    - vcenter_cert_renewal_needed | default(false) | bool
+  tags: [certs, letsencrypt, deploy]
+
+- name: Wait for vCenter API after cert deploy
+  ansible.builtin.import_tasks: certs_wait_services.yml
+  when:
+    - vcenter_cert_replace | default(false) | bool
+    - vcenter_cert_renewal_needed | default(false) | bool
+  tags: [certs, letsencrypt, wait]
+
+- name: Validate deployed certificate chain
+  ansible.builtin.import_tasks: certs_validate.yml
+  when:
+    - vcenter_cert_replace | default(false) | bool
+    - vcenter_cert_renewal_needed | default(false) | bool
+  tags: [certs, letsencrypt, validate]

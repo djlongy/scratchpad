@@ -1,0 +1,43 @@
+---
+- name: Get deployed certificate from vCenter
+  become: false
+  community.crypto.get_certificate:
+    host: "{{ vcenter_hostname }}"
+    port: 443
+    asn1_base64: true
+  register: vcenter_cert_deployed
+
+- name: Parse deployed certificate details
+  become: false
+  community.crypto.x509_certificate_info:
+    content: "{{ vcenter_cert_deployed.cert }}"
+  register: vcenter_cert_deployed_info
+
+- name: Assert certificate is issued by Let's Encrypt (ACME path only)
+  ansible.builtin.assert:
+    that:
+      - "'Let' in vcenter_cert_deployed_info.issuer.organizationName | default('')"
+    fail_msg: >-
+      Deployed cert issuer is not Let's Encrypt: {{ vcenter_cert_deployed_info.issuer }}
+  when:
+    - (vcenter_cert_provider | default('files')) == 'files'
+    - vcenter_cert_issue_acme | default(false) | bool
+
+- name: Assert certificate expiry meets vcenter_cert_remaining_days threshold
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          (vcenter_cert_deployed_info.not_after | to_datetime('%Y%m%d%H%M%SZ')).strftime('%s') | int
+          - now(utc=true).strftime('%s') | int
+        ) > (vcenter_cert_remaining_days | int * 86400)
+    fail_msg: >-
+      Certificate expires too soon: {{ vcenter_cert_deployed_info.not_after }}
+
+- name: Report deployed certificate details
+  ansible.builtin.debug:
+    msg: >-
+      vCenter cert OK — Subject: {{ vcenter_cert_deployed_info.subject }},
+      Issuer: {{ vcenter_cert_deployed_info.issuer }},
+      Valid until: {{ vcenter_cert_deployed_info.not_after }},
+      SAN: {{ vcenter_cert_deployed_info.subject_alt_name }}

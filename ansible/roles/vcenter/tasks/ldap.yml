@@ -1,0 +1,291 @@
+---
+# roles/vcenter/tasks/ldap.yml
+#
+# Gated by vcenter_manage_ldap (default false).
+# Adds FreeIPA / OpenLDAP (or AD-over-LDAP) as a vCenter SSO identity source via
+# /opt/vmware/bin/sso-config.sh on the VCSA. There is no first-class
+# community.vmware identity-source module — this is the supported CLI path
+# (Broadcom KB 319662). Requires a temporary VCSA SSH window.
+#
+# After the source exists, grant roles with vcenter_service_accounts using
+# principal/group (API, no SSH). Run surgically: --tags ldap
+#
+# Idempotency: -get_identity_sources; add only when domain is absent unless
+# vcenter_ldap_force_recreate is true (delete then re-add).
+
+- name: LDAP | Assert required identity-source inputs
+  ansible.builtin.assert:
+    that:
+      - vcenter_ldap_type | default('') in ['openldap', 'adldap']
+      - vcenter_ldap_domain | default('') | length > 0
+      - vcenter_ldap_alias | default('') | length > 0
+      - vcenter_ldap_primary_url | default('') | length > 0
+      - vcenter_ldap_bind_username | default('') | length > 0
+      - vcenter_ldap_bind_password | default('') | length > 0
+      - vcenter_vcsa_ssh_enabled | bool
+      - vcenter_vcsa_ssh_user | default('') | length > 0
+      - vcenter_vcsa_ssh_password | default('') | length > 0
+      - vcenter_vcsa_hostname | default('') | length > 0
+    fail_msg: >-
+      vcenter_manage_ldap requires type (openldap|adldap), domain, alias,
+      primary_url, bind DN + password, and a temporary VCSA SSH window
+      (vcenter_vcsa_ssh_enabled + vcenter_vcsa_ssh_user/password). Prefer
+      LDAPS with FreeIPA CA and a least-priv bind account, not directory admin.
+    quiet: true
+  no_log: true
+
+- name: LDAP | Assert SSL cert material when LDAPS is requested
+  ansible.builtin.assert:
+    that:
+      - (vcenter_ldap_ssl_cert_files | default([])) | length > 0
+    fail_msg: >-
+      vcenter_ldap_use_ssl=true requires vcenter_ldap_ssl_cert_files (list of
+      controller-local FreeIPA/CA cert paths for sso-config -sslCert).
+    quiet: true
+  when: vcenter_ldap_use_ssl | bool
+
+- name: LDAP | Derive FreeIPA-style base DNs when not set
+  ansible.builtin.set_fact:
+    _vcenter_ldap_base_dn: >-
+      dc={{ vcenter_ldap_domain.split('.') | join(',dc=') }}
+    _vcenter_ldap_base_user_dn: >-
+      {{
+        vcenter_ldap_base_user_dn
+        if (vcenter_ldap_base_user_dn | default('') | length > 0)
+        else ('cn=users,cn=accounts,dc=' ~ (vcenter_ldap_domain.split('.') | join(',dc=')))
+      }}
+    _vcenter_ldap_base_group_dn: >-
+      {{
+        vcenter_ldap_base_group_dn
+        if (vcenter_ldap_base_group_dn | default('') | length > 0)
+        else ('cn=groups,cn=accounts,dc=' ~ (vcenter_ldap_domain.split('.') | join(',dc=')))
+      }}
+
+- name: LDAP | List current SSO identity sources
+  become: false
+  ansible.builtin.shell: |
+    set -euo pipefail
+    sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+      ssh -o StrictHostKeyChecking=no -T \
+      {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+    set -e
+    /opt/vmware/bin/sso-config.sh -get_identity_sources 2>&1 || true
+    echo "LDAP_LIST_DONE"
+    SSHEOF
+  args:
+    executable: /bin/bash
+  register: _vcenter_ldap_list
+  changed_when: false
+  failed_when: "'LDAP_LIST_DONE' not in _vcenter_ldap_list.stdout"
+  no_log: true
+
+- name: LDAP | Decide whether domain is already present
+  ansible.builtin.set_fact:
+    _vcenter_ldap_present: >-
+      {{
+        (vcenter_ldap_domain | lower) in (_vcenter_ldap_list.stdout | default('') | lower)
+      }}
+
+- name: LDAP | Delete existing identity source when force recreate
+  become: false
+  when:
+    - vcenter_ldap_force_recreate | bool
+    - _vcenter_ldap_present | bool
+  ansible.builtin.shell: |
+    set -euo pipefail
+    sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+      ssh -o StrictHostKeyChecking=no -T \
+      {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+    set -e
+    /opt/vmware/bin/sso-config.sh -delete_identity_source \
+      -i '{{ vcenter_ldap_domain }}' 2>&1
+    echo "LDAP_DELETED"
+    SSHEOF
+  args:
+    executable: /bin/bash
+  register: _vcenter_ldap_delete
+  changed_when: "'LDAP_DELETED' in _vcenter_ldap_delete.stdout"
+  failed_when: >-
+    ('LDAP_DELETED' not in _vcenter_ldap_delete.stdout)
+    and ('not found' not in (_vcenter_ldap_delete.stdout | lower))
+    and ('does not exist' not in (_vcenter_ldap_delete.stdout | lower))
+  no_log: true
+
+- name: LDAP | Refresh presence after force delete
+  when:
+    - vcenter_ldap_force_recreate | bool
+    - _vcenter_ldap_present | bool
+  ansible.builtin.set_fact:
+    _vcenter_ldap_present: false
+
+- name: LDAP | Stage SSL certificates on VCSA when using LDAPS
+  when:
+    - not (_vcenter_ldap_present | bool)
+    - vcenter_ldap_use_ssl | bool
+    - (vcenter_ldap_ssl_cert_files | default([])) | length > 0
+  block:
+    - name: LDAP | Ensure remote cert directory on VCSA
+      become: false
+      ansible.builtin.shell: |
+        set -euo pipefail
+        sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+          ssh -o StrictHostKeyChecking=no -T \
+          {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+        set -e
+        mkdir -p '{{ vcenter_ldap_ssl_cert_remote_dir }}'
+        chmod 700 '{{ vcenter_ldap_ssl_cert_remote_dir }}'
+        echo "LDAP_CERT_DIR_OK"
+        SSHEOF
+      args:
+        executable: /bin/bash
+      register: _vcenter_ldap_certdir
+      changed_when: false
+      failed_when: "'LDAP_CERT_DIR_OK' not in _vcenter_ldap_certdir.stdout"
+      no_log: true
+
+    # appliancesh blocks SCP — base64 over ssh shell (same as certs_deploy).
+    - name: LDAP | Slurp each controller-local SSL cert
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop: "{{ vcenter_ldap_ssl_cert_files }}"
+      loop_control:
+        label: "{{ item | basename }}"
+      register: _vcenter_ldap_slurp
+      no_log: true
+
+    - name: LDAP | Write each SSL cert to VCSA via SSH
+      become: false
+      ansible.builtin.shell: |
+        set -euo pipefail
+        remote_name='{{ item.item | basename }}'
+        sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+          ssh -o StrictHostKeyChecking=no -T \
+          {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<SSHEOF
+        set -e
+        echo '{{ item.content }}' | base64 -d > \
+          '{{ vcenter_ldap_ssl_cert_remote_dir }}/'${remote_name}
+        chmod 600 '{{ vcenter_ldap_ssl_cert_remote_dir }}/'${remote_name}
+        wc -c '{{ vcenter_ldap_ssl_cert_remote_dir }}/'${remote_name}
+        echo "LDAP_CERT_UPLOADED"
+        SSHEOF
+      args:
+        executable: /bin/bash
+      loop: "{{ _vcenter_ldap_slurp.results }}"
+      loop_control:
+        label: "{{ item.item | basename }}"
+      register: _vcenter_ldap_upload
+      changed_when: "'LDAP_CERT_UPLOADED' in _vcenter_ldap_upload.stdout"
+      failed_when: "'LDAP_CERT_UPLOADED' not in _vcenter_ldap_upload.stdout"
+      no_log: true
+
+    - name: LDAP | Build remote -sslCert argument
+      ansible.builtin.set_fact:
+        _vcenter_ldap_ssl_cert_arg: >-
+          {{
+            vcenter_ldap_ssl_cert_files
+            | map('basename')
+            | map('regex_replace', '^(.*)$', vcenter_ldap_ssl_cert_remote_dir ~ '/\1')
+            | join(',')
+          }}
+
+- name: LDAP | Build optional secondaryURL / SSL flags for sso-config
+  ansible.builtin.set_fact:
+    _vcenter_ldap_secondary_flag: >-
+      {{
+        ("-secondaryURL '" ~ vcenter_ldap_secondary_url ~ "'")
+        if (vcenter_ldap_secondary_url | default('') | length > 0)
+        else ''
+      }}
+    _vcenter_ldap_ssl_flags: >-
+      {{
+        ("-useSSL true -sslCert '" ~ (_vcenter_ldap_ssl_cert_arg | default('')) ~ "'")
+        if (vcenter_ldap_use_ssl | bool)
+        else ''
+      }}
+  when: not (_vcenter_ldap_present | bool)
+  no_log: true
+
+- name: LDAP | Add OpenLDAP / AD-over-LDAP identity source
+  become: false
+  when: not (_vcenter_ldap_present | bool)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+      ssh -o StrictHostKeyChecking=no -T \
+      {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<SSHEOF
+    set -e
+    /opt/vmware/bin/sso-config.sh -add_identity_source \
+      -type '{{ vcenter_ldap_type }}' \
+      -baseUserDN '{{ _vcenter_ldap_base_user_dn }}' \
+      -baseGroupDN '{{ _vcenter_ldap_base_group_dn }}' \
+      -domain '{{ vcenter_ldap_domain }}' \
+      -alias '{{ vcenter_ldap_alias }}' \
+      -username '{{ vcenter_ldap_bind_username }}' \
+      -password '{{ vcenter_ldap_bind_password }}' \
+      -primaryURL '{{ vcenter_ldap_primary_url }}' \
+      {{ _vcenter_ldap_secondary_flag }} \
+      {{ _vcenter_ldap_ssl_flags }} \
+      2>&1
+    echo "LDAP_ADDED"
+    SSHEOF
+  args:
+    executable: /bin/bash
+  register: _vcenter_ldap_add
+  changed_when: "'LDAP_ADDED' in _vcenter_ldap_add.stdout"
+  failed_when: "'LDAP_ADDED' not in _vcenter_ldap_add.stdout"
+  no_log: true
+
+- name: LDAP | Report already present (no change)
+  ansible.builtin.debug:
+    msg: >-
+      SSO identity source for domain '{{ vcenter_ldap_domain }}' already present
+      (set vcenter_ldap_force_recreate=true to delete and re-add).
+  when: _vcenter_ldap_present | bool
+
+- name: LDAP | Validate domain is searchable via vCenter API
+  when: vcenter_ldap_validate | default(true) | bool
+  community.vmware.vcenter_domain_user_group_info:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ _vcenter_username }}"
+    password: "{{ _vcenter_password }}"
+    validate_certs: "{{ vcenter_validate_certs }}"
+    domain: "{{ vcenter_ldap_domain }}"
+    # Prefer a known FreeIPA uid when set; empty string can return module errors
+    # on some community.vmware builds. Default to a broad substring.
+    search_string: "{{ vcenter_ldap_validate_search | default('admin') }}"
+    exact_match: false
+    find_users: true
+    find_groups: true
+  register: _vcenter_ldap_probe
+  changed_when: false
+  # Domain may need a short settle after first add.
+  retries: 5
+  delay: 5
+  until: _vcenter_ldap_probe is succeeded
+  # Identity source already added; a flaky API probe must not roll back success.
+  failed_when: false
+  no_log: true
+
+- name: LDAP | Warn if domain probe failed after retries
+  ansible.builtin.debug:
+    msg: >-
+      Identity source '{{ vcenter_ldap_domain }}' is configured, but
+      vcenter_domain_user_group_info did not succeed after retries.
+      Confirm in UI (Administration → Single Sign On → Identity Sources)
+      and grant roles with principal IDM\user@domain format.
+  when:
+    - vcenter_ldap_validate | default(true) | bool
+    - _vcenter_ldap_probe is failed or _vcenter_ldap_probe is skipped
+
+- name: LDAP | Summarise identity source
+  ansible.builtin.debug:
+    msg: >-
+      LDAP identity source domain={{ vcenter_ldap_domain }}
+      type={{ vcenter_ldap_type }}
+      primary={{ vcenter_ldap_primary_url }}
+      base_user={{ _vcenter_ldap_base_user_dn }}
+      base_group={{ _vcenter_ldap_base_group_dn }}
+      present_before={{ _vcenter_ldap_present }}
+      ssl={{ vcenter_ldap_use_ssl }}
+      Grant roles next via vcenter_service_accounts principal/group
+      (vcenter_manage_svc_accounts) without VCSA SSH.

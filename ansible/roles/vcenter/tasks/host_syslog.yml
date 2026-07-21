@@ -1,0 +1,15 @@
+---
+# ESXi syslog via vCenter API — gated by vcenter_manage_host_syslog.
+
+- name: Configure syslog forwarding on each managed ESXi host
+  community.vmware.vmware_host_config_manager:
+    esxi_hostname: "{{ item.hostname }}"
+    options:
+      Syslog.global.logHost: >-
+        {{ vcenter_host_syslog_protocol }}://{{ vcenter_host_syslog_target }}:{{ vcenter_host_syslog_port }}
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when:
+    - vcenter_esxi_hosts | length > 0
+    - vcenter_host_syslog_target | length > 0

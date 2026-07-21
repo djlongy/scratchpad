@@ -1,0 +1,24 @@
+---
+- name: Create datacenter
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_datacenter:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ _vcenter_username }}"
+    password: "{{ _vcenter_password }}"
+    validate_certs: false
+    datacenter_name: "{{ vcenter_datacenter }}"
+    state: present
+
+- name: Create cluster
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_cluster:
+    hostname: "{{ vcenter_hostname }}"
+    username: "{{ _vcenter_username }}"
+    password: "{{ _vcenter_password }}"
+    validate_certs: false
+    datacenter_name: "{{ vcenter_datacenter }}"
+    cluster_name: "{{ vcenter_cluster }}"
+    enable_ha: "{{ vcenter_cluster_ha | default(false) }}"
+    enable_drs: "{{ vcenter_cluster_drs | default(false) }}"
+    enable_vsan: "{{ vcenter_cluster_vsan | default(false) }}"
+  when: vcenter_cluster | length > 0

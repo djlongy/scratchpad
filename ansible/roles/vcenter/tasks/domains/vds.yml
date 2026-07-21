@@ -1,0 +1,24 @@
+---
+# roles/vcenter/tasks/domains/vds.yml
+#
+# Moved from roles/vds/tasks/vds.yml, re-parameterised onto _vcenter_desired.vds.
+# vcenter_config's vds schema (shape_vds) does not carry health_check fields, so
+# item.health_check_* below will always fall back to the old role's hardcoded
+# defaults (vlan_mtu/teaming_failover both true) — same runtime behaviour as
+# before, forward-compatible if a later schema version adds these keys.
+- name: VDS | Converge distributed switches
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_dvswitch:
+    datacenter: "{{ _vcenter_desired.datacenter.name }}"
+    switch: "{{ item.name }}"
+    version: "{{ item.version }}"
+    mtu: "{{ item.mtu | default(9000) }}"
+    uplink_quantity: "{{ item.uplink_quantity | default(2) }}"
+    discovery_protocol: "{{ item.discovery_protocol | default('cdp') }}"
+    discovery_operation: "{{ item.discovery_operation | default('listen') }}"
+    health_check:
+      vlan_mtu: "{{ item.health_check_vlan_mtu | default(true) }}"
+      teaming_failover: "{{ item.health_check_teaming | default(true) }}"
+    state: present
+  loop: "{{ _vcenter_desired.vds | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }

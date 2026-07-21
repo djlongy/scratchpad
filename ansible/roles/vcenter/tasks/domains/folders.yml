@@ -1,0 +1,12 @@
+---
+# roles/vcenter/tasks/domains/folders.yml
+- name: Folders | Converge inventory folders
+  become: false  # localhost/API — no host privilege
+  community.vmware.vcenter_folder:
+    datacenter: "{{ _vcenter_desired.datacenter.name }}"
+    folder_name: "{{ item.name }}"
+    folder_type: "{{ item.folder_type | default('vm') }}"
+    parent_folder: "{{ item.parent | default(omit) }}"
+    state: present
+  loop: "{{ _vcenter_desired.folders | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }

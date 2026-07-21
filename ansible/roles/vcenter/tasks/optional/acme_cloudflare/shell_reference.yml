@@ -1,0 +1,41 @@
+---
+# Reference: equivalent acme.sh commands (never runs by default).
+# AIR-GAP: delete entire optional/acme_cloudflare/ — see README.md
+# Use --tags acme_shell to display.
+
+- name: "Reference: acme.sh account registration"
+  ansible.builtin.debug:
+    msg: >-
+      acme.sh --register-account
+      --server {{ vcenter_acme_directory }}
+      {{ '--accountemail ' + vcenter_acme_email if vcenter_acme_email else '' }}
+  tags: [acme_shell, never]
+
+- name: "Reference: acme.sh certificate issuance (DNS-01 Cloudflare)"
+  ansible.builtin.debug:
+    msg: >-
+      export CF_Token="{{ vcenter_cloudflare_api_token | default('') }}" &&
+      acme.sh --issue
+      --dns dns_cf
+      -d {{ vcenter_hostname }}
+      --keylength {{ vcenter_cert_key_size }}
+      --server {{ vcenter_acme_directory }}
+  tags: [acme_shell, never]
+  no_log: true
+
+- name: "Reference: acme.sh install cert to directory"
+  ansible.builtin.debug:
+    msg: >-
+      acme.sh --install-cert -d {{ vcenter_hostname }}
+      --cert-file {{ vcenter_cert_dir }}/cert.pem
+      --key-file {{ vcenter_cert_dir }}/key.pem
+      --ca-file {{ vcenter_cert_dir }}/ca.pem
+      --fullchain-file {{ vcenter_cert_dir }}/fullchain.pem
+  tags: [acme_shell, never]
+
+- name: "Reference: acme.sh renewal check"
+  ansible.builtin.debug:
+    msg: >-
+      acme.sh --renew -d {{ vcenter_hostname }} --force
+      (acme.sh auto-renews at 60 days; --force overrides)
+  tags: [acme_shell, never]

@@ -1,0 +1,13 @@
+---
+# ESXi advanced settings via vCenter API — gated by vcenter_manage_host_advanced.
+
+- name: Apply advanced settings on each managed ESXi host
+  community.vmware.vmware_host_config_manager:
+    esxi_hostname: "{{ item.hostname }}"
+    options: "{{ item.advanced_settings | default(vcenter_host_advanced_settings) }}"
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when:
+    - vcenter_esxi_hosts | length > 0
+    - (item.advanced_settings | default(vcenter_host_advanced_settings) | length) > 0

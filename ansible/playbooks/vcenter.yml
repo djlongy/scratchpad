@@ -1,0 +1,17 @@
+---
+# Example: configure vCenter (topology / tenancy / optional LDAP / certs).
+# Tags: topology | tenancy | ldap | certs | export | svc_accounts
+#
+#   ansible-playbook -i inventories/example playbooks/vcenter.yml --tags tenancy
+
+- name: Configure vCenter
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - "{{ playbook_dir }}/../inventories/example/group_vars/vcenter/main.yml"
+    - "{{ playbook_dir }}/../inventories/example/group_vars/vcenter/config.yml"
+    - "{{ playbook_dir }}/../inventories/example/group_vars/vcenter/tenancy.yml"
+  roles:
+    - role: vcenter

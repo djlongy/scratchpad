@@ -1,0 +1,153 @@
+---
+# roles/vcenter/tasks/export.yml
+#
+# Opt-in FULL snapshot: topology + vds_hosts + per-host ESXi day-2 networking.
+# Read-only against vCenter (no ESXi SSH). Gated [never, export].
+#
+# Output is multiple importable dictionaries in one file (and optional splits):
+#   vcenter_config      → group_vars + --tags topology
+#   vcenter_esxi_hosts  → group_vars host list for day-2 gates
+#   esxi_host_configs   → host_vars maps for roles/esxi
+#
+# Rendering:
+#   vcenter_export_format:     yaml | json
+#   vcenter_export_list_style: block | json | yaml_flow
+#   vcenter_export_omit_empty: strip null/''/[]/{} inside each dict
+#   vcenter_export_split:      false (default) = one file; true = + .topology/.esxi
+#   vcenter_export_topology_only: skip per-host ESXi walk (faster)
+
+- name: Export | Capture live state via pyVmomi
+  vars:
+    _vcenter_export_argv: >-
+      {{
+        [
+          ansible_playbook_python | default('/usr/bin/python3'),
+          role_path ~ '/files/vcenter_config_export.py',
+        ]
+        + (['--include-stock'] if (vcenter_export_include_stock | bool) else [])
+        + (['--topology-only'] if (vcenter_export_topology_only | default(false) | bool) else [])
+      }}
+  ansible.builtin.command:
+    argv: "{{ _vcenter_export_argv }}"
+  environment:
+    VCENTER_HOST: "{{ vcenter_hostname }}"
+    VCENTER_USER: "{{ _vcenter_username }}"
+    VCENTER_PASS: "{{ _vcenter_password }}"
+    VCENTER_VALIDATE_CERTS: "{{ 'true' if vcenter_validate_certs | bool else 'false' }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: _vcenter_export_raw
+  changed_when: false
+  no_log: true
+
+- name: Export | Parse captured configuration
+  ansible.builtin.set_fact:
+    _vcenter_export: >-
+      {{ _vcenter_export_raw.stdout[_vcenter_export_raw.stdout.find('{'):]
+         | from_json }}
+  run_once: true
+
+- name: Export | Shape dictionaries (optional empty-value omit)
+  ansible.builtin.set_fact:
+    _vcenter_export_config: >-
+      {{
+        (_vcenter_export.vcenter_config | drop_empty)
+        if (vcenter_export_omit_empty | bool)
+        else _vcenter_export.vcenter_config
+      }}
+    _vcenter_export_esxi_hosts: >-
+      {{
+        (_vcenter_export.vcenter_esxi_hosts | default([]) | drop_empty)
+        if (vcenter_export_omit_empty | bool)
+        else (_vcenter_export.vcenter_esxi_hosts | default([]))
+      }}
+    _vcenter_export_esxi_configs: >-
+      {{
+        (_vcenter_export.esxi_host_configs | default({}) | drop_empty)
+        if (vcenter_export_omit_empty | bool)
+        else (_vcenter_export.esxi_host_configs | default({}))
+      }}
+  run_once: true
+
+- name: Export | Resolve snapshot destination paths
+  ansible.builtin.set_fact:
+    _vcenter_export_dest: >-
+      {{
+        vcenter_export_output
+        if (vcenter_export_format | default('yaml')) == 'yaml'
+        else (vcenter_export_output | regex_replace('\.ya?ml$', '.json'))
+      }}
+  run_once: true
+
+- name: Export | Resolve split-file stem (strip final extension only)
+  ansible.builtin.set_fact:
+    # e.g. .../vcenter.config.snapshot.yml → .../vcenter.config.snapshot
+    _vcenter_export_dest_stem: >-
+      {{ _vcenter_export_dest | regex_replace('\.(ya?ml|json)$', '') }}
+  run_once: true
+
+- name: Export | Write full YAML snapshot (all bundles)
+  ansible.builtin.template:
+    src: vcenter.config.snapshot.yml.j2
+    dest: "{{ _vcenter_export_dest }}"
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: (vcenter_export_format | default('yaml')) == 'yaml'
+
+- name: Export | Write full JSON snapshot (all bundles)
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'meta': _vcenter_export.meta,
+          'vcenter_config': _vcenter_export_config,
+          'vcenter_esxi_hosts': _vcenter_export_esxi_hosts,
+          'esxi_host_configs': _vcenter_export_esxi_configs,
+        } | to_nice_json(indent=2)
+      }}
+    dest: "{{ _vcenter_export_dest }}"
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: (vcenter_export_format | default('yaml')) == 'json'
+
+- name: Export | Write split topology-only file (blast-radius segregation)
+  when:
+    - vcenter_export_split | default(true) | bool
+    - (vcenter_export_format | default('yaml')) == 'yaml'
+  ansible.builtin.template:
+    src: vcenter.topology.snapshot.yml.j2
+    dest: "{{ _vcenter_export_dest_stem }}.topology.yml"
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Export | Write split ESXi host-configs file (to_pretty_yaml)
+  when:
+    - vcenter_export_split | default(true) | bool
+    - (vcenter_export_format | default('yaml')) == 'yaml'
+  ansible.builtin.template:
+    src: vcenter.esxi.snapshot.yml.j2
+    dest: "{{ _vcenter_export_dest_stem }}.esxi.yml"
+    mode: "0640"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Export | Report
+  ansible.builtin.debug:
+    msg: >-
+      Captured {{ _vcenter_export.meta.source }} → {{ _vcenter_export_dest }}
+      ({{ _vcenter_export.meta.counts | to_json }};
+      format={{ vcenter_export_format | default('yaml') }},
+      list_style={{ vcenter_export_list_style | default('block') }},
+      split={{ vcenter_export_split | default(true) }}).
+      {{ 'REVIEW skipped: ' ~ (_vcenter_export.meta.skipped | to_json)
+         if (_vcenter_export.meta.skipped | default([]) | length > 0) else '' }}
+      Import: vcenter_config → topology; esxi_host_configs → host_vars / roles/esxi.
+  run_once: true

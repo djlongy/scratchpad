@@ -1,0 +1,121 @@
+---
+# roles/vcenter/tasks/reconcile.yml
+#
+# Authoritative prune of UNDECLARED, in-scope objects. Triple-gated by main.yml:
+#   --tags reconcile  AND  vcenter_authoritative: true  AND  vcenter_reconcile_scope != ""
+# Blank scope yields no orphans (fail-safe — vcenter_config_orphans returns []).
+# The would-delete set is always shown via debug; the actual prune tasks are
+# additionally guarded with `when: not ansible_check_mode` so `--check` can
+# never delete anything, even though the mutating modules already support
+# check mode natively.
+#
+# Phase 1 prunes ONLY portgroups + resource_pools — the two topology domains
+# that are safe to prune blind. hosts/vds/datacenter/vds_hosts are NEVER
+# pruned here: detaching a host or deleting a vDS/datacenter is destructive
+# and needs a human decision, not a scope-substring match.
+#
+# Pair-helper note (Task 6 NOTE): community.vmware.vmware_dvs_portgroup_info
+# (installed community.vmware 4.8.6 — see collections/requirements.yml) already
+# returns `dvswitch_name` on every entry under `dvs_portgroup_info` (verified
+# via `ansible-doc community.vmware.vmware_dvs_portgroup_info` RETURN VALUES,
+# e.g. `dvs_0: [{portgroup_name: dvpg_001, dvswitch_name: dvs_001, ...}]`).
+# So no `vcenter_pg_pair` helper filter or subelements pairing is needed — the
+# live entries are mapped directly by field.
+
+# ── Portgroups ───────────────────────────────────────────────────────────────
+
+- name: Reconcile | List live distributed portgroups
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_dvs_portgroup_info:
+    datacenter: "{{ _vcenter_desired.datacenter.name }}"
+  register: _vcenter_live_pg
+
+# Reject each vDS's own auto-created uplink portgroup ("<vds>-DVUplinks-<n>")
+# BEFORE orphan computation: its "-DVUplinks-<n>" suffix is dynamic per-vDS, so
+# it can never be declared in _vcenter_desired.portgroups (the export script's
+# PORTGROUP_DENYLIST omits it) AND no static vcenter_builtin_portgroups entry can
+# exact-match it. Without this guard, an authoritative scope that substring-matches
+# a vDS name (e.g. "vDS-Lab" matches "vDS-Lab-DVUplinks-123") would flag the
+# uplink portgroup as an orphan and delete the switch's own uplinks. Mirror the
+# export denylist here so a vDS's uplinks are NEVER pruned blind.
+- name: Reconcile | Flatten live portgroups (excluding vDS auto-uplinks)
+  ansible.builtin.set_fact:
+    _vcenter_live_pg_flat: >-
+      {{ _vcenter_live_pg.dvs_portgroup_info.values() | list | flatten
+         | rejectattr('portgroup_name', 'search', '-DVUplinks-') | list }}
+
+- name: Reconcile | Compute orphan portgroups
+  ansible.builtin.set_fact:
+    _vcenter_orphan_pg: >-
+      {{ _vcenter_live_pg_flat | map(attribute='portgroup_name') | list
+         | vcenter_config_orphans(
+             _vcenter_desired.portgroups | default([]) | map(attribute='name') | list,
+             vcenter_reconcile_scope,
+             vcenter_builtin_portgroups) }}
+
+- name: Reconcile | Show orphan portgroups (would-delete)
+  ansible.builtin.debug:
+    msg: >-
+      Orphan portgroups to prune (scope '{{ vcenter_reconcile_scope }}'):
+      {{ _vcenter_orphan_pg }}
+
+- name: Reconcile | Prune orphan portgroups
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_dvs_portgroup:
+    switch_name: "{{ item.dvswitch_name }}"
+    portgroup_name: "{{ item.portgroup_name }}"
+    vlan_id: "0"
+    state: absent
+  loop: "{{ _vcenter_live_pg_flat | selectattr('portgroup_name', 'in', _vcenter_orphan_pg) | list }}"
+  loop_control:
+    label: "{{ item.portgroup_name }} (switch {{ item.dvswitch_name }})"
+  when: not ansible_check_mode
+
+# ── Resource pools ───────────────────────────────────────────────────────────
+# vmware_resource_pool_info has no datacenter filter (verified via ansible-doc);
+# it returns every resource pool in the vCenter inventory with an `owner` field
+# that is the parent ComputeResource (cluster) name — the export script
+# (files/vcenter_config_export.py:_export_resource_pools) already treats
+# `owner.name` as the pool's `cluster`, confirming the field mapping used below.
+# The implicit root "Resources" pool that every cluster carries is excluded via
+# vcenter_builtin_resource_pools (that same export script always skips it too).
+#
+# CAVEAT (future, acceptable now): vmware_resource_pool_info returns resource
+# pools vCenter-WIDE with no datacenter filter, so in a hypothetical multi-
+# datacenter vCenter the RP prune scope is NOT datacenter-bounded (the portgroup
+# path above IS, via the info module's `datacenter:` arg). Fine for the current
+# single-datacenter estate; revisit if a second datacenter is ever added.
+
+- name: Reconcile | List live resource pools
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_resource_pool_info: {}
+  register: _vcenter_live_rp
+
+- name: Reconcile | Compute orphan resource pools
+  ansible.builtin.set_fact:
+    _vcenter_orphan_rp: >-
+      {{ _vcenter_live_rp.resource_pool_info | default([]) | map(attribute='name') | list
+         | vcenter_config_orphans(
+             _vcenter_desired.resource_pools | default([]) | map(attribute='name') | list,
+             vcenter_reconcile_scope,
+             vcenter_builtin_resource_pools) }}
+
+- name: Reconcile | Show orphan resource pools (would-delete)
+  ansible.builtin.debug:
+    msg: >-
+      Orphan resource pools to prune (scope '{{ vcenter_reconcile_scope }}'):
+      {{ _vcenter_orphan_rp }}
+
+- name: Reconcile | Prune orphan resource pools
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_resource_pool:
+    datacenter: "{{ _vcenter_desired.datacenter.name }}"
+    cluster: "{{ item.owner }}"
+    resource_pool: "{{ item.name }}"
+    state: absent
+  loop: >-
+    {{ _vcenter_live_rp.resource_pool_info | default([])
+       | selectattr('name', 'in', _vcenter_orphan_rp) | list }}
+  loop_control:
+    label: "{{ item.name }} (cluster {{ item.owner }})"
+  when: not ansible_check_mode

@@ -1,0 +1,32 @@
+---
+# ESXi DNS via vCenter API — gated by vcenter_manage_host_dns.
+
+- name: Assert DNS inputs for host day-2
+  ansible.builtin.assert:
+    that:
+      - vcenter_esxi_hosts | length > 0
+      - vcenter_host_dns_servers | length > 0
+      - vcenter_host_domain | length > 0
+    fail_msg: >-
+      vcenter_manage_host_dns requires vcenter_esxi_hosts, vcenter_host_dns_servers,
+      and vcenter_host_domain.
+
+- name: Configure DNS on each managed ESXi host
+  community.vmware.vmware_host_dns:
+    esxi_hostname: "{{ item.hostname }}"
+    type: static
+    host_name: >-
+      {{ item.host_name
+         | default(vcenter_host_hostname | default(item.hostname | string | regex_replace('[^a-zA-Z0-9-].*$', '') | lower, true)) }}
+    domain: "{{ item.domain | default(vcenter_host_domain) }}"
+    dns_servers: "{{ item.dns_servers | default(vcenter_host_dns_servers) }}"
+    search_domains: >-
+      {{ item.dns_search
+         | default(
+             vcenter_host_dns_search
+             if (vcenter_host_dns_search | length > 0)
+             else [vcenter_host_domain]
+           ) }}
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }}"

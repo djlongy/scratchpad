@@ -1,0 +1,11 @@
+---
+# roles/vcenter/tasks/domains/datacenter.yml
+#
+# Converge the datacenter. Single object (a map), not a list — vcenter_config
+# has exactly one datacenter per config-as-code invocation.
+- name: Datacenter | Ensure datacenter present
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_datacenter:
+    datacenter_name: "{{ _vcenter_desired.datacenter.name }}"
+    state: present
+  when: _vcenter_desired.datacenter is defined and _vcenter_desired.datacenter.name is defined

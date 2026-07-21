@@ -1,0 +1,261 @@
+---
+# Cert preflight — work-safe.
+#
+# When vcenter_cert_replace is false (default):
+#   * optional read-only GET of current Machine SSL for the log
+#   * sets vcenter_cert_renewal_needed=false — no deploy / ACME / trust mutation
+#   * does NOT require ACME, Cloudflare, PEM paths, or VCSA SSH
+#
+# When vcenter_cert_replace is true:
+#   * asserts provider knobs only for the paths you enabled
+#   * decides renewal_needed from expiry (+ optional LE issuer when ACME on)
+
+- name: Cert preflight | Report-only mode (no Machine SSL mutation)
+  when: not (vcenter_cert_replace | default(false) | bool)
+  block:
+    - name: Cert preflight | Set no-op facts (replace disabled)
+      ansible.builtin.set_fact:
+        vcenter_cert_renewal_needed: false
+        vcenter_cert_mode: report
+
+    - name: Cert preflight | Optionally read current Machine SSL (report only)
+      when: vcenter_cert_report | default(true) | bool
+      become: false
+      block:
+        - name: Authenticate to vCenter REST API (report)
+          ansible.builtin.uri:
+            url: "{{ vcenter_api_base }}/session"
+            method: POST
+            url_username: "{{ vcenter_admin_username }}"
+            url_password: "{{ vcenter_admin_password }}"
+            force_basic_auth: true
+            validate_certs: "{{ vcenter_cert_validate_certs }}"
+            status_code: [200, 201]
+          register: vcenter_session_result
+          no_log: true
+          failed_when: false
+
+        - name: Fetch current TLS certificate (report)
+          when: vcenter_session_result is succeeded
+          ansible.builtin.uri:
+            url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/tls"
+            method: GET
+            headers:
+              vmware-api-session-id: >-
+                {{ vcenter_session_result.json.value
+                   | default(vcenter_session_result.json) }}
+            validate_certs: "{{ vcenter_cert_validate_certs }}"
+            status_code: [200]
+          register: vcenter_cert_current_result
+          no_log: true
+          failed_when: false
+
+        - name: Parse current certificate details (report)
+          when:
+            - vcenter_cert_current_result is defined
+            - vcenter_cert_current_result is succeeded
+            - vcenter_cert_current_result.json.cert is defined
+          community.crypto.x509_certificate_info:
+            content: "{{ vcenter_cert_current_result.json.cert }}"
+          register: vcenter_cert_current_info
+          failed_when: false
+
+        - name: Display current certificate summary (report — no changes)
+          ansible.builtin.debug:
+            msg: >-
+              Cert mode=report (vcenter_cert_replace=false).
+              Existing Machine SSL is left unchanged.
+              {% if vcenter_cert_current_info is defined
+                    and vcenter_cert_current_info.not_after is defined %}
+              Issuer={{ vcenter_cert_current_info.issuer | default('?') }},
+              expires={{ vcenter_cert_current_info.not_after }}.
+              {% else %}
+              (Could not read current cert — still not modifying anything.)
+              {% endif %}
+              To mutate TLS you must set vcenter_cert_replace=true and supply
+              material (files/csr and/or ACME package).
+
+      always:
+        - name: Delete report session
+          when:
+            - vcenter_session_result is defined
+            - vcenter_session_result is succeeded
+          ansible.builtin.uri:
+            url: "{{ vcenter_api_base }}/session"
+            method: DELETE
+            headers:
+              vmware-api-session-id: >-
+                {{ vcenter_session_result.json.value
+                   | default(vcenter_session_result.json) }}
+            validate_certs: "{{ vcenter_cert_validate_certs }}"
+            status_code: [200, 204]
+          ignore_errors: true
+          no_log: true
+          failed_when: false
+
+    - name: Cert preflight | Skip report API when report disabled
+      when: not (vcenter_cert_report | default(true) | bool)
+      ansible.builtin.debug:
+        msg: >-
+          Cert mode=report, vcenter_cert_report=false — no TLS API calls,
+          no Machine SSL changes.
+
+- name: Cert preflight | Replace mode (mutations allowed)
+  when: vcenter_cert_replace | default(false) | bool
+  block:
+    - name: Assert core knobs for replace mode
+      ansible.builtin.assert:
+        that:
+          - vcenter_hostname is defined and vcenter_hostname | length > 0
+          - vcenter_admin_username is defined and vcenter_admin_username | length > 0
+          - vcenter_admin_password is defined and vcenter_admin_password | length > 0
+          - vcenter_cert_deploy_method | default('rest') in ['rest', 'vecs_ssh']
+          - vcenter_cert_provider | default('files') in ['files', 'csr']
+        fail_msg: >-
+          vcenter_cert_replace=true requires vcenter_hostname/username/password
+          and valid deploy_method (rest|vecs_ssh) / provider (files|csr).
+          For work estates that must not change TLS: set
+          vcenter_cert_replace=false (default) or vcenter_manage_certs=false.
+      no_log: true
+
+    - name: Assert ACME knobs when optional ACME package is enabled
+      ansible.builtin.assert:
+        that:
+          - vcenter_acme_email is defined and vcenter_acme_email | length > 0
+        fail_msg: "vcenter_acme_email is required when vcenter_cert_issue_acme is true."
+      when:
+        - (vcenter_cert_provider | default('files')) == 'files'
+        - vcenter_cert_issue_acme | default(false) | bool
+
+    - name: Assert Cloudflare DNS-01 knobs when optional ACME package is enabled
+      ansible.builtin.assert:
+        that:
+          - vcenter_cloudflare_zone is defined and vcenter_cloudflare_zone | length > 0
+          - vcenter_cloudflare_api_token is defined and vcenter_cloudflare_api_token | length > 0
+        fail_msg: >-
+          Cloudflare DNS-01 selected: set vcenter_cloudflare_zone and
+          vcenter_cloudflare_api_token (or Vault fallback).
+      when:
+        - (vcenter_cert_provider | default('files')) == 'files'
+        - vcenter_cert_issue_acme | default(false) | bool
+        - (vcenter_acme_dns_provider | default('cloudflare')) == 'cloudflare'
+      no_log: true
+
+    - name: Assert VECS SSH knobs when deploy_method is vecs_ssh
+      ansible.builtin.assert:
+        that:
+          - vcenter_vcsa_ssh_enabled | bool
+          - vcenter_vcsa_hostname is defined and vcenter_vcsa_hostname | length > 0
+          - vcenter_vcsa_ssh_user is defined and vcenter_vcsa_ssh_user | length > 0
+          - vcenter_vcsa_ssh_password is defined and vcenter_vcsa_ssh_password | length > 0
+        fail_msg: >-
+          vecs_ssh deploy requires vcenter_vcsa_ssh_enabled and SSH credentials.
+          Prefer rest on vCenter 8.0.3+, or disable cert_replace.
+      when: (vcenter_cert_deploy_method | default('rest')) == 'vecs_ssh'
+      no_log: true
+
+    - name: Assert files provider has PEMs when not using ACME issue
+      ansible.builtin.assert:
+        that:
+          - >-
+            (vcenter_cert_file | default('') | length > 0)
+            or ((vcenter_cert_dir | default('') | length > 0)
+                and (vcenter_hostname | default('') | length > 0))
+        fail_msg: >-
+          provider=files without ACME needs vcenter_cert_file (and key) or the
+          default layout under vcenter_cert_dir. Leave cert_replace=false to skip.
+      when:
+        - (vcenter_cert_provider | default('files')) == 'files'
+        - not (vcenter_cert_issue_acme | default(false) | bool)
+
+    - name: Create local certificate directory
+      become: false
+      ansible.builtin.file:
+        path: "{{ vcenter_cert_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Authenticate to vCenter REST API
+      become: false
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/session"
+        method: POST
+        url_username: "{{ vcenter_admin_username }}"
+        url_password: "{{ vcenter_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200, 201]
+      register: vcenter_session_result
+      no_log: true
+
+    - name: Extract session token
+      ansible.builtin.set_fact:
+        vcenter_session_id: >-
+          {{ vcenter_session_result.json.value
+             | default(vcenter_session_result.json) }}
+      no_log: true
+
+    - name: Get current vCenter TLS certificate
+      become: false
+      block:
+        - name: Fetch current TLS certificate from vCenter API
+          ansible.builtin.uri:
+            url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/tls"
+            method: GET
+            headers:
+              vmware-api-session-id: "{{ vcenter_session_id }}"
+            validate_certs: "{{ vcenter_cert_validate_certs }}"
+            status_code: [200]
+          register: vcenter_cert_current_result
+          no_log: true
+      always:
+        - name: Delete preflight vCenter session
+          ansible.builtin.uri:
+            url: "{{ vcenter_api_base }}/session"
+            method: DELETE
+            headers:
+              vmware-api-session-id: "{{ vcenter_session_id }}"
+            validate_certs: "{{ vcenter_cert_validate_certs }}"
+            status_code: [200, 204]
+          ignore_errors: true
+          no_log: true
+
+    - name: Parse current certificate details
+      become: false
+      community.crypto.x509_certificate_info:
+        content: "{{ vcenter_cert_current_result.json.cert }}"
+      register: vcenter_cert_current_info
+
+    - name: Determine if replacement should run
+      ansible.builtin.set_fact:
+        vcenter_cert_mode: replace
+        # Only expire (or ACME-wants-LE) triggers work. Self-signed / FreeIPA
+        # certs are never force-replaced just because they are not LE.
+        vcenter_cert_renewal_needed: >-
+          {{
+            (
+              (
+                (vcenter_cert_current_info.not_after
+                   | to_datetime('%Y%m%d%H%M%SZ')).strftime('%s') | int
+                - now(utc=true).strftime('%s') | int
+              ) < (vcenter_cert_remaining_days | int * 86400)
+            )
+            or (
+              (vcenter_cert_provider | default('files')) == 'files'
+              and (vcenter_cert_issue_acme | default(false) | bool)
+              and ('Let' not in
+                   (vcenter_cert_current_info.issuer.organizationName | default('')))
+            )
+            or (vcenter_cert_force_replace | default(false) | bool)
+          }}
+
+    - name: Display current certificate summary (replace mode)
+      ansible.builtin.debug:
+        msg: >-
+          Cert mode=replace, will_mutate={{ vcenter_cert_renewal_needed }}.
+          Issuer: {{ vcenter_cert_current_info.issuer }},
+          Expires: {{ vcenter_cert_current_info.not_after }},
+          deploy_method={{ vcenter_cert_deploy_method | default('rest') }},
+          provider={{ vcenter_cert_provider | default('files') }},
+          issue_acme={{ vcenter_cert_issue_acme | default(false) }},
+          force={{ vcenter_cert_force_replace | default(false) }}

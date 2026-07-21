@@ -1,0 +1,26 @@
+---
+# roles/vcenter/tasks/desired.yml
+#
+# Assemble + validate the declarative desired state before any apply/reconcile.
+# Runs for every apply tag (main.yml tags it with the union of domain tags).
+
+- name: Desired | Assemble builtins map
+  ansible.builtin.set_fact:
+    _vcenter_builtins:
+      roles: "{{ vcenter_builtin_roles }}"
+      portgroups: "{{ vcenter_builtin_portgroups }}"
+      clusters: "{{ vcenter_builtin_clusters }}"
+      vds: "{{ vcenter_builtin_vds }}"
+
+- name: Desired | Bind the validated config
+  ansible.builtin.set_fact:
+    _vcenter_desired: "{{ vcenter_config }}"
+
+- name: Desired | Validate referential integrity (fail fast)
+  ansible.builtin.assert:
+    that:
+      - (_vcenter_desired | vcenter_config_validate(_vcenter_builtins)) | length == 0
+    fail_msg: >-
+      vcenter_config has unresolved references:
+      {{ _vcenter_desired | vcenter_config_validate(_vcenter_builtins) | join('; ') }}
+    success_msg: "vcenter_config referential integrity OK."

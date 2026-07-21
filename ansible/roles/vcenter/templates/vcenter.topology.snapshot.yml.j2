@@ -1,0 +1,41 @@
+# yamllint disable rule:line-length
+# yamllint disable rule:indentation
+# Topology only — import as group_vars vcenter_config; --tags topology
+# list_style={{ vcenter_export_list_style | default('block') }}
+{% set _style = vcenter_export_list_style | default('block') %}
+{% set _cfg = _vcenter_export_config %}
+---
+vcenter_config:
+{% if _style == 'block' %}
+{{ _cfg | to_pretty_yaml(
+     indent=2,
+     width=200,
+     gap_depth=vcenter_export_pretty_gap_depth | default(2) | int,
+     gap_blocks_only=vcenter_export_pretty_gap_blocks_only | default(true) | bool,
+     sort_keys=false
+   ) | indent(2, first=true) }}
+{% else %}
+{% if _cfg.datacenter is defined and _cfg.datacenter %}
+  datacenter:
+{{ _cfg.datacenter | to_nice_yaml(indent=2, width=160, sort_keys=false) | indent(4, first=true) }}
+{% else %}
+  datacenter: {}
+{% endif %}
+{% for key in ['clusters', 'hosts', 'vds', 'portgroups', 'resource_pools', 'folders', 'vds_hosts'] %}
+{% set _items = _cfg[key] | default([]) %}
+{% if _items | length > 0 %}
+  {{ key }}:
+{% for _item in _items %}
+{% if _style == 'json' %}
+    - {{ _item | to_json }}
+{% else %}
+{% set _flow = _item | to_yaml(default_flow_style=true, width=4096, sort_keys=false) | trim %}
+    - {{ ('{ ' ~ _flow[1:-1] ~ ' }') if (_flow[:1] == '{' and _flow[-1:] == '}') else _flow }}
+{% endif %}
+{% endfor %}
+{% else %}
+  {{ key }}: []
+{% endif %}
+
+{% endfor %}
+{% endif %}

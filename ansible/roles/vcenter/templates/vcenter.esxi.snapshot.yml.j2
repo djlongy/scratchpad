@@ -1,0 +1,48 @@
+# yamllint disable rule:line-length
+# yamllint disable rule:indentation
+# Per-host esxi_* maps — copy each key into host_vars/<host>.yml
+# Apply with roles/esxi --tags networking,ntp,dns,ssh
+# list_style={{ vcenter_export_list_style | default('block') }}
+{% set _style = vcenter_export_list_style | default('block') %}
+{% set _hosts_list = _vcenter_export_esxi_hosts | default([]) %}
+{% set _hosts = _vcenter_export_esxi_configs | default({}) %}
+---
+vcenter_esxi_hosts:
+{% if _hosts_list | length == 0 %}
+  []
+{% elif _style == 'block' %}
+{{ _hosts_list | to_pretty_yaml(
+     indent=2,
+     width=200,
+     gap_depth=vcenter_export_pretty_gap_depth | default(2) | int,
+     gap_blocks_only=vcenter_export_pretty_gap_blocks_only | default(true) | bool,
+     sort_keys=false
+   ) | indent(2, first=true) }}
+{% else %}
+{% for h in _hosts_list %}
+{% if _style == 'json' %}
+  - {{ h | to_json }}
+{% else %}
+{% set _flow = h | to_yaml(default_flow_style=true, width=4096, sort_keys=false) | trim %}
+  - {{ ('{ ' ~ _flow[1:-1] ~ ' }') if (_flow[:1] == '{' and _flow[-1:] == '}') else _flow }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+esxi_host_configs:
+{% if _hosts | length == 0 %}
+  {}
+{% else %}
+{% for host_key in _hosts.keys() | list | sort %}
+{% set _hc = _hosts[host_key] %}
+  "{{ host_key }}":
+{# Always pretty-print nested host maps (indent lists under keys). #}
+{{ _hc | to_pretty_yaml(
+     indent=2,
+     width=200,
+     gap_depth=vcenter_export_pretty_gap_depth | default(2) | int,
+     gap_blocks_only=vcenter_export_pretty_gap_blocks_only | default(true) | bool,
+     sort_keys=false
+   ) | indent(4, first=true) }}
+{% endfor %}
+{% endif %}

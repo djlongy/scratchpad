@@ -1,0 +1,13 @@
+---
+# roles/vcenter/tasks/domains/resource_pools.yml
+- name: Resource pools | Converge pools
+  become: false  # localhost/API — no host privilege
+  community.vmware.vmware_resource_pool:
+    datacenter: "{{ _vcenter_desired.datacenter.name }}"
+    cluster: "{{ item.cluster }}"
+    resource_pool: "{{ item.name }}"
+    cpu_shares: "{{ item.cpu_shares | default('normal') }}"
+    mem_shares: "{{ item.mem_shares | default('normal') }}"
+    state: present
+  loop: "{{ _vcenter_desired.resource_pools | default([]) }}"
+  loop_control: { label: "{{ item.name }}" }

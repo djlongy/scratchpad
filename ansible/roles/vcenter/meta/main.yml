@@ -1,0 +1,24 @@
+---
+galaxy_info:
+  role_name: vcenter
+  author: contributor
+  description: >-
+    Configure VMware vCenter — datacenter/cluster, ESXi registration, host
+    day-2 settings via vCenter API, config-as-code VDS/dvPortGroups, service
+    accounts, and optional VCSA TLS. ACME+Cloudflare is one stripable package
+    under tasks/optional/acme_cloudflare/.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+  galaxy_tags:
+    - vmware
+    - vcenter
+    - vsphere
+# Collections (install via repo requirements.yml):
+#   community.vmware       — always (topology, hosts, host day-2)
+#   community.hashi_vault  — when vcenter_use_hashicorp_vault
+#   community.crypto       — when manage_certs + optional ACME package
+#   community.general      — when ACME+Cloudflare package; when svc_accounts
+dependencies: []

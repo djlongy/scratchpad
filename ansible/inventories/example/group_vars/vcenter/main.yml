@@ -1,0 +1,40 @@
+---
+# Example gates for the vcenter role (generic lab/enterprise placeholders).
+vcenter_hostname: "vcenter.example.com"
+vcenter_datacenter: "Datacenter"
+vcenter_cluster: "Cluster"
+vcenter_validate_certs: false
+
+vcenter_manage_topology: true
+vcenter_manage_topology_datacenter: true
+vcenter_manage_topology_cluster: true
+vcenter_manage_topology_hosts: false
+vcenter_manage_vds: true
+vcenter_manage_portgroups: true
+vcenter_manage_vds_hosts: true
+vcenter_manage_resource_pools: false
+vcenter_manage_folders: true
+vcenter_manage_tenancy: true
+
+vcenter_manage_datacenter: false
+vcenter_manage_esxi_register: false
+vcenter_manage_svc_accounts: false
+vcenter_manage_ldap: false
+vcenter_manage_certs: false
+vcenter_cert_replace: false
+vcenter_vcsa_ssh_enabled: false
+vcenter_use_hashicorp_vault: true
+vcenter_vcsa_hostname: "{{ vcenter_hostname }}"
+
+# FreeIPA / OpenLDAP identity source (gated). Temporary VCSA SSH for sso-config only.
+# vcenter_manage_ldap: true
+# vcenter_vcsa_ssh_enabled: true
+# vcenter_ldap_type: openldap
+# vcenter_ldap_domain: "idm.example.com"
+# vcenter_ldap_alias: "IDM"
+# vcenter_ldap_primary_url: "ldaps://idm-01.idm.example.com:636"
+# vcenter_ldap_use_ssl: true
+# vcenter_ldap_ssl_cert_files: ["/path/to/ipa-ca.crt"]
+# vcenter_ldap_bind_username: "uid=svc-vcenter,cn=users,cn=accounts,dc=idm,dc=example,dc=com"
+# vcenter_ldap_vault_secret: "platform/freeipa/idm/runtime"
+# vcenter_ldap_vault_password_field: "admin_password"

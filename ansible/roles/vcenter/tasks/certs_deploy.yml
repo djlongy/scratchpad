@@ -1,0 +1,393 @@
+---
+# Deploy Machine SSL to VCSA.
+#
+# Default (vCenter 8.0.3+ / healthy Automation API):
+#   vcenter_cert_deploy_method: rest
+#   vcenter_cert_provider: files | csr
+#     files — PUT …/tls with cert (+ key + optional root) from controller PEMs
+#     csr   — POST …/tls-csr (key stays on VCSA), then PUT signed cert + root
+#
+# Explicit fallback (legacy 7.0.x FIPS / broken REST):
+#   vcenter_cert_deploy_method: vecs_ssh
+#   Requires vcenter_vcsa_ssh_enabled + appliance SSH credentials.
+#   Uses vecs-cli over appliancesh (no SCP).
+
+- name: Deploy | Assert cert deploy knobs
+  ansible.builtin.assert:
+    that:
+      - vcenter_cert_deploy_method | default('rest') in ['rest', 'vecs_ssh']
+      - vcenter_cert_provider | default('files') in ['files', 'csr']
+      - >-
+          not (
+            (vcenter_cert_deploy_method | default('rest')) == 'vecs_ssh'
+            and (vcenter_cert_provider | default('files')) == 'csr'
+          )
+    fail_msg: >-
+      vcenter_cert_deploy_method must be rest|vecs_ssh;
+      vcenter_cert_provider must be files|csr.
+      CSR provider requires REST (key never leaves VCSA).
+
+- name: Deploy | REST — Machine SSL via certificate-management API
+  when:
+    - vcenter_cert_renewal_needed | bool
+    - (vcenter_cert_deploy_method | default('rest')) == 'rest'
+  become: false
+  block:
+    - name: Deploy | Open vCenter session for TLS replace
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/session"
+        method: POST
+        url_username: "{{ vcenter_admin_username }}"
+        url_password: "{{ vcenter_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200, 201]
+      register: _vcenter_cert_deploy_session
+      no_log: true
+
+    - name: Deploy | Capture session id
+      ansible.builtin.set_fact:
+        _vcenter_cert_deploy_session_id: >-
+          {{ _vcenter_cert_deploy_session.json.value
+             | default(_vcenter_cert_deploy_session.json) }}
+      no_log: true
+
+    # ── provider: files (ACME / FreeIPA PEMs / any external keypair) ───────
+    - name: Deploy | files — load PEMs and PUT Machine SSL
+      when: (vcenter_cert_provider | default('files')) == 'files'
+      block:
+        - name: Deploy | Resolve PEM paths for files provider
+          ansible.builtin.set_fact:
+            _vcenter_cert_cert_path: >-
+              {{ vcenter_cert_file
+                 | default(vcenter_cert_dir ~ '/' ~ vcenter_hostname ~ '-fullchain.crt') }}
+            _vcenter_cert_key_path: >-
+              {{ vcenter_cert_key_file
+                 | default(vcenter_cert_dir ~ '/' ~ vcenter_hostname ~ '.key') }}
+            _vcenter_cert_root_path: >-
+              {{ vcenter_cert_root_file
+                 if (vcenter_cert_root_file | default('') | length > 0)
+                 else (
+                   (role_path ~ '/tasks/optional/acme_cloudflare/files/isrg-root-x1.pem')
+                   if (vcenter_cert_issue_acme | default(false) | bool)
+                   else ''
+                 ) }}
+
+        - name: Deploy | Assert cert and key files exist
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ _vcenter_cert_cert_path }}"
+            - "{{ _vcenter_cert_key_path }}"
+          register: _vcenter_cert_pem_stats
+
+        - name: Deploy | Fail when cert or key is missing
+          ansible.builtin.assert:
+            that:
+              - item.stat.exists
+            fail_msg: "Missing PEM for REST files deploy: {{ item.item }}"
+          loop: "{{ _vcenter_cert_pem_stats.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Deploy | Read certificate PEM
+          ansible.builtin.slurp:
+            src: "{{ _vcenter_cert_cert_path }}"
+          register: _vcenter_cert_cert_slurp
+
+        - name: Deploy | Read private key PEM
+          ansible.builtin.slurp:
+            src: "{{ _vcenter_cert_key_path }}"
+          register: _vcenter_cert_key_slurp
+          no_log: true
+
+        - name: Deploy | Read root / CA PEM when present
+          ansible.builtin.slurp:
+            src: "{{ _vcenter_cert_root_path }}"
+          register: _vcenter_cert_root_slurp
+          when: _vcenter_cert_root_path | length > 0
+
+        - name: Deploy | PUT Machine SSL (files — cert + key + root)
+          ansible.builtin.uri:
+            url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/tls"
+            method: PUT
+            headers:
+              vmware-api-session-id: "{{ _vcenter_cert_deploy_session_id }}"
+            validate_certs: "{{ vcenter_cert_validate_certs }}"
+            body_format: json
+            body: >-
+              {{
+                {
+                  'cert': _vcenter_cert_cert_slurp.content | b64decode,
+                  'key': _vcenter_cert_key_slurp.content | b64decode
+                }
+                | combine(
+                    {'root_cert': _vcenter_cert_root_slurp.content | b64decode}
+                    if (_vcenter_cert_root_slurp is defined
+                        and _vcenter_cert_root_slurp.content is defined)
+                    else {}
+                  )
+              }}
+            status_code: [200, 204]
+            timeout: 120
+          register: _vcenter_cert_tls_put
+          no_log: true
+
+        - name: Deploy | Report REST files replace
+          ansible.builtin.debug:
+            msg: >-
+              Machine SSL replaced via REST PUT
+              (status={{ _vcenter_cert_tls_put.status }}; provider=files).
+              On vSphere 8.0 U2+ services typically stay up; validate next.
+
+    # ── provider: csr (key generated and retained on VCSA) ────────────────
+    - name: Deploy | csr — generate CSR and/or install signed cert
+      when: (vcenter_cert_provider | default('files')) == 'csr'
+      block:
+        - name: Deploy | Resolve CSR / signed-cert paths
+          ansible.builtin.set_fact:
+            _vcenter_cert_csr_path: >-
+              {{ vcenter_cert_csr_output
+                 | default(vcenter_cert_dir ~ '/' ~ vcenter_hostname ~ '.csr') }}
+            _vcenter_cert_signed_path: "{{ vcenter_cert_signed_file | default('') }}"
+            _vcenter_cert_root_path: >-
+              {{ vcenter_cert_root_file
+                 if (vcenter_cert_root_file | default('') | length > 0)
+                 else '' }}
+
+        - name: Deploy | Ensure local cert workdir exists
+          ansible.builtin.file:
+            path: "{{ vcenter_cert_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Deploy | Stat signed certificate (if configured)
+          ansible.builtin.stat:
+            path: "{{ _vcenter_cert_signed_path }}"
+          register: _vcenter_cert_signed_stat
+          when: _vcenter_cert_signed_path | length > 0
+
+        - name: Deploy | Generate TLS CSR on VCSA when no signed cert yet
+          when: >-
+            (_vcenter_cert_signed_path | length == 0)
+            or not (_vcenter_cert_signed_stat.stat.exists | default(false))
+          block:
+            - name: Deploy | Build tls-csr request body
+              ansible.builtin.set_fact:
+                _vcenter_cert_csr_body: >-
+                  {{
+                    {'common_name': vcenter_hostname,
+                     'key_size': (vcenter_cert_key_size | default(3072) | int)}
+                    | combine(vcenter_cert_csr_spec | default({}))
+                  }}
+
+            - name: Deploy | POST tls-csr
+              ansible.builtin.uri:
+                url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/tls-csr"
+                method: POST
+                headers:
+                  vmware-api-session-id: "{{ _vcenter_cert_deploy_session_id }}"
+                validate_certs: "{{ vcenter_cert_validate_certs }}"
+                body_format: json
+                body: "{{ _vcenter_cert_csr_body }}"
+                status_code: [200, 201]
+                timeout: 60
+              register: _vcenter_cert_csr_result
+              no_log: true
+
+            - name: Deploy | Write CSR PEM to controller
+              ansible.builtin.copy:
+                dest: "{{ _vcenter_cert_csr_path }}"
+                content: "{{ _vcenter_cert_csr_result.json.csr | default(_vcenter_cert_csr_result.json) }}"
+                mode: "0600"
+
+            - name: Deploy | Stop — CSR issued; sign externally then re-run
+              ansible.builtin.fail:
+                msg: >-
+                  CSR written to {{ _vcenter_cert_csr_path }}. Sign it (e.g. FreeIPA),
+                  set vcenter_cert_signed_file to the signed PEM and
+                  vcenter_cert_root_file to the CA/root PEM, then re-run
+                  with --tags certs,deploy. Private key remains on VCSA.
+
+        - name: Deploy | Install CA-signed cert from CSR (no private key)
+          when:
+            - _vcenter_cert_signed_path | length > 0
+            - _vcenter_cert_signed_stat.stat.exists | default(false)
+          block:
+            - name: Deploy | Assert root CA path for csr install
+              ansible.builtin.assert:
+                that:
+                  - _vcenter_cert_root_path | length > 0
+                fail_msg: >-
+                  CSR install requires vcenter_cert_root_file (issuer CA /
+                  FreeIPA CA PEM).
+
+            - name: Deploy | Read signed cert and root PEMs
+              ansible.builtin.slurp:
+                src: "{{ item }}"
+              loop:
+                - "{{ _vcenter_cert_signed_path }}"
+                - "{{ _vcenter_cert_root_path }}"
+              register: _vcenter_cert_csr_pems
+
+            - name: Deploy | PUT Machine SSL (csr — cert + root, key on VCSA)
+              ansible.builtin.uri:
+                url: "{{ vcenter_api_base }}/vcenter/certificate-management/vcenter/tls"
+                method: PUT
+                headers:
+                  vmware-api-session-id: "{{ _vcenter_cert_deploy_session_id }}"
+                validate_certs: "{{ vcenter_cert_validate_certs }}"
+                body_format: json
+                body:
+                  cert: "{{ _vcenter_cert_csr_pems.results[0].content | b64decode }}"
+                  root_cert: "{{ _vcenter_cert_csr_pems.results[1].content | b64decode }}"
+                status_code: [200, 204]
+                timeout: 120
+              register: _vcenter_cert_tls_put_csr
+              no_log: true
+
+            - name: Deploy | Report REST csr replace
+              ansible.builtin.debug:
+                msg: >-
+                  Machine SSL replaced via REST PUT
+                  (status={{ _vcenter_cert_tls_put_csr.status }}; provider=csr).
+
+  always:
+    - name: Deploy | Close TLS replace session
+      when: _vcenter_cert_deploy_session_id is defined
+      ansible.builtin.uri:
+        url: "{{ vcenter_api_base }}/session"
+        method: DELETE
+        headers:
+          vmware-api-session-id: "{{ _vcenter_cert_deploy_session_id }}"
+        validate_certs: "{{ vcenter_cert_validate_certs }}"
+        status_code: [200, 204]
+      ignore_errors: true
+      no_log: true
+
+- name: Deploy | VECS-CLI fallback over VCSA SSH (explicit only)
+  when:
+    - vcenter_cert_renewal_needed | bool
+    - (vcenter_cert_deploy_method | default('rest')) == 'vecs_ssh'
+  become: false
+  block:
+    - name: Deploy | Assert VECS path is intentionally enabled
+      ansible.builtin.assert:
+        that:
+          - vcenter_vcsa_ssh_enabled | bool
+          - vcenter_vcsa_ssh_user | default('') | length > 0
+          - vcenter_vcsa_ssh_password | default('') | length > 0
+          - (vcenter_cert_provider | default('files')) == 'files'
+        fail_msg: >-
+          vecs_ssh deploy requires vcenter_vcsa_ssh_enabled=true,
+          vcenter_vcsa_ssh_user/password, and provider=files.
+          Prefer vcenter_cert_deploy_method=rest on vCenter 8.0.3+.
+
+    - name: Deploy | Resolve PEM paths for VECS files provider
+      ansible.builtin.set_fact:
+        _vcenter_cert_cert_path: >-
+          {{ vcenter_cert_file
+             | default(vcenter_cert_dir ~ '/' ~ vcenter_hostname ~ '-fullchain.crt') }}
+        _vcenter_cert_key_path: >-
+          {{ vcenter_cert_key_file
+             | default(vcenter_cert_dir ~ '/' ~ vcenter_hostname ~ '.key') }}
+
+    - name: Deploy | Read fullchain for VECS
+      ansible.builtin.slurp:
+        src: "{{ _vcenter_cert_cert_path }}"
+      register: vcenter_cert_fullchain
+
+    - name: Deploy | Read private key for VECS
+      ansible.builtin.slurp:
+        src: "{{ _vcenter_cert_key_path }}"
+      register: vcenter_cert_privkey
+      no_log: true
+
+    # appliancesh blocks SCP — base64 over ssh shell is the reliable transfer.
+    - name: Deploy | Write fullchain to VCSA via SSH
+      ansible.builtin.shell: |
+        set -euo pipefail
+        sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+          ssh -o StrictHostKeyChecking=no -T \
+          {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+        echo '{{ vcenter_cert_fullchain.content }}' | base64 -d > /tmp/vcenter-cert-fullchain.crt
+        chmod 644 /tmp/vcenter-cert-fullchain.crt
+        wc -c /tmp/vcenter-cert-fullchain.crt
+        SSHEOF
+      args:
+        executable: /bin/bash
+      register: vcenter_cert_scp_cert
+      no_log: true
+      changed_when: true
+
+    - name: Deploy | Write private key to VCSA via SSH
+      ansible.builtin.shell: |
+        set -euo pipefail
+        sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+          ssh -o StrictHostKeyChecking=no -T \
+          {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+        echo '{{ vcenter_cert_privkey.content }}' | base64 -d > /tmp/vcenter-cert-privkey.key
+        chmod 600 /tmp/vcenter-cert-privkey.key
+        wc -c /tmp/vcenter-cert-privkey.key
+        SSHEOF
+      args:
+        executable: /bin/bash
+      register: vcenter_cert_scp_key
+      no_log: true
+      changed_when: true
+
+    - name: Deploy | Replace Machine SSL cert in VECS
+      ansible.builtin.shell: |
+        set -euo pipefail
+        sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+          ssh -o StrictHostKeyChecking=no -T \
+          {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+        /usr/lib/vmware-vmafd/bin/vecs-cli entry delete \
+          --store MACHINE_SSL_CERT --alias __MACHINE_CERT -y 2>&1 || true
+        /usr/lib/vmware-vmafd/bin/vecs-cli entry create \
+          --store MACHINE_SSL_CERT --alias __MACHINE_CERT \
+          --cert /tmp/vcenter-cert-fullchain.crt --key /tmp/vcenter-cert-privkey.key 2>&1
+        SSHEOF
+      args:
+        executable: /bin/bash
+      register: vcenter_cert_vecs_result
+      no_log: true
+      changed_when: true
+
+    - name: Deploy | Assert VECS entry was created
+      ansible.builtin.assert:
+        that:
+          - "'was created successfully' in vcenter_cert_vecs_result.stdout"
+        fail_msg: "VECS cert replacement failed: {{ vcenter_cert_vecs_result.stdout }}"
+      no_log: true
+
+    - name: Deploy | Restart rhttpproxy to load VECS cert
+      ansible.builtin.command:
+        argv:
+          - sshpass
+          - -p
+          - "{{ vcenter_vcsa_ssh_password }}"
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - "{{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }}"
+          - service-control --restart vmware-rhttpproxy
+      register: vcenter_cert_restart_result
+      no_log: true
+      changed_when: true
+
+  always:
+    - name: Deploy | Clean up PEMs on VCSA after VECS path
+      when: (vcenter_cert_deploy_method | default('rest')) == 'vecs_ssh'
+      ansible.builtin.shell: |
+        set -euo pipefail
+        sshpass -p '{{ vcenter_vcsa_ssh_password }}' \
+          ssh -o StrictHostKeyChecking=no -T \
+          {{ vcenter_vcsa_ssh_user }}@{{ vcenter_vcsa_hostname }} "shell" <<'SSHEOF'
+        rm -f /tmp/vcenter-cert-fullchain.crt /tmp/vcenter-cert-privkey.key
+        SSHEOF
+      args:
+        executable: /bin/bash
+      ignore_errors: true
+      no_log: true
+      changed_when: false

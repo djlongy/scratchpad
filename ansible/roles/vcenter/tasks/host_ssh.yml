@@ -1,0 +1,24 @@
+---
+# ESXi SSH + shell timeout via vCenter API — gated by vcenter_manage_host_ssh.
+# Default desired state is SSH OFF (vcenter_host_ssh_enabled: false).
+
+- name: Converge ESXi SSH service to desired state on each managed host
+  community.vmware.vmware_host_service_manager:
+    esxi_hostname: "{{ item.hostname }}"
+    service_name: "{{ vcenter_host_ssh_service_name }}"
+    service_policy: "{{ 'on' if (vcenter_host_ssh_enabled | bool) else 'off' }}"
+    state: "{{ 'present' if (vcenter_host_ssh_enabled | bool) else 'absent' }}"
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }} (ssh={{ 'on' if (vcenter_host_ssh_enabled | bool) else 'off' }})"
+  when: vcenter_esxi_hosts | length > 0
+
+- name: Configure ESXi shell interactive timeout on each managed host
+  community.vmware.vmware_host_config_manager:
+    esxi_hostname: "{{ item.hostname }}"
+    options:
+      UserVars.ESXiShellInteractiveTimeOut: "{{ vcenter_host_shell_timeout }}"
+  loop: "{{ vcenter_esxi_hosts }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: vcenter_esxi_hosts | length > 0

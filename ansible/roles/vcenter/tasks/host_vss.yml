@@ -1,0 +1,74 @@
+---
+# Standard vSwitch + port groups via vCenter API (not VDS).
+# Gated by vcenter_manage_host_vss. Prefer vcenter_config.vds for distributed.
+
+- name: Ensure standard vSwitches on each managed ESXi host
+  community.vmware.vmware_vswitch:
+    esxi_hostname: "{{ item.0.hostname }}"
+    switch: "{{ item.1.name }}"
+    nics: "{{ item.1.nics | default(item.1.uplinks | default([])) }}"
+    mtu: "{{ item.1.mtu | default(1500) }}"
+    security: "{{ _vss_security }}"
+    teaming: "{{ _vss_teaming }}"
+    state: present
+  vars:
+    _sec: "{{ item.1.security | default({}) }}"
+    _vss_security: >-
+      {{
+        {
+          'promiscuous_mode': _sec.promiscuous_mode | default(_sec.allow_promiscuous | default(false)),
+          'mac_changes': _sec.mac_changes | default(_sec.allow_mac_change | default(false)),
+          'forged_transmits': _sec.forged_transmits | default(_sec.allow_forged_transmits | default(false)),
+        }
+        if item.1.security is defined else omit
+      }}
+    _vss_teaming: >-
+      {{
+        {
+          'active_adapters': [vcenter_host_vswitch0_active_uplink],
+          'standby_adapters': (
+            [vcenter_host_vswitch0_standby_uplink]
+            if (vcenter_host_vswitch0_standby_uplink | default('') | length > 0)
+            else []
+          ),
+        }
+        if (
+          item.1.name == 'vSwitch0'
+          and (vcenter_host_vswitch0_active_uplink | default('') | length > 0)
+        )
+        else (item.1.teaming if item.1.teaming is defined else omit)
+      }}
+  loop: "{{ vcenter_esxi_hosts | product(vcenter_host_vswitches) | list }}"
+  loop_control:
+    label: "{{ item.0.hostname }} / {{ item.1.name }}"
+  when:
+    - vcenter_esxi_hosts | length > 0
+    - vcenter_host_vswitches | length > 0
+
+- name: Ensure standard port groups on each managed ESXi host
+  community.vmware.vmware_portgroup:
+    hosts:
+      - "{{ item.0.hostname }}"
+    switch: "{{ item.1.vswitch | default(item.1.switch | default('vSwitch0')) }}"
+    portgroup: "{{ item.1.name | default(item.1.portgroup) }}"
+    vlan_id: "{{ item.1.vlan_id | default(item.1.vlan | default(0)) }}"
+    security: "{{ _pg_security }}"
+    state: present
+  vars:
+    _pg_sec: "{{ item.1.security_override | default(item.1.security | default({})) }}"
+    _pg_security: >-
+      {{
+        {
+          'promiscuous_mode': _pg_sec.promiscuous_mode | default(_pg_sec.allow_promiscuous | default(false)),
+          'mac_changes': _pg_sec.mac_changes | default(_pg_sec.allow_mac_change | default(false)),
+          'forged_transmits': _pg_sec.forged_transmits | default(_pg_sec.allow_forged_transmits | default(false)),
+        }
+        if (item.1.security_override is defined or item.1.security is defined)
+        else omit
+      }}
+  loop: "{{ vcenter_esxi_hosts | product(vcenter_host_portgroups) | list }}"
+  loop_control:
+    label: "{{ item.0.hostname }} / {{ item.1.name | default(item.1.portgroup) }}"
+  when:
+    - vcenter_esxi_hosts | length > 0
+    - vcenter_host_portgroups | length > 0

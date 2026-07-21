@@ -1,0 +1,174 @@
+---
+# roles/vcenter/tasks/main.yml
+#
+# Every capability is feature-gated (defaults/main.yml). Tags refine further.
+#
+#   gates:     vcenter_manage_* booleans
+#   tags:      datacenter | esxi_hosts | svc_accounts | ldap | tenancy | ntp |
+#              dns | syslog | ssh | host_vss | advanced | certs | topology |
+#              vds | portgroups | …
+#   opt-in:    export | reconcile (never + ansible_run_tags)
+#
+# ACME+Cloudflare lives only under tasks/optional/acme_cloudflare/ — deletable
+# for air-gapped ship (see that directory's README and defaults markers).
+
+- name: Fetch credentials (gated per feature)
+  ansible.builtin.import_tasks: vault_auth.yml
+  tags: [always]
+
+# ── Legacy imperative bootstrap ─────────────────────────────────────────────
+
+- name: Configure vCenter datacenter + cluster (legacy)
+  ansible.builtin.import_tasks: datacenter.yml
+  when: vcenter_manage_datacenter | bool
+  tags: [install, configure, datacenter]
+
+- name: Register ESXi hosts in vCenter (legacy)
+  ansible.builtin.import_tasks: hosts.yml
+  when: vcenter_manage_esxi_register | bool
+  tags: [install, configure, esxi_hosts]
+
+# Identity source before service_accounts so the same run can grant roles
+# to LDAP principals once FreeIPA is linked (API grants need the source live).
+- name: Add FreeIPA / OpenLDAP SSO identity source (opt-in; needs VCSA SSH)
+  ansible.builtin.import_tasks: ldap.yml
+  when: vcenter_manage_ldap | bool
+  tags: [ldap, identity, sso]
+
+- name: Provision vCenter service accounts + RBAC roles
+  ansible.builtin.import_tasks: service_accounts.yml
+  when: vcenter_manage_svc_accounts | bool
+  tags: [svc_accounts, rbac]
+
+# Soft multi-tenancy (folders + principal grants). Prefer after topology so
+# datacenter exists; migrates legacy env folders when enabled in inventory.
+- name: Apply soft multi-tenancy (folders + tenant RBAC)
+  ansible.builtin.import_tasks: tenancy.yml
+  when: vcenter_manage_tenancy | bool
+  tags: [tenancy, rbac, multi_tenant]
+
+# ── ESXi host day-2 via vCenter API (roles/esxi surface, cluster list) ──────
+
+- name: ESXi host day-2 settings via vCenter API
+  module_defaults:
+    group/community.vmware.vmware:
+      hostname: "{{ vcenter_hostname }}"
+      username: "{{ _vcenter_username }}"
+      password: "{{ _vcenter_password }}"
+      validate_certs: "{{ vcenter_validate_certs }}"
+  block:
+    - name: Configure ESXi host NTP
+      ansible.builtin.import_tasks: host_ntp.yml
+      when: vcenter_manage_host_ntp | bool
+      tags: [ntp, host_settings, configure]
+
+    - name: Configure ESXi host DNS
+      ansible.builtin.import_tasks: host_dns.yml
+      when: vcenter_manage_host_dns | bool
+      tags: [dns, host_settings, configure]
+
+    - name: Configure ESXi host syslog
+      ansible.builtin.import_tasks: host_syslog.yml
+      when: vcenter_manage_host_syslog | bool
+      tags: [syslog, host_settings, configure]
+
+    - name: Configure ESXi host SSH
+      ansible.builtin.import_tasks: host_ssh.yml
+      when: vcenter_manage_host_ssh | bool
+      tags: [ssh, host_settings, configure]
+
+    - name: Apply ESXi host advanced settings
+      ansible.builtin.import_tasks: host_advanced.yml
+      when: vcenter_manage_host_advanced | bool
+      tags: [advanced, host_settings, configure]
+
+    - name: Configure ESXi standard vSwitch networking
+      ansible.builtin.import_tasks: host_vss.yml
+      when: vcenter_manage_host_vss | bool
+      tags: [host_vss, vswitch, host_settings, configure]
+
+# ── TLS (dual opt-in; ACME+Cloudflare is a nested optional package) ───────
+# manage_certs=false (default): phase not loaded — topology never needs cert vars.
+# cert_replace=false (default): if phase is on, report only; never mutate TLS.
+
+- name: Manage VCSA Machine SSL certificates (opt-in; replace is a second gate)
+  ansible.builtin.import_tasks: certs_main.yml
+  when: vcenter_manage_certs | bool
+  tags: [certs, letsencrypt]
+
+# ── Config-as-code pipeline ─────────────────────────────────────────────────
+
+- name: Export live vCenter config to a reviewable snapshot (opt-in)
+  ansible.builtin.import_tasks: export.yml
+  when: "'export' in ansible_run_tags"
+  tags: [never, export]
+
+- name: Assemble + validate declarative vcenter_config
+  ansible.builtin.import_tasks: desired.yml
+  when: vcenter_manage_topology | bool
+  tags: [datacenter, cluster, hosts, vds, portgroups, resource_pools, folders,
+         vds_hosts, topology, reconcile, report]
+
+- name: Converge + reconcile vCenter topology (config-as-code)
+  when: vcenter_manage_topology | bool
+  module_defaults:
+    group/community.vmware.vmware:
+      hostname: "{{ vcenter_hostname }}"
+      username: "{{ _vcenter_username }}"
+      password: "{{ _vcenter_password }}"
+      validate_certs: "{{ vcenter_validate_certs }}"
+  block:
+    - name: Apply datacenter
+      ansible.builtin.import_tasks: domains/datacenter.yml
+      when: vcenter_manage_topology_datacenter | bool
+      tags: [datacenter, topology]
+
+    - name: Apply clusters
+      ansible.builtin.import_tasks: domains/cluster.yml
+      when: vcenter_manage_topology_cluster | bool
+      tags: [cluster, topology]
+
+    - name: Apply host membership
+      ansible.builtin.import_tasks: domains/hosts.yml
+      when: vcenter_manage_topology_hosts | bool
+      tags: [hosts, topology]
+
+    - name: Apply distributed switches
+      ansible.builtin.import_tasks: domains/vds.yml
+      when: vcenter_manage_vds | bool
+      tags: [vds, topology]
+
+    - name: Apply distributed portgroups
+      ansible.builtin.import_tasks: domains/portgroups.yml
+      when: vcenter_manage_portgroups | bool
+      tags: [portgroups, topology]
+
+    - name: Attach ESXi hosts to distributed switch uplinks
+      ansible.builtin.import_tasks: domains/vds_hosts.yml
+      when: vcenter_manage_vds_hosts | bool
+      tags: [vds_hosts, topology]
+
+    - name: Apply resource pools
+      ansible.builtin.import_tasks: domains/resource_pools.yml
+      when: vcenter_manage_resource_pools | bool
+      tags: [resource_pools, topology]
+
+    - name: Apply inventory folders
+      ansible.builtin.import_tasks: domains/folders.yml
+      when: vcenter_manage_folders | bool
+      tags: [folders, topology]
+
+    - name: Reconcile undeclared in-scope objects (authoritative; gated)
+      ansible.builtin.import_tasks: reconcile.yml
+      when:
+        - "'reconcile' in ansible_run_tags"
+        - vcenter_authoritative | bool
+        - (vcenter_reconcile_scope | length) > 0
+      tags: [never, reconcile]
+
+- name: Report run summary
+  ansible.builtin.import_tasks: report.yml
+  when:
+    - vcenter_manage_topology | bool
+    - vcenter_report | default(true) | bool
+  tags: [topology, report]

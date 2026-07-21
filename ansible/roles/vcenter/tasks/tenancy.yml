@@ -1,0 +1,80 @@
+---
+# roles/vcenter/tasks/tenancy.yml
+#
+# Soft multi-tenancy for FreeIPA-backed vCenter logins (work-style):
+#   platform/ + tenants/<name>/ folders
+#   one resource pool per tenant under each vcenter_tenancy_resource_pool_parents
+#   platform admins → Admin @ rootFolder
+#   tenant admins   → Admin @ tenants/<name> + Admin @ each of that tenant's RPs
+#   same principal may be listed under multiple tenants → multiple RPs
+#   revoke stray root Admin from pure tenant principals
+#
+# FreeIPA OpenLDAP identity source does not resolve IDM groups for
+# SetEntityPermissions (UserNotFound). Inventory lists user principals.
+#
+# Gated by vcenter_manage_tenancy. Surgical: --tags tenancy
+
+- name: Tenancy | Assert multi-tenancy inputs
+  ansible.builtin.assert:
+    that:
+      - vcenter_hostname | length > 0
+      - _vcenter_username | default('') | length > 0
+      - _vcenter_password | default('') | length > 0
+      - (vcenter_platform_admins | default([]) | length > 0)
+        or (vcenter_tenants | default([]) | length > 0)
+    fail_msg: >-
+      vcenter_manage_tenancy requires vcenter_platform_admins and/or
+      vcenter_tenants with admin_principals (IDM\\uid format).
+    quiet: true
+
+- name: Tenancy | Apply folder layout + RBAC (pyvmomi)
+  become: false
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_python_interpreter | default(ansible_playbook_python) | default('/usr/bin/python3') }}"
+      - "{{ role_path }}/files/vcenter_tenancy_apply.py"
+  args:
+    stdin: >-
+      {{
+        {
+          'hostname': vcenter_hostname,
+          'username': _vcenter_username,
+          'password': _vcenter_password,
+          'validate_certs': vcenter_validate_certs | bool,
+          'datacenter': vcenter_datacenter | default(
+              (vcenter_config.datacenter.name if vcenter_config.datacenter is defined else 'Datacenter')
+            ),
+          'migrate_legacy': vcenter_tenancy_migrate_legacy | bool,
+          'legacy_tenant': vcenter_tenancy_legacy_tenant,
+          'legacy_folders': vcenter_tenancy_legacy_folders,
+          'resource_pool_parents': vcenter_tenancy_resource_pool_parents | default([]),
+          'platform_admins': vcenter_platform_admins,
+          'tenants': vcenter_tenants,
+          'admin_role': vcenter_tenancy_admin_role,
+          'revoke_root_admins': vcenter_tenancy_revoke_root_admins,
+        } | to_json
+      }}
+  register: _vcenter_tenancy_apply
+  changed_when: >-
+    (
+      (_vcenter_tenancy_apply.stdout | from_json).folders_created | default([]) | length > 0
+    )
+    or (
+      (_vcenter_tenancy_apply.stdout | from_json).folders_moved | default([]) | length > 0
+    )
+    or (
+      (_vcenter_tenancy_apply.stdout | from_json).resource_pools_created | default([]) | length > 0
+    )
+    or (
+      (_vcenter_tenancy_apply.stdout | from_json).grants | default([])
+      | selectattr('status', 'ne', 'unchanged') | list | length > 0
+    )
+    or (
+      (_vcenter_tenancy_apply.stdout | from_json).revokes | default([])
+      | selectattr('status', 'eq', 'removed') | list | length > 0
+    )
+  no_log: true
+
+- name: Tenancy | Show apply summary (no secrets)
+  ansible.builtin.debug:
+    var: _vcenter_tenancy_apply.stdout | from_json
