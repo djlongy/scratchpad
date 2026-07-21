@@ -1,0 +1,51 @@
+---
+# Path A — Simple LDAP groups (recommended default for humans)
+#
+# Prerequisites in FreeIPA (role does NOT create these):
+#   - group CN "vault-acme-prod"   members: tenant readers/writers
+#   - group CN "vault-admins"      members: platform operators
+#
+# What sticks where:
+#   policies        → HCL only (inert until attached)
+#   auth/ldap/groups/vault-acme-prod → default, acme-prod
+#   auth/ldap/groups/vault-admins    → default, vault-admin
+#
+# Login: vault login -method=ldap username=<uid>
+#
+# See README "Auth & RBAC map". Path A leaves identity_groups empty.
+
+hashicorp_vault_manage_policies: true
+hashicorp_vault_tenants:
+  - {tenant: acme, env: prod}     # mount kv-acme-prod, policy acme-prod
+  - {tenant: acme, env: dev}      # mount kv-acme-dev,  policy acme-dev
+  - {tenant: globex, env: prod}   # mount kv-globex-prod, policy globex-prod
+
+hashicorp_vault_policies:
+  - {policy_name: vault-admin, template: admin.hcl.j2}
+
+hashicorp_vault_admin_kv_mounts:
+  - kv-acme-prod
+  - kv-acme-dev
+  - kv-globex-prod
+
+# ── FreeIPA bind (replace with your directory) ───────────────────────────
+hashicorp_vault_ldap_enabled: true
+hashicorp_vault_ldap_url: "ldaps://ipa.example.com"
+hashicorp_vault_ldap_binddn: "uid=svc-vault,cn=users,cn=accounts,dc=example,dc=com"
+# Prefer vaulted inventory for the password; or use _bindpass_vault_path.
+hashicorp_vault_ldap_bindpass: "{{ vaulted_ldap_bindpass }}"
+hashicorp_vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"
+hashicorp_vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
+# default pattern → FreeIPA CNs vault-acme-prod, vault-acme-dev, vault-globex-prod
+hashicorp_vault_ldap_group_pattern: "vault-{tenant}-{env}"
+
+# Non-tenant FreeIPA groups (platform ops)
+hashicorp_vault_ldap_extra_groups:
+  - {ldap_group: vault-admins, policies: [default, vault-admin]}
+
+# Optional: one person without depending on group membership
+# hashicorp_vault_ldap_users:
+#   - {ldap_username: long, policies: [default, vault-admin]}
+
+# Path A: leave Identity empty
+hashicorp_vault_identity_groups: []

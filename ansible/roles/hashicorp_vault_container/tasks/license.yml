@@ -1,0 +1,172 @@
+---
+# Enterprise license — OPTIONAL. Gated by hashicorp_vault_license_enabled.
+# When false (default) this entire file is skipped: Community images and
+# unlicensed runs need no license material.
+#
+# HashiCorp autoload priority (highest first):
+#   1. VAULT_LICENSE        — raw license string (env)
+#   2. VAULT_LICENSE_PATH   — path to license file (env)
+#   3. license_path         — path in vault.hcl
+# We use (2) + (3) with a file under the bind-mounted config dir. We do NOT set
+# VAULT_LICENSE in compose (raw blob would appear in `docker inspect`).
+# Docs: https://developer.hashicorp.com/vault/docs/license/autoloading
+#
+# When true:
+#   1. resolve the license blob (declared string first, else controller file)
+#   2. assert the image looks Enterprise
+#   3. write license.hclic on every node (same key on all members)
+#   4. if Vault is already up: POST /sys/config/reload/license (no seal)
+#   5. else: notify container restart (deploy also templates license_path)
+#
+# License never hits argv; copy uses content= with no_log.
+
+- name: "License | Resolve license content (declared string first, controller file fallback)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_license_content: >-
+      {{ hashicorp_vault_license
+         if (hashicorp_vault_license | length > 0)
+         else (lookup('ansible.builtin.file', hashicorp_vault_license_src)
+               if (hashicorp_vault_license_src | length > 0) else '') }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: "License | Assert a license blob is available"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_license_content | length > 0
+    fail_msg: >-
+      hashicorp_vault_license_enabled is true but no license content resolved.
+      Set hashicorp_vault_license (vaulted inventory string) or
+      hashicorp_vault_license_src (controller path to a .hclic file).
+    quiet: true
+  run_once: true
+
+- name: "License | Assert the container image is Enterprise"
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('enterprise' in (hashicorp_vault_image | lower))
+        or (not (hashicorp_vault_license_require_enterprise_image | bool))
+    fail_msg: >-
+      Enterprise license is enabled but hashicorp_vault_image={{ hashicorp_vault_image }}
+      does not look like an Enterprise image. Use a hashicorp/vault-enterprise tag
+      (e.g. hashicorp/vault-enterprise:1.19.5-ent). Set
+      hashicorp_vault_license_require_enterprise_image=false only if the image is
+      Enterprise under another name.
+    quiet: true
+  run_once: true
+
+# The Enterprise binary validates a license OFFLINE (signature, format, expiry)
+# with no server running: `vault license inspect`. Failing HERE — before the
+# file lands and the container restarts — beats discovering a mangled paste or
+# an expired key as a crash-looping Vault. The blob travels via the client
+# environment (`-e VAULT_LICENSE` with no value = pass-through from the docker
+# CLI's env), never argv. Uses hashicorp_vault_image, so this also proves the
+# Enterprise image is pullable before deploy needs it.
+- name: "License | Validate the license offline (vault license inspect)"
+  become: true  # root: docker CLI needs the root-owned docker socket
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --entrypoint
+      - vault
+      - -e
+      - VAULT_LICENSE
+      - "{{ hashicorp_vault_image }}"
+      - license
+      - inspect
+  environment:
+    VAULT_LICENSE: "{{ _hashicorp_vault_license_content }}"
+  register: _hashicorp_vault_license_inspect
+  changed_when: false
+  failed_when: false
+  no_log: true  # output echoes license identifiers; keep it out of the transcript
+  run_once: true
+  when: hashicorp_vault_license_validate | bool
+
+- name: "License | Assert the license passed offline validation"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_license_inspect.rc == 0
+    fail_msg: >-
+      `vault license inspect` rejected the license
+      (rc={{ _hashicorp_vault_license_inspect.rc }}). Common causes: the blob was
+      mangled in transit (it must be ONE unbroken line — YAML folded scalars
+      insert spaces), the license is expired, or the image is not Enterprise.
+      Reproduce on the node with the blob exported:
+      docker run --rm --entrypoint vault -e VAULT_LICENSE
+      {{ hashicorp_vault_image }} license inspect
+    quiet: true
+  run_once: true
+  when: hashicorp_vault_license_validate | bool
+
+- name: "License | Install the license file on every node"
+  become: true  # root: writes under the root-owned config dir on the data mount
+  ansible.builtin.copy:
+    dest: "{{ hashicorp_vault_license_path }}"
+    content: "{{ _hashicorp_vault_license_content }}"
+    owner: root
+    group: root
+    # vault.hcl is 0644 root:root; vault process (uid 100) must read the license
+    mode: "0644"
+  no_log: true
+  register: _hashicorp_vault_license_install
+
+# Prefer hot reload when the API is already serving (HashiCorp: reload standbys
+# then leader; we reload every node — safe if the key is identical cluster-wide).
+# https://developer.hashicorp.com/vault/api-docs/system/config-reload
+- name: "License | Detect a running Vault container"
+  become: true  # root: docker CLI needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker inspect -f {% raw %}{{.State.Running}}{% endraw %} {{ hashicorp_vault_name }}"
+  register: _hashicorp_vault_license_running
+  changed_when: false
+  failed_when: false
+
+- name: "License | Read root token for license reload (when container is up)"
+  become: true  # root: root_token.txt is root-only
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+  register: _hashicorp_vault_license_token_slurp
+  when:
+    - _hashicorp_vault_license_running.stdout | default('') | trim == 'true'
+    - _hashicorp_vault_license_install is changed
+  failed_when: false
+  no_log: true
+
+- name: "License | Hot-reload the license (sys/config/reload/license)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write -force sys/config/reload/license
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_license_token_slurp.content | b64decode | trim }}"
+  register: _hashicorp_vault_license_reload
+  when:
+    - _hashicorp_vault_license_running.stdout | default('') | trim == 'true'
+    - _hashicorp_vault_license_install is changed
+    - _hashicorp_vault_license_token_slurp.content is defined
+  changed_when: true
+  failed_when: false
+  no_log: true
+  throttle: 1
+
+# First enable (container down / no license_path yet) or failed reload → restart.
+# Hot-reload succeeds only when license_path is already configured and Vault is up.
+- name: "License | Queue container restart when hot-reload is not possible"
+  ansible.builtin.debug:
+    msg: >-
+      License file changed on {{ inventory_hostname }}; container restart queued
+      (API reload unavailable — unseal after if auto-unseal is off).
+  when:
+    - _hashicorp_vault_license_install is changed
+    - >-
+      (_hashicorp_vault_license_running.stdout | default('') | trim != 'true')
+      or (_hashicorp_vault_license_reload.rc | default(1) | int != 0)
+  changed_when: true
+  notify: Restart vault container

@@ -14,6 +14,7 @@
 #   preflight — validate mount, docker, topology; derive scaling facts
 #   prereqs   — directories, firewall
 #   tls       — self-signed CA + server cert, distributed to nodes
+#   license   — optional Enterprise license file (off unless enabled)
 #   deploy    — template vault.hcl + compose, start container, wait healthy
 #   init      — initialize (once), unseal all nodes, form the Raft cluster
 #   verify    — health + Raft peer / seal assertions
@@ -30,6 +31,11 @@
   ansible.builtin.import_tasks: tls.yml
   when: hashicorp_vault_tls_enabled | bool
   tags: [tls]
+
+- name: "License — Enterprise license file (optional; off unless enabled)"
+  ansible.builtin.import_tasks: license.yml
+  when: hashicorp_vault_license_enabled | bool
+  tags: [license]
 
 - name: "Deploy — config, compose, start container"
   ansible.builtin.import_tasks: deploy.yml

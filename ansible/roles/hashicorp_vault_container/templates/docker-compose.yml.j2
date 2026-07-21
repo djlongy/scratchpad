@@ -25,6 +25,12 @@ services:
       # entrypoint does not re-exec vault (which collides on the API port).
       SKIP_CHOWN: "1"
       VAULT_ADDR: "{{ hashicorp_vault_scheme }}://127.0.0.1:{{ hashicorp_vault_api_port }}"
+{% if hashicorp_vault_license_enabled | bool %}
+      # Autoload priority 2 (file path). Prefer over VAULT_LICENSE so the raw
+      # license never appears in `docker inspect` / compose env. Config also sets
+      # license_path (priority 3). See HashiCorp license autoloading docs.
+      VAULT_LICENSE_PATH: "{{ hashicorp_vault_container_config_dir }}/{{ hashicorp_vault_license_filename }}"
+{% endif %}
 {% if hashicorp_vault_tls_enabled | bool %}
       VAULT_CACERT: "{{ hashicorp_vault_container_certs_dir }}/ca.crt"
 {% if hashicorp_vault_tls_onhost | bool %}

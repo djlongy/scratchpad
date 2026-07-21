@@ -14,6 +14,45 @@ argument_specs:
         type: str
         description: Container and compose service name.
         default: "vault"
+      hashicorp_vault_license_enabled:
+        type: bool
+        description: >-
+          Install an Enterprise license file and set license_path in vault.hcl.
+          When false (default) the license phase is skipped entirely — Community
+          runs need no license material.
+        default: false
+      hashicorp_vault_license:
+        type: str
+        description: >-
+          Enterprise license blob (.hclic contents). Declared-var-first; keep in
+          vaulted inventory. Required when license_enabled and license_src empty.
+        default: ""
+      hashicorp_vault_license_src:
+        type: str
+        description: >-
+          Controller path to a .hclic file (fallback when hashicorp_vault_license
+          is empty).
+        default: ""
+      hashicorp_vault_license_filename:
+        type: str
+        description: Filename written under the Vault config dir.
+        default: "license.hclic"
+      hashicorp_vault_license_path:
+        type: str
+        description: Host path of the installed license file.
+        default: "{{ hashicorp_vault_config_dir }}/{{ hashicorp_vault_license_filename }}"
+      hashicorp_vault_license_require_enterprise_image:
+        type: bool
+        description: >-
+          When license is enabled, fail unless hashicorp_vault_image contains
+          "enterprise" (case-insensitive).
+        default: true
+      hashicorp_vault_license_validate:
+        type: bool
+        description: >-
+          Validate the license blob offline (vault license inspect in a
+          throwaway container) before installing it.
+        default: true
       hashicorp_vault_data_mount:
         type: str
         description: >-
@@ -173,7 +212,7 @@ argument_specs:
         type: str
         description: >-
           GitLab base URL used as JWT issuer / OIDC discovery for the jwt auth
-          method (CI pipelines only). Human SSO is LDAP/FreeIPA, not GitLab OIDC.
+          method (CI pipelines). Human SSO is LDAP/FreeIPA.
         default: ""
       hashicorp_vault_gitlab_jwt_enabled:
         type: bool

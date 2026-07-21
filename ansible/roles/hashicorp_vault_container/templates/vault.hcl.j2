@@ -45,3 +45,9 @@ telemetry {
 
 log_level  = "{{ hashicorp_vault_log_level }}"
 log_format = "{{ hashicorp_vault_log_format }}"
+{% if hashicorp_vault_license_enabled | bool %}
+
+# Enterprise license (autoloaded). Written by tasks/license.yml when
+# hashicorp_vault_license_enabled is true. Absent on Community runs.
+license_path = "{{ hashicorp_vault_container_config_dir }}/{{ hashicorp_vault_license_filename }}"
+{% endif %}

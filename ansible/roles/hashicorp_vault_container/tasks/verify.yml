@@ -14,7 +14,7 @@
 
 # Peer verification runs for BOTH standalone and HA. Raft always keeps a peer
 # list — even a single node has one — so checking it standalone catches the
-# dangerous case where a shrink (e.g. 3 -> 1) removed hosts from the play but the
+# shrink without remove-peers: hosts leave the play while Raft still lists them;
 # operator never ran `raft remove-peer`, leaving GHOST peers that still count
 # toward quorum and silently break availability.
 - name: "Verify | Read the root token from the first node"
@@ -79,8 +79,8 @@
   run_once: true
 
 # GHOST-PEER GUARD — raft members that are NOT in the play's desired node set.
-# These come from a scale-down where `raft remove-peer` was not run. They still
-# count toward quorum, so the cluster is NOT healthy until they are removed.
+# Stale peers still count toward quorum. Cluster is unhealthy until
+# `raft remove-peer` (or --tags remove_peers) drops them.
 - name: "Assert there are no stale Raft peers outside the desired node set"
   ansible.builtin.assert:
     that:
@@ -109,6 +109,56 @@
       {{ 'Raft HA cluster' if hashicorp_vault_is_ha | bool else 'standalone Vault' }}.
       Init material on {{ hashicorp_vault_first_node }}:{{ hashicorp_vault_keys_dir }}/vault_init.json
   run_once: true
+
+# ── Enterprise license assurance (license_enabled only) ──────────────────────
+# File-in-place is not license-in-effect: a wrong (Community) image, a stale
+# container, or a failed hot-reload all leave license.hclic looking correct
+# while Vault runs unlicensed — and then refuses to START on the next restart.
+# Ask the running binary what it actually loaded.
+- name: "Verify | Read the autoloaded license status (license get)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault license get -format=json
+  environment:
+    VAULT_TOKEN: "{{ _verify_root_token }}"
+  register: _hashicorp_vault_license_status
+  changed_when: false
+  failed_when: false
+  no_log: true  # output carries license identifiers; token is in env
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: hashicorp_vault_license_enabled | bool
+
+- name: "Verify | Assert the running Vault autoloaded the license"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_license_status.rc == 0
+      - "'autoloaded' in ((_hashicorp_vault_license_status.stdout | from_json).data | default({}))"
+    fail_msg: >-
+      hashicorp_vault_license_enabled is true but the running Vault reports no
+      autoloaded license. Check on {{ hashicorp_vault_first_node }}:
+      (1) the image is Enterprise (*-ent tag) — docker inspect -f
+      {% raw %}'{{.Config.Image}}'{% endraw %} {{ hashicorp_vault_name }};
+      (2) license.hclic is visible in the container — docker exec
+      {{ hashicorp_vault_name }} cat /vault/config/license.hclic;
+      (3) the container restarted since the file landed — docker exec
+      {{ hashicorp_vault_name }} vault license get.
+    quiet: true
+  run_once: true
+  when: hashicorp_vault_license_enabled | bool
+
+- name: "Verify | Report the license expiry"
+  ansible.builtin.debug:
+    msg: >-
+      Enterprise license autoloaded; expires
+      {{ (_hashicorp_vault_license_status.stdout | from_json).data.autoloaded.expiration_time
+         | default('unknown') }}
+  run_once: true
+  when:
+    - hashicorp_vault_license_enabled | bool
+    - _hashicorp_vault_license_status.rc | default(1) == 0
 
 # ── Served-certificate assurance (onhost/certmonger TLS only) ────────────────
 # The whole point of the sync hook is that what Vault SERVES tracks what

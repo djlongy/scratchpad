@@ -1,0 +1,65 @@
+---
+# Path B — Identity groups + nesting (when flat LDAP groups are not enough)
+#
+# Prerequisites in FreeIPA:
+#   - vault-acme-prod     (tenant readers — Path A auto-map from tenants)
+#   - vault-acme-admins   (tenant admins across envs — Identity grant)
+#   - vault-platform-ops  (platform operators — Identity grant)
+#
+# With tenants + ldap_enabled, the role always writes Path A maps:
+#   auth/ldap/groups/vault-<tenant>-<env> → default,<tenant>-<env>
+# Use Identity for additional FreeIPA groups and nesting. Keep each FreeIPA
+# CN on one grant path so policy attachment stays single-source.
+#
+# Login is still: vault login -method=ldap username=<uid>
+# See README "Auth & RBAC map".
+
+hashicorp_vault_manage_policies: true
+hashicorp_vault_tenants:
+  - {tenant: acme, env: prod}
+  - {tenant: acme, env: dev, wide: true}   # also writes policy "acme" → kv-acme-*
+  - {tenant: globex, env: prod}
+
+hashicorp_vault_policies:
+  - {policy_name: vault-admin, template: admin.hcl.j2}
+  - {policy_name: vault-superadmin, template: all-kv.hcl.j2}
+
+hashicorp_vault_admin_kv_mounts:
+  - kv-acme-prod
+  - kv-acme-dev
+  - kv-globex-prod
+
+# LDAP required for external group-aliases (bind config same as Path A)
+hashicorp_vault_ldap_enabled: true
+hashicorp_vault_ldap_url: "ldaps://ipa.example.com"
+hashicorp_vault_ldap_binddn: "uid=svc-vault,cn=users,cn=accounts,dc=example,dc=com"
+hashicorp_vault_ldap_bindpass: "{{ vaulted_ldap_bindpass }}"
+hashicorp_vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"
+hashicorp_vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
+
+# Leave extra LDAP group→policy empty when those FreeIPA groups are granted
+# only via Identity (avoids Path A + Identity double-map on the same CN).
+hashicorp_vault_ldap_extra_groups: []
+
+# Path A still auto-maps vault-acme-prod / vault-acme-dev / vault-globex-prod.
+# Identity below grants EXTRA FreeIPA groups + nesting only.
+hashicorp_vault_identity_groups:
+  # FreeIPA vault-acme-admins → all acme envs (policy "acme" from wide: true)
+  - identity_group_name: id-acme-all-envs
+    type: external
+    ldap_group: vault-acme-admins
+    policies: [acme]
+
+  # FreeIPA vault-platform-ops → limited admin on listed mounts
+  - identity_group_name: id-platform-ops
+    type: external
+    ldap_group: vault-platform-ops
+    policies: [vault-admin]
+
+  # No FreeIPA group — nests the two above → superadmin on every kv-*
+  - identity_group_name: id-platform-superadmins
+    type: internal
+    policies: [vault-superadmin]
+    member_group_names:
+      - id-acme-all-envs
+      - id-platform-ops

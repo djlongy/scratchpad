@@ -7,16 +7,31 @@
 
 # ── Container image ──────────────────────────────────────────────────────
 # Pin an EXACT version — never a floating tag like hashicorp/vault:1.19 (it drifts
-# and breaks reproducibility). 1.19.5 is the latest 1.19.x Community image and is
-# LDAP-verified against FreeIPA (direct-bind AND binddn/search, dev + live cluster,
-# 10/10 logins). NOTE for future debuggers: an earlier persistent "failed to bind
-# as user" here was NOT a version bug and NOT a FreeIPA bug — it was stuck runtime
-# state in a long-lived container (from heavy re-config/lockout churn during
-# debugging); recreating the container fixed it. Every clean 1.19.3/1.19.5/1.20.4/
-# 1.21.3 container authenticates fine. Newer 1.19.x are Enterprise-only; the
-# Community upgrade path is a newer minor (1.20.x/1.21.x) — re-verify LDAP on bump.
+# and breaks reproducibility). 1.19.5 is the current Community pin, LDAP-verified
+# against FreeIPA (direct-bind and binddn/search). Community upgrades move to a
+# newer minor (1.20.x / 1.21.x); re-verify LDAP after any image bump.
 hashicorp_vault_image: "hashicorp/vault:1.19.5"
 hashicorp_vault_name: "vault"
+
+# ── Enterprise license (OPTIONAL; off by default) ────────────────────────
+# Safe no-op when false: no license file, no license_path in vault.hcl, Community
+# image runs unchanged. When true, tasks/license.yml writes license.hclic and
+# vault.hcl sets license_path (requires an Enterprise image).
+hashicorp_vault_license_enabled: false
+# License blob (contents of the .hclic). Prefer vaulted inventory / group_vars.
+hashicorp_vault_license: ""
+# Controller-side path fallback when hashicorp_vault_license is empty.
+hashicorp_vault_license_src: ""
+# Host + in-container filename under the config dir (config is bind-mounted).
+hashicorp_vault_license_filename: "license.hclic"
+hashicorp_vault_license_path: "{{ hashicorp_vault_config_dir }}/{{ hashicorp_vault_license_filename }}"
+# Fail when enabled if the image ref lacks "enterprise" (avoids obscure boot errors).
+hashicorp_vault_license_require_enterprise_image: true
+# Validate the blob OFFLINE (`vault license inspect` in a throwaway container)
+# before installing it — catches mangled/expired keys before a restart bricks
+# the container. Needs the node to be able to pull hashicorp_vault_image.
+hashicorp_vault_license_validate: true
+
 
 # ── Persistent storage (SECOND DISK) ─────────────────────────────────────
 # hashicorp_vault_data_mount MUST be the mount point of a persistent second disk,
@@ -146,9 +161,12 @@ hashicorp_vault_admin_kv_mounts: []
 #   - kv-globex-dev
 
 # ── LDAP auth / human SSO (optional; FreeIPA in this lab) ────────────
-# Human operator login for this role — not GitLab OIDC. Group naming: a tenant's
-# LDAP group defaults to "vault-<tenant>-<env>", mapped to policies
-# [default, <tenant>-<env>]. Add non-tenant groups via _extra_groups.
+# READ FIRST: README "Auth & RBAC map" + examples/path-a-ldap-groups.yml
+# Human SSO: LDAP/FreeIPA. GitLab JWT is CI-only (separate phase).
+# Path A (default): tenants auto-map auth/ldap/groups/vault-<tenant>-<env>
+# → policies [default, <tenant>-<env>]. Extra FreeIPA groups via _extra_groups.
+# Path B (nesting): examples/path-b-identity-nesting.yml. Map each FreeIPA CN
+# once — either auth/ldap/groups/* or an Identity group-alias, not both.
 hashicorp_vault_ldap_enabled: false
 hashicorp_vault_ldap_url: ""                     # e.g. ldaps://10.0.10.11
 hashicorp_vault_ldap_binddn: ""
@@ -170,17 +188,14 @@ hashicorp_vault_ldap_users: []
 #   - {ldap_username: long, policies: [default, vault-admin]}
 
 # ── Identity groups (cross-auth-method RBAC layer, optional) ──────────────
-# Vault Identity groups. EXTERNAL groups map an LDAP (FreeIPA) group to policies
-# via a group-alias (human SSO path for this role). INTERNAL groups have explicit
-# membership and can NEST other groups (member_group_names) for indirect
-# inheritance (e.g. an "admin-all" parent).
-#   external: {identity_group_name, type: external, ldap_group, policies}
-#   internal: {identity_group_name, type: internal, policies, member_group_names}
-# type defaults to external. Requires hashicorp_vault_ldap_enabled for the alias.
+# Path B only — see README "Auth & RBAC map" + examples/path-b-identity-nesting.yml.
+# EXTERNAL: FreeIPA group → policies via group-alias (needs ldap_enabled).
+# INTERNAL: nests other Identity groups (member_group_names).
+# type defaults to external. Empty = phase skipped (Path A sites leave empty).
 hashicorp_vault_identity_groups: []
-#   - {identity_group_name: example-prod-admins, ldap_group: vault-example-prod, policies: [example-prod]}
-#   - {identity_group_name: platform-superadmins, type: internal, policies: [vault-superadmin],
-#      member_group_names: [example-prod-admins]}
+#   - {identity_group_name: id-acme-all-envs, ldap_group: vault-acme-admins, policies: [acme]}
+#   - {identity_group_name: id-platform-superadmins, type: internal, policies: [vault-superadmin],
+#      member_group_names: [id-acme-all-envs]}
 
 # ── Human operator accounts (userpass, optional) ─────────────────────────
 # Data-driven; empty = phase skipped. Keep passwords in a VAULTED inventory /
@@ -199,17 +214,16 @@ hashicorp_vault_approles: []
 #   - {role_name: svc-ansible, policies: [svc-automation], token_ttl: 4h, token_max_ttl: 12h}
 
 # ── GitLab CI JWT (optional) ─────────────────────────────────────────────
-# Pipeline JWT->token exchange only. Human SSO for this role is LDAP/FreeIPA
-# (hashicorp_vault_ldap_*), not GitLab OIDC — that path was removed.
+# CI pipeline JWT → Vault token. Humans use LDAP. See add-on-ci-and-automation.yml.
 # Roles are data — empty = phase skipped. bound_audiences defaults to
 # _default_audience when a role omits it (empty = no audience binding).
-hashicorp_vault_gitlab_base_url: ""              # GitLab issuer / OIDC discovery for jwt
+hashicorp_vault_gitlab_base_url: ""              # GitLab issuer for jwt auth (OIDC discovery URL)
 hashicorp_vault_gitlab_jwt_enabled: false
 hashicorp_vault_gitlab_jwt_default_audience: ""
 hashicorp_vault_gitlab_jwt_roles: []
-#   - name: myproject
+#   - name: gitlab-acme-deploy
 #     bound_claims: {project_id: "42", ref: main, ref_type: branch}
-#     policies: [svc-ci-prod]
+#     policies: [svc-ci-acme-prod]
 #     token_ttl: 1h
 #     token_max_ttl: 4h
 

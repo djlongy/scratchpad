@@ -1,0 +1,38 @@
+---
+# Optional add-ons — layer ON TOP of Path A or Path B, only when needed.
+# None of these replace FreeIPA human SSO.
+
+# ── Break-glass local human (not FreeIPA) ────────────────────────────────
+hashicorp_vault_userpass_accounts:
+  - username: alice
+    password: "{{ vaulted_alice_pw }}"
+    policies: [default, vault-admin]
+
+# ── Non-GitLab automation ────────────────────────────────────────────────
+# Role is created only; role_id / secret_id are fetched out of band.
+hashicorp_vault_approles:
+  - role_name: svc-ansible
+    policies: [svc-automation]
+    token_ttl: 4h
+    token_max_ttl: 12h
+
+# Policy for AppRole must exist (supply via hashicorp_vault_policies or hand-made).
+# Example if you manage it here:
+# hashicorp_vault_policies:
+#   - {policy_name: svc-automation, template: admin.hcl.j2}  # or a tighter custom template
+
+# ── GitLab CI only (not human login) ─────────────────────────────────────
+hashicorp_vault_gitlab_jwt_enabled: true
+hashicorp_vault_gitlab_base_url: "https://gitlab.example.com"
+hashicorp_vault_gitlab_jwt_roles:
+  - name: gitlab-acme-deploy
+    bound_claims:
+      project_id: "42"
+      ref: main
+      ref_type: branch
+    policies: [svc-ci-acme-prod]
+    token_ttl: 1h
+    token_max_ttl: 4h
+
+# JWT policy must exist separately (tenant policy acme-prod is often enough,
+# or a tighter read-only CI policy named svc-ci-acme-prod).
