@@ -11,9 +11,10 @@
 # Both modes are `never`-gated (sanctioned enablement exception) so neither fires
 # by accident on a full converge.
 #
-# Export is the bare-minimum path: it must succeed without Vault, without admin
-# credentials, and without an applyable topology. Apply is best-effort on top of
-# a prior export and may skip reseed/push when those inputs are missing.
+# Export is the bare-minimum path: no HashiCorp Vault required, no admin
+# credentials required for container capture, no applyable topology required.
+# Secrets default to flat files under files/secrets/ (gitignored). Vault is an
+# optional backend only.
 
 # ── Discovery ────────────────────────────────────────────────────────────────
 # Primary docker ps name filter (stack prefix). Swarm prefixes service
@@ -88,6 +89,28 @@ splunk_config_snapshot_dir: "{{ role_path }}/files/snapshots/{{ splunk_config_st
 splunk_config_raw_dir: "/tmp/splunk_config_raw/{{ splunk_config_stack }}"
 splunk_config_keep_raw: false
 
+# ── Export transport ─────────────────────────────────────────────────────────
+# api       — management REST only (:8089). Work use case: unknown production
+#             config → recreate in a test environment. No Docker, no mounts.
+# container — docker exec/cp (+ host-volume fallback). Homelab Swarm / when you
+#             own the hosts and want on-disk local/ trees.
+# Dedicated playbook for the work path: playbooks/ops_splunk_config_export.yml
+splunk_config_export_transport: container
+
+# ── API transport (when export_transport=api) ────────────────────────────────
+# Management base URL — NOT the web UI reverse-proxy host (use :8089).
+splunk_config_api_url: ""
+splunk_config_api_user: admin
+# Password resolution order (first non-empty wins):
+#   1. splunk_config_api_password
+#   2. contents of splunk_config_api_password_file
+#   3. <secrets_dir>/api_password  (flat file written by operator)
+splunk_config_api_password: ""
+splunk_config_api_password_file: ""
+splunk_config_api_verify_tls: false
+splunk_config_api_label: standalone
+splunk_config_api_include_disabled_apps: false
+
 # ── Docker storage root (host-side volume paths) ─────────────────────────────
 # Docker's data-root. Named volumes (including local-driver + type=nfs) appear
 # under <root>/volumes/<name>/_data on the node, even when the backend is NFS —
@@ -122,24 +145,51 @@ splunk_config_export_fail_on_secret_leak: true
 # vs bind mounts. Sources are typically under splunk_config_docker_root.
 splunk_config_export_record_mounts: true
 
-# ── Secrets (HashiCorp Vault) — optional for export ──────────────────────────
-# vault_kv_mount / vault_addr come from inventory when present. Defaults stay
-# empty so export parses and runs on estates with no Vault at all.
+# ── Secrets backend (HashiCorp Vault is NOT required) ────────────────────────
+# file  — flat files under splunk_config_secrets_dir (default; gitignored)
+# vault — optional HashiCorp KV v2 (only if you already run Vault)
+# none  — do not store/restore secrets (config snapshot only)
+splunk_config_secrets_backend: file
+
+# Directory for flat-file secrets (splunk.secret.*, secrets.yml, api_password).
+# Role ships files/secrets/.gitignore so contents are never committed.
+splunk_config_secrets_dir: "{{ role_path }}/files/secrets/{{ splunk_config_stack }}"
+
+# Store captured secrets on export (to the selected backend).
+splunk_config_export_store_secrets: true
+
+# Optional Vault settings — only used when secrets_backend=vault.
+# Prefer leaving these empty; set only if you explicitly choose Vault.
+splunk_config_vault_addr: "{{ vault_addr | default('') }}"
 splunk_config_vault_mount: "{{ vault_kv_mount | default('') }}"
 splunk_config_vault_path: apps/splunk/config
 
-# Capture each instance's splunk.secret to Vault on export (restored on apply to
-# keep $7$-encrypted conf values decryptable). Soft-fails when Vault is
-# unreachable or vault_addr/mount are unset — the snapshot still lands.
-splunk_config_export_push_splunk_secret: true
+# Legacy alias kept for callers that still set the old flag name.
+# Prefer splunk_config_export_store_secrets.
+splunk_config_export_push_splunk_secret: "{{ splunk_config_export_store_secrets }}"
 
 # ── Apply behaviour ──────────────────────────────────────────────────────────
-# Reseed scrubbed secrets from Vault during apply. Soft-skips when Vault is not
-# configured or the path is empty — placement still runs.
+# Apply transport: container | api. Empty → same as splunk_config_export_transport.
+splunk_config_apply_transport: "{{ splunk_config_export_transport | default('container') }}"
+
+# API apply scope (when apply_transport=api):
+#   custom_apps — only non-stock apps (safest on a live box; default)
+#   system      — system-local conf only
+#   all         — system-local + every app in the snapshot
+splunk_config_api_apply_scope: custom_apps
+splunk_config_api_apply_dry_run: false
+splunk_config_api_apply_max_errors: 50
+splunk_config_api_apply_allow_secret_keys: false
+splunk_config_api_apply_fail_on_errors: true
+
+# Reseed scrubbed secrets from the secrets backend during apply. Soft-skips
+# when secrets are missing — placement still runs. (Container transport only;
+# API apply skips <SCRUBBED> values and never POSTs secret key names by default.)
 splunk_config_apply_reseed_secrets: true
 
 # Trigger each tier's bundle push after placing config. Off = stage the files
 # but let an operator push manually (safer first apply against a live estate).
+# Container transport only.
 splunk_config_apply_push_bundles: true
 
 # Restart non-control instances (search head / indexer / standalone) after
@@ -147,10 +197,12 @@ splunk_config_apply_push_bundles: true
 # interrupt; enable once you've reviewed a first apply.
 splunk_config_apply_restart_instances: false
 
-# Admin credential for CLI bundle-push / reload auth. Supply via a Vault lookup
-# in inventory (the estate's own admin path). Empty → pushes are SKIPPED with a
-# warning telling the operator to push manually (safe default for a first apply).
+# Admin credential for CLI bundle-push / reload auth (container transport).
+# Resolution: var → password file → <secrets_dir>/admin_password.
+# Empty → pushes are SKIPPED with a warning (safe first-apply default).
+# API apply uses splunk_config_api_password / _file / secrets_dir/api_password.
 splunk_config_admin_password: ""
+splunk_config_admin_password_file: ""
 
 # ── Inventory must provide (no safe defaults) ────────────────────────────────
 # The nodes to scan for Splunk containers are simply the hosts this role

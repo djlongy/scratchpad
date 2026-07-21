@@ -1,14 +1,16 @@
 ---
 galaxy_info:
   role_name: splunk_config
-  author: operator
+  author: longy
   description: >-
     Capture the entire live configuration of a Splunk estate running on Docker
     Swarm into a declarative, version-controlled snapshot (manifest + native app
     bundles), and re-apply it deterministically to reproduce the estate. Reaches
     Splunk through the containers, auto-detects topology (cluster manager / SHC
     deployer / deployment server / search head / indexer), and scrubs every
-    secret before it touches git — re-seeding from HashiCorp Vault on apply.
+    secret before it touches git. Secrets default to flat files; HashiCorp Vault
+    is optional and never required.
+
   license: MIT
   min_ansible_version: "2.14"
   platforms:

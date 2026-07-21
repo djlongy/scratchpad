@@ -1,12 +1,13 @@
 ---
-# Apply orchestrator — place a captured snapshot back onto the estate and
-# trigger each tier's bundle push. Runs against the swarm nodes; per-node work
-# targets the Splunk containers currently on that node, matched to the snapshot
-# by service name.
+# Apply orchestrator — place a captured snapshot back onto the estate.
 #
-# Placement OVERWRITES the container's config from the snapshot and each push is
-# safe to repeat, so apply is convergent/re-appliable (a second run restores the
-# same state). It is NOT a fine-grained no-op diff — it re-copies every run.
+# Two transports (splunk_config_apply_transport, falls back to export_transport):
+#   container — discover containers, docker cp, reseed secrets, bundle push
+#   api       — management REST only (:8089). Work / lab recreate without Docker.
+#
+# Placement OVERWRITES target config from the snapshot and each push is safe to
+# repeat, so apply is convergent/re-appliable. It is NOT a fine-grained no-op
+# diff — it re-applies every run.
 
 - name: Apply | Assert the snapshot manifest exists (once)
   ansible.builtin.stat:
@@ -24,17 +25,34 @@
       --tags export first, or point splunk_config_snapshot_dir at one.
   run_once: true
 
+- name: Apply | Resolve effective apply transport
+  ansible.builtin.set_fact:
+    _splunk_apply_transport: >-
+      {{ splunk_config_apply_transport
+         | default(splunk_config_export_transport | default('container')) }}
+  run_once: true
+
 # include_vars exposes splunk_config_snapshot on every node (cheap local read)
 - name: Apply | Load the snapshot manifest
   ansible.builtin.include_vars:
     file: "{{ splunk_config_snapshot_dir }}/manifest.yml"
 
+# ── API transport ───────────────────────────────────────────────────────────
+- name: Apply | Push snapshot via management REST API (once)
+  ansible.builtin.include_tasks: apply/push_api.yml
+  run_once: true
+  when: (_splunk_apply_transport | default('container')) == 'api'
+
+# ── Container transport ─────────────────────────────────────────────────────
 - name: Apply | Discover Splunk containers on this node
   ansible.builtin.include_tasks: export/detect_containers.yml
+  when: (_splunk_apply_transport | default('container')) == 'container'
 
-- name: Apply | Reseed splunk.secret into local containers from Vault
+- name: Apply | Reseed splunk.secret into local containers
   ansible.builtin.include_tasks: apply/reseed_secrets.yml
-  when: splunk_config_apply_reseed_secrets | bool
+  when:
+    - (_splunk_apply_transport | default('container')) == 'container'
+    - splunk_config_apply_reseed_secrets | bool
 
 - name: Apply | Place snapshot bundles into local containers
   ansible.builtin.include_tasks: apply/place_bundles.yml
@@ -42,6 +60,7 @@
   loop_control:
     loop_var: _container
     label: "{{ _container.label }}"
+  when: (_splunk_apply_transport | default('container')) == 'container'
 
 - name: Apply | Trigger tier bundle pushes / reloads
   ansible.builtin.include_tasks: apply/push.yml
@@ -49,4 +68,6 @@
   loop_control:
     loop_var: _container
     label: "{{ _container.label }}"
-  when: splunk_config_apply_push_bundles | bool
+  when:
+    - (_splunk_apply_transport | default('container')) == 'container'
+    - splunk_config_apply_push_bundles | bool

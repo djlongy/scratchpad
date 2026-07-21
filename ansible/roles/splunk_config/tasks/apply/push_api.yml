@@ -1,0 +1,112 @@
+---
+# Apply scrubbed snapshot conf via management REST API (splunkd :8089).
+# No Docker, no host mounts. Password resolution mirrors export/capture_api.
+
+- name: API apply | Resolve password from password_file when var empty
+  ansible.builtin.slurp:
+    src: "{{ splunk_config_api_password_file }}"
+  delegate_to: localhost
+  become: false
+  register: _api_pw_file
+  no_log: true
+  when:
+    - (splunk_config_api_password | default('') | length) == 0
+    - (splunk_config_api_password_file | default('') | length) > 0
+  failed_when: false
+
+- name: API apply | Resolve password from secrets_dir/api_password when still empty
+  ansible.builtin.slurp:
+    src: "{{ splunk_config_secrets_dir }}/api_password"
+  delegate_to: localhost
+  become: false
+  register: _api_pw_secrets
+  no_log: true
+  when:
+    - (splunk_config_api_password | default('') | length) == 0
+    - not (_api_pw_file.content is defined)
+  failed_when: false
+
+- name: API apply | Materialise effective API password
+  ansible.builtin.set_fact:
+    _splunk_api_password: >-
+      {{
+        splunk_config_api_password
+        if (splunk_config_api_password | default('') | length) > 0
+        else (
+          (_api_pw_file.content | b64decode | trim)
+          if (_api_pw_file.content is defined)
+          else (
+            (_api_pw_secrets.content | b64decode | trim)
+            if (_api_pw_secrets.content is defined)
+            else ''
+          )
+        )
+      }}
+  no_log: true
+
+- name: API apply | Assert API endpoint and password are set
+  ansible.builtin.assert:
+    that:
+      - (splunk_config_api_url | default('') | length) > 0
+      - (_splunk_api_password | default('') | length) > 0
+    fail_msg: >-
+      API apply needs splunk_config_api_url (e.g. https://host:8089) and a
+      password via splunk_config_api_password, splunk_config_api_password_file,
+      or {{ splunk_config_secrets_dir }}/api_password.
+
+- name: API apply | Push snapshot via REST
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          ansible_playbook_python | default('/usr/bin/python3'),
+          role_path ~ '/files/splunk_config_api_apply.py',
+          '--url', splunk_config_api_url,
+          '--user', splunk_config_api_user,
+          '--password', _splunk_api_password,
+          '--snapshot', splunk_config_snapshot_dir,
+          '--scope', splunk_config_api_apply_scope | default('custom_apps'),
+          '--max-errors', (splunk_config_api_apply_max_errors | default(50) | string),
+        ]
+        + (['--verify-tls'] if (splunk_config_api_verify_tls | bool) else [])
+        + (['--dry-run'] if (splunk_config_api_apply_dry_run | default(false) | bool) else [])
+        + (['--allow-secret-keys'] if (splunk_config_api_apply_allow_secret_keys | default(false) | bool) else [])
+      }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+  register: _api_apply
+  changed_when: >-
+    not (splunk_config_api_apply_dry_run | default(false) | bool)
+  # Script exits 0 on success, 2 when some stanza POSTs failed (JSON still printed).
+  failed_when: (_api_apply.rc | default(1) | int) not in [0, 2]
+
+- name: API apply | Parse result JSON
+  ansible.builtin.set_fact:
+    _splunk_api_apply_result: >-
+      {{ _api_apply.stdout[_api_apply.stdout.find('{') :] | from_json }}
+
+- name: API apply | Show exporter stderr summary
+  ansible.builtin.debug:
+    msg: "{{ _api_apply.stderr_lines | default([]) }}"
+
+- name: API apply | Report result
+  ansible.builtin.debug:
+    msg: >-
+      API apply {{ 'DRY-RUN ' if (_splunk_api_apply_result.dry_run | default(false)) else '' }}
+      scope={{ _splunk_api_apply_result.scope }}
+      ok={{ _splunk_api_apply_result.ok }}
+      stats={{ _splunk_api_apply_result.stats }}
+      error_count={{ _splunk_api_apply_result.error_count }}
+
+- name: API apply | Fail when apply reported errors
+  ansible.builtin.assert:
+    that:
+      - _splunk_api_apply_result.ok | bool
+    fail_msg: >-
+      API apply completed with errors
+      ({{ _splunk_api_apply_result.error_count }}):
+      {{ _splunk_api_apply_result.errors | default([]) | join(' | ') }}
+  when:
+    - not (splunk_config_api_apply_dry_run | default(false) | bool)
+    - splunk_config_api_apply_fail_on_errors | default(true) | bool

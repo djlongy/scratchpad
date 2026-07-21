@@ -89,28 +89,38 @@
     - not (splunk_config_export_fail_on_secret_leak | bool)
     - _secret_scan.rc == 0
 
-- name: Scrub | Push each instance splunk.secret to Vault (optional, soft-fail)
-  ansible.builtin.include_tasks: export/push_splunk_secret.yml
+# Persist secrets via the configured backend (file by default — no Vault).
+- name: Scrub | Store captured secrets
+  ansible.builtin.include_tasks: export/store_secrets.yml
   when:
-    - splunk_config_export_push_splunk_secret | bool
-    - (vault_addr | default('') | length) > 0
-    - (splunk_config_vault_mount | default('') | length) > 0
+    - splunk_config_export_store_secrets | bool
+    - (splunk_config_secrets_backend | default('file')) != 'none'
 
-- name: Scrub | Note that Vault secret push was skipped
-  ansible.builtin.debug:
-    msg: >-
-      Vault push of splunk.secret skipped
-      (export_push={{ splunk_config_export_push_splunk_secret }},
-      vault_addr set={{ (vault_addr | default('') | length) > 0 }},
-      vault_mount set={{ (splunk_config_vault_mount | default('') | length) > 0 }}).
-      Snapshot is still complete for retrieve; apply reseed will need Vault
-      later if you want $7$-encrypted values to decrypt.
-  when: >-
-    (splunk_config_export_push_splunk_secret | bool)
-    and (
-      (vault_addr | default('') | length) == 0
-      or (splunk_config_vault_mount | default('') | length) == 0
-    )
+# API export writes estate_inventory.json + RECREATE.md beside each raw
+# instance; promote the newest copies into the snapshot root for operators.
+- name: Scrub | Find estate inventory sidecars
+  ansible.builtin.find:
+    paths: "{{ splunk_config_raw_dir }}"
+    patterns:
+      - estate_inventory.json
+      - RECREATE.md
+    recurse: true
+  delegate_to: localhost
+  become: false
+  register: _estate_sidecars
+  failed_when: false
+
+- name: Scrub | Promote estate inventory sidecars into the snapshot
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ splunk_config_snapshot_dir }}/{{ item.path | basename }}"
+    mode: "0640"
+  loop: "{{ _estate_sidecars.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  delegate_to: localhost
+  become: false
+  when: (_estate_sidecars.files | default([])) | length > 0
 
 - name: Scrub | Clean the raw capture dir
   ansible.builtin.file:
@@ -125,7 +135,6 @@
     msg: >-
       Captured {{ _splunk_manifest.meta.counts }} → {{ splunk_config_snapshot_dir }}.
       Tiers: {{ _splunk_manifest.meta.tiers_detected }}.
-      Review manifest.yml + SECRETS-SCRUBBED.md
-      {{ 'then commit the snapshot.'
-         if (splunk_config_export_fail_on_secret_leak | bool)
-         else '(forensics dump — do not commit unless scrub is clean).' }}
+      Review manifest.yml, SECRETS-SCRUBBED.md
+      {{ ', RECREATE.md, estate_inventory.json' if (_estate_sidecars.files | default([])) | length > 0 else '' }}.
+      Secrets (if any): {{ splunk_config_secrets_dir }} (flat files; not for git).

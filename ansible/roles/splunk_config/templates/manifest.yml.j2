@@ -4,7 +4,7 @@
 {{ '#' }} app bundles live alongside this file under apps/ and the tier dirs
 {{ '#' }} (manager-apps/, shcluster-apps/, deployment-apps/, instance-*/). Secrets were
 {{ '#' }} scrubbed before capture — see SECRETS-SCRUBBED.md — and are re-seeded from
-{{ '#' }} HashiCorp Vault on `--tags apply`.
+{{ '#' }} the secrets backend (flat files by default) on `--tags apply`.
 ---
 splunk_config_snapshot:
 {{ _splunk_manifest | to_nice_yaml(indent=2) | indent(2, first=True) }}

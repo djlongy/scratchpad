@@ -1,0 +1,33 @@
+---
+# ops_splunk_config_apply.yml — push a scrubbed snapshot via management REST API.
+#
+# Pair with ops_splunk_config_export.yml. Typical work flow:
+#   1) export unknown prod → snapshot + RECREATE.md
+#   2) stand up a lab Splunk of the same major/minor
+#   3) apply snapshot (custom apps by default; use scope=all carefully)
+#
+# Example (round-trip against the same management endpoint used for export):
+#   ansible-playbook -i inventories/ops_splunk/hosts.yml \
+#     playbooks/ops_splunk_config_apply.yml \
+#     -e splunk_config_snapshot_dir=$PWD/captures/work-splunk
+#
+# Dry-run (parse + count, no writes):
+#   ansible-playbook -i inventories/ops_splunk/hosts.yml \
+#     playbooks/ops_splunk_config_apply.yml \
+#     -e splunk_config_api_apply_dry_run=true
+
+- name: Apply Splunk configuration via management REST API
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    splunk_config_export_transport: api
+    splunk_config_apply_transport: api
+    splunk_config_secrets_backend: file
+    # Prefer custom apps on a live box; override with -e for system/all.
+    splunk_config_api_apply_scope: "{{ splunk_config_api_apply_scope | default('custom_apps') }}"
+  tasks:
+    - name: Run splunk_config apply (API transport)
+      ansible.builtin.import_role:
+        name: splunk_config
+        tasks_from: apply.yml

@@ -32,8 +32,8 @@ LOCAL, DEFAULT, METADATA = "local", "default", "metadata"
 APPS_DIR, USERS_DIR, SYSTEM_LOCAL = "apps", "users", os.path.join("system", "local")
 SERVERCLASS = "serverclass.conf"
 PASSWORDS_CONF = "passwords.conf"  # pragma: allowlist secret  (a filename, not a secret)
-SCRUBBED_TOKEN = "<SCRUBBED:vault>"
-SRC_VAULT = "vault"
+SCRUBBED_TOKEN = "<SCRUBBED:secrets>"
+SRC_SECRETS = "secrets"  # re-seeded from secrets backend (file by default)
 CONF_SUFFIX = ".conf"
 UI_VIEWS = os.path.join("local", "data", "ui", "views")
 
@@ -61,7 +61,7 @@ STANZA_RE = re.compile(r"^\[(?P<name>.*)\]\s*$")
 # key = value (Splunk conf; whitespace around '=' optional).
 KV_RE = re.compile(r"^(?P<key>[^=\[\s][^=]*?)\s*=\s*(?P<val>.*)$")
 
-# Files never copied into the snapshot (secret material re-seeded from Vault).
+# Files never copied into the snapshot (re-seeded from secrets backend).
 NEVER_COPY_BASENAMES = frozenset({"splunk.secret", "passwd", PASSWORDS_CONF})
 
 OUT_OF_SCOPE_V1 = [
@@ -106,7 +106,7 @@ def scrub_conf_text(text: str, rel_path: str, scrubbed: list[dict]) -> str:
         pair = KV_RE.match(line)
         if pair and _redact_reason(pair.group("key"), pair.group("val")):
             key = pair.group("key").strip()
-            scrubbed.append({"path": rel_path, "stanza": stanza, "key": key, "source": SRC_VAULT})
+            scrubbed.append({"path": rel_path, "stanza": stanza, "key": key, "source": SRC_SECRETS})
             out_lines.append(f"{key} = {SCRUBBED_TOKEN}")
         else:
             out_lines.append(line)
@@ -143,7 +143,7 @@ def _copy_tree(src_dir: str, dst_dir: str, rel_base: str, scrubbed: list[dict]) 
         for name in files:
             if name in NEVER_COPY_BASENAMES:
                 scrubbed.append({"path": os.path.join(rel_base, name),
-                                 "stanza": "", "key": name, "source": SRC_VAULT})
+                                 "stanza": "", "key": name, "source": SRC_SECRETS})
                 continue
             src = os.path.join(root, name)
             rel = os.path.relpath(src, src_dir)
@@ -290,12 +290,12 @@ def capture_instance(inst_dir: str, out_dir: str, manifest: dict, scrubbed: list
 
 
 # Well-known secret files that live OUTSIDE the captured config dirs (never
-# copied into the snapshot; re-seeded from Vault on apply). Recorded here so the
-# scrubbed index documents them. (rel-path, note)
+# copied into the snapshot; re-seeded from the secrets backend on apply).
+# (rel-path, note)
 WELLKNOWN_SECRETS = (
-    ("passwd", "local users re-seeded from Vault (usernames+roles captured only)"),
+    ("passwd", "local users re-seeded from secrets backend (usernames+roles only)"),
     (os.path.join("auth", "splunk.secret"),
-     "splunk.secret restored from Vault to keep encrypted values valid"),
+     "splunk.secret restored from secrets backend to keep encrypted values valid"),
 )
 
 
@@ -303,7 +303,7 @@ def _record_wellknown_secrets(etc: str, scrubbed: list[dict]) -> None:
     for rel, note in WELLKNOWN_SECRETS:
         if os.path.isfile(os.path.join(etc, rel)):
             scrubbed.append({"path": rel, "stanza": "", "key": os.path.basename(rel),
-                             "source": SRC_VAULT, "note": note})
+                             "source": SRC_SECRETS, "note": note})
 
 
 def _instance_meta(inst_dir: str) -> dict:
@@ -371,7 +371,8 @@ def _write_secrets_index(out_dir: str, scrubbed: list[dict]) -> None:
         "# Secrets scrubbed from this snapshot",
         "",
         "Every entry below was removed BEFORE the snapshot was written and is "
-        "re-seeded from HashiCorp Vault on apply. None of these values is in git.",
+        "re-seeded from the secrets backend on apply (flat files by default; "
+        "optional Vault). None of these values is in git.",
         "",
         "| Path | Stanza | Key | Re-seed source |",
         "|------|--------|-----|----------------|",
@@ -426,11 +427,30 @@ def _finalise(manifest: dict, scrubbed: list[dict]) -> None:
     }
 
 
+def _version_from_raw(raw_dir: str) -> str:
+    """Prefer version recorded by the capture path (_capture.json)."""
+    if not os.path.isdir(raw_dir):
+        return ""
+    for label in sorted(os.listdir(raw_dir)):
+        meta = _instance_meta(os.path.join(raw_dir, label))
+        ver = (meta.get("splunk_version") or "").strip()
+        if ver and ver.lower() != "unknown":
+            return ver
+    return ""
+
+
 def run(raw_dir: str, out_dir: str, source_stack: str, splunk_version: str) -> dict:
     """Capture every instance under raw_dir into out_dir; return the manifest."""
-    manifest = _empty_manifest(source_stack, splunk_version)
+    version = (splunk_version or "").strip()
+    if not version or version.lower() == "unknown":
+        version = _version_from_raw(raw_dir) or "unknown"
+    manifest = _empty_manifest(source_stack, version)
     scrubbed: list[dict] = []
     os.makedirs(out_dir, exist_ok=True)
+    if not os.path.isdir(raw_dir):
+        _finalise(manifest, scrubbed)
+        _write_secrets_index(out_dir, scrubbed)
+        return manifest
     for label in sorted(os.listdir(raw_dir)):
         inst_dir = os.path.join(raw_dir, label)
         if os.path.isdir(inst_dir) and os.path.isdir(os.path.join(inst_dir, "etc")):

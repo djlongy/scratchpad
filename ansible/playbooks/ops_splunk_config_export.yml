@@ -1,0 +1,48 @@
+---
+# ops_splunk_config_export.yml — reverse-engineer a live Splunk via API only.
+#
+# Use case (work): nobody knows how production Splunk is configured. Point this
+# at the management port (:8089), pull conf + apps + a recreation checklist,
+# and use the scrubbed snapshot to stand up a test instance elsewhere.
+#
+# Requirements:
+#   - Network reachability to splunkd management API (NOT just the web UI)
+#   - Admin (or equivalent) username + password in a flat file or -e
+#   - No Docker, no host mounts, no HashiCorp Vault
+#
+# Example:
+#   mkdir -p roles/splunk_config/files/secrets/work
+#   printf '%s' "$SPLUNK_ADMIN_PASSWORD" \
+#     > roles/splunk_config/files/secrets/work/api_password
+#   chmod 600 roles/splunk_config/files/secrets/work/api_password
+#
+#   ansible-playbook playbooks/ops_splunk_config_export.yml \
+#     -e splunk_config_api_url=https://splunk.example.com:8089 \
+#     -e splunk_config_stack=work \
+#     -e splunk_config_snapshot_dir=$PWD/captures/work-splunk
+#
+# Outputs:
+#   - scrubbed conf snapshot (safe-ish for git after review)
+#   - RECREATE.md + estate_inventory.json (how to rebuild in the lab)
+#   - files/secrets/<stack>/  (flat secrets; never commit)
+#
+# Note: this playbook imports the export task file directly so a bare run
+# actually exports (the role's main.yml is never-gated for full converges).
+
+- name: Export Splunk configuration via management REST API
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Force the work-oriented path regardless of role defaults.
+    splunk_config_export_transport: api
+    splunk_config_secrets_backend: file
+    splunk_config_export_store_secrets: true
+    splunk_config_export_push_splunk_secret: false
+    # stack names the secrets/ + snapshot subdir when not overridden.
+    splunk_config_stack: "{{ splunk_config_stack | default('work') }}"
+  tasks:
+    - name: Run splunk_config export (API transport)
+      ansible.builtin.import_role:
+        name: splunk_config
+        tasks_from: export.yml

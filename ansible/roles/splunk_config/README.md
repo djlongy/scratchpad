@@ -2,151 +2,138 @@
 
 ## TL;DR
 
-Captures the entire live configuration of a Splunk-on-Docker estate into a
-declarative, version-controlled snapshot (a readable `manifest.yml` + native
-app/config bundles), and can apply that snapshot back when the estate supports
-it. Reaches Splunk through the containers (`docker exec` / `docker cp`),
-auto-detects topology, and scrubs every secret before anything touches git.
+**Reverse-engineer an unknown Splunk estate over the management API**, scrub
+secrets into flat files, and produce a recreation checklist so you can stand up
+the same shape of install in a test environment.
 
-**Export is the bare-minimum path** — it works without Vault, without admin
-credentials, and without knowing whether storage is local, bind-mounted, or
-NFS-backed Docker volumes. Apply is best-effort on top of a prior export.
+No Docker. No host disk mounts. No HashiCorp Vault.
 
 ```bash
-ansible-playbook -i inventories/swarm/hosts.yml playbooks/app_splunk.yml --tags export
+# 1) Password as a flat file (mode 0600)
+mkdir -p roles/splunk_config/files/secrets/work
+printf '%s' "$SPLUNK_ADMIN_PASSWORD" > roles/splunk_config/files/secrets/work/api_password
+chmod 600 roles/splunk_config/files/secrets/work/api_password
+
+# 2) Export (management port :8089 — not the web UI reverse-proxy)
+# Bare run is enough — the ops playbook imports export.yml directly.
+ansible-playbook playbooks/ops_splunk_config_export.yml \
+  -e splunk_config_api_url=https://splunk.example.com:8089 \
+  -e splunk_config_stack=work \
+  -e splunk_config_snapshot_dir=$PWD/captures/work-splunk
 ```
+
+Outputs:
+- **Scrubbed conf snapshot** — apps, system conf, dashboards (safe to review; scrub placeholders for secrets)
+- **`RECREATE.md`** — checklist to rebuild a test instance
+- **`estate_inventory.json`** — version, roles, apps, indexes, inputs surface
+- **`files/secrets/work/`** — flat secret material (gitignored; not for git)
+
+There is also a **container** transport (`docker exec` / `/var/lib/docker` volumes)
+for Swarm estates you operate yourself. The API path is the one for “we don’t
+know how production was built.”
 
 ## Requirements
 
-Install collections before running (repo `requirements.yml`, or ad-hoc):
-
-    ansible-galaxy collection install -r requirements.yml
-
 | Collection | When | Used for |
 |---|---|---|
-| `community.hashi_vault` | When Vault push/reseed is enabled *and* `vault_addr` is set | pushing / reseeding `splunk.secret` |
-
-Export does **not** require HashiCorp Vault. When Vault is unset or unreachable,
-export still writes the scrubbed snapshot; only the optional secret-reseed
-path for apply is deferred.
+| *(none beyond `ansible.builtin`)* | always | API export, container export, flat-file secrets |
+| `community.hashi_vault` | Only if you set `secrets_backend=vault` | optional; never required |
 
 ## Key variables
 
 Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-**Required** = value must be correct for a successful run (defaults often work).
-**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
-**When X** = required only if that feature is on.
-
 | Req | Variable | Default | Purpose |
 |---|---|---|---|
-| Optional | `splunk_config_stack` | `splunk` | Primary `docker ps` name filter |
-| Optional | `splunk_config_name_filters` | `[]` | Extra name filters (OR) for foreign estates |
-| Optional | `splunk_config_image_filters` | `[]` | Image-substring filters (OR), e.g. `splunk/splunk` |
-| Optional | `splunk_config_snapshot_dir` | `<role>/files/snapshots/<stack>` | Where the snapshot is written/read |
-| Optional | `splunk_config_capture_paths` | see defaults | `etc/` subtrees harvested per container |
-| Optional | `splunk_config_export_ignore_capture_errors` | `true` | One failed container does not abort export |
-| Optional | `splunk_config_export_fail_on_empty` | `false` | Fail export when zero containers match |
-| Optional | `splunk_config_docker_root` | `/var/lib/docker` | Docker data-root; volumes live under `<root>/volumes/<name>/_data` |
-| Optional | `splunk_config_export_host_volume_fallback` | `true` | When the container is stopped, read config from the host volume path |
-| Optional | `splunk_config_export_include_stopped` | `true` | Include stopped containers in discovery |
-| Optional | `splunk_config_export_record_mounts` | `true` | Record Docker mount metadata (NFS vs bind) |
-| Optional | `splunk_config_vault_path` | `apps/splunk/config` | Vault KV path for `splunk.secret` |
-| Optional | `splunk_config_export_push_splunk_secret` | `true` | Push `splunk.secret` to Vault on export (soft-fails) |
-| Optional | `splunk_config_apply_reseed_secrets` | `true` | Reseed secrets from Vault on apply (soft-skips) |
-| Optional | `splunk_config_apply_push_bundles` | `true` | Trigger tier bundle pushes on apply |
-| When bundle push | `splunk_config_admin_password` | `""` | Estate admin credential; empty skips pushes |
+| **Required (API)** | `splunk_config_api_url` | `""` | Management URL `https://host:8089` |
+| When API | `splunk_config_api_password` / `_file` / `secrets_dir/api_password` | — | Admin password (flat file OK) |
+| Optional | `splunk_config_export_transport` | `container` | Use `api` for work reverse-engineering |
+| Optional | `splunk_config_secrets_backend` | `file` | `file` (default) \| `vault` \| `none` |
+| Optional | `splunk_config_secrets_dir` | `files/secrets/<stack>/` | Flat secrets (gitignored) |
+| Optional | `splunk_config_snapshot_dir` | `files/snapshots/<stack>/` | Scrubbed output |
 
 ## Usage
 
-```yaml
-- hosts: swarm_managers:swarm_workers
-  become: true
-  roles:
-    - splunk_config
-```
+### Work / unknown production (API only)
 
-Foreign / work estate — cast a wider discovery net and keep the snapshot out of
-the role tree:
+Use the dedicated playbook — see TL;DR. Prefer the data-plane **management**
+endpoint (`:8089`). A web UI hostname that only proxies `:443`/`:8000` will not
+serve REST.
 
 ```yaml
-- hosts: swarm_managers:swarm_workers
-  become: true
+# Minimal play (also what ops_splunk_config_export.yml does)
+- hosts: localhost
+  connection: local
+  gather_facts: false
   roles:
     - role: splunk_config
       vars:
-        splunk_config_stack: ""                 # optional if image filters alone match
-        splunk_config_name_filters:
-          - splunk
-          - idx
-          - sh-
-        splunk_config_image_filters:
-          - splunk/splunk
-          - splunk/universalforwarder
-        splunk_config_snapshot_dir: "{{ playbook_dir }}/../captures/work-splunk"
-        splunk_config_export_push_splunk_secret: false
+        splunk_config_export_transport: api
+        splunk_config_api_url: "https://splunk-mgmt.example.com:8089"
+        splunk_config_secrets_backend: file
+        splunk_config_stack: work
 ```
 
-Run it — pick a mode with a tag, both are `never`-gated so a bare run does
-nothing:
+### Homelab Swarm (container transport)
 
 ```bash
-# Capture (bare-minimum retrieve — no Vault required)
 ansible-playbook -i inventories/swarm/hosts.yml playbooks/app_splunk.yml --tags export
-
-# Restore (dry: stage files, skip pushes)
-ansible-playbook -i inventories/swarm/hosts.yml playbooks/app_splunk.yml --tags apply \
-    -e splunk_config_apply_push_bundles=false
 ```
+
+### Apply into a lab instance (API)
+
+```bash
+# After export (or point snapshot_dir at an existing capture):
+ansible-playbook -i inventories/ops_splunk/hosts.yml \
+  playbooks/ops_splunk_config_apply.yml \
+  -e splunk_config_snapshot_dir=$PWD/captures/work-splunk \
+  -e splunk_config_api_url=https://lab-splunk.example.com:8089 \
+  -e splunk_config_api_password_file=roles/splunk_config/files/secrets/work/api_password
+
+# Dry-run (no writes)
+ansible-playbook -i inventories/ops_splunk/hosts.yml \
+  playbooks/ops_splunk_config_apply.yml \
+  -e splunk_config_api_apply_dry_run=true \
+  -e splunk_config_snapshot_dir=$PWD/captures/work-splunk
+
+# Broader scope (use carefully on live targets)
+# -e splunk_config_api_apply_scope=all
+```
+
+### Apply into a lab instance (container / Swarm)
+
+```bash
+# After standing up a blank Splunk of the same major/minor version:
+ansible-playbook … --tags apply \
+  -e splunk_config_secrets_backend=file
+```
+
+Or merge the scrubbed tree into `$SPLUNK_HOME/etc` by hand using `RECREATE.md`.
 
 ## Preconditions
 
-- Runs against **all** nodes that may host Splunk containers (e.g.
-  `swarm_managers:swarm_workers`) — a container is exec-reachable only on the
-  node hosting it.
-- Docker CLI on each target host. Export prefers `docker exec` / `docker cp`;
-  when a task is stopped it falls back to host paths under Docker's data-root
-  (default `/var/lib/docker`, or whatever `docker info` reports). Named volumes
-  — including local-driver + NFS opts — appear at
-  `<docker_root>/volumes/<name>/_data`; the NFS server export path is not
-  required for retrieve.
-- For `apply`: a prior export snapshot must exist. Vault reseed and bundle
-  pushes are optional soft-paths — placement still runs when they are skipped.
+- **API:** network path to splunkd **:8089** and an admin-equivalent password in a
+  var, password file, or `files/secrets/<stack>/api_password`.
+- **Container:** Docker CLI on hosts that run Splunk tasks.
+- **Apply:** prior export snapshot; flat-file secrets dir if you need
+  `splunk.secret` restored for encrypted conf values.
 
 ## Behaviour
 
-- Capture scope is auto-detected per tier: cluster manager → `manager-apps/`,
-  SHC deployer → `shcluster/apps/`, deployment server → `deployment-apps/` +
-  `serverclass.conf`, search head(s) → app/user/system local overrides,
-  indexer(s) → system/app local overrides. Every app contributes `local/**` +
-  `metadata/local.meta`; `default/**` is captured only for genuinely custom
-  apps (Splunk-shipped apps contribute local overrides only).
-- In-container etc root is auto-detected (`/opt/splunk/etc` or
-  `/opt/splunkforwarder/etc`).
-- Secrets are scrubbed before the snapshot is written. When Vault is configured,
-  `splunk.secret` is pushed on export and re-seeded on apply; when it is not,
-  export still succeeds and apply placement still runs.
-- Mount metadata (type / name / source / destination / driver) is recorded per
-  instance. Volume `Source` paths are under `splunk_config_docker_root`
-  (default `/var/lib/docker`) even when the backend is NFS.
-- Apply **overwrites** placed config and re-runs each push, so it is
-  convergent / re-appliable — not a fine-grained no-op diff.
+- API export filters conf/views to **ACL-owned** entries (drops inherited product noise).
+- System conf is **effective** config (enough to recreate behaviour; not a pure `local/` dig).
+- Secret-looking values become `<SCRUBBED:secrets>` in the snapshot.
+- Secrets default to **flat files** under `files/secrets/` (gitignored). Vault is optional.
 
 ## Out of scope
 
-- kvstore *data* and index *bucket data* — only kvstore collection
-  *definitions* are captured.
-- License files.
-- Secret *values* in git — captured as scrubbed placeholders; re-seeded from
-  Vault on apply when Vault is available.
-- Guaranteeing apply on a foreign estate — export is the contract; apply needs
-  live containers, matching service names, and (for encrypted values) Vault.
+- Index bucket data and kvstore data (definitions only)
+- License key files
+- Secret *values* in git
+- Guaranteed bit-identical filesystem layout vs production
 
 ## Expected result
 
-- `--tags export` produces `manifest.yml` + scrubbed bundles under
-  `splunk_config_snapshot_dir`, even when Vault is absent or a single container
-  fails to capture.
-- `SECRETS-SCRUBBED.md` lists every redaction.
-- `--tags apply` places what it can and skips (with a warning) reseed/push when
-  credentials or Vault are missing.
+- `manifest.yml` + scrubbed conf tree
+- `RECREATE.md` + `estate_inventory.json` (API transport)
+- Flat secrets under `splunk_config_secrets_dir` when store is enabled

@@ -2,17 +2,13 @@
 # Export orchestrator — capture the live Splunk estate into a committable
 # snapshot on the control node.
 #
-# Runs against the swarm nodes (the play's hosts). Ansible executes each task
-# across ALL hosts before the next, so every node's containers are captured
-# before the run_once scrub/manifest step aggregates them on the control node.
+# Two transports (splunk_config_export_transport):
+#   container — discover containers on play hosts, docker exec/cp (+ host
+#               volume fallback under Docker data-root)
+#   api       — management REST API on the control node (no docker/mounts)
 #
-# Flow: reset control-node raw dir (once) → discover Splunk containers on each
-# node → tar each container's etc subtree out and fetch it → scrub + classify +
-# render manifest + optional Vault push of splunk.secret (once).
-#
-# Bare-minimum retrieve: export does not require Vault, admin credentials, or
-# an applyable topology. Soft-fails individual container captures and optional
-# Vault writes so a partial snapshot still lands.
+# Flow: reset raw dir → capture (container or API) → scrub + manifest +
+# optional secrets store (flat files by default).
 
 - name: Export | Reset the control-node raw capture dir (once)
   ansible.builtin.file:
@@ -24,8 +20,16 @@
   become: false
   run_once: true
 
+# ── API transport ───────────────────────────────────────────────────────────
+- name: Export | Capture via management REST API (once)
+  ansible.builtin.include_tasks: export/capture_api.yml
+  run_once: true
+  when: (splunk_config_export_transport | default('container')) == 'api'
+
+# ── Container transport ─────────────────────────────────────────────────────
 - name: Export | Discover Splunk containers on this node
   ansible.builtin.include_tasks: export/detect_containers.yml
+  when: (splunk_config_export_transport | default('container')) == 'container'
 
 - name: Export | Capture each Splunk container's config
   ansible.builtin.include_tasks: export/capture_container.yml
@@ -33,9 +37,8 @@
   loop_control:
     loop_var: _container
     label: "{{ _container.label }}"
+  when: (splunk_config_export_transport | default('container')) == 'container'
 
-# Aggregate discovery counts after every host has run detect + capture.
-# hostvars is safe here: the prior tasks ran on every play host.
 - name: Export | Count containers discovered across the estate (once)
   ansible.builtin.set_fact:
     _splunk_export_container_count: >-
@@ -45,6 +48,7 @@
          | map('length')
          | sum }}
   run_once: true
+  when: (splunk_config_export_transport | default('container')) == 'container'
 
 - name: Export | Fail when no containers found and fail_on_empty is set
   ansible.builtin.assert:
@@ -55,23 +59,26 @@
       (stack={{ splunk_config_stack }},
       name_filters={{ splunk_config_name_filters | default([]) }},
       image_filters={{ splunk_config_image_filters | default([]) }}).
-      Widen the filters or set splunk_config_export_fail_on_empty=false to
-      write an empty snapshot.
+      Widen the filters, set splunk_config_export_fail_on_empty=false, or use
+      splunk_config_export_transport=api against the management port.
   run_once: true
-  when: splunk_config_export_fail_on_empty | bool
+  when:
+    - (splunk_config_export_transport | default('container')) == 'container'
+    - splunk_config_export_fail_on_empty | bool
 
 - name: Export | Warn when no containers found (empty snapshot will be written)
   ansible.builtin.debug:
     msg: >-
       No Splunk containers matched on any host. Writing an empty snapshot to
-      {{ splunk_config_snapshot_dir }}. Widen splunk_config_stack /
-      splunk_config_name_filters / splunk_config_image_filters if this is
-      unexpected.
+      {{ splunk_config_snapshot_dir }}. Widen filters or use
+      splunk_config_export_transport=api if this is unexpected.
   run_once: true
   when:
+    - (splunk_config_export_transport | default('container')) == 'container'
     - not (splunk_config_export_fail_on_empty | bool)
     - (_splunk_export_container_count | int) == 0
 
+# ── Scrub + manifest (both transports) ──────────────────────────────────────
 - name: Export | Scrub, classify, render the snapshot, optional Vault push (once)
   ansible.builtin.include_tasks: export/scrub_manifest.yml
   run_once: true

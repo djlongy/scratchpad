@@ -1,0 +1,23 @@
+---
+# Default vars for API-only Splunk config reverse-engineer / recreate.
+# Override secrets via password file or -e; never commit real passwords.
+
+splunk_config_stack: work
+splunk_config_export_transport: api
+splunk_config_apply_transport: api
+splunk_config_secrets_backend: file
+
+# Management port — NOT the web UI reverse-proxy host alone.
+splunk_config_api_url: "https://splunk-mgmt.example.com:8089"
+splunk_config_api_user: admin
+splunk_config_api_verify_tls: false
+
+# Password resolution (first non-empty wins):
+#   1. -e splunk_config_api_password=…
+#   2. splunk_config_api_password_file
+#   3. <secrets_dir>/api_password
+splunk_config_api_password_file: ""
+
+# Apply defaults — custom apps only (safer on a live target).
+splunk_config_api_apply_scope: custom_apps
+splunk_config_api_apply_dry_run: false

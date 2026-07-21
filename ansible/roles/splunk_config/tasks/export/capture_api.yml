@@ -1,0 +1,101 @@
+---
+# Capture Splunk configuration via the management REST API (splunkd :8089).
+# Runs once on the control node — no docker, no host mounts.
+# Requires: splunk_config_api_url + splunk_config_api_password (user defaults
+# to admin). Output lands under splunk_config_raw_dir/<label>/ for the scrubber.
+#
+# Use the management endpoint (e.g. https://splunk-data.example.com:8089), not
+# the web UI reverse-proxy host that only fronts :8000/:443.
+
+# Resolve password without assuming Vault: explicit var → password file →
+# flat file under secrets_dir.
+- name: API capture | Resolve password from password_file when var empty
+  ansible.builtin.slurp:
+    src: "{{ splunk_config_api_password_file }}"
+  delegate_to: localhost
+  become: false
+  register: _api_pw_file
+  no_log: true
+  when:
+    - (splunk_config_api_password | default('') | length) == 0
+    - (splunk_config_api_password_file | default('') | length) > 0
+  failed_when: false
+
+- name: API capture | Resolve password from secrets_dir/api_password when still empty
+  ansible.builtin.slurp:
+    src: "{{ splunk_config_secrets_dir }}/api_password"
+  delegate_to: localhost
+  become: false
+  register: _api_pw_secrets
+  no_log: true
+  when:
+    - (splunk_config_api_password | default('') | length) == 0
+    - not (_api_pw_file.content is defined)
+  failed_when: false
+
+- name: API capture | Materialise effective API password
+  ansible.builtin.set_fact:
+    _splunk_api_password: >-
+      {{
+        splunk_config_api_password
+        if (splunk_config_api_password | default('') | length) > 0
+        else (
+          (_api_pw_file.content | b64decode | trim)
+          if (_api_pw_file.content is defined)
+          else (
+            (_api_pw_secrets.content | b64decode | trim)
+            if (_api_pw_secrets.content is defined)
+            else ''
+          )
+        )
+      }}
+  no_log: true
+
+- name: API capture | Assert API endpoint and password are set
+  ansible.builtin.assert:
+    that:
+      - (splunk_config_api_url | default('') | length) > 0
+      - (_splunk_api_password | default('') | length) > 0
+    fail_msg: >-
+      API export needs splunk_config_api_url (e.g. https://host:8089) and a
+      password via splunk_config_api_password, splunk_config_api_password_file,
+      or {{ splunk_config_secrets_dir }}/api_password. No HashiCorp Vault
+      required. Web UI reverse-proxy hosts are not enough — use :8089.
+
+- name: API capture | Resolve raw instance path
+  ansible.builtin.set_fact:
+    _api_raw_inst: "{{ splunk_config_raw_dir }}/{{ splunk_config_api_label }}"
+
+- name: API capture | Ensure raw instance directory
+  ansible.builtin.file:
+    path: "{{ _api_raw_inst }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  become: false
+
+- name: API capture | Run REST exporter
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          ansible_playbook_python | default('/usr/bin/python3'),
+          role_path ~ '/files/splunk_config_api_export.py',
+          '--url', splunk_config_api_url,
+          '--user', splunk_config_api_user,
+          '--password', _splunk_api_password,
+          '--raw-inst', _api_raw_inst,
+          '--label', splunk_config_api_label,
+        ]
+        + (['--verify-tls'] if (splunk_config_api_verify_tls | bool) else [])
+        + (['--include-disabled-apps'] if (splunk_config_api_include_disabled_apps | bool) else [])
+      }}
+  delegate_to: localhost
+  become: false
+  no_log: true
+  register: _api_export
+  changed_when: true
+
+- name: API capture | Show exporter summary
+  ansible.builtin.debug:
+    msg: "{{ _api_export.stderr_lines | default([]) }}"

@@ -20,6 +20,10 @@
 
 # Docker data-root (default /var/lib/docker). Named volumes — including
 # local-driver NFS backends — surface under <root>/volumes/<name>/_data.
+# docker CLI talks to the socket — no root needed when the operator is in the
+# docker group (typical). become:true hard-fails passwordless-sudo-less laptops
+# before failed_when can soft-land, so keep become false and fall back to
+# splunk_config_docker_root when the probe fails.
 - name: Detect | Resolve Docker data-root on {{ inventory_hostname }}
   ansible.builtin.command:
     argv:
@@ -27,7 +31,7 @@
       - info
       - --format
       - "{% raw %}{{.DockerRootDir}}{% endraw %}"
-  become: true
+  become: false
   register: _docker_root_probe
   changed_when: false
   failed_when: false
@@ -41,24 +45,26 @@
          else (splunk_config_docker_root | default('/var/lib/docker')) }}
 
 # Host-volume fallback helper — staged once per node, used by capture.
+# /tmp is world-writable; no privilege needed to stage the helper.
 - name: Detect | Stage etc-host resolver on {{ inventory_hostname }}
   ansible.builtin.copy:
     src: resolve_etc_host.py
     dest: /tmp/splunk_config_resolve_etc_host.py
     mode: "0755"
-  become: true
+  become: false
   when: splunk_config_export_host_volume_fallback | bool
 
 # One docker ps of everything; match/filter in Ansible so name + image
 # criteria stay portable. Include stopped containers when enabled so
 # scaled-down tasks can still be retrieved via host volume paths.
+# become false — same rationale as docker info (socket auth, not root).
 - name: Detect | List containers on {{ inventory_hostname }}
   ansible.builtin.command:
     argv: >-
       {{ ['docker', 'ps']
          + (['-a'] if (splunk_config_export_include_stopped | bool) else [])
          + ['--format', '{% raw %}{{.Names}}\t{{.Image}}\t{{.ID}}\t{{.Status}}{% endraw %}'] }}
-  become: true
+  become: false
   register: _docker_ps
   changed_when: false
   failed_when: false
