@@ -1,80 +1,43 @@
 # velociraptor
 
-Installs the [Velociraptor](https://www.rapid7.com/products/velociraptor/) DFIR
-endpoint client on Linux hosts as a systemd service.
-
-This role is a **generic, defaults-driven engine**.  It handles idempotent binary
-download, version-pinned install with a stable symlink, secure client config
-deployment, and systemd lifecycle management.  It does **not** ship an
-organisation-specific server URL or enrollment config — you must supply those via
-variables (see _Minimal configuration_ below).
-
----
-
 ## TL;DR
 
-**Most common: push a client-config update.** Update the vaulted `velociraptor_client_config`, then re-run scoped to `--tags configure` (a full no-tag run does install → configure → service).
+Installs the Velociraptor DFIR endpoint client on Linux hosts as a systemd
+service. Set a binary source (`velociraptor_version` or `velociraptor_binary_url`)
+and a client config (`velociraptor_client_config`), then run. A no-tag run is a
+full idempotent reconcile: install → configure → service.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/security/velociraptor_client.yml --tags configure
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags velociraptor
 ```
-
----
 
 ## Requirements
 
-- Ansible 2.14+
-- `ansible.builtin`, `ansible.posix`, `community.general` collections
-- systemd on the target host
-- Internet access to GitHub (or an internal mirror via `velociraptor_binary_url`)
+None beyond `ansible.builtin`.
 
----
+## Key variables
 
-## Variable reference
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-| Variable | Default | Description |
-|---|---|---|
-| `velociraptor_binary_url` | `""` | Explicit download URL.  Takes priority over the constructed URL.  Set this for air-gapped environments or internal mirrors. |
-| `velociraptor_version` | `""` | Semver without leading `v` (e.g. `"0.72.4"`).  Used to construct the GitHub URL and version-stamp the binary filename.  Required when `velociraptor_binary_url` is empty. |
-| `velociraptor_download_base` | `"https://github.com/Velocidex/velociraptor/releases/download"` | Base URL for constructed downloads.  Override to point at an internal proxy. |
-| `velociraptor_binary_checksum` | `""` | Optional checksum for `get_url` (e.g. `"sha256:abc123..."`).  When empty, checksum verification is skipped. |
-| `velociraptor_install_dir` | `/opt/velociraptor` | Directory for the versioned binary and stable `velociraptor` symlink. |
-| `velociraptor_config_dir` | `/etc/velociraptor` | Directory for `client.config.yaml` (mode `0700`; config `0600`). |
-| `velociraptor_service_name` | `velociraptor_client` | systemd unit name (without `.service`). |
-| `velociraptor_client_config` | `""` | Inline YAML content for `client.config.yaml`.  Store as an Ansible Vault secret.  Takes priority over `velociraptor_client_config_src`. |
-| `velociraptor_client_config_src` | `""` | Absolute path to the config file on the Ansible controller.  Used when `velociraptor_client_config` is empty. |
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
 
-### Architecture mapping (`vars/main.yml`)
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| When no `_binary_url` | `velociraptor_version` | `""` | Semver without leading `v` (e.g. `"0.72.4"`); builds the download URL and version-stamps the binary filename |
+| When no `_version` | `velociraptor_binary_url` | `""` | Explicit download URL; takes priority over the constructed one (air-gap / internal mirror) |
+| Optional | `velociraptor_download_base` | `https://github.com/Velocidex/velociraptor/releases/download` | Base URL for constructed downloads |
+| Optional | `velociraptor_binary_checksum` | `""` | Checksum for `get_url`, e.g. `sha256:...`; skipped when empty |
+| Optional | `velociraptor_install_dir` | `/opt/velociraptor` | Versioned binary + stable `velociraptor` symlink |
+| Optional | `velociraptor_config_dir` | `/etc/velociraptor` | Directory for `client.config.yaml` (mode `0700`; config `0600`) |
+| Optional | `velociraptor_service_name` | `velociraptor_client` | systemd unit name (also the service account username) |
+| Optional | `velociraptor_client_config` | `""` | Inline YAML for `client.config.yaml` (vault it); takes priority over `_src`. Configure phase is skipped when both are empty |
+| Optional | `velociraptor_client_config_src` | `""` | Absolute path to the config file on the Ansible controller |
 
-| `ansible_architecture` | Velociraptor arch |
-|---|---|
-| `x86_64` | `amd64` |
-| `aarch64` | `arm64` |
-
-Override `velociraptor_arch_map` in a play or inventory to add other architectures.
-
----
-
-## Minimal configuration
-
-At a minimum you must provide a binary source and a client config.  Both should
-live in inventory or group_vars, never in the role itself.
+## Usage
 
 ```yaml
-# inventories/prod/group_vars/linux_endpoints.yml
-
-velociraptor_version: "0.72.4"
-velociraptor_binary_checksum: "sha256:<sha256sum from GitHub release page>"
-
-# Client config vaulted — generate with: velociraptor config repack --quiet ...
-velociraptor_client_config: !vault |
-  $ANSIBLE_VAULT;1.1;AES256
-  ...
-```
-
-```yaml
-# playbooks/security/velociraptor_client.yml
----
 - name: Deploy Velociraptor endpoint client
   hosts: linux_endpoints
   become: true
@@ -82,37 +45,31 @@ velociraptor_client_config: !vault |
     - role: velociraptor
 ```
 
-### Air-gap / internal mirror example
-
 ```yaml
-velociraptor_binary_url: "https://artifacts.example.com/velociraptor/velociraptor-0.72.4-linux-amd64"
-velociraptor_version: "0.72.4"      # still required to version-stamp the dest filename
-velociraptor_binary_checksum: "sha256:<expected>"
-velociraptor_client_config_src: "files/velociraptor/client.config.yaml"
+# inventory group_vars
+velociraptor_version: "0.72.4"
+velociraptor_binary_checksum: "sha256:<sha256sum from GitHub release page>"
+
+# Vaulted — generate with: velociraptor config repack --quiet ...
+velociraptor_client_config: !vault |
+  $ANSIBLE_VAULT;1.1;AES256
+  ...
 ```
 
----
+Run it:
 
-## Tags
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags install,configure,service
+```
 
-| Tag | Phase |
-|---|---|
-| `install` | Download binary, create symlink |
-| `configure` | Deploy `client.config.yaml` |
-| `service` | Install systemd unit, enable + start |
+## Behaviour
 
-Run a subset with `--tags install,configure` etc.
-
----
-
-## Notes
-
-- **Binary source is required.**  The role will `assert` and fail if neither
-  `velociraptor_binary_url` nor `velociraptor_version` is set.
-- **Client config is optional at deploy time** (warn-only when missing), but the
-  service will not start successfully without one.
+- Fails fast via an assert if neither `velociraptor_binary_url` nor
+  `velociraptor_version` is set.
+- A missing `velociraptor_client_config`/`_src` is warn-only at deploy time —
+  the service will not start successfully without one.
 - The versioned binary filename (`velociraptor-<version>`) means bumping
-  `velociraptor_version` automatically retriggers the download — no cache-busting
-  needed.
-- `no_log: true` is set on all config-deployment tasks to prevent the config
-  content appearing in Ansible output or logs.
+  `velociraptor_version` retriggers the download.
+- All config-deployment tasks set `no_log: true`.
+- Only `x86_64` → `amd64` and `aarch64` → `arm64` are mapped by default;
+  override `velociraptor_arch_map` in a play or inventory to add others.

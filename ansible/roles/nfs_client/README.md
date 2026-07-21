@@ -1,41 +1,81 @@
 # nfs_client
 
-Mounts the `nfs_server` tree on demand at `/net/users/<user>` and
-`/net/share/<share>` via autofs with `soft,nofail` so a dead server fails fast and
-never hangs login. Home directories stay local — this is a separate network drive.
-
-A `/etc/profile.d` snippet creates `~/Network -> /net/users/$USER` on first login
-for discoverability.
-
-It also sets the NFSv4 idmapd `Domain` (`nfs_client_realm_domain`, default the
-realm) — this **must match the server** or files show as `nobody:nobody`.
-
-> **One home model per host.** This role keeps `/home` **local** and adds a
-> separate `/net` drive. Do **not** also apply `nfs_home_client` (which mounts
-> NFS *over* `/home`, the roaming model) to the same host — pick one per fleet.
-
 ## TL;DR
 
-**Most common: converge the autofs mounts.** Set `nfs_client_server` (match `nfs_client_kerberos` to the server), then run — mounts appear on demand under `/net`; re-running is idempotent.
+Mounts the `nfs_server` export tree on demand at `/net/users/<user>` and
+`/net/share/<share>` via autofs, using `soft,nofail` so a dead server fails
+fast instead of hanging a login. Home directories stay local — this is a
+separate network drive, not a home-directory mount.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml [--tags nfs_client] [--limit <host>]
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/nfs_client.yml
 ```
 
-## Minimal config
+## Requirements
+
+Install collections before running (repo `requirements.yml`, or ad-hoc):
+
+    ansible-galaxy collection install -r requirements.yml
+
+| Collection | When | Used for |
+|---|---|---|
+| `community.general` | always | NFSv4 idmapd `Domain` via `ini_file` |
+
+## Key variables
+
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
+
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
+
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| **Required** | `nfs_client_server` | derived from the `nfs_servers` inventory group | NFS server FQDN |
+| Optional | `nfs_client_base` | `/net` | Client mount root |
+| Optional | `nfs_client_server_export_base` | `/srv/nfs` | Must match the server's export base |
+| Optional | `nfs_client_kerberos` | `true` | `sec=krb5p` vs `sec=sys` — must match the server |
+| Optional | `nfs_client_realm_domain` | global `domain` | NFSv4 idmapd Domain — must match the server or files show `nobody:nobody` |
+| Optional | `nfs_client_mount_options` | `soft,nofail,timeo=30,retrans=2` | Fail-fast autofs mount options |
+| Optional | `nfs_client_network_symlink` | `Network` | Login-time `~/<name>` symlink; `""` disables |
+| Optional | `nfs_client_manage_service` | `true` | Enable/start autofs; disable in CI |
+
+## Usage
 
 ```yaml
-nfs_client_server: nfs-01.example.com
-nfs_client_kerberos: true        # match the server
+- name: Mount the NFS network drive
+  hosts: nfs_clients
+  become: true
+  roles:
+    - role: nfs_client
+      vars:
+        nfs_client_server: nfs-01.example.com
+        nfs_client_kerberos: true   # must match the server
 ```
 
-## Variables
+Run it:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `nfs_client_server` | — (required) | NFS server FQDN |
-| `nfs_client_base` | `/net` | client mount root |
-| `nfs_client_server_export_base` | `/srv/nfs` | must match server `nfs_server_base` |
-| `nfs_client_kerberos` | `true` | `sec=krb5p` vs `sec=sys` |
-| `nfs_client_mount_options` | `soft,nofail,timeo=30,retrans=2` | fail-fast opts |
-| `nfs_client_network_symlink` | `Network` | login-time `~/<name>` symlink (`""` disables) |
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/nfs_client.yml
+```
+
+## Preconditions
+
+- `nfs_client_server` must resolve via DNS and be running the `nfs_server`
+  role with export paths under `nfs_client_server_export_base`.
+- `nfs_client_kerberos` and `nfs_client_realm_domain` must match the
+  server's settings, or NFSv4 id-mapping falls back to `nobody:nobody`.
+
+## Behaviour
+
+- Deploys a `/etc/profile.d` snippet that creates `~/Network ->
+  /net/users/$USER` on first login (disable via
+  `nfs_client_network_symlink: ""`).
+- Mounts are autofs indirect (lazy) — a bad `nfs_client_server` value
+  doesn't fail the playbook run, only the first access under `/net/...`.
+
+## Out of scope
+
+- Home directories — they stay local; this is a separate `/net` drive. Do
+  not also mount NFS over `/home` on the same host — pick one home model
+  per fleet.

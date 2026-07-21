@@ -1,142 +1,126 @@
 # freeipa_server_docker
 
-Run a **FreeIPA server as a container** (official `quay.io/freeipa/freeipa-server` image) on
-a Docker/Podman host, with a persistent `/data` volume. The `<noun>_<purpose>` sibling of
-[`freeipa_server`](../freeipa_server/) — mirroring `hashicorp_vault` + `hashicorp_vault_docker`.
-
-This role is **thin**: it owns only the container lifecycle. All declarative configuration
-(IAM, DNS, hardening, backup) is delegated to the existing `freeipa_server` role, run
-**inside** the container via the `community.docker.docker` connection plugin — the container
-is a full IPA server, so every native `freeipa.ansible_freeipa` module works there in server
-context. **Validated E2E** against a live realm (AlmaLinux 9, `ipa-server-4.13.1`).
-
 ## TL;DR
 
-**Most common: redeploy the container after an image bump.** Set `freeipa_server_deployment: container`, bump the image tag, and re-run — the container self-upgrades `ipa-server-upgrade` against the `/data` volume.
+Runs a FreeIPA server as a container (`quay.io/freeipa/freeipa-server`) on a
+Docker/Podman host, with a persistent `/data` volume. Owns only the container
+lifecycle — declarative config (IAM, DNS, hardening, backup) runs **inside**
+the container via the `community.docker.docker` connection plugin, in a
+follow-up play.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_container.yml [--tags deploy] [--limit <host>]
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_container.yml -e freeipa_server_deployment=container
 ```
 
-## Why containerize
+Redeploy after an image bump: bump `freeipa_server_docker_image`'s tag and re-run — the
+container self-upgrades `ipa-server-upgrade` against `/data`.
 
-Update FreeIPA independently of the host OS: swap the image tag → the container runs
-`ipa-server-upgrade` against the `/data` volume automatically (in-major only,
-`almalinux-9` → newer `almalinux-9`). Portable, redeployable, `docker restart`-recoverable.
+## Requirements
 
-## Deployment toggle
+Install collections before running (repo `requirements.yml`, or ad-hoc):
 
-`playbooks/freeipa_container.yml` selects the substrate from ONE variable:
+    ansible-galaxy collection install -r requirements.yml
+
+| Collection | When | Used for |
+|---|---|---|
+| `community.docker` | When `freeipa_server_docker_runtime: docker` (default) | container lifecycle (`docker_container`) + the `community.docker.docker` connection plugin used by `register` |
+| `containers.podman` | When `freeipa_server_docker_runtime: podman` | container lifecycle (`podman_container`) |
+| `ansible.posix` | When `freeipa_server_docker_manage_firewall` | `firewalld` port management |
+| `community.hashi_vault` | When Vault credential fallback | admin/DM password lookup |
+
+## Key variables
+
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
+
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
+
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| **Required** | `freeipa_server_docker_domain` | `{{ freeipa_server_domain \| default(domain \| default('')) }}` | FreeIPA primary DNS domain |
+| Optional | `freeipa_server_docker_image` | `quay.io/freeipa/freeipa-server:almalinux-9` | Container image; pin the OS tag to keep upgrades in-major |
+| Optional | `freeipa_server_docker_data_dir` | `/var/lib/ipa-data` | Host path bind-mounted at `/data` — the entire persistent dataset |
+| Optional | `freeipa_server_docker_runtime` | `docker` | `docker` \| `podman` |
+| Optional | `freeipa_server_docker_install_mode` | `existing` | `existing` (boot populated `/data`) \| `fresh` \| `replica` |
+| When replica | `freeipa_server_docker_replica_server` | `""` | FQDN of the live master to enrol against |
+| Optional | `freeipa_server_docker_forwarders` | inherits `freeipa_server_forwarders` | Upstream DNS forwarders |
+| When admin ops | `freeipa_server_docker_admin_password` | inherits `freeipa_server_admin_password` | Admin password — declared var wins |
+| When Vault fallback | `freeipa_server_docker_vault_secret` | inherits `freeipa_server_vault_secret` | HashiCorp Vault KV path for admin/DM passwords |
+| Optional | `freeipa_server_docker_skip_mem_check` | `true` | Pass `--skip-mem-check` (cgroup-v2 RAM probe is unreliable in containers) |
+| Optional | `freeipa_server_docker_state` | inherits `freeipa_server_state` (`present`) | `absent` decommissions the node |
+| Optional | `freeipa_server_docker_decommission_transfer_renewal` | `false` | On decommission, move CA renewal master + CRL to survivor instead of refusing |
+| Optional | `freeipa_server_docker_decommission_wipe_data` | `false` | Also remove `/data` on decommission |
+| Optional | `freeipa_server_docker_register_container` | `true` | `add_host` the container so a following play can run `freeipa_server` inside it |
+| Optional | `freeipa_server_docker_manage_firewall` | `true` | Open the IPA port set on the host firewall |
+
+## Usage
 
 ```yaml
-freeipa_server_deployment: package    # (default) FreeIPA as host RPMs — the freeipa_server role
-freeipa_server_deployment: container  # FreeIPA as a container — this role
+- name: FreeIPA server — container
+  hosts: freeipa
+  become: true
+  roles:
+    - role: freeipa_server_docker
+      when: freeipa_server_deployment | default('package') == 'container'
 ```
 
-## Install modes (`freeipa_server_docker_install_mode`)
-
-| Mode | Does |
-|---|---|
-| `existing` (default) | Boot a populated `/data` — never (re)installs. Safe/idempotent. |
-| `fresh` | `ipa-server-install` a NEW realm in the container. |
-| `replica` | `ipa-replica-install --setup-ca --setup-dns` against a live master — the **lift-and-shift** path (exact dataset synced by replication, no `/data`-copy risk). |
-
-## Decommission a node (`freeipa_server_state: absent`)
-
-Declarative removal, mirroring `freeipa_server_is_primary`. Set `freeipa_server_state: absent` on a
-host (host_vars) and re-run the play across the group — the node is `server-del`'d from a surviving
-master (mode-aware) and its container removed, then the play ends for it. Works for package and
-container hosts. **Refuses** to remove the last server. If the node is the **CA renewal master** it
-also refuses, unless you set `freeipa_server_decommission_transfer_renewal: true` — then it moves
-the renewal master (+ CRL generation) to the surviving master first, self-contained (no external
-role). `*_decommission_wipe_data: true` also clears `/data`. Reducing 3 replicas → 2 = flip the
-third host's flag, re-run.
-
-**Requirements / notes:** the surviving-master selection filters peers to the **same realm** by
-comparing `freeipa_server_domain` — so that var **must be set in inventory group_vars** (a role-
-default `domain` fallback isn't in `hostvars` for out-of-play peers → they're excluded → a
-fail-**closed** "no surviving master" refusal, which is safe but blocks the run). `server-del
---force` is idempotent (returns "Deleted IPA server" even when the entry is already absent —
-verified live on IPA 4.13), so a re-run is safe. The decommission flag has been live-exercised
-end-to-end (throwaway replica: join → migrate → `state: absent` → clean removal, `failed=0`).
-
-## Rolling package → container migration (playbook)
-
-`playbooks/freeipa_migrate_to_container.yml` migrates one node in place, keeping its
-original FQDN, by composing the two self-contained roles (Stage 1 `freeipa_server` decommission →
-Stage 2 `freeipa_server_docker` replica). Run once per node; keep ≥1 master up:
+Run it:
 
 ```bash
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_migrate_to_container.yml \
-  -e freeipa_migrate_node=idm01 -e freeipa_migrate_source=idm02.example.com
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_container.yml \
+  -e freeipa_deploy_target=<host> -e freeipa_server_deployment=container
 ```
 
-## Phases (tags)
+## Preconditions
 
-| Tag | Runs on | Does |
-|---|---|---|
-| `prereqs` | VM host | Install Docker (reuses the `docker` role), open the IPA firewall ports, create `/data` |
-| `deploy` | VM host | Run the FreeIPA container (idempotent `community.docker.docker_container`) + wait healthy |
-| `register` | VM host | `add_host` the container (docker connection) so a following play runs `freeipa_server` inside it |
+- The VM host must already run its own time sync (chrony) — the container
+  installs with `--no-ntp` and relies on host time.
+- FreeIPA needs roughly 1.2 GB+ RAM available; size the VM at 4 GB+ for IPA +
+  Dogtag CA. The installer's own memory probe is skipped (`--skip-mem-check`),
+  so an undersized host will still attempt the install rather than fail fast.
+- `replica` install mode needs a live, already-installed master
+  (`freeipa_server_docker_replica_server`) reachable from the host.
+- Validated on AlmaLinux 9 / cgroups v2 / Docker.
 
-## Runtime facts (systemd-in-container, validated on AlmaLinux 9 / cgroups v2 / Docker 29)
+## Behaviour
 
-- **`--privileged` is NOT supported** by the image. systemd needs `--cgroupns=host` +
-  `-v /sys/fs/cgroup:/sys/fs/cgroup:rw`, the image's own `/run`,`/tmp` tmpfs, `-h <fqdn>`.
-- The installer's **cgroup-v2 RAM probe fails** under `--cgroupns=host` (root cgroup has no
-  `memory.max`); the role passes **`--skip-mem-check`** (`freeipa_server_docker_skip_mem_check`).
-- **Host owns time** — the container installs `--no-ntp`; run chrony on the VM host.
-- FreeIPA needs ~1.2 GB+ RAM available; give the VM ≥ 4 GB for IPA + Dogtag CA.
+- **Runtime install** — `prereqs` installs Docker or Podman itself (reusing
+  the repo's `docker`/`podman` roles per `freeipa_server_docker_runtime`),
+  creates `/data`, and opens the IPA port set on `firewalld` — best-effort,
+  never blocks the run if firewalld is absent/disabled on a lab host.
+- **Install modes**:
 
-## Managing the containerized server with native modules
+  | Mode | Does |
+  |---|---|
+  | `existing` (default) | Boots a populated `/data`, never (re)installs — safe/idempotent |
+  | `fresh` | `ipa-server-install` a new realm in the container |
+  | `replica` | `ipa-replica-install --setup-ca --setup-dns` against a live master — exact dataset synced by replication |
 
-The `community.docker.docker` connection needs the container's docker daemon. For a **remote**
-container, export `DOCKER_HOST` on the controller (like `ANSIBLE_VAULT_PASSWORD`):
-
-```bash
-eval "$(ssh-agent -s)"; ssh-add ~/.ssh/<automation-key>.pem
-export DOCKER_HOST=ssh://ansible@<vm-host-ip>      # ansible user must be in the docker group
-export ANSIBLE_VAULT_PASSWORD=$(cat ~/.vault-pass.txt)
-ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_container.yml \
-    -e freeipa_deploy_target=idm02 -e freeipa_server_deployment=container
-```
-
-The registered container host uses `ansible_user: root`, `ansible_remote_tmp: /tmp/...`
-(both required — the image has no `ansible` user and `~` doesn't expand under `docker exec`).
-
-## Required inventory variables
-
-Inherited from the `freeipa_server_*` estate group_vars where present (the toggle is seamless):
-
-| Variable | Example | Purpose |
-|---|---|---|
-| `freeipa_server_docker_domain` | `example.com` | IPA domain (→ realm) |
-| `freeipa_server_docker_admin_password` | *(Ansible Vault)* | IPA admin password — **primary** credential source (see below) |
-| `freeipa_server_docker_dm_password` | *(Ansible Vault)* | Directory Manager password (fresh install only) |
-| `freeipa_server_docker_vault_secret` | `kv/data/platform/freeipa/runtime` | **Optional** HashiCorp Vault fallback path for the passwords above |
-| `freeipa_server_docker_forwarders` | `[10.0.0.53]` | Upstream DNS forwarders |
-| `freeipa_server_docker_replica_server` | `idm01.example.com` | Master to enrol against (`replica` mode) |
-
-See `defaults/main.yml` for the full surface.
-
-## Credentials — Ansible Vault first, HashiCorp Vault fallback
-
-The role (and the `freeipa_server` config engine it drives) resolves each password
-**Ansible Vault first, HashiCorp Vault as an optional fallback**, so it runs unchanged in an
-environment that has no HashiCorp Vault:
-
-1. **Primary (Ansible Vault):** set `freeipa_server_docker_admin_password` /
-   `freeipa_server_docker_dm_password` — normally to a var held in an Ansible-Vault-encrypted
-   `group_vars` file (they also inherit `freeipa_server_admin_password` / `_dm_password`). When
-   set, the HashiCorp Vault lookup is never evaluated and `community.hashi_vault` is not needed.
-2. **Fallback (HashiCorp Vault):** leave the password vars empty and set
-   `freeipa_server_docker_vault_secret` to the KV path holding them (fields
-   `freeipa_server_docker_admin_password_field` / `_dm_password_field`).
-3. **Neither set →** the role fails fast with a clear message (no cryptic Vault connection error).
-
-An Ansible-Vault-only deployment therefore just populates the two password vars and never
-references HashiCorp Vault.
-
-## See also
-
-- [`freeipa_server`](../freeipa_server/) — the package-install role + the reused config engine
+- **Container constraints** — `--privileged` is not supported by the image;
+  systemd needs `--cgroupns=host` plus `-v /sys/fs/cgroup:/sys/fs/cgroup:rw`,
+  the image's own `/run`/`/tmp` tmpfs, and `-h <fqdn>`.
+- **Native-module management** — the `community.docker.docker` connection
+  needs the container's docker daemon reachable. For a remote container,
+  export `DOCKER_HOST=ssh://<user>@<vm-host-ip>` on the controller before
+  running a follow-up play against the registered container host. That host
+  uses `ansible_user: root` and a `/tmp`-rooted `ansible_remote_tmp` — both
+  required, since the image has no `ansible` user and `~` doesn't expand
+  under `docker exec`.
+- **Credentials** — resolve declared-var-first with Vault as an optional
+  fallback: set `freeipa_server_docker_admin_password`/`_dm_password`
+  directly and the Vault lookup is never evaluated; leave them empty and set
+  `freeipa_server_docker_vault_secret` (fields `_admin_password_field`/
+  `_dm_password_field`) to use Vault instead. Neither set → the role fails
+  fast with a clear message.
+- **Decommission** (`freeipa_server_docker_state: absent`) — set the flag on
+  a host (host_vars) and re-run the play across the group: the node is
+  `server-del`'d from a surviving master (mode-aware) and its container
+  removed, then the play ends for it. Refuses to remove the last server, and
+  refuses on the CA renewal master unless
+  `freeipa_server_docker_decommission_transfer_renewal: true` is set, which
+  moves the renewal master (+ CRL generation) to the surviving master first.
+  Surviving-master selection filters peers by `freeipa_server_domain`, so
+  that var must be set in inventory group_vars — a missing value excludes
+  out-of-play peers and fails closed with "no surviving master" (safe, but
+  blocks the run).

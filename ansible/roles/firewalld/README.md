@@ -1,151 +1,69 @@
 # firewalld
 
-Manages **firewalld** on EL- and Debian-family hosts via:
-
-1. **Custom service XML** templates dropped under `/etc/firewalld/services/`
-2. **Custom zone XML** templates dropped under `/etc/firewalld/zones/`
-3. **Runtime bindings** of source CIDRs and interfaces to zones (L3 segregation
-   preferred over L2 per-NIC patterns)
-
-Env-agnostic: every value lives in `inventories/<env>/group_vars/` or `host_vars/`.
-The role's `defaults/main.yml` ships empty lists for all configurable surfaces.
-
 ## TL;DR
 
-**Most common: apply updated firewall rules.** Edit `firewalld_services` / `firewalld_zones` / `firewalld_source_zone_bindings` in group_vars, then re-run — a no-tag run re-renders the XML and applies the bindings.
+Configures **firewalld** on EL- and Debian-family hosts: renders custom
+service/zone XML under `/etc/firewalld/{services,zones}/`, then applies
+runtime bindings of source CIDRs (preferred) or interfaces to zones.
+Env-agnostic — every configurable value defaults empty and is set from
+`inventories/<env>/group_vars/` or `host_vars/`.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/firewalld.yml [--tags services,bindings]
+ansible-playbook -i inventories/<env>/hosts.yml <playbook>.yml --tags firewalld
 ```
 
-## Why XML templates instead of per-port firewalld module calls?
+## Requirements
 
-Defining a service once as `/etc/firewalld/services/harbor.xml` and then
-referencing `harbor` in a zone is firewalld's native, declarative model. It:
+Install collections before running (repo `requirements.yml`, or ad-hoc):
 
-- Survives `firewall-cmd --reload` and reboots without re-running Ansible
-- Makes `firewall-cmd --list-all` output meaningful (services have names, not
-  just port numbers)
-- Decouples *what a service is* (port set, helpers, destination) from *which
-  zone it lives in* — reuse across multiple zones
-- Avoids the per-port loop pattern that's hard to audit and slow on big lists
+    ansible-galaxy collection install -r requirements.yml
 
-## Quickstart
+| Collection | When | Used for |
+|---|---|---|
+| `ansible.posix` | always | `firewalld` module (services, zones, bindings) |
 
-```yaml
-# inventories/mgt/group_vars/docker_hosts.yml
-firewalld_default_zone: trusted-mgmt
+## Key variables
 
-firewalld_services:
-  - name: harbor
-    short: Harbor Registry
-    description: Container registry web UI + registry API
-    ports:
-      - { port: 80,  protocol: tcp }
-      - { port: 443, protocol: tcp }
-      - { port: 4443, protocol: tcp }
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-  - name: docker-swarm-control
-    short: Docker Swarm control plane
-    ports:
-      - { port: 2377, protocol: tcp }      # Raft
-      - { port: 7946, protocol: tcp }      # gossip
-      - { port: 7946, protocol: udp }
-      - { port: 4789, protocol: udp }      # VXLAN overlay
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
 
-firewalld_zones:
-  - name: trusted-mgmt
-    short: Management
-    description: Internal management network — admin services
-    target: default
-    services: [ssh, harbor, docker-swarm-control]
+Nothing is required — every list defaults empty and every phase is skipped
+until the corresponding variable is populated.
 
-  - name: dmz-ingress
-    short: DMZ Ingress
-    description: Public-facing services
-    target: default
-    services: [http, https]
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| Optional | `firewalld_enabled` | `true` | Master toggle; `false` skips the role |
+| Optional | `firewalld_default_zone` | `""` | Default zone for unclassified traffic; empty = unchanged |
+| Optional | `firewalld_services` | `[]` | Custom service XML definitions (name/ports/protocols/…) |
+| Optional | `firewalld_zones` | `[]` | Custom zone XML definitions (name/target/services/…) |
+| Optional | `firewalld_source_zone_bindings` | `[]` | `[{zone, source}]` — preferred L3 CIDR-to-zone pattern |
+| Optional | `firewalld_interface_zone_bindings` | `[]` | `[{zone, interface}]` — L2 pattern, use sparingly (shares the vSwitch uplink, no real kernel-level boundary) |
+| Optional | `firewalld_services_remove` | `[]` | Service short names to delete |
+| Optional | `firewalld_zones_remove` | `[]` | Zone short names to delete |
+| Optional | `firewalld_reload` | `true` | Reload firewalld after XML changes |
+| Optional | `firewalld_packages` | `[firewalld]` | Package(s) to install |
+| Optional | `firewall_rules` | `[]` | Legacy `"22/tcp/ssh"` or `{port,protocol,service}` list; opens ports directly in `firewalld_default_zone` |
 
-firewalld_source_zone_bindings:
-  - { zone: trusted-mgmt, source: 10.0.10.0/24 }
-  - { zone: dmz-ingress,  source: 0.0.0.0/0 }
-```
-
-Then in a playbook:
+## Usage
 
 ```yaml
 - hosts: docker_hosts
-  become: true
   roles:
-    - firewalld
+    - role: firewalld
+      tags: [firewalld]
 ```
 
-## Tags
-
-| Tag | Phase |
-|---|---|
-| `firewalld` | All firewalld tasks |
-| `install` | Package install + service start/enable |
-| `services` | Render service XML files |
-| `zones` | Render zone XML files |
-| `cleanup` | Remove service/zone XML files |
-| `default_zone` | Set the default zone |
-| `bindings` | Apply source-CIDR and interface bindings |
-| `legacy_rules` | Apply legacy `firewall_rules` list (back-compat) |
-| `reload` | The flush_handlers checkpoint |
-
-Run only the binding phase:
+Run it:
 
 ```bash
-ansible-playbook -i inventories/mgt/hosts.yml playbooks/30_plat_baseline.yml \
-  --tags bindings
+ansible-playbook -i inventories/<env>/hosts.yml <playbook>.yml --tags firewalld
 ```
 
-## Variables
+## Tag safety
 
-Full schema in `defaults/main.yml`. Key options:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `firewalld_enabled` | `true` | Master toggle |
-| `firewalld_default_zone` | `""` | Default zone (empty = unchanged) |
-| `firewalld_services` | `[]` | Custom service XML definitions |
-| `firewalld_zones` | `[]` | Custom zone XML definitions |
-| `firewalld_source_zone_bindings` | `[]` | `[{zone, source}]` — preferred L3 pattern |
-| `firewalld_interface_zone_bindings` | `[]` | `[{zone, interface}]` — L2, use sparingly |
-| `firewalld_services_remove` | `[]` | Service short names to delete |
-| `firewalld_zones_remove` | `[]` | Zone short names to delete |
-| `firewalld_reload` | `true` | Reload after XML changes |
-| `firewall_rules` | `[]` | **Legacy** — accepts `"22/tcp/ssh"` or `{port,protocol,service}` |
-
-## Back-compat with `firewall_rules` (role only — inventory migrated)
-
-Inventory and service roles use `firewalld_services` / `firewalld_zones` /
-`firewalld_source_zone_bindings`. The legacy `firewall_rules` list remains
-supported **inside this role only** for transitional callers; do not reintroduce
-it in group_vars or host_vars.
-
-Legacy formats still accepted by the role (when `firewall_rules` is non-empty):
-
-```yaml
-# String form
-firewall_rules:
-  - "22/tcp/ssh"
-  - "5000-5100/tcp/elasticsearch"
-
-# Dict form
-firewall_rules:
-  - { port: 22, protocol: tcp, service: ssh }
-```
-
-Entries open in `firewalld_default_zone` (or `public` if unset).
-
-## Notes on the L2 vs L3 segregation debate
-
-`firewalld_interface_zone_bindings` exists so you *can* bind a vNIC to a zone,
-but **prefer `firewalld_source_zone_bindings`** in nearly all cases. On a
-virtualised host, the extra vNICs in an L2-split design don't deliver real
-bandwidth isolation (they share the vSwitch uplink), don't create a real
-security boundary (the VM kernel routes between them), and triple your IP and
-DNS surface. The defensible cases for a dedicated NIC are storage with custom
-MTU/multipathing, or PCI passthrough for performance.
+`reload` is a bare `meta: flush_handlers` checkpoint — it only reloads
+firewalld if an earlier task in the *same* invocation (`services`, `zones`,
+`cleanup`) notified the handler. Run alone (`--tags reload`), it is a no-op;
+it does not force a live reload of already-applied config.

@@ -1,129 +1,57 @@
 # storage
 
-Universal, hardware/name-agnostic disk role. Provisions, grows, formats, and
-mounts **LVM or plain** storage on **any** Linux host — VM, bare metal, or
-cloud image — regardless of disk size or device naming (`sda` / `nvme0n1` /
-`vda` / `mmcblk0`).
-
-It consolidates four older patterns (grow, provision, mount-hygiene, repair)
-into one role driven by a single declarative list.
-
 ## TL;DR
 
-**Most common: grow a disk after expanding its backing volume.** `--tags grow` rescans, then runs growpart → pvresize → lvextend → fs grow (auto, non-destructive); provisioning fresh disks is opt-in.
+Universal, hardware/name-agnostic disk role. Provisions, grows, formats, and
+mounts LVM or plain storage on any Linux host — VM, bare metal, or cloud
+image — regardless of disk size or device naming (`sda` / `nvme0n1` / `vda`
+/ `mmcblk0`). One role handles growing, provisioning, mount hygiene, and
+repair via a single declarative list.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags grow       # resize existing
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags provision  # opt-in, fresh disks
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags grow       # resize existing
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags provision  # opt-in, fresh disks
 ```
 
-## How it works
+## Requirements
 
-One list, `storage_volumes`, where each entry describes a volume end-to-end.
-The same entry drives every phase:
+Install collections before running (repo `requirements.yml`, or ad-hoc):
 
-```
-packages -> discover -> grow -> provision -> mount -> selinux
-```
+    ansible-galaxy collection install -r requirements.yml
 
-A no-tags run is a full idempotent reconcile. Refinement tags narrow it for
-fast iteration:
+| Collection | When | Used for |
+|---|---|---|
+| `ansible.posix` | always | mounting volumes (`ansible.posix.mount`) |
+| `community.general` | When provisioning (`--tags provision`) | partitioning, LVM, filesystem creation |
+| `community.general` | When SELinux management (EL) | `sefcontext` |
 
-| Tag | Phase | Default |
-|-----|-------|---------|
-| `--tags grow` | rescan -> growpart/resizepart -> pvresize -> lvextend -> fs grow | auto |
-| `--tags provision` | FRESH guard -> parted -> pv/vg/lv (or partition) -> mkfs | opt-in |
-| `--tags mount` | mkdir -> UUID fstab (nofail) -> mount -> assert | auto |
-| `--tags selinux` | semanage fcontext + restorecon (EL) | auto |
+## Key variables
 
-`discover` (read-only device discovery + selector resolution) always runs
-because the other phases depend on its facts.
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-## Safety model
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
 
-- **Grow is automatic and non-destructive** — it only enlarges existing
-  stacks after the underlying disk grew.
-- **Provision is opt-in** (`storage_provision: true` or `--tags provision`)
-  **and FRESH-guarded** (`storage_require_fresh`, default true): it refuses
-  any disk with an existing filesystem or partition signature.
-- The disk backing `/` is discovered at runtime and excluded from `auto`
-  selection and from provisioning.
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| Optional | `storage_volumes` | `[]` | The master list — one entry per volume, drives every phase |
+| Optional | `storage_profile` | `""` | Key into `storage_profiles`; empty uses `storage_volumes` verbatim |
+| Optional | `storage_profiles` | `{}` | Named presets resolving to a `storage_volumes` list |
+| Optional | `storage_manage_packages` | `true` | Install prerequisite packages (parted, lvm2, xfsprogs, …) first |
+| Optional | `storage_grow` | `true` | Run the automatic, non-destructive grow pass |
+| When creating disks | `storage_provision` | `false` | Allow opt-in provisioning (create/format) |
+| Optional | `storage_require_fresh` | `true` | Provisioning refuses disks with an existing filesystem/partition signature |
+| Optional | `storage_manage_fstab` | `true` | Manage UUID + `nofail` fstab entries and mounts |
+| Optional | `storage_manage_selinux` | `true` | Apply SELinux fcontext + restorecon on EL |
 
-## Ordering & prerequisites
+Each `storage_volumes` entry needs only `name`, `mount`, and either
+(`vg` + `lv`) or `disk` — the full field schema is in
+`meta/argument_specs.yml`.
 
-This role is **layer-0 / self-contained**: run it first (before a baseline
-role, before any app role), because logging filesystems (`/var/log`) and
-app data dirs (`/opt`, …) depend on disks being sized and mounted.
+## Usage
 
-It installs its own prerequisites — `packages` is the first phase
-(`storage_manage_packages: true`), pulling `parted, lvm2, xfsprogs,
-e2fsprogs, cloud-guest-utils`/`cloud-utils-growpart` per distro — so it has
-**no dependency** on anything baseline does.
-
-One caveat: those packages come from the distro's **base repos**. On
-AlmaLinux/Rocky/Debian/Ubuntu they install without registration. On **RHEL
-with RHSM**, base repos are subscription-gated, so if you run this before the
-host is registered the install fails — in that case either (a) pre-bake the
-tools into your template (`lvm2`/`xfsprogs` are already present on an LVM
-template; add `parted` + `cloud-utils-growpart`) and/or (b) set
-`storage_manage_packages: false`, or (c) register the host before this role.
-
-## Selectors — choosing among multiple disks
-
-`disk: auto` picks the first **blank** non-root disk in kernel enumeration
-order (`sda` before `sdb`, `nvme0n1` before `nvme0n2`). With two `auto`
-volumes each gets a distinct disk (first, then second). But kernel order is
-**not stable** across reboots/controllers/clouds, so when you have **two or
-more empty disks and it matters which volume lands where**, pin them with a
-stable selector instead of `auto`:
-
-| Selector | Use when |
-|----------|----------|
-| `auto` | exactly one blank disk, or volumes are interchangeable |
-| `by-size:50G` | blank disks differ in size |
-| `by-serial:<S>` / `by-wwn:<W>` | same-size disks (each has a unique ID) |
-| `/dev/sdb` | names are stable in your environment (least portable) |
-
-Find stable IDs with `lsblk -dpo NAME,SIZE,SERIAL,WWN`. A disk is only
-"blank" if it has no partitions and `blkid -p` finds no signature; the
-FRESH guard is the backstop if a selector ever points at a non-empty disk.
-
-## Volume schema
-
-| Field | Meaning |
-|-------|---------|
-| `name` | logical handle (required) |
-| `disk` | `auto` \| `/dev/sdb` \| `by-size:50G` \| `by-serial:X` \| `by-id:X` \| `by-wwn:X` |
-| `lvm` | `true` LVM stack \| `false` plain partition |
-| `partition` | LVM: partition the disk vs. whole-disk PV |
-| `partition_number` | partition to create/grow (default 1) |
-| `vg` / `lv` | LVM names |
-| `size` | `40G` \| `100%FREE` \| `50%VG` |
-| `fstype` | `xfs` \| `ext4` |
-| `mount` | mount point (`''` = manage block stack only) |
-| `opts` | fstab options (`nofail` enforced) |
-| `sefcontext` | SELinux fcontext type (EL) |
-| `provision` / `grow` | participate in each pass |
-| `owner` / `group` / `mode` | mountpoint perms |
-
-Per-volume defaults (`storage_default_*`) fill anything omitted, so a minimal
-entry is just `name`, `mount`, and either (`vg` + `lv`) or `disk`.
-
-## Selectors
-
-Device names reorder across reboots and clouds, so prefer stable selectors:
-
-- `auto` — first blank, non-root disk (consumed in list order)
-- `by-size:50G` — first blank disk of that size
-- `by-serial:` / `by-id:` / `by-wwn:` — match a stable identifier
-- `/dev/sdb` — explicit path (least stable)
-
-Partition device names are **derived**, never assumed: `nvme0n1` + part 1 =
-`nvme0n1p1`, `sda` + 1 = `sda1` (also `mmcblk`/`loop`/`nbd` take the `p`).
-
-## Examples
-
-Minimal — provision + mount a fresh data disk at `/opt`:
+Provision + mount a fresh data disk at `/opt`:
 
 ```yaml
 - hosts: workers
@@ -140,47 +68,38 @@ Minimal — provision + mount a fresh data disk at `/opt`:
             mount: /opt
 ```
 
-Modeling a typical environment (grow-only root `/var`, data `/opt`, plain `/data`):
+Run it:
 
-```yaml
-storage_volumes:
-  # grow-only — never created, only resized when /dev/sda grows
-  - name: var
-    lvm: true
-    vg: sysvg
-    lv: lv_var
-    mount: /var
-    partition_number: 3
-    disk: /dev/sda
-    provision: false
-    grow: true
-  # LVM data disk
-  - name: opt
-    disk: auto
-    vg: vg_data
-    lv: lv_opt
-    size: 100%FREE
-    fstype: xfs
-    mount: /opt
-    sefcontext: usr_t
-    provision: true
-  # plain (no LVM) cloud data partition
-  - name: data
-    lvm: false
-    disk: by-size:100G
-    fstype: ext4
-    mount: /data
-    provision: true
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags provision
 ```
 
-Named profile — environment catalog lives in `playbooks/group_vars/all/storage.yml`.
-Inventories only select a key (do not redefine `storage_profiles` in host_vars;
-list/dict vars replace, they do not merge):
+## Preconditions
 
-```yaml
-storage_profile: vault          # or freeipa, swarm_data, opt, opt_50g, …
-storage_provision: true         # first-time create
-```
+- On RHEL with RHSM, base repos are subscription-gated — register the host
+  before this role, pre-bake `parted`/`lvm2`/`xfsprogs`/
+  `cloud-utils-growpart` into the image, or set
+  `storage_manage_packages: false`. Otherwise package install fails.
+- A disk is only "blank" if it has no partitions and `blkid -p` finds no
+  signature — stale metadata on an otherwise-empty disk defeats
+  auto-selection.
 
-Common keys: `sys_var`, `opt`, `opt_50g`, `swarm_data`, `vault`, `freeipa`,
-`throwaway`, `docker`. Add new presets to the environment catalog, not per inventory.
+## Behaviour
+
+- Grow is automatic and non-destructive — it only enlarges existing stacks
+  after the underlying disk grew.
+- Provision is opt-in (`storage_provision: true` or `--tags provision`)
+  and FRESH-guarded (`storage_require_fresh`, default `true`): it refuses
+  any disk with an existing filesystem or partition signature.
+- The disk backing `/` is discovered at runtime and excluded from `auto`
+  selection and from provisioning.
+- `disk: auto` resolves in kernel enumeration order (`sda` before `sdb`,
+  `nvme0n1` before `nvme0n2`), which is not stable across
+  reboots/controllers/clouds — with two or more blank disks where
+  placement matters, pin a stable selector (`by-size:`, `by-serial:`,
+  `by-wwn:`, or an explicit path) instead of `auto`.
+- `discover` always runs (tagged `always`) regardless of which other
+  `--tags` you pass, because every other phase depends on its facts.
+- Installs its own prerequisite packages (`storage_manage_packages`,
+  default `true`), so it has no dependency on a baseline role having run
+  first — safe to run before it.

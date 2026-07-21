@@ -1,177 +1,112 @@
 # freeipa_client
 
-Portable, multi-OS FreeIPA **client** role. Enrols a host into a FreeIPA realm by
-wrapping `freeipa.ansible_freeipa.ipaclient`, and configures the full client-side
-integration — CA trust, home directories, SSSD sudo + HBAC enforcement, DNS
-self-registration — with **idempotent re-runs** and **effective stale-machine
-rejoin** (including realm-cutover re-enrolment).
-
-Pairs with [`freeipa_server`](../freeipa_server/).
-
 ## TL;DR
 
-**Most common: enrol a host into an existing IPA realm.** Add the host to the `freeipa_clients` group, then run — the join is idempotent and a stale/realm-mismatched enrolment is auto-detected and cleanly re-joined.
+Enrols a host into a FreeIPA realm (wraps `freeipa.ansible_freeipa.ipaclient`) and configures
+client-side integration — CA trust, home directories, SSSD sudo/HBAC, DNS self-registration —
+with idempotent re-runs and automatic stale-enrolment rejoin.
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml
 ```
 
-Force a clean uninstall + re-join (the guarded rejoin variant):
+Force a clean uninstall + re-join:
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml -e freeipa_client_force_rejoin=true
 ```
 
-## Supported platforms
+## Requirements
 
-EL-family (RHEL/Rocky/Alma/CentOS/Fedora) and Debian/Ubuntu — packaging of the join
-itself is handled by the upstream `ipaclient` role's per-distro vars. **Preflight's
-own tooling install is RedHat-only** (see "Preflight package install" below) — on
-Debian/Ubuntu, preflight's `chronyc`/`kinit`/`kdestroy`/`ipa-client-install` health
-checks depend on whatever is already present; there is no bundled Debian equivalent
-of the preflight package list. This is a known limitation, not a bug.
+Install collections before running (repo `requirements.yml`, or ad-hoc):
 
-## Phases (tags)
+    ansible-galaxy collection install -r requirements.yml
 
-| Tag | Runs |
-|---|---|
-| `always` | **FreeIPA-server guard** (runs on every invocation, before all phases) |
-| `preflight` | preflight package install (RedHat), hostname/time guards + **stale-enrolment detection & cleanup** |
-| `enroll` / `install` | upstream `ipaclient` join (idempotent) + `ipa-certupdate` |
-| `dns` | server-side seed of this host's A/PTR record, **on by default** (admin-join only) |
-| `configure` | post-join verification + server-side pointers |
-
-## FreeIPA-server guard (always)
-
-Before anything else — on **every** invocation regardless of `--tags` selection —
-the role (top of `tasks/main.yml`, tagged `always`) checks whether
-`inventory_hostname` is a member of the `freeipa_client_server_group` inventory
-group (the FreeIPA **servers** group — defaults to `freeipa`). If it is, the play
-prints an explanatory message and ends the host (`meta: end_host`) instead of
-running client logic against a server — health-checking or `ipa-client-install
---uninstall`-ing an IPA server by accident is exactly what this guard prevents.
-It is tagged `always` (not `preflight`) deliberately: a tag-limited run such as
-`--tags configure` would otherwise skip a preflight-tagged guard and still execute
-the other phases against a server host.
-
-Set `freeipa_client_on_master: true` only for the deliberate case of
-(re)configuring a client integration **on** an IPA server host — this is the
-escape hatch that bypasses the guard.
-
-## Preflight package install
-
-`preflight` installs its own tooling (`freeipa_client_packages`, default
-`ipa-client`, `krb5-workstation`, `chrony`, `bind-utils`) via `dnf` before any
-health checks run, so `chronyc`, `kinit`/`kdestroy`, and `ipa-client-install` are
-guaranteed present. This is gated `when: ansible_os_family == 'RedHat'` — on
-Debian/Ubuntu no equivalent package list is installed by this role; the upstream
-`ipaclient` role handles its own distro packaging during `enroll`, but preflight's
-tooling on Debian is the caller's responsibility (documented limitation, not
-in scope for this role — see "Supported platforms" above).
-
-## What it does (client-side)
-
-- **Join** — admin-based (Vault) or OTP-based, against `freeipa_client_servers`
-  (defaults to the `freeipa` inventory group) or SRV discovery.
-- **CA trust** — `/etc/ipa/ca.crt` + system trust, installed automatically on join,
-  refreshed afterwards with `ipa-certupdate` so the local NSS/CA trust store picks
-  up any CA changes made server-side since the last enrolment.
-- **Home dirs** — `freeipa_client_mkhomedir` (oddjob/pam); optional NFS automount
-  via `freeipa_client_automount_location`.
-- **sudo** — SSSD sudo provider (`freeipa_client_no_sudo: false`); the host runs
-  server-defined sudo rules.
-- **HBAC** — enforced automatically by SSSD (`access_provider=ipa`).
-- **DNS** — with `freeipa_client_enable_dns_updates` (**on by default**) the host
-  self-registers its A record on join and SSSD keeps it in sync with the host IP via
-  `dyndns_update`; SSHFP is published regardless. Only effective where IPA is authoritative
-  for the client's zone. See "DNS record propagation" below.
-
-## DNS record propagation
-
-The client's forward record is managed **only when the realm's integrated DNS is
-authoritative for the client's zone** — e.g. a client named `*.ipa.<env>.<domain>`
-when IPA owns that zone. For a client in a zone IPA does **not** own (e.g.
-`webnode01.example.com` while IPA owns only `ipa.example.com`), `ipa-client-install`
-cannot create the record; it must come from site DNS or a server-side
-`ipa dnsrecord-add` against an IPA-managed zone.
-
-When IPA *is* authoritative:
-
-- **At join** — with `freeipa_client_enable_dns_updates` (default **true**),
-  `ipa-client-install` adds the A record (and PTR if the reverse zone exists) via an
-  authenticated nsupdate; with it **false** no A record is created at join (use the explicit
-  seed below or site DNS). `freeipa_client_all_ip_addresses: true` registers every NIC IP.
-- **Explicit seed at enrol** — `freeipa_client_seed_dns_record` is **on by default**
-  (set `false` to disable): it writes the A record (and, with
-  `freeipa_client_seed_dns_reverse`, the reverse PTR) server-side via the admin API
-  right after join, independent of join-time self-registration and of SSSD dyndns.
-  This **guarantees** the record exists even with dyndns off, and **seeds the PTR**
-  that `ipa-client-install` skips. SSSD then maintains it from there. Admin-join
-  only (needs admin creds) — OTP-joined hosts skip it and rely on
-  self-registration. Idempotent and tolerant: if IPA isn't authoritative for the
-  zone (`freeipa_client_dns_zone`, default = realm domain), it warns instead of
-  failing. The PTR is managed directly in the reverse zone
-  (`freeipa_client_dns_reverse_zone`; empty = auto-derive the `/24` zone from the
-  host IP — override for non-`/24` reverse delegations). **Tested:** a fresh enrol
-  seeds the forward A and reverse PTR, and a re-run is `changed=0`.
-- **Following the host IP** — SSSD `dyndns_update` (on with `freeipa_client_enable_dns_updates`)
-  re-registers the A record on each SSSD start/reboot and per `dyndns_refresh_interval` (daily).
-  A live in-place re-IP isn't picked up until the next restart/refresh — for an immediate fix
-  use the next bullet.
-- **Forcing an immediate refresh** — `freeipa_client_sync_dns_record: true` compares the live A
-  record to the host's current IP and restarts SSSD to push an update only on a mismatch (needs
-  `freeipa_client_enable_dns_updates`). Idempotent; converges once IPA's bind-dyndb-ldap refresh
-  lag catches up.
-
-## Stale-machine rejoin (idempotency model)
-
-`preflight` reads `/etc/ipa/default.conf`, compares its realm to the target, and
-runs `kinit -k host/<fqdn>` to prove the host keytab still authenticates:
-
-- **Healthy + correct realm** → nothing happens; `enroll` no-ops (idempotent).
-- **Broken keytab / host deleted server-side / realm mismatch** → `ipa-client-install
-  --uninstall` then a clean re-join (with `force_join`). This is also how you
-  re-enrol clients during a **realm cutover** (old realm → new realm): point
-  `freeipa_client_domain`/`_realm` at the new realm and re-run.
-- `freeipa_client_force_rejoin: true` forces uninstall + re-join unconditionally.
-
-A re-run on a healthy client makes **no changes**.
-
-## Required / common variables
-
-| Variable | Example | Purpose |
+| Collection | When | Used for |
 |---|---|---|
-| `domain` | `example.com` | base domain (`group_vars/all.yml`); realm derives as upper-case |
-| `freeipa_client_admin_password` | `<ipa-admin-password>` | admin password (admin-join) — set directly (e.g. from an ansible-vault var) for a HashiCorp-free deployment |
-| `freeipa_client_vault_secret` | `kv/data/platform/freeipa/runtime` | HashiCorp Vault path for the admin password — **fallback only**, used when `freeipa_client_admin_password` is empty |
-| `freeipa_client_use_otp` + `freeipa_client_otp` | `true` / `<otp>` | OTP-join instead of admin |
-| `freeipa_client_servers` | `[idm01.example.com]` | servers to enrol against (else SRV) |
-| `freeipa_client_server_group` | `idm` | inventory group of FreeIPA **servers** — used to build `freeipa_client_servers` and as the group the preflight guard checks `inventory_hostname` against |
-| `freeipa_client_on_master` | `true` | escape hatch for the preflight server-group guard (see "FreeIPA-server guard" above) |
+| `freeipa.ansible_freeipa` | always | `ipaclient` join, `ipadnsrecord` DNS seed |
+| `community.general` | always | `ini_file` (post-join config tweaks) |
+| `community.hashi_vault` | When admin-join fallback | Vault lookup for the admin password |
 
-See `defaults/main.yml` for the full surface (NTP, SSH/SSHFP, automount, subid,
-DNS resolver, kinit attempts, `freeipa_client_packages`, …).
+## Key variables
 
-## Server-side config (NOT in this role)
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-A client cannot self-assign these — they need admin and live in `freeipa_server`
-IAM (or a host-management play):
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
 
-- **Host-group membership** → `freeipa_iam_hostgroups` (with host lists)
-- **HBAC rules** → `freeipa_iam_hbac_rules` (this client enforces them via SSSD)
-- **sudo rules** → `freeipa_iam_sudo_rules` (this client runs them via SSSD)
-- **DNS zones/records** beyond the host's own auto-registered A/SSHFP
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| **Required** | `freeipa_client_domain` | `{{ domain }}` | Realm DNS domain to join |
+| **Required** | `freeipa_client_realm` | `{{ freeipa_client_domain \| upper }}` | Kerberos realm |
+| Optional | `freeipa_client_server_group` | `freeipa` | Inventory group of FreeIPA servers; also the preflight server-guard group |
+| Optional | `freeipa_client_servers` | derived from `server_group` | Explicit server FQDNs (else SRV discovery) |
+| When admin-join | `freeipa_client_admin_password` | `""` | Admin password (declared var wins; empty falls back to Vault) |
+| When admin-join fallback | `freeipa_client_vault_secret` | unset | HashiCorp Vault KV path for the admin password |
+| When OTP-join | `freeipa_client_use_otp` / `freeipa_client_otp` | `false` / `""` | One-time-password join instead of admin |
+| Optional | `freeipa_client_force_rejoin` | `false` | Force uninstall + re-join regardless of health |
+| Optional | `freeipa_client_on_master` | `false` | Escape hatch to run this role on a FreeIPA server host |
+| Optional | `freeipa_client_no_sudo` | `false` | Disable the SSSD sudo provider |
+| Optional | `freeipa_client_automount_location` | `""` | IPA-managed NFS automount for home dirs (`""` disables) |
+| Optional | `freeipa_client_enable_dns_updates` | `true` | SSSD dyndns keeps the A record synced to the host IP |
+| Optional | `freeipa_client_seed_dns_record` | `true` | Server-side A(+PTR) seed at enrol time (admin-join only) |
+| Optional | `freeipa_client_sync_dns_record` | `false` | Force an immediate A-record refresh on drift |
+| Optional | `freeipa_client_service_certs` | `[]` | certmonger-managed certs chained to the IPA CA (`--tags certs`) |
+| Optional | `freeipa_client_packages` | `[ipa-client, krb5-workstation, chrony, bind-utils]` | Preflight tooling (RedHat family only) |
 
 ## Usage
 
-```bash
-# Enrol the `freeipa_clients` group (admin-join via Vault)
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml
-
-# Re-enrol stale hosts / realm cutover (same command — preflight detects + rejoins)
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml
-
-# Force a clean rejoin
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml \
-  -e freeipa_client_force_rejoin=true
+```yaml
+- name: Enrol FreeIPA clients
+  hosts: freeipa_clients
+  become: true
+  roles:
+    - role: freeipa_client
 ```
+
+Run it:
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_client.yml
+```
+
+## Preconditions
+
+- `freeipa_client_domain`/`_realm` must already be a reachable FreeIPA realm (SRV
+  discovery, or `freeipa_client_servers` set explicitly).
+- Admin-join fallback needs a secret already present at `freeipa_client_vault_secret`
+  (field `freeipa_client_admin_password_field`) — this role only reads it.
+- DNS self-registration and server-side seeding only take effect when the realm's
+  integrated DNS is authoritative for the client's zone (e.g. a client in
+  `*.ipa.<env>.<domain>` when IPA owns that zone). Outside that zone,
+  `ipa-client-install` cannot create the record — this role warns rather than fails,
+  and the record must come from site DNS or a server-side `ipa dnsrecord-add`.
+
+## Behaviour
+
+- **FreeIPA-server guard** — on every invocation, regardless of `--tags`, checks
+  whether `inventory_hostname` is a member of `freeipa_client_server_group`. If so,
+  it prints a message and ends the host (`meta: end_host`) instead of running client
+  logic, so the role can't accidentally uninstall or health-check a server. Set
+  `freeipa_client_on_master: true` to deliberately run client config on a server host.
+- **Stale-machine rejoin** — `preflight` reads `/etc/ipa/default.conf`, compares its
+  realm to the target, and runs `kinit -k host/<fqdn>` to prove the host keytab still
+  authenticates:
+
+  | Enrolment state | Result |
+  |---|---|
+  | Healthy + correct realm | No-op; `enroll` is idempotent |
+  | Broken keytab / host deleted server-side / realm mismatch | `ipa-client-install --uninstall` then a clean re-join (also how realm cutovers are handled — point `freeipa_client_domain`/`_realm` at the new realm and re-run) |
+  | `freeipa_client_force_rejoin: true` | Uninstall + re-join unconditionally |
+
+  A re-run on a healthy client makes no changes.
+
+## Out of scope
+
+- Host-group membership, HBAC rules, sudo rules, and DNS zones/records beyond the
+  host's own auto-registered A/SSHFP are server-side operations a client cannot
+  self-assign — manage them via server-side IAM or a dedicated host-management play.
+- Preflight's own tooling install (`freeipa_client_packages`) is RedHat-only; on
+  Debian/Ubuntu, preflight's health checks depend on whatever tooling is already
+  present — installing it there is out of scope.

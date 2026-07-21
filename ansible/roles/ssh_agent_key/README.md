@@ -1,69 +1,38 @@
 # ssh_agent_key
 
-Unlock/lock a private SSH key in `ssh-agent`, **straight from memory** — the key is fed
-to `ssh-add` over stdin, so it never touches disk, never appears on a command line, and
-(`no_log`) never appears in task output. The key lives encrypted in Ansible Vault
-(`--ask-vault-pass` / `-e @vault.yml`); if the key itself also has a passphrase, set
-`ssh_agent_key_passphrase` (from a vaulted var) and the role unlocks it with that.
+## TL;DR
 
-Two entry points, **fully independent of each other** — each just takes the vaulted key:
+Unlocks/locks a private SSH key in `ssh-agent` straight from memory — the
+key is fed to `ssh-add` over stdin, so it never touches disk, never appears
+on a command line, and (`no_log`) never appears in task output. The key
+lives encrypted in Ansible Vault; if it also has a passphrase, set
+`ssh_agent_key_passphrase` and the role unlocks it with that. `unlock` and
+`lock` are fully independent entry points — each just takes the same
+vaulted key.
 
-- **`unlock`** — load the key (start of a play, or its own playbook)
-- **`lock`** — remove the key (end of a play, a different play, or days later)
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/load_ssh_agent_key.yml
+```
 
-`run_once` + `delegate_to: localhost` are baked into both.
+## Requirements
 
-## ssh-agent in 30 seconds (read this first)
+None beyond `ansible.builtin`.
 
-`ssh-agent` is a small background program that holds private keys **in memory**. When
-you run `ssh` (or Ansible does), ssh doesn't read your key itself — it asks the agent
-"can you sign this for me?". That's why a key loaded into the agent works without any
-key file on disk.
+## Key variables
 
-**How does `ssh` find the agent?** Through a **socket** — a special file the agent
-creates (something like `/tmp/ssh-XXXX/agent.123`). The path to that file lives in the
-environment variable **`SSH_AUTH_SOCK`**. Every tool in the SSH family (`ssh`,
-`ssh-add`, `scp`, Ansible's connections) reads that variable to know where the agent
-is. No `SSH_AUTH_SOCK`, no agent — that's the whole mechanism.
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-So for this role, "the sock" is simply **the address of the agent**:
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
 
-- If your shell already has an agent running, the play inherits `SSH_AUTH_SOCK`
-  automatically and the role uses it without touching anything.
-- If there's **no** agent, the role spawns one. A brand-new agent means a brand-new
-  socket path that only the role knows — so it has to (a) hand that path to every later
-  `ssh-add` it runs, (b) hand it to the play's own SSH connections, and (c) print it
-  for you. That's the **only** reason a socket variable (`ssh_agent_key_sock`) exists
-  in this role.
-
-## How can lock work without unlock? (no saved state)
-
-A key pair is two halves of the same thing. The agent stores keys and deletes them
-**by public key** — and the public half is *derivable* from the private half. So lock
-doesn't need to remember anything: you hand it the same vaulted private key, a small
-bundled filter (`filter_plugins/`) recomputes the public line **in memory** on the
-controller, and that is fed to `ssh-add -d`. Same input as unlock, opposite action,
-zero shared state — which is why they work across different plays, playbooks and days.
-
-### Don't want the filter plugin? Pass the public key.
-
-The filter plugin exists only to *derive* the public key when you give the role the
-private key alone. If you also pass **`ssh_agent_key_public`** (the `.pub` line — it's
-non-secret, so plain group_vars is fine) to **both unlock and lock**, the plugin is
-**never referenced at all** and can be deleted:
-
-- **unlock** — `ssh_agent_key_content` (+ `ssh_agent_key_passphrase`) is still added over
-  stdin; `ssh_agent_key_public` is used for the precise "is this exact key already
-  loaded?" check (`ssh-add -L` grep — per-key, not a count).
-- **lock** — `ssh_agent_key_public` alone; `ssh-add -d` removes exactly that key,
-  independent of unlock (so a key leaked by a failed-then-rerun play still gets removed).
-
-This is wired as **`when:`-gated tasks, not a ternary**, on purpose: Ansible resolves a
-filter *name* at template **compile** time, so `x if cond else (… | ssh_agent_key_pubkey)`
-would require the plugin even when `cond` is true and that branch never runs. A skipped
-task never compiles its expression, so passing the public key genuinely bypasses the
-plugin. Verified by deleting the `.py` and running the full flow (passes with the public
-key; fails only when neither the public key nor the plugin is available).
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| **Required** | `ssh_agent_key_content` | `""` | Private key text, from a vaulted var (unlock and lock, unless `ssh_agent_key_public` is set for lock) |
+| When passphrase | `ssh_agent_key_passphrase` | `""` | Passphrase to unlock the key, if it has one |
+| Optional | `ssh_agent_key_lifetime` | `0` | Seconds; `0` = until locked/agent stops, `>0` = `ssh-add -t` auto-expiry (unlock only) |
+| Optional | `ssh_agent_key_public` | `""` | Explicit public line to remove/check — skips in-memory derivation, no private key needed for lock |
+| Optional (output) | `ssh_agent_key_sock` | *unset* | Set by unlock only when it spawned an agent — that agent's socket path |
 
 ## Usage
 
@@ -93,107 +62,43 @@ Bracketing one play:
       vars: *deploy_key
 ```
 
-Standalone lock — its own playbook, any time:
+Run it:
 
-```yaml
-- name: Remove the deploy key from the agent
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - ansible.builtin.import_role:
-        name: ssh_agent_key
-        tasks_from: lock
-      vars:
-        ssh_agent_key_content: "{{ vault_ssh_private_key }}"
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml site.yml --ask-vault-pass
 ```
 
-Run like any other play — `ansible-playbook site.yml --ask-vault-pass`.
-Load-only also works: `roles: [ssh_agent_key]` defaults to unlock.
+Load-only also works: `roles: [ssh_agent_key]` defaults to unlock. For a
+standalone lock in its own playbook, run `tasks_from: lock` on `localhost`.
 
-## Variables
+## Preconditions
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ssh_agent_key_content` | `""` | **Required (unlock and lock).** Private key text, from a vaulted var. |
-| `ssh_agent_key_passphrase` | `""` | Passphrase to unlock the key, if it has one. From a vaulted var. |
-| `ssh_agent_key_lifetime` | `0` | **unlock.** Seconds; `0` = until locked/agent stops, `>0` = `ssh-add -t` auto-expiry. |
-| `ssh_agent_key_public` | `""` | **lock.** Explicit public line to remove — skips derivation, no private key needed. |
-| `ssh_agent_key_sock` | *output* | Set by unlock **only when it spawned an agent** — that agent's socket path. |
+- Passphrase-protected keys need OpenSSH ≥ 8.4 (`SSH_ASKPASS_REQUIRE`) on
+  the control node — RHEL 9 ships 8.7.
 
-## What happens, step by step
+## Behaviour
 
-### unlock
-
-1. **Check the key was provided.** If `ssh_agent_key_content` is empty you get a clear
-   "wire your vaulted variable" message, instead of a cryptic `ssh-add` error later.
-
-2. **List what's in the agent right now** (`ssh-add -L`). One task, two jobs: its
-   *return code* is the agent probe (`0`/`1` = agent reachable, `2` = no agent — the
-   explicit signal step 3 branches on), and its *output* is the "before" list step 4
-   compares against. Branching on the return code — rather than "try the add and
-   rescue any failure" — matters: a bad passphrase or broken key must fail loudly,
-   not get mistaken for "no agent" and silently spawn one.
-
-3. **Spawn an agent — only when the probe said there is none** (`rc 2`):
-
-   - **Start it** (`ssh-agent -s`). This agent is a normal background process —
-     it **keeps running after the play finishes**.
-   - **Save its socket path** in `ssh_agent_key_sock`. A new agent has a new
-     address, and nothing else on the system knows it yet. Every later `ssh-add` in
-     the role uses this variable to talk to the right agent.
-   - **Tell the play's SSH connections about it.** This is the subtle one: when
-     Ansible SSHes to your hosts, those ssh processes get `ansible-playbook`'s
-     environment — **not** the environment of a task. So they'd never see the new
-     agent on their own, and the key would be loaded somewhere the play can't use.
-     The role appends `-o IdentityAgent=<sock>` to `ansible_ssh_common_args` (skipped
-     when already present, so repeat runs can't stack duplicates), which tells ssh
-     explicitly which agent to ask.
-   - **Print the reuse line** — `export SSH_AUTH_SOCK=<sock>`. Paste that in your
-     terminal and your shell (and your next ansible run) will find the same agent
-     instead of spawning another.
-
-4. **Add the key** (`ssh-add -`). The private key is piped in over **stdin** — it
-   never becomes a file and never appears in a process list. It lands in the inherited
-   agent, or the just-spawned one. A failure here is a *real* failure (wrong
-   passphrase, invalid key) and stops the play with ssh-add's own error. The key's
-   public half (derived in memory) is compared against step 2's list, so a key that
-   was already loaded reports `ok`, not `changed`.
-
-   **If the key has a passphrase:** `ssh-add` has no terminal to prompt on, so it uses
-   ssh's built-in fallback — it runs the program named in the `SSH_ASKPASS` env var
-   and takes its output as the answer. Ours is `files/askpass.sh`, three lines that
-   echo `$SSH_AGENT_KEY_PASSPHRASE` — a variable the task places in **ssh-add's own
-   process environment**, filled from your vaulted `ssh_agent_key_passphrase`. The
-   helper contains no secret, the role reads nothing from your shell's environment,
-   and with a raw key it is never even called. (It also refuses `ssh-add`'s "try
-   again" re-prompt, so a wrong passphrase fails in a second instead of looping
-   forever — don't "simplify" that line away.)
-
-### lock
-
-5. **Check we know which key to remove** — either you gave it the vaulted private key
-   (normal case) or an explicit `ssh_agent_key_public` line.
-
-6. **Remove the key** — the public line (derived in memory from your private key, see
-   "How can lock work without unlock?" above) is piped to `ssh-add -d /dev/stdin`.
-   Idempotent: if the key is already gone, the agent is empty, or there's no agent at
-   all, the task reports `ok` — it only says `changed` when it actually removed
-   something. An agent unlock spawned is left running; only the key is taken out.
-
-## Notes
-
-- **Passphrase-protected keys** need `ssh_agent_key_passphrase` set (from a vaulted
-  var) — for unlock (ssh-add asks for it) and for lock (deriving the public key from
-  an encrypted key needs it). Needs OpenSSH ≥ 8.4 (`SSH_ASKPASS_REQUIRE`); RHEL 9
-  ships 8.7.
-- **Locking a spawned agent in a later run:** the play only knows the spawned agent's
-  address while it's running. To lock later, export the printed `SSH_AUTH_SOCK` line
-  first (or pass `ssh_agent_key_sock` as a var) so `ssh-add` can find that agent.
-- **`IdentitiesOnly yes` defeats the agent.** If `~/.ssh/config` pins
-  `IdentityFile` + `IdentitiesOnly yes` for a host, ssh ignores agent keys. Verify
-  with `ssh -v <host>`: an agent key offers as `... agent`, an on-disk key as
-  `... explicit`.
-- Set `ansible_pipelining: true` if you also want Ansible's own module payloads off
-  disk; the key itself never touches disk either way.
-- One key per unlock/lock call. Call the role once per key for several.
+- **Agent discovery.** If the play's shell already has an agent running,
+  the role inherits `SSH_AUTH_SOCK` and uses it. If there's none, the role
+  spawns one (`ssh-agent -s`, persists after the play), saves its socket in
+  `ssh_agent_key_sock`, and appends `-o IdentityAgent=<sock>` to
+  `ansible_ssh_common_args` so the play's own SSH connections can reach it.
+- **Unlock** pipes the private key to `ssh-add -` over stdin. A passphrase
+  is supplied via `SSH_ASKPASS`, never via a prompt or the shell
+  environment. Idempotent: a key already loaded (checked via `ssh-add -L`)
+  reports `ok`, not `changed`.
+- **Lock has no saved state.** The public half of a key pair is derivable
+  from the private half, so lock re-derives it in memory (via the bundled
+  `ssh_agent_key_pubkey` filter, or directly from `ssh_agent_key_public` if
+  you pass it) and pipes it to `ssh-add -d /dev/stdin` — same input as
+  unlock, opposite action.
+- To lock a spawned agent in a later run, export the printed
+  `SSH_AUTH_SOCK` line first (or pass `ssh_agent_key_sock` as a var) — the
+  play only knows a spawned agent's address while it's running.
+- **Known failure mode:** if `~/.ssh/config` pins `IdentityFile` +
+  `IdentitiesOnly yes` for a host, ssh ignores agent keys entirely. Verify
+  with `ssh -v <host>`: an agent key offers as `... agent`, an on-disk key
+  as `... explicit`.
+- Set `ansible_pipelining: true` if you also want Ansible's own module
+  payloads off disk; the key itself never touches disk either way.
+- One key per unlock/lock call — call the role once per key for several.

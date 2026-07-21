@@ -1,154 +1,82 @@
 # docker
 
-Install and configure **Docker CE** on EL (RHEL/AlmaLinux 8/9) and Debian/Ubuntu — from the official upstream repo or from any custom mirror (e.g. Artifactory for air-gapped fleets).
+## TL;DR
 
-**What the role does:**
+Installs and configures Docker CE on EL (RHEL/AlmaLinux 8/9) and Debian/Ubuntu — from
+the official upstream repo or from a custom mirror (e.g. Artifactory for air-gapped
+fleets). Configures the repo + GPG key, installs packages, renders `/etc/docker/daemon.json`
+from variables (only set keys are emitted), and enables the service.
 
-- Configures the Docker CE package repository (upstream or custom/air-gap)
-- Imports/trusts the GPG key (rpm_key on EL; apt signed-by on Debian/Ubuntu)
-- Installs Docker CE packages (overridable list + optional version pin)
-- Renders `/etc/docker/daemon.json` from variables — only the keys whose variable is set are emitted; no stale defaults
-- Ensures `/etc/docker` and the data-root directory exist with correct permissions
-- Enables and starts the `docker` systemd service
-- Optionally adds users to the `docker` group for unprivileged socket access
-- Optionally provisions a dedicated service account (e.g. `svc-docker`), owns the data-root with it, and grants the docker group write ACLs on a shared path (e.g. `/opt`)
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_solo_e2e.yml --tags docker
+```
 
-## Tagging model
+## Requirements
 
-Follows the **refinement** model: a no-tag run executes every phase. Tags narrow scope for fast iteration.
+None beyond `ansible.builtin`.
 
-| Tag | Phase |
-|---|---|
-| `install` | Repo config, GPG key import, package install |
-| `configure` | `daemon.json`, data-root directory, service enable/start |
-| `users` | Docker-group members, optional service account, optional shared-path ACLs |
+## Key variables
 
-## Minimal usage
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
+
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
+
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| When air-gap / custom mirror | `docker_repo_baseurl` / `_gpgkey` | `""` | Custom repo URL + GPG key; empty = official upstream |
+| Optional | `docker_repo_sslverify` | `true` | Set `false` for a self-signed internal mirror |
+| Optional | `docker_packages` | `[docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]` | Packages to install |
+| Optional | `docker_version` | `""` | Version pin (e.g. `"26.1.4"`); empty = latest |
+| Optional | `docker_data_root` | `/opt/docker` | Docker data directory (`daemon.json` `data-root`) |
+| Optional | `docker_bip` | `""` | Bridge IP/prefix for `docker0`; empty = Docker default |
+| Optional | `docker_insecure_registries` | `[]` | Registries reachable over HTTP or self-signed TLS |
+| Optional | `docker_live_restore` | `true` | Keep containers running during daemon restart; set `false` in swarm mode |
+| Optional | `docker_users` | `[]` | Users added to the `docker` group |
+| When a service account is wanted | `docker_service_user` | `""` | Name of a dedicated service account (e.g. `svc-docker`); empty = none created |
+| When `docker_service_user` is set | `docker_manage_data_dir_owner` | `false` | Recursively chown `docker_data_root` to the service account |
+| When shared-path ACLs are wanted | `docker_manage_opt_acl` | `false` | Apply docker-group ACLs on `docker_opt_acl_path` (default `/opt`) |
+
+## Usage
 
 ```yaml
-# site.yml / playbook
 - hosts: docker_hosts
   roles:
-    - docker
+    - role: docker
+      tags: [docker]
 ```
 
-All defaults work for an internet-connected host. The data-root is `/opt/docker`, logging is `json-file` with 50m/5 rotation.
+Run it:
 
-## Air-gap Artifactory example
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_solo_e2e.yml --tags docker
 
-Prerequisite: Artifactory has a **remote** Docker CE repo (e.g. `docker-ce-remote`) proxying `download.docker.com`, and a **local** Docker V2 registry (e.g. port 5000 or the `docker-local` virtual repo).
+# Air-gap Artifactory mirror (prerequisite: Artifactory has a remote Docker CE repo
+# proxying download.docker.com, and a local Docker V2 registry)
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_solo_e2e.yml --tags docker \
+  -e docker_repo_baseurl=https://artifactory.example.com/artifactory/docker-ce-remote/linux/centos/9/x86_64/stable \
+  -e docker_repo_gpgkey=https://artifactory.example.com/artifactory/docker-ce-remote/linux/centos/gpg \
+  -e docker_repo_sslverify=false
 
-```yaml
-# inventories/prod/group_vars/docker_hosts.yml
-docker_repo_baseurl: "https://artifactory.example.com/artifactory/docker-ce-remote/linux/centos/{{ ansible_distribution_major_version }}/$basearch/stable"
-docker_repo_gpgkey: "https://artifactory.example.com/artifactory/docker-ce-remote/linux/centos/gpg"
-docker_repo_sslverify: false        # set true when Artifactory has a valid CA-signed cert
-
-# Tell Docker the local registry is reachable (HTTP or self-signed TLS)
-docker_insecure_registries:
-  - "artifactory.example.com:5000"
-
-# Pull-through mirror for Docker Hub images
-docker_registry_mirrors:
-  - "https://artifactory.example.com/artifactory/docker-hub-remote"
-
-docker_data_root: "/opt/docker"
-docker_live_restore: true
+# Dedicated service account + shared /opt ACLs
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_solo_e2e.yml --tags docker \
+  -e docker_service_user=svc-docker -e docker_manage_data_dir_owner=true -e docker_manage_opt_acl=true
 ```
 
-On Debian/Ubuntu the same vars apply — the role picks the correct apt vs. yum path automatically.
+## Behaviour
 
-## Subnet / insecure-registry daemon.json example
+The `users` phase (docker-group members, optional service account, optional
+shared-path ACLs) runs only when at least one of `docker_users`,
+`docker_service_user`, or `docker_manage_opt_acl` is set; otherwise it is a no-op. On
+Debian/Ubuntu the same repo/mirror variables apply — the role picks the correct apt vs.
+yum path automatically.
 
-Setting a custom bridge IP, address pool, and an insecure registry:
+## Out of scope
 
-```yaml
-docker_bip: "172.17.0.1/24"
-docker_default_address_pools:
-  - base: "172.18.0.0/16"
-    size: 24
-docker_insecure_registries:
-  - "artifactory.example.com:5000"
-```
-
-Rendered daemon.json:
-
-```json
-{
-  "log-driver": "json-file",
-  "storage-driver": "overlay2",
-  "live-restore": true,
-  "data-root": "/opt/docker",
-  "log-opts": {
-    "max-size": "50m",
-    "max-file": "5"
-  },
-  "bip": "172.17.0.1/24",
-  "default-address-pools": [
-    {
-      "base": "172.18.0.0/16",
-      "size": 24
-    }
-  ],
-  "insecure-registries": [
-    "artifactory.example.com:5000"
-  ]
-}
-```
-
-## Variable reference
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `docker_repo_baseurl` | `""` | Custom repo URL. Empty = official upstream. Air-gap: set to Artifactory mirror URL. |
-| `docker_repo_gpgkey` | `""` | GPG key URL for the repo. Empty = official Docker key URL. EL: rpm_key; Debian: saved as apt keyring. |
-| `docker_repo_gpgcheck` | `true` | Verify GPG signatures on repo packages. |
-| `docker_repo_sslverify` | `true` | Verify repo TLS cert. Set `false` for self-signed Artifactory. |
-| `docker_packages` | `[docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]` | Packages to install. Override for air-gap package naming. |
-| `docker_version` | `""` | Version pin (e.g. `"26.1.4"`). Empty = latest. |
-| `docker_data_root` | `"/opt/docker"` | Docker data directory (`daemon.json` `data-root`). |
-| `docker_bip` | `""` | Bridge IP/prefix for docker0 (e.g. `"172.17.0.1/24"`). Empty = omitted (Docker default). |
-| `docker_default_address_pools` | `[]` | Bridge IPAM pools. List of `{base: CIDR, size: N}`. Empty = omitted. |
-| `docker_insecure_registries` | `[]` | Registries with HTTP or self-signed TLS. Added to `daemon.json`. |
-| `docker_registry_mirrors` | `[]` | Pull-through mirrors consulted before Docker Hub. |
-| `docker_log_driver` | `"json-file"` | Default container log driver. |
-| `docker_log_max_size` | `"50m"` | Log file size limit per container (json-file/local only). |
-| `docker_log_max_file` | `"5"` | Number of rotated log files per container (json-file/local only). |
-| `docker_log_opts` | `{}` | Free-form log-opts merged over max-size/max-file (highest precedence). |
-| `docker_storage_driver` | `"overlay2"` | Storage driver. |
-| `docker_live_restore` | `true` | Keep containers running during daemon restart. Set `false` in swarm mode. |
-| `docker_default_ulimits` | `{}` | Default ulimits for all containers. Empty = omitted. |
-| `docker_extra_daemon_options` | `{}` | Arbitrary extra daemon.json keys merged last (wins over all others). |
-| `docker_users` | `[]` | Users to add to the `docker` group. |
-| `docker_service_user` | `""` | Optional service account (e.g. `svc-docker`). Empty = none created. |
-| `docker_service_user_shell` | `/bin/bash` | Login shell for the service account. |
-| `docker_service_user_system` | `true` | Create the service account as a system user. |
-| `docker_service_user_groups` | `[docker, systemd-journal, adm]` | Supplementary groups for the service account. |
-| `docker_manage_data_dir_owner` | `false` | Recursively chown `docker_data_root` to the service account. |
-| `docker_data_dir_mode` | `0775` | Mode for `docker_data_root` when ownership is managed. |
-| `docker_manage_opt_acl` | `false` | Apply docker-group ACLs on `docker_opt_acl_path`. |
-| `docker_opt_acl_path` | `/opt` | Shared path to receive docker-group ACLs. |
-
-> The `users` phase runs when **any** of `docker_users`, `docker_service_user`, or
-> `docker_manage_opt_acl` is set; otherwise it is skipped. This absorbs the former
-> standalone `docker_user` role — set `docker_service_user: svc-docker` +
-> `docker_manage_opt_acl: true` to reproduce its behaviour.
-
-## Service account + shared /opt example
-
-```yaml
-# inventories/<env>/group_vars/docker_hosts.yml
-docker_service_user: svc-docker            # hyphenated, matches Vault entity naming
-docker_manage_data_dir_owner: true         # svc-docker owns /opt/docker
-docker_manage_opt_acl: true                # docker group gets rwx ACLs on /opt
-docker_users:
-  - ansible                                # automation user gets socket access
-```
-
-## Relationship to docker_swarm
-
-The `docker_swarm` role has its own Docker CE install phase (`tasks/install_docker.yml`) gated by `docker_swarm_install_docker_enabled`. For hosts that are Swarm members, you can either:
-
-- Use `docker_swarm` exclusively (set `docker_swarm_install_docker_enabled: true`)
-- Apply `docker` first then `docker_swarm` with `docker_swarm_install_docker_enabled: false`
-- Set `docker_live_restore: false` when using this role on swarm hosts — dockerd rejects `swarm init` when live-restore is on
+`docker_swarm` has its own Docker CE install phase, gated by
+`docker_swarm_install_docker_enabled`. For hosts that are Swarm members, either use
+`docker_swarm` exclusively, or apply this role first with `docker_swarm` set to skip
+install (`docker_swarm_install_docker_enabled: false`). Set `docker_live_restore:
+false` when using this role on swarm hosts — dockerd rejects `swarm init` when
+live-restore is on.

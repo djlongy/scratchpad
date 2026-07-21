@@ -1,82 +1,43 @@
 # clamav
 
-Installs and configures ClamAV antivirus on Linux hosts. Manages:
-
-- Base packages (scanner + freshclam)
-- Freshclam configuration and initial signature database seed
-- Optional resident `clamd` daemon (on-access / fast-scan client)
-- Optional scheduled scan via systemd timer + oneshot service
-
-Distro-agnostic — package names, config paths, and service names are keyed on
-`ansible_os_family` (`RedHat` / `Debian`) in `vars/main.yml`.
-
 ## TL;DR
 
-**Most common: redeploy the scan units.** Install once, then re-run with `--tags scan` to refresh the scheduled-scan timer/service (needs `clamav_scan_enabled: true`). First install (everything): drop the `--tags`.
+Installs and configures ClamAV antivirus on Linux hosts: base packages (scanner +
+freshclam), freshclam configuration and initial signature database seed, an optional
+resident `clamd` daemon, and an optional scheduled scan via a systemd timer. Distro
+package names, config paths, and service names are keyed on `ansible_os_family`
+(`RedHat` / `Debian`) in `vars/main.yml`.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/site.yml --tags scan
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags scan
 ```
 
-## Prerequisites
+## Requirements
 
-**RedHat/EL only — EPEL required.**  ClamAV packages ship in EPEL, not the
-base repos. EPEL must be enabled on the target host before this role runs. The
-role does not install EPEL; rely on your baseline role or
-`ansible.builtin.dnf: name: epel-release` before invoking `clamav`.
+None beyond `ansible.builtin`.
 
-Debian/Ubuntu: all packages are in the main archive; no extra repo needed.
+## Key variables
 
-## Air-gap / private mirror
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
-Set `clamav_database_mirror` to your internal mirror URL.  When set, the role
-writes `DatabaseMirror <url>` into `freshclam.conf`; when empty (the default)
-the distro default (`db.local.clamav.net`) is left in place.
+**Required** = value must be correct for a successful run (defaults often work).
+**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**When X** = required only if that feature is on.
 
-## Tags
+| Req | Variable | Default | Purpose |
+|---|---|---|---|
+| Optional | `clamav_enable_freshclam` | `true` | Enable and start the freshclam update service |
+| Optional | `clamav_database_mirror` | `""` | Private/air-gap mirror URL; empty = distro default |
+| Optional | `clamav_enable_daemon` | `false` | Install and start the resident `clamd` daemon (~700 MB RAM) |
+| Optional | `clamav_scan_enabled` | `false` | Deploy and enable the systemd scheduled scan |
+| Optional | `clamav_scan_paths` | `[/home, /tmp, /var/tmp]` | Directories to scan recursively |
+| Optional | `clamav_scan_schedule` | `"Sun *-*-* 02:00:00"` | systemd `OnCalendar` expression |
+| Optional | `clamav_remove_infected` | `false` | Pass `--remove` to clamscan (destructive) |
+| Optional | `clamav_scan_log` | `/var/log/clamav/scan.log` | Path for the scheduled-scan log |
+| When FIPS mode (EL9) | `clamav_fips_compatible` | `false` | Set true only once ClamAV ≥ 1.5 is installed (older ClamAV uses MD5, unusable under FIPS) |
+| When air-gap / custom repo | `clamav_repo_baseurl` / `_gpgkey` | `""` | Internal mirror to obtain ClamAV ≥ 1.5; empty = distro/EPEL packages |
 
-| Tag | Phase |
-|-----|-------|
-| `install` | Package installation |
-| `configure` | freshclam.conf + initial DB seed |
-| `service` | systemd service enable/start |
-| `scan` | Scheduled scan timer + service unit deployment |
-
-A no-tags run is a full idempotent reconcile.  Use tags to iterate quickly:
-
-```bash
-# Re-apply freshclam config only
-ansible-playbook site.yml --tags configure
-
-# Redeploy scan units only
-ansible-playbook site.yml --tags scan
-```
-
-## Variable reference
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `clamav_enable_freshclam` | `true` | Enable and start the freshclam update service |
-| `clamav_database_mirror` | `""` | Private/air-gap mirror URL; empty = distro default |
-| `clamav_enable_daemon` | `false` | Install and start the resident `clamd` daemon |
-| `clamav_scan_enabled` | `false` | Deploy and enable the systemd scheduled scan |
-| `clamav_scan_paths` | `[/home, /tmp, /var/tmp]` | Directories to scan recursively |
-| `clamav_scan_schedule` | `"Sun *-*-* 02:00:00"` | systemd `OnCalendar` expression |
-| `clamav_remove_infected` | `false` | Pass `--remove` to clamscan (destructive) |
-| `clamav_scan_log` | `/var/log/clamav/scan.log` | Path for the scheduled-scan log |
-
-## Examples
-
-### Minimal — freshclam only (no daemon, no scheduled scan)
-
-```yaml
-- hosts: webservers
-  become: true
-  roles:
-    - role: clamav
-```
-
-### Enable the resident daemon and scheduled scans
+## Usage
 
 ```yaml
 - hosts: fileservers
@@ -86,34 +47,28 @@ ansible-playbook site.yml --tags scan
       vars:
         clamav_enable_daemon: true
         clamav_scan_enabled: true
-        clamav_scan_paths:
-          - /home
-          - /srv/shares
-          - /tmp
-        clamav_scan_schedule: "Mon..Fri *-*-* 03:30:00"
-        clamav_scan_log: /var/log/clamav/daily-scan.log
+        clamav_scan_paths: [/home, /srv/shares, /tmp]
 ```
 
-### Air-gap environment with internal mirror
+Run it:
 
-```yaml
-- hosts: isolated_hosts
-  become: true
-  roles:
-    - role: clamav
-      vars:
-        clamav_database_mirror: "https://mirror.corp.example.com/clamav"
-        clamav_enable_freshclam: true
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags scan
 ```
 
-## Distro notes
+## Preconditions
 
-| Family | Base packages | Daemon packages | freshclam.conf |
-|--------|---------------|-----------------|----------------|
-| RedHat/EL (EPEL) | `clamav`, `clamav-update` | `clamd`, `clamav-server`, `clamav-server-systemd` | `/etc/freshclam.conf` |
-| Debian/Ubuntu | `clamav`, `clamav-freshclam` | `clamav-daemon` | `/etc/clamav/freshclam.conf` |
+**RedHat/EL only — EPEL required.** ClamAV packages ship in EPEL, not the base repos.
+EPEL must be enabled on the target host before this role runs; the role does not
+install EPEL itself. Debian/Ubuntu: all packages are in the main archive, no extra
+repo needed.
 
-On Debian/Ubuntu the `clamav-freshclam` package ships a pre-enabled systemd
-service that may auto-seed the database on first install. The configure phase
-guards the initial `freshclam` run with a stat check on `main.cvd`/`main.cld`
-so a double-download never occurs.
+## Behaviour
+
+Setting `clamav_database_mirror` writes `DatabaseMirror <url>` into `freshclam.conf`;
+leaving it empty leaves the distro default (`db.local.clamav.net`) in place.
+
+On Debian/Ubuntu the `clamav-freshclam` package ships a pre-enabled systemd service
+that may auto-seed the database on first install. The configure phase guards the
+initial `freshclam` run with a stat check on `main.cvd`/`main.cld` so a double-download
+never occurs.
