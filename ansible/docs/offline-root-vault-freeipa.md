@@ -54,16 +54,65 @@ hashicorp_vault_pki_root_cert: "{{ pki_root_ca_cert }}"
 then run the playbook with `--tags pki,pki_issuer`. Idempotent — the second run
 reports `changed=0`. The phase self-verifies by certificate fingerprint.
 
-Option B — any existing Vault, by hand:
+Option B — any existing Vault, by hand (~5 min). After this, Vault signs
+everything; nothing else is manual until ansible phase 2.
+
+Set once:
 
 ```bash
-vault secrets enable pki && vault secrets tune -max-lease-ttl=87600h pki/
-cat issuing.crt issuing.key | vault write pki/issuers/import/bundle pem_bundle=-
-cat root.crt              | vault write pki/issuers/import/bundle pem_bundle=-   # cert only, for full chains
+export VAULT_ADDR=https://vault.example.com:8200   # token: ~/.vault-token, needs pki/* admin
+export ESCROW=inventories/example/group_vars/all/offline_ca.yml
 ```
 
-(`issuing.crt`/`issuing.key`/`root.crt` = the corresponding fields from the
-escrow bundle; each field's comment says exactly this.)
+1. Extract the three escrow fields to a throwaway dir (the issuing key is
+   plaintext PEM inside the ansible-vault layer — keep it on disk no longer
+   than this session):
+
+   ```bash
+   umask 077 && mkdir -p /tmp/ca-load && cd /tmp/ca-load
+   ansible-vault view "$OLDPWD/$ESCROW" | yq -r '.pki_issuing_ca_cert' > issuing.crt
+   ansible-vault view "$OLDPWD/$ESCROW" | yq -r '.pki_issuing_ca_key'  > issuing.key
+   ansible-vault view "$OLDPWD/$ESCROW" | yq -r '.pki_root_ca_cert'    > root.crt
+   ```
+
+2. Enable + tune the mount (skip `enable` if it already exists):
+
+   ```bash
+   vault secrets enable pki
+   vault secrets tune -max-lease-ttl=87600h pki
+   ```
+
+3. Import the issuing CA (cert + key as ONE bundle, key over stdin — never
+   argv), then the root cert (no key — it lets the mount build the full
+   `ca_chain`):
+
+   ```bash
+   cat issuing.crt issuing.key | vault write -format=json pki/issuers/import/bundle pem_bundle=-
+   cat root.crt                | vault write pki/issuers/import/bundle pem_bundle=-
+   ```
+
+4. Confirm the issuing CA is the mount's default issuer — Vault auto-defaults
+   the FIRST issuer imported into an empty mount; the two fingerprints must
+   match:
+
+   ```bash
+   vault read -field=certificate pki/cert/ca | openssl x509 -noout -fingerprint -sha256
+   openssl x509 -in issuing.crt -noout -fingerprint -sha256
+   # mismatch only: vault list pki/issuers, then
+   #   vault write pki/config/issuers default=<issuing-ca-issuer-id>
+   ```
+
+5. Verify the chain serves both certs (issuing CA first, root last), then
+   destroy the extracted key:
+
+   ```bash
+   curl -fsS "$VAULT_ADDR/v1/pki/ca_chain" | grep -c 'BEGIN CERTIFICATE'   # expect: 2
+   cd / && rm -rf /tmp/ca-load
+   ```
+
+Done — Vault PKI holds the issuing CA and signs every CSR from here. Continue
+with Step 3 (turnkey wrapper) or the Manual path below; ansible phase 2
+finishes the install either way.
 
 ## Step 3 — deploy FreeIPA (one command per server)
 
