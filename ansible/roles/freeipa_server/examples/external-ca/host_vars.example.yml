@@ -42,10 +42,11 @@ freeipa_server_no_pkinit: false
 
 # ── SIGN — pick one path ─────────────────────────────────────────────────────
 #
-# A) Automated (recommended when Vault holds the issuing CA):
+# A) Automated (recommended — Vault holds the issuing CA):
 #    docs/offline-root-vault-freeipa.md — offline root ceremony → import into Vault
-#    → freeipa-signed-install.sh with freeipa_signed_install_signer=vault.
-#    Inventory needs vault_pki_addr (+ root at certificate_authority_pki_dir/root/root.crt).
+#    → freeipa-signed-install.sh (Vault is the only signer). Inventory needs
+#    vault_pki_addr + the escrow bundle offline_ca.yml in group_vars/all/
+#    (its pki_root_ca_cert var feeds phase-2 trust distribution).
 #
 # B) Manual off-Ansible, with YOUR org root CA:
 #    Fetch the CSR and have your org root CA (or its issuing sub-CA) sign it as a CA

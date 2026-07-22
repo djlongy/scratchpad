@@ -5,7 +5,7 @@
 # external-ca is inherently two-phase and freeipa.ansible_freeipa 1.16.0 only
 # resumes "step two" across SEPARATE ansible-playbook processes (see the playbook
 # header). So this runs the playbook TWICE, back-to-back:
-#   phase 1 : emit the CSR + sign it off the org root (STOPS before completion)
+#   phase 1 : emit the CSR + sign it off the Vault PKI issuing CA (STOPS before completion)
 #   phase 2 : push the signed cert + chain back, complete the install, distribute
 # Phase 2 runs ONLY if phase 1 succeeds; a phase-1 failure aborts with a message.
 #
@@ -15,7 +15,7 @@
 #   <host>               inventory host/pattern for the IPA server (passed as --limit)
 #   INVENTORY            inventory path (default: inventories/example/hosts.yml)
 #   [extra ansible args] forwarded verbatim to both invocations, e.g.
-#                        -e certificate_authority_pki_dir=/tmp/scratch-pki   (scratch PKI)
+#                        -e freeipa_signed_install_pki_dir=/tmp/scratch-pki   (scratch PKI)
 #
 # Both phases stay documented and hand-runnable — this wrapper is only the turnkey
 # convenience over:

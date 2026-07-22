@@ -72,14 +72,14 @@ Prerequisites, both one-liners:
 1. Inventory points at Vault: `vault_pki_addr: "https://vault.example.com:8200"`
    (token comes from `~/.vault-token`; it needs write on
    `pki/root/sign-intermediate`).
-2. The PUBLIC root cert exists at `<certificate_authority_pki_dir>/root/root.crt`
-   on the control node — phase 2 distributes it to trust stores from there.
-   It is in the escrow bundle as `pki_root_ca_cert`; write it out once.
+2. The encrypted escrow bundle (`offline_ca.yml` from Step 1) sits in the
+   inventory's `group_vars/all/` — phase 2 installs the trust anchor straight
+   from its `pki_root_ca_cert` var. No root.crt file to write out.
 
 Then:
 
 ```bash
-scripts/freeipa-signed-install.sh <host> -e freeipa_signed_install_signer=vault
+scripts/freeipa-signed-install.sh <host>
 ```
 
 Done. One command runs the whole thing:
@@ -124,7 +124,7 @@ need them individually.
 
 Sanitised copies live under `inventories/example/group_vars/all/`:
 
-- `vault_pki.yml` — `vault_pki_addr` / mount (and optional default signer)
+- `vault_pki.yml` — `vault_pki_addr` / mount
 - `offline_ca_import.yml.example` — map escrow vars onto `pki_issuer` role vars
 
 Copy the example import file, place your **encrypted** `offline_ca.yml` beside

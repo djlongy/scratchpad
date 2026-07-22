@@ -1,11 +1,8 @@
 ---
-# Vault PKI signer for freeipa_signed_install_signer=vault (control-node API calls).
+# Vault PKI signer for the FreeIPA signed install (control-node API calls).
 # The mount's default issuer is the offline-ca issuing CA imported into pki/
-# (see docs/offline-root-vault-freeipa.md).
+# (see docs/offline-root-vault-freeipa.md). Vault is the ONLY signer — the
+# file-based certificate_authority branch was deprecated and removed from
+# playbooks/freeipa_signed_install.yml.
 vault_pki_addr: "https://vault.{{ env }}.{{ domain }}:8200"
 vault_pki_mount: "pki"
-
-# Opt in to Vault signing for the FreeIPA external-ca flow. Override per run with
-# -e freeipa_signed_install_signer=certificate_authority if you prefer the
-# file-based certificate_authority role instead.
-# freeipa_signed_install_signer: "vault"

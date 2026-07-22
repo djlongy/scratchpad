@@ -11,7 +11,7 @@ the issuing CA.
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_signed_install.yml \
-  -e freeipa_signed_install_signer=vault
+  -e freeipa_signed_install_phase=1
 ```
 
 ## Requirements
@@ -66,7 +66,7 @@ Run it:
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_signed_install.yml \
-  -e freeipa_signed_install_signer=vault
+  -e freeipa_signed_install_phase=1
 ```
 
 ## Behaviour

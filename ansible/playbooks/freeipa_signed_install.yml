@@ -1,10 +1,10 @@
 ---
 # playbooks/freeipa_signed_install.yml
 #
-# TURNKEY signed FreeIPA install — external-ca mode, signed by an org root CA held
-# by the certificate_authority role. It runs as TWO sequential ansible-playbook
-# invocations selected by an explicit phase gate. Prefer the wrapper (one command,
-# both phases, aborts on failure):
+# TURNKEY signed FreeIPA install — external-ca mode, signed by the Vault PKI
+# issuing CA (the offline-ca escrow bundle imported into Vault). It runs as TWO
+# sequential ansible-playbook invocations selected by an explicit phase gate.
+# Prefer the wrapper (one command, both phases, aborts on failure):
 #
 #   scripts/freeipa-signed-install.sh <host>
 #
@@ -36,12 +36,13 @@
 #   phase 1 : freeipa_server install with ca_mode=external-ca,
 #             external_cert_files=[] and external_ca_allow_csr_phase=true → the
 #             install STOPS after writing /root/ipa.csr; the CSR is fetched to the
-#             control node and signed off the org root (certificate_authority
-#             sign_ipa). The run ends here — IPA is NOT up yet.
+#             control node and signed off the Vault PKI issuing CA (vault_pki
+#             sign_external). The run ends here — IPA is NOT up yet.
 #   phase 2 : (a fresh process) copy the signed IPA CA cert + root chain back,
 #             re-run freeipa_server install with external_cert_files set → the
-#             installer resumes step two and COMPLETES; then certificate_authority
-#             distribute drops the org root anchor into the host trust store.
+#             installer resumes step two and COMPLETES; then the org root anchor
+#             is written into the host trust store straight from the Ansible-Vault
+#             escrow var pki_root_ca_cert (offline_ca.yml).
 # The "phase gate" play below targets the freeipa group (so `--limit <host>` does
 # not filter it out) but runs its assert/banners on the control node (delegate_to:
 # localhost, run_once) — so a hand-run that forgets the phase var gets the actionable
@@ -50,26 +51,29 @@
 # single invocation only ever executes ONE phase's plays.
 #
 # ── WHY tasks_from: (playbook-level include_role with a task file) ────────────
-# 1. INSTALL-SCOPING. A full freeipa_server role run also executes iam/dns/
-#    hardening/backup phases AFTER install. Those are intentionally OUT OF SCOPE of
-#    a signed install; `tasks_from: install` runs ONLY the install path
-#    (resolve_credentials + primary/replica). Reconcile users/groups/DNS separately
-#    after phase 2.
-# 2. NEVER-TAGS. certificate_authority tags sign_ipa and distribute `never`
-#    (opt-in). `tasks_from: sign_ipa` / `tasks_from: distribute` invokes those
-#    phase task files directly so the turnkey command needs no --tags.
-# (These roles are composed at PLAYBOOK level — include_role/import_role INSIDE a
-#  role is what to avoid, not here.)
+# INSTALL-SCOPING. A full freeipa_server role run also executes iam/dns/
+# hardening/backup phases AFTER install. Those are intentionally OUT OF SCOPE of
+# a signed install; `tasks_from: install` runs ONLY the install path
+# (resolve_credentials + primary/replica). Reconcile users/groups/DNS separately
+# after phase 2. (Roles are composed at PLAYBOOK level — include_role/import_role
+# INSIDE a role is what to avoid, not here.)
+#
+# SIGNER — vault_pki ONLY. The CSR is signed by the Vault PKI mount whose default
+# issuer is the offline-ca issuing CA (escrow bundle imported at Vault build time).
+# The file-based certificate_authority signer was deprecated and removed from this
+# flow; passing freeipa_signed_install_signer fails with guidance. Trust
+# distribution reads the PUBLIC root from the Ansible-Vault escrow var
+# pki_root_ca_cert — no pki/root/root.crt file is needed.
 #
 # become: the phase task files rely on the role's main.yml wrappers for escalation,
 # which we bypass — so become: true is set on each work play that needs root
 # (preflight mutates hostname/hosts, install runs ipa-server-install). The
-# certificate_authority phases self-manage delegation/become internally (sign_ipa
-# runs control-node only; distribute self-escalates per task).
+# vault_pki sign runs delegated on the control node.
 #
-# PKI paths derive from certificate_authority_pki_dir (default pki/ under the repo,
-# overridable with -e) so both phases agree on where the CSR, signed cert and chain
-# live. env = the environment label, used as the output stem, so outputs land at
+# PKI paths derive from freeipa_signed_install_pki_dir (default pki/ under the
+# repo, overridable with -e; legacy name certificate_authority_pki_dir still
+# honoured) so both phases agree on where the CSR, signed cert and chain live.
+# env = the environment label, used as the output stem, so outputs land at
 # pki/ipa/<env>-ipa-ca.crt + <env>-chain.crt.
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,7 +109,7 @@
       ansible.builtin.debug:
         msg: >-
           PHASE 1 selected — freeipa_server install emits /root/ipa.csr and STOPS;
-          the CSR is fetched and signed off the org root. Run phase 2 next.
+          the CSR is fetched and signed off the Vault PKI issuing CA. Run phase 2 next.
       when: (freeipa_signed_install_phase | default('') | int) == 1
       delegate_to: localhost
       run_once: true
@@ -130,7 +134,7 @@
   # control-node dir task below overrides with become: false.
   become: true
   vars:
-    _ca_pki_dir: "{{ certificate_authority_pki_dir | default(playbook_dir + '/../../pki') }}"
+    _ca_pki_dir: "{{ freeipa_signed_install_pki_dir | default(certificate_authority_pki_dir | default(playbook_dir + '/../../pki')) }}"
     _ipa_csr_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa.csr"
   tasks:
     - name: Phase 1 — emit and fetch the FreeIPA external-ca CSR
@@ -175,46 +179,42 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # hosts: freeipa (NOT localhost) so the documented `--limit <host>` command does not
 # filter this play out — the sign itself is delegated to the control node.
-- name: "FreeIPA signed install — phase 1 (sign the IPA CSR off the org root)"
+- name: "FreeIPA signed install — phase 1 (sign the IPA CSR via the Vault PKI issuing CA)"
   hosts: freeipa
   gather_facts: false
   become: false
   vars:
-    _ca_pki_dir: "{{ certificate_authority_pki_dir | default(playbook_dir + '/../../pki') }}"
+    _ca_pki_dir: "{{ freeipa_signed_install_pki_dir | default(certificate_authority_pki_dir | default(playbook_dir + '/../../pki')) }}"
     _ipa_csr_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa.csr"
   tasks:
-    - name: Phase 1 — sign the fetched CSR off the org root
+    - name: Phase 1 — sign the fetched CSR off the Vault PKI issuing CA
       when: (freeipa_signed_install_phase | default('') | int) == 1
       block:
-        # Signer selection: freeipa_signed_install_signer defaults to
-        # certificate_authority (community.crypto, file-based root on the control
-        # node); 'vault' signs off a HashiCorp Vault PKI issuing CA instead
-        # (<mount>/root/sign-intermediate — see roles/vault_pki). Mutually
-        # exclusive; the rest of the flow is identical. Phase 2's trust
-        # distribution reads the ROOT cert at
-        # <certificate_authority_pki_dir>/root/root.crt REGARDLESS of signer, so
-        # a vault run must still have the public root cert at that path.
-        - name: Sign the FreeIPA CA certificate off the root (certificate_authority sign_ipa)
-          ansible.builtin.include_role:
-            name: certificate_authority
-            tasks_from: sign_ipa
-            # delegate_to is invalid directly on include_role; apply: forwards it to
-            # the included sign_ipa tasks so signing runs on the control node even
-            # though this play targets the freeipa host (to survive --limit).
-            apply:
-              delegate_to: localhost
-              run_once: true
-          vars:
-            certificate_authority_ipa_csr_path: "{{ _ipa_csr_control_path }}"
-            certificate_authority_ipa_name: "{{ env | default('ipa') }}"
-          when: (freeipa_signed_install_signer | default('certificate_authority')) != 'vault'
+        # SIGNER — vault_pki ONLY. The mount's default issuer is the offline-ca
+        # issuing CA (escrow bundle imported at Vault build time); it signs the IPA
+        # CSR via <mount>/root/sign-intermediate. The file-based
+        # certificate_authority signer branch was deprecated and deleted.
+        - name: Assert no removed signer was requested (certificate_authority is gone)
+          ansible.builtin.assert:
+            that:
+              - (freeipa_signed_install_signer | default('vault')) == 'vault'
+            fail_msg: >-
+              freeipa_signed_install_signer='{{ freeipa_signed_install_signer | default('') }}'
+              is no longer supported — this flow signs via the Vault PKI issuing CA
+              only (offline-ca escrow imported into Vault). Remove the variable (or
+              set it to 'vault'). The certificate_authority signer branch was
+              deprecated and deleted.
+            quiet: true
+          delegate_to: localhost
+          run_once: true
 
         - name: Sign the FreeIPA CA certificate off the Vault PKI issuing CA (vault_pki sign_external)
           ansible.builtin.include_role:
             name: vault_pki
             tasks_from: sign_external
-            # Same apply: trick — the Vault API calls run on the control node even
-            # though this play targets the freeipa host.
+            # delegate_to is invalid directly on include_role; apply: forwards it so
+            # the Vault API calls run on the control node even though this play
+            # targets the freeipa host (to survive --limit).
             apply:
               delegate_to: localhost
               run_once: true
@@ -225,7 +225,6 @@
             vault_pki_sign_external_csr_path: "{{ _ipa_csr_control_path }}"
             vault_pki_sign_external_cert_out: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa-ca.crt"
             vault_pki_sign_external_chain_out: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-chain.crt"
-          when: (freeipa_signed_install_signer | default('certificate_authority')) == 'vault'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PHASE 2 — push the signed cert + chain back, complete install, distribute root
@@ -236,11 +235,10 @@
   hosts: freeipa
   gather_facts: true
   # Play-level become for the phase-2 install (tasks_from bypasses the role's
-  # become wrappers). certificate_authority distribute self-manages become per
-  # task internally, so play become is harmless there.
+  # become wrappers) and for the trust-anchor copy below.
   become: true
   vars:
-    _ca_pki_dir: "{{ certificate_authority_pki_dir | default(playbook_dir + '/../../pki') }}"
+    _ca_pki_dir: "{{ freeipa_signed_install_pki_dir | default(certificate_authority_pki_dir | default(playbook_dir + '/../../pki')) }}"
     _ipa_cert_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-ipa-ca.crt"
     _ipa_chain_control_path: "{{ _ca_pki_dir }}/ipa/{{ env | default('ipa') }}-chain.crt"
     _ipa_cert_host_path: "/root/{{ env | default('ipa') }}-ipa-ca.crt"
@@ -275,7 +273,35 @@
               - "{{ _ipa_cert_host_path }}"
               - "{{ _ipa_chain_host_path }}"
 
-        - name: Distribute the org root anchor into the host OS trust store (certificate_authority distribute)
-          ansible.builtin.include_role:
-            name: certificate_authority
-            tasks_from: distribute
+        # Trust distribution — the PUBLIC offline root comes straight from the
+        # Ansible-Vault escrow bundle (pki_root_ca_cert in group_vars/all/
+        # offline_ca.yml); no control-node pki/root/root.crt file is involved.
+        - name: Assert the escrow root cert is available (pki_root_ca_cert)
+          ansible.builtin.assert:
+            that:
+              - pki_root_ca_cert is defined
+              - pki_root_ca_cert | length > 0
+            fail_msg: >-
+              pki_root_ca_cert is not defined — trust distribution installs the
+              PUBLIC offline root from the Ansible-Vault escrow bundle. Put the
+              encrypted offline_ca.yml written by scripts/offline-ca.sh setup into
+              this inventory's group_vars/all/ (it defines pki_root_ca_cert /
+              pki_issuing_ca_cert / pki_issuing_ca_key).
+            quiet: true
+          delegate_to: localhost
+          become: false
+          run_once: true
+
+        - name: Distribute the org root anchor into the host OS trust store (escrow root cert)
+          ansible.builtin.copy:
+            content: "{{ pki_root_ca_cert | trim }}\n"
+            dest: "/etc/pki/ca-trust/source/anchors/{{ freeipa_signed_install_trust_anchor_name | default('internal-root-ca') }}.crt"
+            owner: root
+            group: root
+            mode: "0644"
+          notify: Refresh the OS trust store
+  handlers:
+    - name: Refresh the OS trust store
+      ansible.builtin.command: update-ca-trust
+      become: true
+      changed_when: true
