@@ -90,6 +90,81 @@ Done. One command runs the whole thing:
 3. Phase 2 — signed cert goes back, the install completes, the root cert is
    pushed into the estate trust stores
 
+## Manual path — copy-paste up to phase 2
+
+Same result as phase 1 with no ansible — for when you want to watch every step,
+or the control node can't run the playbook yet. Phase 2 stays ansible (it must
+feed the signed certs back through `ansible_freeipa`). ~15 minutes total.
+
+Set once (from `ansible/`); everything below uses these:
+
+```bash
+export ENV=prod                      # output-file stem — MUST match the -e env= passed to phase 2
+export IPA_HOST=ipa01.example.com
+export VAULT_ADDR=https://vault.example.com:8200
+export PKI_DIR=../pki                # the playbook default (repo-root/pki)
+```
+
+**On the IPA host** (~10 min; it EXITS after writing `/root/ipa.csr` — that exit
+is the checkpoint, not a failure):
+
+1. Run the install to its CSR stop:
+
+   ```bash
+   ipa-server-install --unattended --external-ca \
+     --realm EXAMPLE.COM --domain example.com \
+     --hostname "$(hostname -f)" \
+     --ds-password '<dm-password>' --admin-password '<admin-password>'
+   ```
+
+**On your workstation** (~3 min):
+
+2. Fetch the CSR to the exchange path phase 2 reads:
+
+   ```bash
+   mkdir -p "${PKI_DIR}/ipa"
+   scp "root@${IPA_HOST}:/root/ipa.csr" "${PKI_DIR}/ipa/${ENV}-ipa.csr"
+   ```
+
+3. Sign it off the Vault issuing CA. `use_csr_values=true` is mandatory — it
+   preserves `O=<REALM>` in the subject; without it phase 2 rejects the cert:
+
+   ```bash
+   vault write -field=certificate pki/root/sign-intermediate \
+     csr=@"${PKI_DIR}/ipa/${ENV}-ipa.csr" use_csr_values=true ttl=87600h \
+     > "${PKI_DIR}/ipa/${ENV}-ipa-ca.crt"
+   ```
+
+4. Assemble the chain — IPA CA, then issuing CA, then root. The `printf '\n'`
+   between blocks is load-bearing (bare `cat a b` glues `END` to `BEGIN`):
+
+   ```bash
+   { cat "${PKI_DIR}/ipa/${ENV}-ipa-ca.crt"; printf '\n'
+     curl -fsS "${VAULT_ADDR}/v1/pki/ca_chain"; printf '\n'
+   } > "${PKI_DIR}/ipa/${ENV}-chain.crt"
+   ```
+
+5. Verify before handing over — expect `... ${ENV}-ipa-ca.crt: OK`
+   (`ca_chain` returns two certs: issuing CA first, root last):
+
+   ```bash
+   curl -fsS "${VAULT_ADDR}/v1/pki/ca_chain" > /tmp/mount-chain.pem
+   awk '/BEGIN CERT/{n++} n==2' /tmp/mount-chain.pem > /tmp/root.pem
+   openssl verify -CAfile /tmp/root.pem -untrusted /tmp/mount-chain.pem \
+     "${PKI_DIR}/ipa/${ENV}-ipa-ca.crt"
+   ```
+
+**Handover** — phase 2 is ansible from here (fresh process; completes the
+install + distributes trust):
+
+```bash
+ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_signed_install.yml \
+  --limit "${IPA_HOST}" -e freeipa_signed_install_phase=2 -e "env=${ENV}"
+```
+
+File names must keep the `${ENV}` stem — phase 2 reads exactly
+`${PKI_DIR}/ipa/${ENV}-ipa-ca.crt` and `${ENV}-chain.crt`.
+
 ## Why the wrapper runs two ansible processes (read only if curious)
 
 `ipa-server-install --external-ca` exits after emitting its CSR and must be
