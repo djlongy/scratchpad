@@ -1,19 +1,21 @@
 ---
 # roles/vsphere_vm/tasks/create.yml
 # Ensure THIS host's VM (main.yml imports this whenever the host's state ≠ absent).
-# We do NOT pre-check existence — the modules are idempotent, so this runs on every
-# desired-present host and reconciles: a missing VM is cloned, an existing one is a
-# fast per-VM no-op (or a reconfigure if its spec drifted). This replaces the old
-# up-front whole-inventory vmware_vm_info gather, which was the slow part.
-# Runs on the controller against vCenter; hosts create their VMs in parallel.
+# GOSC mode makes ONE cheap per-VM existence probe (vmware_guest_info) to split
+# "staged create" from "reconcile" — a fresh clone must be powered on in a separate
+# call from the clone (see the GOSC block), while an existing VM must never be
+# power-cycled by that staging. Still no whole-inventory gather: the probe, like
+# every call here, is per-VM and hosts run in parallel on the controller.
 #
 # Two provisioning modes (_vsphere_guest.provision_via_guestinfo), both reading
 # the same spec fields (networks[*].{name,ip,netmask,gateway,interface},
 # customization):
 #
-#   GOSC (default) → ONE vmware_guest call clones + customizes + powers on. The
-#     customization spec makes vSphere fire an async first-boot event that
-#     disconnects the NIC (a known quirk) — healed afterwards by connect.yml.
+#   GOSC (default) → STAGED: clone powered off with the GOSC spec, assert every
+#     vNIC connected+start-connected while off, then power on. The NIC enters
+#     first boot live and never disconnects (one-call clone+power-on loses the
+#     connect flags and orphans the NIC — see the block comment below).
+#     connect.yml stays as defense-in-depth and short-circuits on its IP pre-check.
 #
 #   GuestInfo → clone with NO networks + NO customization, so vmware_guest attaches
 #     NO GOSC spec and the NIC is never disconnected. Each vNIC's portgroup is set
@@ -46,38 +48,116 @@
   delegate_to: localhost
   become: false
 
-# ─── GOSC mode (default) ──────────────────────────────────────────────────────
-- name: Create | Build the VM — GOSC ({{ _vsphere_guest.name }})
-  vars:
-    # Force NICs connected + start-connected. Necessary-but-not-sufficient under
-    # GOSC (the async customize re-disconnects — connect.yml heals it).
-    _gosc_networks: >-
-      {{ _vsphere_guest.networks | map('combine', {'connected': true, 'start_connected': true}) | list }}
-  community.vmware.vmware_guest:
-    datacenter: "{{ vsphere_vm_datacenter }}"
-    cluster: "{{ vsphere_vm_cluster | default(omit) }}"
-    esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
-    resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
-    folder: "{{ _vsphere_guest.folder }}"
-    name: "{{ _vsphere_guest.name }}"
-    template: "{{ _vsphere_guest.template }}"
-    datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
-    state: "{{ _vsphere_guest.state }}"
-    # Native vmware_guest dicts, passed through 1:1.
-    hardware: "{{ _vsphere_guest.hardware }}"
-    disk: "{{ _vsphere_guest.disk }}"
-    networks: "{{ _gosc_networks }}"
-    customization: "{{ _vsphere_guest.customization }}"
-    # IP waiting is deferred to connect.yml (after the NIC reconnect); waiting here
-    # would block for 20+ minutes while the NIC is GOSC-disconnected.
-    wait_for_ip_address: false
-  register: _vsphere_created
-  retries: "{{ vsphere_vm_create_retries }}"
-  delay: "{{ vsphere_vm_create_delay }}"
-  until: _vsphere_created is succeeded
+# ─── GOSC mode (default) — STAGED power-on ────────────────────────────────────
+# vmware_guest's one-call clone+customize+power-on creates the vNIC
+# connected=false/startConnected=false (the flags in `networks` do not survive that
+# path), and a NIC that enters FIRST power-on disconnected is never reconnected by
+# any layer: vpxd only restores NICs it disconnected itself, and the guest's
+# deployPkg enable-nics either no-ops (guestId outside the GOSC matrix) or is
+# reverted when vCenter reasserts its authoritative device state after the GOSC
+# reboot. Live-proven 2026-07-23 (see ansible/docs/vsphere-gosc-nic-disconnect.md).
+#
+# The fix is SEQUENCING: clone powered OFF with the GOSC spec attached, assert
+# every NIC connected+start-connected while the VM is off, then power on. The NIC
+# then enters first boot already start-connected and stays connected through
+# customization and the GOSC reboot — static IP in ~80-90 s, no heal needed
+# (proven 5/5, on correct AND wrong template guestIds).
+#
+# An existing VM must never be power-cycled by the staged path, so a cheap per-VM
+# existence probe splits create (staged) from reconcile (plain vmware_guest with
+# the declared state, exactly the old behaviour).
+- name: Create | Build the VM — GOSC, staged power-on
   when: not _vsphere_guest.provision_via_guestinfo
   delegate_to: localhost
   become: false
+  block:
+    - name: Create | Probe whether this VM already exists
+      community.vmware.vmware_guest_info:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+      register: _vsphere_probe
+      failed_when: false
+
+    # A successful probe returns `instance`; a failed one only `msg`. Missing
+    # `instance` = the VM does not exist yet → run the staged create below.
+    - name: Create | Mark whether the staged create is needed
+      ansible.builtin.set_fact:
+        _vsphere_vm_absent: "{{ _vsphere_probe.instance is not defined }}"
+
+    # Step 1: clone POWERED OFF with the full spec (GOSC customization included —
+    # the imc package is attached at clone time and fires at first power-on).
+    - name: Create | Clone powered-off with the GOSC spec ({{ _vsphere_guest.name }})
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        cluster: "{{ vsphere_vm_cluster | default(omit) }}"
+        esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        template: "{{ _vsphere_guest.template }}"
+        datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
+        state: poweredoff
+        hardware: "{{ _vsphere_guest.hardware }}"
+        disk: "{{ _vsphere_guest.disk }}"
+        networks: "{{ _vsphere_guest.networks }}"
+        customization: "{{ _vsphere_guest.customization }}"
+      register: _vsphere_created
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_created is succeeded
+      when: _vsphere_vm_absent | bool
+
+    # Step 2: assert every vNIC connected + start-connected WHILE POWERED OFF.
+    # This is what the one-call path loses; with it set, the NIC enters first
+    # power-on live and vSphere never disconnects it.
+    - name: Create | Assert each vNIC start-connected before first power-on
+      community.vmware.vmware_guest_network:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        label: "Network adapter {{ _vsphere_guest.networks.index(item) + 1 }}"
+        network_name: "{{ item.name }}"
+        connected: true
+        start_connected: true
+        state: present
+      loop: "{{ _vsphere_guest.networks }}"
+      loop_control:
+        label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
+      when: _vsphere_vm_absent | bool
+
+    # Step 3: first power-on (only when the declared state wants it). GOSC runs
+    # with the NIC connected; connect.yml's IP pre-check then short-circuits.
+    - name: Create | Power on (staged first boot)
+      community.vmware.vmware_guest_powerstate:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: powered-on
+      when:
+        - _vsphere_vm_absent | bool
+        - _vsphere_guest.state == 'poweredon'
+
+    # Reconcile path: the VM already exists — plain idempotent vmware_guest with
+    # the declared state (never the staged power-off, which would bounce a live
+    # guest). Spec drift (cpu/memory/disk/networks) converges here.
+    - name: Create | Reconcile the existing VM ({{ _vsphere_guest.name }})
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        cluster: "{{ vsphere_vm_cluster | default(omit) }}"
+        esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        template: "{{ _vsphere_guest.template }}"
+        datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
+        state: "{{ _vsphere_guest.state }}"
+        hardware: "{{ _vsphere_guest.hardware }}"
+        disk: "{{ _vsphere_guest.disk }}"
+        networks: "{{ _vsphere_guest.networks }}"
+        wait_for_ip_address: false
+      register: _vsphere_reconciled
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_reconciled is succeeded
+      when: not (_vsphere_vm_absent | bool)
 
 # ─── GuestInfo mode ───────────────────────────────────────────────────────────
 - name: Create | Build the VM — GuestInfo, no GOSC ({{ _vsphere_guest.name }})

@@ -65,18 +65,19 @@ vsphere_vm_scsi_type: paravirtual
 vsphere_vm_wait_for_ssh: false
 vsphere_vm_ssh_timeout: 300                       # max seconds to wait for guest SSH
 
-# ── Robust spin-up (NIC reconnect + bounded waits) ───────────────────────────
-# After a clone+customize, vSphere leaves the NIC disconnected (a known bug), so
-# the guest never gets an IP. Critically, the disconnect is a ONE-TIME event
-# applied during the guest's first-boot customization — which runs ASYNC and can
-# re-disconnect the NIC AFTER a single up-front reconnect. So one reconnect can
-# lose the race.
+# ── Robust spin-up (NIC state + bounded waits) ───────────────────────────────
+# GOSC creates are STAGED (see create.yml): clone powered off, assert every vNIC
+# connected+start-connected while off, then power on — the NIC enters first boot
+# live and is never disconnected, so a fresh clone reaches its IP in ~80-90 s
+# with no reconnect needed. (The one-call clone+customize+power-on path loses
+# the connect flags and orphans the NIC permanently — live-proven 2026-07-23.)
 #
-# The role therefore runs a bounded MULTI-PASS poll-and-reconnect: each pass
-# re-asserts every still-disconnected NIC, then briefly waits for an IP; it
-# repeats until every VM has an IP or the passes run out. Whichever pass lands
-# just after customization finishes makes the reconnect stick — so recovery is
-# ~one pass-interval, not a single long timeout. Bounded total =
+# The bounded MULTI-PASS poll-and-reconnect below remains as defense-in-depth
+# for VMs an earlier (pre-staged) run left disconnected, manual power events,
+# or any regression: each pass re-asserts every still-disconnected NIC, then
+# briefly waits for an IP; it repeats until the VM has an IP or the passes run
+# out. On a healthy staged create it is just the bounded IP wait (the pre-check
+# short-circuits the NIC writes). Bounded total =
 # connect_passes * connect_pass_retries * connect_pass_delay seconds.
 #
 # Set vsphere_vm_connect_nics: false for "trust vCenter" mode — the entire
@@ -112,7 +113,7 @@ vsphere_vm_connect_pass_delay: 10                # seconds between polls within 
 # setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
 # becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
 # (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the knowledge base note "vSphere — Cloned VM NIC Disconnects
+# no new inventory. See the SecondBrain note "vSphere — Cloned VM NIC Disconnects
 # Under GOSC; Use cloud-init GuestInfo" and the role README.
 #
 # REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
