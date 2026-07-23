@@ -34,15 +34,19 @@ vsphere_vm_validate_certs: false               # labs use self-signed vCenter ce
 vsphere_vm_folder: ""                          # e.g. "swarm/alma"; "" = DC VM root
 vsphere_vm_datastore: ""                       # default datastore for clones
 
-# ── Per-VM hardware defaults (override per host/group) ───────────────────────
-# Flat scalars cover the common case; vsphere_vm_hardware carries any EXTRA
-# native community.vmware.vmware_guest hardware keys (boot_firmware, scsi,
-# hotadd_cpu, …) and is merged OVER the pair — a num_cpus/memory_mb key there
-# wins. Keys never set inherit from the source template — the right behaviour
-# for clones. vsphere_vm_disk stays a NATIVE vmware_guest disk list, passed 1:1.
-vsphere_vm_cpu: 2                                # → hardware.num_cpus
-vsphere_vm_memory: 4096                          # MB → hardware.memory_mb
-vsphere_vm_hardware: {}                          # extra native hardware keys
+# ── Per-VM hardware (native community.vmware.vmware_guest `hardware` dict) ───
+# Passed 1:1 as the module's `hardware:` parameter. Shape matches the module
+# contract exactly — see community.vmware.vmware_guest (num_cpus, memory_mb,
+# boot_firmware, scsi, hotadd_cpu, nested_virt, …). Keys never set inherit from
+# the source template (right behaviour for clones). Inventory may replace this
+# dict wholesale; include every key you care about when overriding.
+#
+# Deprecated aliases (still honoured if set in inventory, no role default):
+#   vsphere_vm_cpu     → folds into hardware.num_cpus
+#   vsphere_vm_memory  → folds into hardware.memory_mb (MB)
+vsphere_vm_hardware:
+  num_cpus: 2
+  memory_mb: 4096
 vsphere_vm_disk:
   - size_gb: 40                                  # primary disk — must be >= the template's
     type: thin                                   # thin | thick | eagerzeroedthick
@@ -113,8 +117,7 @@ vsphere_vm_connect_pass_delay: 10                # seconds between polls within 
 # setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
 # becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
 # (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the SecondBrain note "vSphere — Cloned VM NIC Disconnects
-# Under GOSC; Use cloud-init GuestInfo" and the role README.
+# no new inventory. See the role README (GuestInfo provisioning mode).
 #
 # REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
 # (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
@@ -146,9 +149,9 @@ vsphere_vm_provision_via_guestinfo: false
 # RETIRED; the role refuses them with a migration message. Per-host vars (all
 # optional except the template; they fall back to the role defaults above):
 #   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
-#   vsphere_vm_cpu / _memory / _hardware (extra keys) / _disk / _state / _folder / _datastore,
-#   vsphere_vm_networks (else derived from ansible_host + the vars below),
-#   vsphere_vm_customization (else derived from hostname/domain/dns),
+#   vsphere_vm_hardware (native num_cpus/memory_mb/…) / _disk / _state / _folder /
+#   _datastore, vsphere_vm_networks (else derived from ansible_host + the vars
+#   below), vsphere_vm_customization (else derived from hostname/domain/dns),
 #   vsphere_vm_provision_via_guestinfo, vsphere_vm_tags, vsphere_vm_guestinfo_userdata.
 #
 # DROP-IN MAPPING for inventories whose hosts already carry exported bare vars
@@ -157,8 +160,9 @@ vsphere_vm_provision_via_guestinfo: false
 # group_vars templates resolve per host, so each host's values flow through:
 #   vsphere_vm_template: "{{ template }}"
 #   vsphere_vm_folder: "{{ folder }}"
-#   vsphere_vm_cpu: "{{ cpus }}"
-#   vsphere_vm_memory: "{{ memory }}"
+#   vsphere_vm_hardware:
+#     num_cpus: "{{ cpus | int }}"
+#     memory_mb: "{{ memory | int }}"
 #   vsphere_vm_disk: "{{ disks }}"
 #   vsphere_vm_networks: "{{ networks }}"
 #   vsphere_vm_customization:

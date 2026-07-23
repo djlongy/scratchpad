@@ -22,13 +22,15 @@
     _vsphere_guest:
       name: "{{ vsphere_vm_name | default(canonical_hostname | default(inventory_hostname)) }}"
       template: "{{ vsphere_vm_template }}"
-      # Flat cpu/memory scalars build the native vmware_guest hardware dict;
-      # vsphere_vm_hardware merges extra native keys (boot_firmware, scsi, …)
-      # over the pair. Keys never set inherit from the source template, which
-      # is what you want for clones. Disk stays a native list, passed 1:1.
+      # Native community.vmware.vmware_guest `hardware` dict (num_cpus,
+      # memory_mb, …), passed 1:1. Optional deprecated aliases vsphere_vm_cpu /
+      # vsphere_vm_memory fold on top when inventory still sets them.
       hardware: >-
-        {{ {'num_cpus': vsphere_vm_cpu | int, 'memory_mb': vsphere_vm_memory | int}
-           | combine(vsphere_vm_hardware) }}
+        {{ vsphere_vm_hardware
+           | combine({'num_cpus': vsphere_vm_cpu | int}
+                     if (vsphere_vm_cpu is defined) else {})
+           | combine({'memory_mb': vsphere_vm_memory | int}
+                     if (vsphere_vm_memory is defined) else {}) }}
       disk: "{{ vsphere_vm_disk }}"
       # The two vSphere modules want different dialects of the SAME location:
       #   folder      → community.vmware.vmware_guest `folder:`      — ABSOLUTE

@@ -53,7 +53,7 @@ below).
 | Optional | `vsphere_vm_datastore` | `""` | Default datastore for the clone |
 | Optional | `vsphere_vm_network` / `vsphere_vm_netmask` / `ansible_host` | `""` / `255.255.255.0` / n/a | Auto-derived static NIC — dvPortGroup, netmask, and the guest's static IP |
 | Optional | `vsphere_vm_dns` | `[]` | DNS servers for guest customization |
-| Optional | `vsphere_vm_cpu` / `vsphere_vm_memory` | `2` / `4096` | vCPU count / memory (MB) |
+| Optional | `vsphere_vm_hardware` | `{num_cpus: 2, memory_mb: 4096}` | Native `vmware_guest` `hardware` dict (module shape 1:1) |
 | Optional | `vsphere_vm_disk` | `[{size_gb: 40, type: thin}]` | Native `vmware_guest` disk list, primary first |
 | Optional | `vsphere_vm_wait_for_ssh` | `false` | Chain an on-guest role in the same play (waits for SSH + gathers facts) |
 | Optional | `vsphere_vm_provision_via_guestinfo` | `false` | Provision via cloud-init GuestInfo instead of GOSC (no NIC-disconnect race) |
@@ -172,7 +172,7 @@ ansible-playbook -i inventories/<env>/hosts.yml playbook.yml
   OFF with the GOSC spec, asserts every vNIC connected+start-connected while
   off, then powers on — the NIC stays connected through customization and the
   GOSC reboot (live-proven 5/5, ~80–90 s to IP, on correct and wrong template
-  guestIds; write-up: ansible/docs/vsphere-gosc-nic-disconnect.md).
+  guestIds; findings.md on branch `worktree-nic-reconnect-fable`).
   `connect.yml`'s bounded multi-pass poll-and-reconnect
   (`vsphere_vm_connect_passes` × `vsphere_vm_connect_pass_retries` ×
   `vsphere_vm_connect_pass_delay`, default 8 × 10 × 10 ≈ 800s max) remains as
@@ -253,6 +253,10 @@ Build the template so a clone can customize and connect on first boot:
 6. **Template adapter left "Connect at power on"** (the packer default; the
    role re-asserts it per clone anyway).
 
+Estate note: `linux-almalinux-9.7-main` still carries `other5xLinux64Guest` and
+a duplicated `disable_vmware_customization` — both fixed in the packer vars
+(`config/lidcombe/linux-almalinux-9.pkrvars.hcl`); rebuild the template to pick
+them up. The staged create works even on the unfixed template.
 
 ## Out of scope
 

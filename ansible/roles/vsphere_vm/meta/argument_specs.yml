@@ -58,22 +58,27 @@ argument_specs:
         type: str
         required: false
         description: Default datastore for clones.
-      vsphere_vm_cpu:
-        type: int
-        required: false
-        description: vCPU count (becomes hardware.num_cpus).
-      vsphere_vm_memory:
-        type: int
-        required: false
-        description: Memory in MB (becomes hardware.memory_mb).
       vsphere_vm_hardware:
         type: dict
         required: false
         description: >-
-          EXTRA native community.vmware.vmware_guest `hardware` keys
-          (boot_firmware, scsi, hotadd_cpu, and any other key the module
-          accepts), merged over the cpu/memory pair — a num_cpus/memory_mb key
-          here wins. Keys never set inherit from the source template.
+          Native community.vmware.vmware_guest `hardware` dict, passed 1:1.
+          Defaults: {num_cpus: 2, memory_mb: 4096}. Any module-accepted key
+          (boot_firmware, scsi, hotadd_cpu, nested_virt, …) is valid. Keys
+          never set inherit from the source template.
+      vsphere_vm_cpu:
+        type: int
+        required: false
+        description: >-
+          Deprecated alias for hardware.num_cpus. Prefer vsphere_vm_hardware.
+          When defined, overrides vsphere_vm_hardware.num_cpus.
+      vsphere_vm_memory:
+        type: int
+        required: false
+        description: >-
+          Deprecated alias for hardware.memory_mb (MB). Prefer
+          vsphere_vm_hardware. When defined, overrides
+          vsphere_vm_hardware.memory_mb.
       vsphere_vm_disk:
         type: list
         elements: dict

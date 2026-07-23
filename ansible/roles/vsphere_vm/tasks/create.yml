@@ -55,7 +55,7 @@
 # any layer: vpxd only restores NICs it disconnected itself, and the guest's
 # deployPkg enable-nics either no-ops (guestId outside the GOSC matrix) or is
 # reverted when vCenter reasserts its authoritative device state after the GOSC
-# reboot. Live-proven 2026-07-23 (see ansible/docs/vsphere-gosc-nic-disconnect.md).
+# reboot. Live-proven 2026-07-23 (findings.md at the repo root of this branch + .agent/TASK_LOG.md 2026/07/23).
 #
 # The fix is SEQUENCING: clone powered OFF with the GOSC spec attached, assert
 # every NIC connected+start-connected while the VM is off, then power on. The NIC
