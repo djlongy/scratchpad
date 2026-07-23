@@ -8,8 +8,8 @@ argument_specs:
     options:
       hashicorp_vault_image:
         type: str
-        description: Vault container image reference.
-        default: "hashicorp/vault:1.19"
+        description: Vault container image reference (pin an exact version).
+        default: "hashicorp/vault:1.19.5"
       hashicorp_vault_name:
         type: str
         description: Container and compose service name.
@@ -63,6 +63,34 @@ argument_specs:
         type: bool
         description: Fail preflight unless data_mount is a dedicated mountpoint.
         default: true
+      hashicorp_vault_config_dir:
+        type: str
+        description: >-
+          Config dir (vault.hcl, license, compose) — derived from data_mount;
+          override only to relocate.
+        default: "{{ hashicorp_vault_data_mount }}/config"
+      hashicorp_vault_data_dir:
+        type: str
+        description: >-
+          Raft storage dir — derived from data_mount; override only to relocate.
+        default: "{{ hashicorp_vault_data_mount }}/data"
+      hashicorp_vault_certs_dir:
+        type: str
+        description: >-
+          TLS material dir — derived from data_mount; override only to relocate.
+        default: "{{ hashicorp_vault_data_mount }}/certs"
+      hashicorp_vault_keys_dir:
+        type: str
+        description: >-
+          Init/unseal/token material dir — derived from data_mount; override only
+          to relocate.
+        default: "{{ hashicorp_vault_data_mount }}/keys"
+      hashicorp_vault_logs_dir:
+        type: str
+        description: >-
+          Server + audit log dir — derived from data_mount; override only to
+          relocate.
+        default: "{{ hashicorp_vault_data_mount }}/logs"
       hashicorp_vault_api_port:
         type: int
         description: Vault API / listener port.
@@ -107,6 +135,18 @@ argument_specs:
         type: str
         description: Host path the auto-unseal boot script is installed to.
         default: "/usr/local/bin/vault-container-unseal.sh"
+      hashicorp_vault_seal_config:
+        type: dict
+        description: >-
+          KMS/transit auto-unseal seal stanza ({type, config}) rendered into
+          vault.hcl. type is one of awskms/azurekeyvault/gcpckms/transit/pkcs11;
+          config is the provider's key/value settings. Non-empty replaces Shamir
+          manual unseal, so the role skips its unseal phase and is mutually
+          exclusive with hashicorp_vault_auto_unseal. Prefer ambient credentials
+          over secrets in config. Changing the seal type on an initialized cluster
+          needs a manual `vault operator unseal -migrate` (not automated). Empty =
+          Shamir.
+        default: {}
       hashicorp_vault_manage_policies:
         type: bool
         description: Ensure kv-<tenant>-<env> mounts + write the multi-tenant/extra ACL policies.
@@ -159,10 +199,31 @@ argument_specs:
         type: str
         description: Base DN for user search.
         default: ""
+      hashicorp_vault_ldap_userattr:
+        type: str
+        description: >-
+          User attribute matched against the login name (uid for FreeIPA/POSIX,
+          sAMAccountName for AD).
+        default: "uid"
       hashicorp_vault_ldap_groupdn:
         type: str
         description: Base DN for group search.
         default: ""
+      hashicorp_vault_ldap_groupattr:
+        type: str
+        description: >-
+          Group attribute returned as the group name (cn for FreeIPA/AD).
+        default: "cn"
+      hashicorp_vault_ldap_groupfilter:
+        type: str
+        description: >-
+          Go-template LDAP filter enumerating a user's groups (POSIX memberUid by
+          default; AD uses a member-DN filter).
+        default: "(&(objectClass=posixgroup)(memberUid={{ '{{.Username}}' }}))"
+      hashicorp_vault_ldap_starttls:
+        type: bool
+        description: Issue StartTLS on a plain ldap:// connection.
+        default: false
       hashicorp_vault_ldap_group_pattern:
         type: str
         description: LDAP group name pattern for a tenant ({tenant}/{env} placeholders).
@@ -191,8 +252,10 @@ argument_specs:
         default: []
       hashicorp_vault_ldap_insecure_tls:
         type: bool
-        description: Skip LDAPS cert verification (self-signed directory CA).
-        default: true
+        description: >-
+          Skip LDAPS certificate verification. Secure (false) by default; labs with a
+          self-signed directory CA override to true in inventory.
+        default: false
       hashicorp_vault_userpass_accounts:
         type: list
         elements: dict
@@ -337,6 +400,43 @@ argument_specs:
         type: str
         description: Controller path to a server key (when tls_generate=false).
         default: ""
+      hashicorp_vault_tls_ca_url:
+        type: str
+        description: >-
+          HTTPS URL (e.g. an Artifactory generic repo) every node fetches the CA
+          certificate from. When set it takes precedence over every other CA-cert
+          source for node trust distribution. Empty = use content/file instead.
+        default: ""
+      hashicorp_vault_tls_ca_url_checksum:
+        type: str
+        description: Optional get_url checksum for the fetched CA cert ("sha256:<hex>").
+        default: ""
+      hashicorp_vault_tls_ca_url_username:
+        type: str
+        description: >-
+          Optional HTTP Basic auth username for hashicorp_vault_tls_ca_url. Empty =
+          anonymous read.
+        default: ""
+      hashicorp_vault_tls_ca_url_password:
+        type: str
+        description: >-
+          Optional HTTP Basic auth password for hashicorp_vault_tls_ca_url. Keep in an
+          Ansible-Vault-encrypted var. Empty = anonymous read.
+        default: ""
+      hashicorp_vault_tls_ca_content:
+        type: str
+        description: >-
+          CA certificate PEM as an inventory var (public material). Distributed to
+          nodes when hashicorp_vault_tls_ca_url is empty.
+        default: ""
+      hashicorp_vault_tls_ca_key_content:
+        type: str
+        description: >-
+          CA private key PEM from an Ansible-Vault-encrypted inventory var. In
+          generation mode, paired with hashicorp_vault_tls_ca_content it reuses one
+          stable CA to sign server certs instead of minting a fresh CA. Never
+          fetched; only written to the controller-side TLS dir.
+        default: ""
       hashicorp_vault_tls_onhost:
         type: bool
         description: >-
@@ -355,6 +455,18 @@ argument_specs:
         type: str
         description: On-node path to the CA chain, e.g. /etc/ipa/ca.crt (tls_onhost=true).
         default: ""
+      hashicorp_vault_tls_sync_script:
+        type: str
+        description: >-
+          On-node path of the helper that publishes leaf+CA into the certs dir and
+          SIGHUPs Vault (wire as certmonger's post-save hook so renewals reuse it).
+        default: /usr/local/libexec/vault-tls-sync
+      hashicorp_vault_tls_reload_script:
+        type: str
+        description: >-
+          On-node path of the oneshot a systemd path unit runs to SIGHUP Vault when
+          the published cert changes (load-bearing under certmonger_t).
+        default: /usr/local/libexec/vault-tls-reload
       hashicorp_vault_selinux_relabel:
         type: bool
         description: Add :Z to bind mounts so the container works under SELinux enforcing.
@@ -452,3 +564,10 @@ argument_specs:
         type: bool
         description: Emit the Prometheus telemetry stanza in vault.hcl.
         default: true
+      hashicorp_vault_hcl_extra:
+        type: str
+        description: >-
+          Raw HCL appended verbatim to the end of vault.hcl for stanzas the role
+          does not model (cluster_name, lease TTLs, replication, extra listeners).
+          Rendered with no escaping — the operator owns its validity. Empty = none.
+        default: ""

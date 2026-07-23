@@ -6,9 +6,8 @@
 #   * 1 host  -> standalone Raft (single server)
 #   * N hosts -> Raft HA joining all N nodes
 #
-# Self-contained: imports NO tasks from hashicorp_vault (the native role).
 # Prerequisites (Docker engine + the mounted second disk) are composed at the
-# PLAYBOOK level (see README) and asserted here in preflight.
+# PLAYBOOK level (see README / SUPPORT.md) and asserted here in preflight.
 #
 # Phases (run with no tags = everything; tags refine for fast iteration):
 #   preflight — validate mount, docker, topology; derive scaling facts
@@ -47,6 +46,7 @@
 
 - name: "Unseal — unseal all nodes (also standalone after a reboot: --tags unseal)"
   ansible.builtin.import_tasks: unseal.yml
+  when: hashicorp_vault_seal_config | length == 0
   tags: [init, unseal]
 
 - name: "Auto-unseal — optional systemd unseal-on-boot (hashicorp_vault_auto_unseal)"

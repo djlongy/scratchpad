@@ -16,6 +16,18 @@ tribal knowledge.
 Playbook in this repo: `playbooks/vault_cluster.yml`  
 Lab inventory reference: `inventories/vault/`
 
+**Shipping bundle** — moving this role to another repo? Copy together:
+
+| Item | Path |
+|---|---|
+| The role itself | `roles/hashicorp_vault_container/` (this directory, entire) |
+| Reference playbook | `playbooks/vault_cluster.yml` (daisy-chains `storage` → `docker` → this role) |
+| Inventory example | one `inventories/<env>/` skeleton (or the `inventories/vault/` lab reference) |
+
+Everything else in this repo is optional context. The role depends on the
+`storage` and `docker` roles at the **playbook** level (not as role dependencies);
+bring those too, or supply your own disk-mount and Docker-install steps.
+
 ---
 
 ## 1. What this role owns (and does not)
@@ -53,6 +65,13 @@ hashicorp_vault_data_mount: /opt/vault
 hashicorp_vault_tls_extra_sans:
   - "DNS:vault.example.com"
 ```
+
+> **DECIDE `hashicorp_vault_key_shares` / `hashicorp_vault_key_threshold` BEFORE
+> the first init.** They default to `1`/`1` (single-key, playbook-driven unseal);
+> set e.g. `5`/`3` for shared-custody. These are baked in **permanently** at init —
+> changing them afterwards needs a manual `vault operator rekey` ceremony, not a
+> re-run. (Irrelevant when you unseal via `hashicorp_vault_seal_config` KMS/transit
+> auto-unseal — there are no Shamir shares.)
 
 **Do not enable** LDAP, license, Identity, JWT, transit, etc. until core is green.
 
@@ -127,7 +146,7 @@ All under `hashicorp_vault_data_mount` (default `/opt/vault`):
 
 ## 5. Auth — pick one human path
 
-Full map: [README Auth & RBAC](README.md#auth--rbac-map-read-this-before-enabling-flags).
+Full map: [README Behaviour](README.md#behaviour) (Auth & secrets phases).
 
 | Path | Enable | Policies stick at |
 |---|---|---|
@@ -174,8 +193,33 @@ Autoload order (HashiCorp): `VAULT_LICENSE` → `VAULT_LICENSE_PATH` → `licens
 This role uses **file + path** (not raw env string).  
 Docs: https://developer.hashicorp.com/vault/docs/license/autoloading
 
-**Step-by-step first enable, renewal, and rollback:**
-[`../../docs/vault-container-enterprise-license.md`](../../docs/vault-container-enterprise-license.md)
+**Store the blob as a credential.** Escrow it in your secrets manager, then
+reference it from an **Ansible-Vault-encrypted** inventory var (the role reads the
+var, not a live secrets server, so it works even while the cluster is down):
+
+```bash
+ansible-vault encrypt_string --stdin-name vaulted_vault_enterprise_license < vault.hclic
+```
+
+The blob **must survive as a single line** — a folded (`>-`) or unquoted YAML
+scalar inserts newlines and produces a signature failure. Enterprise tags always
+carry a suffix (`1.19.5-ent`); bare version tags do not exist. Keep the Enterprise
+version equal to the running Community version on the first cutover; upgrade
+versions as a separate, later step so failures are attributable.
+
+**First enable, renewal, rollback:**
+
+| Action | Steps |
+|---|---|
+| **First enable** | Set the three vars above → `--tags license,deploy` (image swap recreates the container) → `--tags unseal` (recreate seals Shamir nodes) → `--tags verify` (asserts `vault license get` reports an **autoloaded** license + prints expiry). The role validates the blob offline (`vault license inspect` in a throwaway container) *before* installing, so a mangled/expired key fails before anything changes. |
+| **Renewal** | Replace the blob in the vaulted var (re-escrow) → `--tags license` only. Cluster is up, so the role hot-reloads node-by-node via `sys/config/reload/license` — **no seal, no restart**. Confirm `--tags verify` — the expiry date must move. |
+| **Rollback (pre-traffic)** | Before the Enterprise image served traffic: `hashicorp_vault_license_enabled: false`, restore the Community image pin → `--tags license,deploy` → `--tags unseal`. Deploy drops `license_path`/`VAULT_LICENSE_PATH` and recreates on Community. |
+| **Rollback (post-traffic)** | HashiCorp does **not** support Enterprise → Community downgrade on the same storage. Snapshot first (`--tags backup_now`); rollback = restore a **pre-Enterprise** snapshot onto the Community image (`--tags restore`), accepting loss of anything written since. |
+
+Every Raft node must load the **same** license (the role installs it on all hosts;
+never `--limit` a license run). The Vault binary build date must be older than the
+license expiry, or Vault refuses to start — keep image version and license period
+roughly contemporary.
 
 ---
 
@@ -226,6 +270,21 @@ cat /opt/vault/config/vault.hcl
 - FreeIPA group CN must match maps (`vault-<tenant>-<env>`).
 - Group filter: posix `memberUid` vs `groupOfNames`+`member` — set `ldap_groupfilter` to match FreeIPA.
 - Role does **not** create FreeIPA groups.
+- **TLS:** `hashicorp_vault_ldap_insecure_tls` defaults to **false** (verifies the
+  directory's LDAPS cert). A lab with a self-signed directory CA sets it `true` in
+  inventory.
+- **Active Directory instead of FreeIPA:** set `hashicorp_vault_ldap_userattr:
+  sAMAccountName`, keep `hashicorp_vault_ldap_groupattr: cn`, and use a member-DN
+  group filter — `(&(objectClass=group)(member={{ '{{.UserDN}}' }}))` — instead of
+  the POSIX `memberUid` default.
+- **FreeIPA — keep `userdn` NARROW** (`cn=users,cn=accounts,dc=...`). The
+  schema-compat plugin duplicates every user under `cn=compat`, and Vault ≥ 1.19
+  **errors when the user search returns > 1 entry** — a broad base DN matches both
+  copies and every login fails.
+- **FreeIPA — user lockout masks the real error.** After ~5 failed logins Vault's
+  built-in user lockout kicks in and returns a generic failure. While debugging:
+  `docker exec vault vault auth tune -user-lockout-disable=true ldap/` (re-enable
+  when done).
 
 ### Init ran twice / two clusters
 
@@ -271,11 +330,9 @@ cat /opt/vault/config/vault.hcl
 | Need | Go elsewhere |
 |---|---|
 | New FreeIPA groups/users | FreeIPA / IdM automation |
-| Disk / LVM / mount | `storage` role |
-| Docker install | `docker` role |
-| Intermediate CA from cold root | `vault_pki` + offline ceremony |
-| Prod native package Vault | `hashicorp_vault` role (legacy path until cutover) |
-| K8s auth for ESO | `hashicorp_vault_k8s_auth` |
+| Disk / LVM / mount | Host disk provisioning (e.g. second disk + mount at `data_mount`) |
+| Docker install | Docker Engine + Compose on the host before this role runs |
+| Intermediate CA from cold root | Separate PKI / offline ceremony process |
 
 ---
 
@@ -291,3 +348,63 @@ ansible-playbook ... --tags backup_now
 
 If verify is green, the cluster membership and seal state match the inventory.
 Everything else (LDAP, policies, license) has its own tags for isolated re-runs.
+
+**`--check` proves rendering only.** A dry-run does not exercise the Vault-API
+phases — the `docker exec` / `command` tasks (init, unseal, policies, LDAP, PKI,
+backup token…) skip in check mode — so a green `--check` confirms templating and
+file state, not that Vault accepted anything.
+
+---
+
+## 12. TLS at work — shared CA
+
+By default `hashicorp_vault_tls_generate: true` self-signs a CA on **whichever
+controller runs the play**, so the trust anchor differs per operator. For a team,
+one CA identity must own the trust:
+
+1. **First run** generates the CA under `hashicorp_vault_tls_local_dir` on that
+   controller.
+2. **Escrow its private key.** Encrypt the generated `ca.key` as an inventory var:
+
+   ```bash
+   ansible-vault encrypt_string --stdin-name hashicorp_vault_tls_ca_key_content < ca.key
+   ```
+
+3. **Publish its certificate.** `ca.crt` is public — supply it either as a flat
+   inventory var `hashicorp_vault_tls_ca_content`, **or** upload it to an
+   Artifactory generic repo and point `hashicorp_vault_tls_ca_url` at it (with an
+   optional `hashicorp_vault_tls_ca_url_checksum: "sha256:<hex>"`).
+4. **Every subsequent run** on any controller reuses that one CA: with
+   `_ca_key_content` + `_ca_content` set, the role signs server certs from the
+   shared CA instead of minting a fresh per-operator one. When a `_ca_url` is also
+   set, the role **asserts the fetched CA fingerprint matches the signing CA**, so
+   a wrong upload fails the run rather than the TLS handshake.
+
+CA-cert distribution precedence for node trust: `_ca_url` > `_ca_content` >
+generated/provided file.
+
+---
+
+## 13. Enterprise auto-unseal (seal stanza)
+
+`hashicorp_vault_seal_config` delegates unsealing to an external KMS/transit key
+instead of Shamir shares. Shape `{type, config}` renders a `seal "<type>" { … }`
+block into `vault.hcl`:
+
+```yaml
+hashicorp_vault_seal_config:
+  type: awskms          # awskms | azurekeyvault | gcpckms | transit | pkcs11
+  config:
+    region: ap-southeast-2
+    kms_key_id: "arn:aws:kms:…"
+```
+
+- **The role skips its unseal phase entirely** — the external seal unseals Vault on
+  start. It is **mutually exclusive** with `hashicorp_vault_auto_unseal` (the role
+  asserts you set at most one).
+- **Prefer ambient credentials** (instance profile / workload identity) over baking
+  secrets into `config` — every `config` value lands verbatim in `vault.hcl` on disk.
+- **Changing the seal on an already-initialized cluster is a manual migration.**
+  Switching Shamir → KMS (or between seal types) on live data requires a
+  `vault operator unseal -migrate` procedure that this role does **not** automate.
+  Set the seal correctly at first init, or run the migration by hand.

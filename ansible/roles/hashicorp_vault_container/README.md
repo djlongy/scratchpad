@@ -39,8 +39,13 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `hashicorp_vault_api_port` / `_cluster_port` | `8200` / `8201` | API/UI and Raft cluster listeners |
 | Optional | `hashicorp_vault_key_shares` / `_key_threshold` | `1` / `1` | Shamir unseal shares generated / required at init |
 | Optional | `hashicorp_vault_auto_unseal` | `false` | Boot-time systemd unseal (places the key on every node) |
+| When KMS unseal | `hashicorp_vault_seal_config` | `{}` | `{type, config}` seal stanza for external KMS/transit auto-unseal; non-empty skips the Shamir unseal phase and is mutually exclusive with `auto_unseal` |
 | Optional | `hashicorp_vault_tls_enabled` | `true` | Serve the API over TLS |
 | Optional | `hashicorp_vault_tls_generate` | `true` | Self-sign CA + server cert; `false` supplies your own PEM paths |
+| When portable CA | `hashicorp_vault_tls_ca_url` | `""` | HTTPS URL (Artifactory generic repo) nodes fetch `ca.crt` from; wins over all other CA-cert sources for node trust |
+| When portable CA | `hashicorp_vault_tls_ca_content` | `""` | CA certificate PEM as an inventory var (public); distributes to nodes when `_ca_url` is empty |
+| When portable CA | `hashicorp_vault_tls_ca_key_content` | `""` | CA private key PEM (Ansible-Vault-encrypted var); in generate mode, with `_ca_content`, reuses one stable CA to sign server certs |
+| Optional | `hashicorp_vault_hcl_extra` | `""` | Raw HCL appended verbatim to `vault.hcl` for stanzas the role does not model (cluster_name, lease TTLs, replication, extra listeners) |
 | Optional | `hashicorp_vault_manage_firewall` | `true` | Open API + cluster ports via firewalld |
 | Optional | `hashicorp_vault_backup_enabled` | `true` | Scheduled Raft snapshots (leader-only) |
 | When `manage_policies` | `hashicorp_vault_tenants`, `hashicorp_vault_policies` | `[]` | KV mounts + HCL policies |
@@ -117,10 +122,26 @@ hashicorp_vault_tls_extra_sans:
   grow into an HA cluster later without a storage migration); re-runs reuse
   existing init material from disk, and the container restarts only when its
   config actually changes.
+- **Portable CA trust** — by default each controller self-signs its own CA, so
+  the trust anchor differs per operator. To share one stable CA across
+  controllers and teams: the first run generates the CA under
+  `hashicorp_vault_tls_local_dir`; the operator then stores its `ca.key` as an
+  Ansible-Vault-encrypted var (`ansible-vault encrypt_string`) and uploads
+  `ca.crt` to an Artifactory generic repo. Subsequent runs on any controller set
+  `hashicorp_vault_tls_ca_key_content` + `hashicorp_vault_tls_ca_content` (the
+  role reuses that CA to sign server certs instead of minting a fresh one) and,
+  optionally, `hashicorp_vault_tls_ca_url` so every node fetches the same
+  `ca.crt` for trust. When both a URL and local generation are in play, the role
+  asserts the fetched CA fingerprint matches the controller signer, so a wrong
+  upload fails the run rather than the TLS handshake. CA-cert distribution
+  precedence is `_ca_url` > `_ca_content` > generated/provided file.
 - **Reboot / unseal** — a restarted node comes up **sealed** by default.
   Bring it back non-destructively with `--tags unseal` (also runs under
   `init`), or set `hashicorp_vault_auto_unseal: true` for a boot-time
-  systemd unseal unit (places the unseal key on every node).
+  systemd unseal unit (places the unseal key on every node). A non-empty
+  `hashicorp_vault_seal_config` (KMS/transit auto-unseal) makes the role skip
+  the unseal phase entirely — the external seal unseals Vault on start — and is
+  mutually exclusive with `hashicorp_vault_auto_unseal` (the role asserts this).
 - **Scaling** — topology follows `hashicorp_vault_nodes`. **Grow (1 → 3):**
   add the new hosts to the group, keeping the original node first, and
   re-run — `init` sees the cluster already initialised and skips it; new

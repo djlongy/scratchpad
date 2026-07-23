@@ -12,7 +12,7 @@
 #
 # Login: vault login -method=ldap username=<uid>
 #
-# See README "Auth & RBAC map". Path A leaves identity_groups empty.
+# See README "Behaviour". Path A leaves identity_groups empty.
 
 hashicorp_vault_manage_policies: true
 hashicorp_vault_tenants:
@@ -36,6 +36,9 @@ hashicorp_vault_ldap_binddn: "uid=svc-vault,cn=users,cn=accounts,dc=example,dc=c
 hashicorp_vault_ldap_bindpass: "{{ vaulted_ldap_bindpass }}"
 hashicorp_vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"
 hashicorp_vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
+# Lab-only: skip LDAPS cert verification for a self-signed directory CA. Leave
+# unset (secure default) once the FreeIPA CA is trusted by the Vault host.
+hashicorp_vault_ldap_insecure_tls: true
 # default pattern → FreeIPA CNs vault-acme-prod, vault-acme-dev, vault-globex-prod
 hashicorp_vault_ldap_group_pattern: "vault-{tenant}-{env}"
 

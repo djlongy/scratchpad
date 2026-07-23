@@ -1,7 +1,7 @@
 # hashicorp_vault_container — inventory examples
 
 Copy **one human path**, then add optional add-ons only when needed.
-Full contract: [../README.md](../README.md) → **Auth & RBAC map**.
+Full contract: [../README.md](../README.md) → **Behaviour** (Auth & secrets phases).
 
 | File | Use when |
 |---|---|

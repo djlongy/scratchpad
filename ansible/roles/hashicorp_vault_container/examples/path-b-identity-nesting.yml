@@ -12,7 +12,7 @@
 # CN on one grant path so policy attachment stays single-source.
 #
 # Login is still: vault login -method=ldap username=<uid>
-# See README "Auth & RBAC map".
+# See README "Behaviour".
 
 hashicorp_vault_manage_policies: true
 hashicorp_vault_tenants:

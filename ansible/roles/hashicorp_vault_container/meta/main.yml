@@ -26,4 +26,9 @@ galaxy_info:
 
 # Self-contained by design: no role dependencies. The Docker engine and the
 # mounted second disk are composed at the playbook level (see README).
+#
+# Galaxy collections the role uses (install via requirements.yml — see README
+# Requirements): community.crypto (self-signed CA + server cert), ansible.posix
+# (firewalld ports, NFS backup mount), community.hashi_vault (LDAP bindpass
+# fallback lookup).
 dependencies: []

@@ -72,4 +72,39 @@
   when:
     - _hashicorp_vault_init is changed
     - not (hashicorp_vault_is_ha | bool)
+
+# init owns root-token persistence so KMS-sealed clusters (which skip the unseal
+# phase) still feed the API phases the root_token.txt every consumer slurps. Runs
+# on EVERY converge — copy content is idempotent, so it also repairs a lost token
+# file. unseal.yml keeps its own writer for the self-contained --tags unseal path.
+- name: "Stat the persisted init material (for root-token persistence)"
+  become: true  # root: stats the root-only keys dir
+  ansible.builtin.stat:
+    path: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+  register: _hashicorp_vault_init_json_stat
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Read the persisted init material for the root token"
+  become: true  # root: reads the root-only vault_init.json
+  ansible.builtin.slurp:
+    src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+  register: _hashicorp_vault_init_json_slurp
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: _hashicorp_vault_init_json_stat.stat.exists
+
+- name: "Persist the root token for the API phases (root_token.txt)"
+  become: true  # root: writes the root-only root_token.txt to the keys dir
+  ansible.builtin.copy:
+    content: "{{ (_hashicorp_vault_init_json_slurp.content | b64decode | from_json).root_token }}\n"
+    dest: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: _hashicorp_vault_init_json_stat.stat.exists
 # Unsealing + cluster formation continue in unseal.yml (tag `unseal`).

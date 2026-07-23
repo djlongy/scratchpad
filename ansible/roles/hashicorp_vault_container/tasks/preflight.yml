@@ -39,6 +39,54 @@
     success_msg: "Topology OK: {{ hashicorp_vault_node_count }} node(s) (odd)."
     quiet: true
 
+# The systemd Shamir unseal-on-boot unit and a KMS/transit seal stanza are two
+# different unseal mechanisms: a seal block makes Vault auto-unseal from an external
+# key, so the on-disk unseal keys the unit replays no longer exist. Enabling both is
+# a configuration contradiction — pick exactly one.
+- name: "Assert auto-unseal unit and a KMS/transit seal stanza are not both enabled"
+  ansible.builtin.assert:
+    that:
+      - not ((hashicorp_vault_auto_unseal | bool) and (hashicorp_vault_seal_config | length > 0))
+    fail_msg: >-
+      hashicorp_vault_auto_unseal (the systemd Shamir unseal unit) and a non-empty
+      hashicorp_vault_seal_config (a KMS/transit seal stanza) must not both be
+      enabled — pick one unseal mechanism.
+    quiet: true
+
+# A seal stanza needs BOTH the provider 'type' and its 'config' map — vault.hcl.j2
+# reads hashicorp_vault_seal_config.type and .config directly, so a malformed dict
+# crashes templating with an opaque undefined-attribute error instead of this guard.
+- name: "Assert a seal stanza carries both 'type' and 'config'"
+  ansible.builtin.assert:
+    that:
+      - "'type' in hashicorp_vault_seal_config"
+      - "'config' in hashicorp_vault_seal_config"
+    fail_msg: >-
+      hashicorp_vault_seal_config must be {type: "<awskms|azurekeyvault|gcpckms|transit|
+      pkcs11>", config: {key: value, ...}} — both keys are required. Got keys:
+      {{ hashicorp_vault_seal_config.keys() | list }}.
+    quiet: true
+  when: hashicorp_vault_seal_config | length > 0
+
+# ansible_host feeds two load-bearing things: the certificate SANs (so clients
+# reach a node by its real address) and the Raft retry_join peer addresses (so
+# followers find the cluster). Both silently degrade if it is unset — a follower
+# never joins, or a cert lacks the address clients dial. Required for every node,
+# TLS mode or not.
+- name: "Assert every cluster node has ansible_host defined"
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].ansible_host is defined
+      - (hostvars[item].ansible_host | default('') | length) > 0
+    fail_msg: >-
+      Node '{{ item }}' has no ansible_host. It feeds the certificate SANs and the
+      Raft retry_join peer addresses — set ansible_host (an IP or resolvable FQDN)
+      for every host in hashicorp_vault_nodes.
+    quiet: true
+  loop: "{{ hashicorp_vault_nodes }}"
+  loop_control:
+    label: "{{ item }}"
+
 # tenant is OPTIONAL. With a tenant the mount is kv-<tenant>-<env>; without one it
 # collapses to a plain kv-<env> (single-tenant/shared environment). Either way the names
 # must be hyphen-free: a hyphen makes kv-<tenant>-<env> ambiguous (kv-a-b-c = tenant

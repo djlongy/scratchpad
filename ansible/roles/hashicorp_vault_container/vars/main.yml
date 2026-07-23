@@ -1,8 +1,6 @@
 ---
 # hashicorp_vault_container — non-overridable constants.
 
-base_task_name: "hashicorp_vault_container"
-
 # Fixed in-container paths (the official hashicorp/vault image layout).
 hashicorp_vault_container_config_dir: "/vault/config"
 hashicorp_vault_container_data_dir: "/vault/data"

@@ -13,13 +13,14 @@
 
 - name: "Template the docker-compose file"
   become: true  # root: writes the root-owned docker-compose.yml on the data mount
+  # No restart handler: compose-file changes are applied by the `docker compose up -d`
+  # below; a vault.hcl change in the same run still restarts via its own handler.
   ansible.builtin.template:
     src: docker-compose.yml.j2
     dest: "{{ hashicorp_vault_data_mount }}/docker-compose.yml"
     owner: root
     group: root
     mode: "0644"
-  notify: Restart vault container
 
 # Raft node_id is inventory_hostname (vault.hcl). After a host rename the HCL
 # picks up the new id, but the on-disk Raft configuration still lists the OLD

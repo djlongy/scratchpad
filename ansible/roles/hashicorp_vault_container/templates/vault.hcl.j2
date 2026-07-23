@@ -29,6 +29,17 @@ listener "tcp" {
   tls_disable = "true"
 {% endif %}
 }
+{% if hashicorp_vault_seal_config | length > 0 %}
+
+# KMS/transit auto-unseal (hashicorp_vault_seal_config). Replaces Shamir manual
+# unseal; the role skips its unseal phase. Prefer ambient cloud credentials over
+# secrets rendered here.
+seal "{{ hashicorp_vault_seal_config.type }}" {
+{% for key, value in hashicorp_vault_seal_config.config.items() %}
+  {{ key }} = {{ '"' ~ value ~ '"' if value is string else (value | string | lower if value is boolean else value) }}
+{% endfor %}
+}
+{% endif %}
 
 api_addr     = "{{ hashicorp_vault_scheme }}://{{ hashicorp_vault_advertise_addr }}:{{ hashicorp_vault_api_port }}"
 cluster_addr = "{{ hashicorp_vault_scheme }}://{{ hashicorp_vault_advertise_addr }}:{{ hashicorp_vault_cluster_port }}"
@@ -50,4 +61,9 @@ log_format = "{{ hashicorp_vault_log_format }}"
 # Enterprise license (autoloaded). Written by tasks/license.yml when
 # hashicorp_vault_license_enabled is true. Absent on Community runs.
 license_path = "{{ hashicorp_vault_container_config_dir }}/{{ hashicorp_vault_license_filename }}"
+{% endif %}
+{% if hashicorp_vault_hcl_extra | length > 0 %}
+
+# Raw operator-supplied HCL (hashicorp_vault_hcl_extra), appended verbatim.
+{{ hashicorp_vault_hcl_extra }}
 {% endif %}

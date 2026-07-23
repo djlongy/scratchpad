@@ -65,19 +65,30 @@
 
 - name: "LDAP | Configure the LDAP auth method"
   become: true  # root: docker exec needs the root-owned docker socket
+  # argv (not free-form cmd): an AD bind DN like "CN=Vault Service,OU=Service
+  # Accounts,..." contains spaces, so a shell-split command shatters one field into
+  # several argv entries. The list form passes each field as exactly one token.
   ansible.builtin.command:
-    cmd: >-
-      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write auth/ldap/config
-      url={{ hashicorp_vault_ldap_url }}
-      binddn={{ hashicorp_vault_ldap_binddn }}
-      bindpass=-
-      userdn={{ hashicorp_vault_ldap_userdn }}
-      userattr={{ hashicorp_vault_ldap_userattr }}
-      groupdn={{ hashicorp_vault_ldap_groupdn }}
-      groupattr={{ hashicorp_vault_ldap_groupattr }}
-      groupfilter={{ hashicorp_vault_ldap_groupfilter }}
-      starttls={{ hashicorp_vault_ldap_starttls | bool | lower }}
-      insecure_tls={{ hashicorp_vault_ldap_insecure_tls | bool | lower }}
+    argv:
+      - docker
+      - exec
+      - "-i"
+      - "-e"
+      - VAULT_TOKEN
+      - "{{ hashicorp_vault_name }}"
+      - vault
+      - write
+      - auth/ldap/config
+      - "url={{ hashicorp_vault_ldap_url }}"
+      - "binddn={{ hashicorp_vault_ldap_binddn }}"
+      - "bindpass=-"
+      - "userdn={{ hashicorp_vault_ldap_userdn }}"
+      - "userattr={{ hashicorp_vault_ldap_userattr }}"
+      - "groupdn={{ hashicorp_vault_ldap_groupdn }}"
+      - "groupattr={{ hashicorp_vault_ldap_groupattr }}"
+      - "groupfilter={{ hashicorp_vault_ldap_groupfilter }}"
+      - "starttls={{ hashicorp_vault_ldap_starttls | bool | lower }}"
+      - "insecure_tls={{ hashicorp_vault_ldap_insecure_tls | bool | lower }}"
     stdin: "{{ _hashicorp_vault_ldap_bindpass }}"
     # CRITICAL: without this, Ansible appends a trailing newline to stdin, so the
     # bindpass becomes "<pass>\n" and the admin bind fails err=49 (invalid

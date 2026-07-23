@@ -7,12 +7,23 @@
 # hashicorp_vault_tls_generate=false to supply your own cert/key/CA instead.
 
 # ── Derive SAN entries (identical on every host; no run_once needed) ──────
+# ansible_host may be an IP or an FQDN, so partition it: an IPv4 literal OR an IPv6
+# literal (contains a colon) is an IP SAN, everything else is a DNS SAN. An FQDN in
+# an IP SAN produces a cert openssl rejects; an IPv6 address in a DNS SAN yields a
+# cert that fails IPv6-dialed clients — so both literal forms go to the IP partition.
 - name: "Assemble certificate SAN hostnames and IPs"
   ansible.builtin.set_fact:
-    _hashicorp_vault_san_dns: "{{ ['localhost'] + hashicorp_vault_nodes + _hashicorp_vault_fqdns }}"
+    _hashicorp_vault_san_dns: >-
+      {{ ['localhost'] + hashicorp_vault_nodes + _hashicorp_vault_fqdns
+         + (_hashicorp_vault_node_hosts | reject('match', _hashicorp_vault_ip_re) | list) }}
     _hashicorp_vault_san_ip: >-
-      {{ ['127.0.0.1'] + (hashicorp_vault_nodes | map('extract', hostvars, 'ansible_host') | list) }}
+      {{ ['127.0.0.1']
+         + (_hashicorp_vault_node_hosts | select('match', _hashicorp_vault_ip_re) | list) }}
   vars:
+    # IPv4 literal OR any value containing a colon (an IPv6 literal).
+    _hashicorp_vault_ip_re: '^(\d{1,3}(\.\d{1,3}){3}|.*:.*)$'
+    _hashicorp_vault_node_hosts: >-
+      {{ hashicorp_vault_nodes | map('extract', hostvars, 'ansible_host') | list }}
     _hashicorp_vault_fqdns: >-
       {{ [] if (hashicorp_vault_domain | length == 0)
          else (hashicorp_vault_nodes | product(['.' + hashicorp_vault_domain]) | map('join', '') | list) }}
@@ -24,8 +35,20 @@
           + (_hashicorp_vault_san_ip | map('regex_replace', '^', 'IP:') | list)
           + hashicorp_vault_tls_extra_sans) | unique }}
 
-# ── Self-signed generation (controller side) ─────────────────────────────
-- name: "Generate self-signed CA + server certificate on the controller"
+# Classify the supplied-CA material by PRESENCE only — the key value never
+# surfaces (length comparison), and no_log keeps it out of the transcript even so.
+# Downstream tasks branch on these booleans, never on the raw key var.
+- name: "Classify supplied CA material (presence only)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_tls_ca_content_set: "{{ (hashicorp_vault_tls_ca_content | length) > 0 }}"
+    _hashicorp_vault_tls_ca_key_set: "{{ (hashicorp_vault_tls_ca_key_content | length) > 0 }}"
+  no_log: true
+
+# ── CA + server certificate generation (controller side) ─────────────────
+# With a supplied CA keypair (ca_content + ca_key_content) the role reuses that
+# stable CA to sign server certs; otherwise it self-signs a fresh CA once and
+# persists it in hashicorp_vault_tls_local_dir so re-runs reuse it.
+- name: "Generate CA + server certificate on the controller"
   when:
     - hashicorp_vault_tls_generate | bool
     - not (hashicorp_vault_tls_onhost | bool)
@@ -33,13 +56,41 @@
   become: false
   run_once: true
   block:
+    - name: "Assert a supplied CA provides BOTH cert and private key for signing"
+      ansible.builtin.assert:
+        that:
+          - _hashicorp_vault_tls_ca_content_set | bool == _hashicorp_vault_tls_ca_key_set | bool
+        fail_msg: >-
+          Generation mode reuses a supplied CA only when BOTH
+          hashicorp_vault_tls_ca_content (certificate) and
+          hashicorp_vault_tls_ca_key_content (private key) are set — exactly one is
+          set here. Signing needs the pair. Provide both to reuse the CA, or neither
+          to self-sign a fresh CA.
+        quiet: true
+
     - name: "Ensure the local TLS directory exists"
       ansible.builtin.file:
         path: "{{ hashicorp_vault_tls_local_dir }}"
         state: directory
         mode: "0700"
 
+    - name: "Write the supplied CA certificate to the controller"
+      when: _hashicorp_vault_tls_ca_key_set | bool
+      ansible.builtin.copy:
+        content: "{{ hashicorp_vault_tls_ca_content }}"
+        dest: "{{ hashicorp_vault_tls_local_dir }}/ca.crt"
+        mode: "0644"
+
+    - name: "Write the supplied CA private key to the controller"
+      when: _hashicorp_vault_tls_ca_key_set | bool
+      ansible.builtin.copy:
+        content: "{{ hashicorp_vault_tls_ca_key_content }}"
+        dest: "{{ hashicorp_vault_tls_local_dir }}/ca.key"
+        mode: "0600"
+      no_log: true
+
     - name: "Generate the CA private key"
+      when: not (_hashicorp_vault_tls_ca_key_set | bool)
       community.crypto.openssl_privatekey:
         path: "{{ hashicorp_vault_tls_local_dir }}/ca.key"
         type: RSA
@@ -47,6 +98,7 @@
         mode: "0600"
 
     - name: "Generate the CA signing request"
+      when: not (_hashicorp_vault_tls_ca_key_set | bool)
       community.crypto.openssl_csr:
         path: "{{ hashicorp_vault_tls_local_dir }}/ca.csr"
         privatekey_path: "{{ hashicorp_vault_tls_local_dir }}/ca.key"
@@ -61,6 +113,7 @@
         mode: "0644"
 
     - name: "Self-sign the CA certificate"
+      when: not (_hashicorp_vault_tls_ca_key_set | bool)
       community.crypto.x509_certificate:
         path: "{{ hashicorp_vault_tls_local_dir }}/ca.crt"
         csr_path: "{{ hashicorp_vault_tls_local_dir }}/ca.csr"
@@ -124,8 +177,46 @@
         _hashicorp_vault_src_cert: "{{ (hashicorp_vault_tls_local_dir ~ '/vault.crt') if (hashicorp_vault_tls_generate | bool) else hashicorp_vault_tls_server_cert }}"
         _hashicorp_vault_src_key: "{{ (hashicorp_vault_tls_local_dir ~ '/vault.key') if (hashicorp_vault_tls_generate | bool) else hashicorp_vault_tls_server_key }}"
 
-    - name: "Distribute the CA certificate to nodes"
+    # CA trust distribution — precedence url > content > controller file. Exactly
+    # one of these runs per node (mutually exclusive when: guards), so the CA every
+    # node trusts is portable across controllers/teams.
+    - name: "Fetch the CA certificate from the distribution URL"
       become: true  # root: writes to the root-owned certs dir
+      when: hashicorp_vault_tls_ca_url | length > 0
+      # force: a rotated CA at the URL must propagate; without it get_url skips the
+      # download whenever ca.crt already exists and a rotation is silently ignored.
+      # get_url still reports changed only when the content differs.
+      ansible.builtin.get_url:
+        url: "{{ hashicorp_vault_tls_ca_url }}"
+        dest: "{{ hashicorp_vault_certs_dir }}/ca.crt"
+        checksum: "{{ hashicorp_vault_tls_ca_url_checksum | default(omit, true) }}"
+        # get_url masks url_password itself; a whole-task no_log would hide fetch errors.
+        url_username: "{{ hashicorp_vault_tls_ca_url_username | default(omit, true) }}"
+        url_password: "{{ hashicorp_vault_tls_ca_url_password | default(omit, true) }}"
+        force: true
+        owner: "{{ hashicorp_vault_uid }}"
+        group: "{{ hashicorp_vault_gid }}"
+        mode: "0644"
+      notify: Restart vault container
+
+    - name: "Write the CA certificate from the inventory content var"
+      become: true  # root: writes to the root-owned certs dir
+      when:
+        - hashicorp_vault_tls_ca_url | length == 0
+        - hashicorp_vault_tls_ca_content | length > 0
+      ansible.builtin.copy:
+        content: "{{ hashicorp_vault_tls_ca_content }}"
+        dest: "{{ hashicorp_vault_certs_dir }}/ca.crt"
+        owner: "{{ hashicorp_vault_uid }}"
+        group: "{{ hashicorp_vault_gid }}"
+        mode: "0644"
+      notify: Restart vault container
+
+    - name: "Distribute the controller CA certificate to nodes"
+      become: true  # root: writes to the root-owned certs dir
+      when:
+        - hashicorp_vault_tls_ca_url | length == 0
+        - hashicorp_vault_tls_ca_content | length == 0
       ansible.builtin.copy:
         src: "{{ _hashicorp_vault_src_ca }}"
         dest: "{{ hashicorp_vault_certs_dir }}/ca.crt"
@@ -154,6 +245,50 @@
         mode: "0600"
       no_log: true
       notify: Restart vault container
+
+# ══ CA-source coherence: the CA nodes fetch MUST be the CA that signs certs ══
+# When generating locally AND distributing the CA from a URL, the Artifactory copy
+# and the controller signer can silently diverge (someone uploaded the wrong CA).
+# Compare the CERTIFICATE fingerprint (not the file byte-hash): Artifactory re-
+# serving the same cert with CRLF/trailing-newline differences must still match.
+- name: "Assert the fetched CA matches the controller signing CA"
+  when:
+    - hashicorp_vault_tls_generate | bool
+    - not (hashicorp_vault_tls_onhost | bool)
+    - hashicorp_vault_tls_ca_url | length > 0
+  block:
+    - name: "Fingerprint the controller-side signing CA"
+      become: false  # localhost read of the controller-side CA file
+      ansible.builtin.command:
+        cmd: "openssl x509 -noout -fingerprint -sha256 -in {{ hashicorp_vault_tls_local_dir }}/ca.crt"
+      register: _hashicorp_vault_signing_ca_fp
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Fingerprint the CA fetched onto the node"
+      become: true  # root: reads the root-owned certs dir
+      ansible.builtin.command:
+        cmd: "openssl x509 -noout -fingerprint -sha256 -in {{ hashicorp_vault_certs_dir }}/ca.crt"
+      register: _hashicorp_vault_node_ca_fp
+      changed_when: false
+
+    - name: "Assert the URL-hosted CA is the CA that signs these server certs"
+      # The two fingerprint commands skip in check mode (no stdout to compare), so
+      # this assert would dereference an undefined register — guard it out of --check.
+      when: not ansible_check_mode
+      ansible.builtin.assert:
+        that:
+          - (_hashicorp_vault_node_ca_fp.stdout | trim) == (_hashicorp_vault_signing_ca_fp.stdout | trim)
+        fail_msg: >-
+          The Artifactory-hosted CA is not the CA that signs these server certs.
+          {{ inventory_hostname }} fetched ca.crt from hashicorp_vault_tls_ca_url
+          ({{ _hashicorp_vault_node_ca_fp.stdout | trim }}), but the controller
+          signed with {{ hashicorp_vault_tls_local_dir }}/ca.crt
+          ({{ _hashicorp_vault_signing_ca_fp.stdout | trim }}). Upload the
+          controller signing ca.crt to the URL, or clear hashicorp_vault_tls_ca_url
+          to distribute the signing CA directly.
+        quiet: true
 
 # ══ On-host certs (issued on the node by certmonger/ipa-getcert): use in place ══
 # The cert/key/CA already exist at hashicorp_vault_tls_onhost_* on the node — do

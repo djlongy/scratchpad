@@ -79,6 +79,18 @@ hashicorp_vault_auto_unseal: false
 hashicorp_vault_autounseal_keys_file: "{{ hashicorp_vault_keys_dir }}/unseal_keys"
 hashicorp_vault_autounseal_script_path: "/usr/local/bin/vault-container-unseal.sh"
 
+# ── KMS / transit auto-unseal (Enterprise/cloud seal stanza; OPTIONAL) ─────
+# A seal block delegates unsealing to an external KMS/transit key, replacing the
+# Shamir manual unseal — the role then SKIPS its own unseal phase entirely. Shape:
+#   {type: "<awskms|azurekeyvault|gcpckms|transit|pkcs11>",
+#    config: {key: value, ...}}
+# rendered as a `seal "<type>" { ... }` stanza in vault.hcl. Empty = Shamir.
+# Prefer AMBIENT credentials (instance profile / workload identity) over baking
+# secrets into config — every config value lands verbatim in vault.hcl on disk.
+# Changing the seal type on an ALREADY-INITIALIZED cluster requires a manual seal
+# migration (`vault operator unseal -migrate`); the role does NOT automate that.
+hashicorp_vault_seal_config: {}
+
 # ── TLS ──────────────────────────────────────────────────────────────────
 hashicorp_vault_tls_enabled: true
 # true  -> role self-signs a CA + multi-SAN server cert (portable default)
@@ -90,6 +102,26 @@ hashicorp_vault_tls_local_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.loc
 hashicorp_vault_tls_ca_cert: ""      # consulted only when hashicorp_vault_tls_generate=false
 hashicorp_vault_tls_server_cert: ""
 hashicorp_vault_tls_server_key: ""
+# Portable CA trust — source the CA CERTIFICATE for node trust from an Artifactory
+# generic repo (URL) or an inventory var, so the trust is the same no matter which
+# controller runs the play. When set, every node fetches ca.crt from this HTTPS URL;
+# takes precedence over every other CA-cert source for node trust distribution.
+hashicorp_vault_tls_ca_url: ""
+# Optional get_url checksum for the fetched CA cert, e.g. "sha256:<hex>".
+hashicorp_vault_tls_ca_url_checksum: ""
+# Optional HTTP Basic auth for hashicorp_vault_tls_ca_url (e.g. an Artifactory repo
+# behind a token). The password belongs in an Ansible-Vault-encrypted var; leave
+# both empty for an anonymous-read repo.
+hashicorp_vault_tls_ca_url_username: ""
+hashicorp_vault_tls_ca_url_password: ""
+# CA certificate PEM as an inventory var (public material — a plain flat var is
+# fine). Distributed to nodes when hashicorp_vault_tls_ca_url is empty.
+hashicorp_vault_tls_ca_content: ""
+# CA PRIVATE key PEM, supplied via an Ansible-Vault-encrypted inventory var. In
+# generation mode, paired with hashicorp_vault_tls_ca_content it makes the role
+# reuse one stable CA to sign server certs instead of minting a fresh per-operator
+# CA. Never fetched from anywhere; only ever written to the controller-side dir.
+hashicorp_vault_tls_ca_key_content: ""
 # On-host cert mode (certmonger / ipa-getcert): the cert/key/CA already exist ON
 # THE NODE at these paths (issued BEFORE this role runs). When true the role does
 # NOT generate or copy-from-controller — it copies these in place into the certs
@@ -126,6 +158,10 @@ hashicorp_vault_disable_mlock: true          # containers frequently cannot mloc
 # manage the contexts out of band (semanage fcontext) for very large data dirs.
 hashicorp_vault_selinux_relabel: true
 hashicorp_vault_telemetry_enabled: true
+# Raw HCL appended verbatim to the end of vault.hcl, for stanzas the role does not
+# model (cluster_name, lease TTL defaults, replication, extra listeners…). Rendered
+# as-is with no escaping — the operator owns its validity.
+hashicorp_vault_hcl_extra: ""
 
 # ── Firewall ─────────────────────────────────────────────────────────────
 hashicorp_vault_manage_firewall: true
@@ -161,14 +197,14 @@ hashicorp_vault_admin_kv_mounts: []
 #   - kv-globex-dev
 
 # ── LDAP auth / human SSO (optional; FreeIPA in this lab) ────────────
-# READ FIRST: README "Auth & RBAC map" + examples/path-a-ldap-groups.yml
+# READ FIRST: README "Behaviour" (Auth & secrets phases) + examples/path-a-ldap-groups.yml
 # Human SSO: LDAP/FreeIPA. GitLab JWT is CI-only (separate phase).
 # Path A (default): tenants auto-map auth/ldap/groups/vault-<tenant>-<env>
 # → policies [default, <tenant>-<env>]. Extra FreeIPA groups via _extra_groups.
 # Path B (nesting): examples/path-b-identity-nesting.yml. Map each FreeIPA CN
 # once — either auth/ldap/groups/* or an Identity group-alias, not both.
 hashicorp_vault_ldap_enabled: false
-hashicorp_vault_ldap_url: ""                     # e.g. ldaps://10.0.10.11
+hashicorp_vault_ldap_url: ""                     # e.g. ldaps://192.0.2.11
 hashicorp_vault_ldap_binddn: ""
 hashicorp_vault_ldap_bindpass: ""                # declared-var-first (ansible-vault)
 hashicorp_vault_ldap_bindpass_vault_path: ""     # HC-Vault fallback: "mount/path:field"
@@ -178,7 +214,9 @@ hashicorp_vault_ldap_groupdn: ""
 hashicorp_vault_ldap_groupattr: "cn"
 hashicorp_vault_ldap_groupfilter: "(&(objectClass=posixgroup)(memberUid={{ '{{.Username}}' }}))"
 hashicorp_vault_ldap_starttls: false
-hashicorp_vault_ldap_insecure_tls: true          # self-signed FreeIPA CA in the lab
+# Verify the directory's LDAPS certificate by default. Labs with a self-signed
+# FreeIPA CA override this to true in inventory.
+hashicorp_vault_ldap_insecure_tls: false
 hashicorp_vault_ldap_group_pattern: "vault-{tenant}-{env}"
 hashicorp_vault_ldap_extra_groups: []
 #   - {ldap_group: vault-admins, policies: [default, vault-admin]}
@@ -188,7 +226,7 @@ hashicorp_vault_ldap_users: []
 #   - {ldap_username: long, policies: [default, vault-admin]}
 
 # ── Identity groups (cross-auth-method RBAC layer, optional) ──────────────
-# Path B only — see README "Auth & RBAC map" + examples/path-b-identity-nesting.yml.
+# Path B only — see README "Behaviour" (Auth & secrets phases) + examples/path-b-identity-nesting.yml.
 # EXTERNAL: FreeIPA group → policies via group-alias (needs ldap_enabled).
 # INTERNAL: nests other Identity groups (member_group_names).
 # type defaults to external. Empty = phase skipped (Path A sites leave empty).
