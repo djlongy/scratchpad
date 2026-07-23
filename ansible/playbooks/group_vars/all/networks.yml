@@ -3,261 +3,297 @@
 # Loaded for every play under playbooks/ (playbook-adjacent group_vars/all).
 # Do NOT redeclare these roots in inventory group_vars/all — they drift.
 #
+# ONE dict — network_underlay — drives every platform config (ESXi port
+# groups, firewall interfaces/zones, switch VLANs) through DERIVED vars.
+# No set_fact, no runtime loops for derivation: Ansible templates vars
+# lazily at reference time, so the projections below re-evaluate wherever
+# they are consumed.
+#
+# Controller dependencies:
+#   pip:         jmespath (json_query), netaddr (ansible.utils.ipaddr)
+#   collections: community.general, ansible.utils
+#
+# ansible-core 2.16 compatibility: the statement-loop var ends with
+# `{{ out | to_json }}` and every consumer starts with `| from_json`.
+# The old templating engine would otherwise hand stage 2 a STRING repr of
+# the list. (Alternative: jinja2_native=true — default-forced from 2.19+ —
+# but the to_json/from_json bridge works on every core version.)
+#
 # Hybrid multi-tenancy:
 #   • Global catalog — platform sees ALL tenants × ALL envs (fabric SoT).
 #   • Inventory selects identity (tenancy × env) + one segment key.
 #   • Soft isolation (default): share platform env segments (mgt/dev/prod);
 #     tenancy lives in IAM/Vault/tags, not L2.
-#   • Hard isolation: dedicated underlay.<tenancy>_<env> with scope: tenant.
+#   • Hard isolation: dedicated <tenancy>_<env> key with scope: tenant.
 #
 # Inventory selection pattern:
 #
 #   env: prod
 #   tenancy: acme                    # soft or hard — always set
 #   network_segment: prod            # soft share  OR  acme_prod for hard L2
-#   network_gateway:    "{{ underlay[network_segment].gateway }}"
-#   network_netmask:    "{{ underlay[network_segment].netmask }}"
-#   vsphere_vm_network: "{{ underlay[network_segment].portgroup }}"
-#   vsphere_vm_gateway: "{{ underlay[network_segment].gateway }}"
-#   vsphere_vm_dns:     "{{ underlay[network_segment].dns }}"
-#
-# Legacy direct keys still work (e.g. underlay.mgt.gateway).
-#
-# Roots:
-#   underlay.<segment>     L2/L3 estate segment (VLAN + subnet + portgroup)
-#   vcenter.portgroups     dvPortGroup / ESXi port-group list
-#   dell.vlans / .trunks   switch VLAN objects + trunk allowed-lists
-#   palo.zones / .ifaces   firewall zones + L3 subinterfaces
-#   docker_swarm.<stack>   Swarm encrypted overlay per app stack
+#   network_gateway:    "{{ network_underlay[network_segment].gateway }}"
+#   network_netmask:    "{{ network_underlay[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
+#   vsphere_vm_network: "{{ (network_underlay_names | from_json)[network_segment] }}"
+#   vsphere_vm_gateway: "{{ network_underlay[network_segment].gateway }}"
+#   vsphere_vm_dns:     "{{ network_underlay[network_segment].dns }}"
 #
 # All addresses below are lab/mock RFC1918 examples — replace for production.
-# Query anywhere: underlay.<seg>.subnet (CIDR) + underlay.<seg>.netmask (dotted).
-# Supports non-/24 ranges (/25 /26 /27) — keep subnet and netmask in lockstep.
-
-# Fallback only — inventory should set network_netmask from underlay.<seg>.netmask.
-underlay_netmask: "255.255.255.0"
-network_netmask: "{{ underlay_netmask }}"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. underlay — L2/L3 segments
+# 1. network_underlay — L2/L3 segments (the source of truth)
 # ═══════════════════════════════════════════════════════════════════════════
-# Schema (every segment):
-#   Fabric:    vlan_id, portgroup, name, subnet, netmask, gateway, dns
-#   Placement: site, zone
-#   Ownership: scope (platform|tenant), env (mgt|dev|prod|null), tenancy (str|null)
-#   Ops:       purpose (string), admin (bool → candidate for underlay_admin_cidrs)
+# The dict KEY is the segment's short name — there is no duplicate name
+# field; display names are DERIVED (network_underlay_items below).
 #
-#   subnet   — network prefix in CIDR form (e.g. 192.168.10.0/26)
-#   netmask  — dotted mask for that prefix (e.g. 255.255.255.192)
-#   scope    — platform = shared/operator fabric; tenant = hard-isolated customer L2
-#   env      — environment this segment serves; null = not env-scoped
-#   tenancy  — owning org; null = shared (platform segments only)
-#   admin    — true → operator/admin source CIDR candidate
+# Schema (every segment):
+#   Fabric:    vlan_id, subnet, gateway, dns[]
+#   Platforms: targets[] (esxi|firewall|switches), vswitch, insecure,
+#              ports[] (physical access ports), mgmt_profile (firewall)
+#   Placement: site, zone
+#   Ownership: scope (platform|tenant), env (mgt|dev|prod|null), tenancy
+#   Ops:       purpose (string), admin (bool → underlay_admin_cidrs)
+#
+#   targets   — which platform projections pick this segment up; each
+#               derived list filters with selectattr('targets','contains',…)
+#   insecure  — true relaxes the vSphere port-group security policy
+#   mgmt_profile — firewall interface management profile (null = none)
+#   tenancy   — 'platform' = shared fabric; else the owning org
+#
+# Derived per entry (never declared here):
+#   display_name  VLAN<%02d id>-<TENANCY>-<KEY>  (a leading '<tenancy>_' on
+#                 the key is dropped, '_'→'-': acme_prod → VLAN60-ACME-PROD)
+#   gateway_cidr  gateway/prefix  (prefix via ipaddr('prefix') on subnet)
+#   netmask       on demand: subnet | ansible.utils.ipaddr('netmask')
 #
 # Rules:
-#   scope:platform + tenancy:null  → soft multi-tenancy underlay (default)
-#   scope:tenant   + tenancy:<org> → hard L2 isolation for that org
+#   scope:platform + tenancy:platform → soft multi-tenancy underlay (default)
+#   scope:tenant   + tenancy:<org>    → hard L2 isolation for that org
 #   Key convention hard: <tenancy>_<env>  (e.g. acme_prod)
 
-underlay: &underlay
+network_underlay:
   # ── Site infrastructure (platform, not env-scoped) ───────────────────────
   infra:
     vlan_id: 0
-    portgroup: "VLAN00-INFRA"
-    name: "VLAN00-INFRA"
     subnet: "192.168.0.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.0.1"
     dns: ["192.168.0.1"]
+    targets: [esxi, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-a
     zone: infra
     scope: platform
     env: null
-    tenancy: null
+    tenancy: platform
     purpose: "site infrastructure / ESXi mgmt adjacency"
     admin: true
 
   site_b:
     vlan_id: 1
-    portgroup: "VLAN01-SITE-B"
-    name: "VLAN01-SITE-B"
     subnet: "192.168.1.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.1.1"
     dns: ["192.168.1.1"]
+    targets: [esxi, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-b
     zone: infra
     scope: platform
     env: null
-    tenancy: null
+    tenancy: platform
     purpose: "site-b infrastructure"
     admin: true
 
   # ── DMZ (platform, not env-scoped) ───────────────────────────────────────
   dmz:
     vlan_id: 9
-    portgroup: "VLAN09-DMZ"
-    name: "VLAN09-DMZ"
     subnet: "192.168.9.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.9.1"
     dns: ["192.168.9.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-a
     zone: dmz
     scope: platform
     env: null
-    tenancy: null
+    tenancy: platform
     purpose: "edge / public-facing"
     admin: false
 
   # ── Management control plane (platform env — soft multi-tenant default) ──
   mgt:
     vlan_id: 10
-    portgroup: "VLAN10-MGT-SVC"
-    name: "VLAN10-MGT-SVC"
     subnet: "192.168.10.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.10.1"
     dns: ["192.168.10.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: "allow-ping"
     site: site-a
     zone: mgt
     scope: platform
     env: mgt
-    tenancy: null
+    tenancy: platform
     purpose: "shared management control plane"
     admin: true
 
   mgt_k3s:
     vlan_id: 11
-    portgroup: "VLAN11-MGT-K3S"
-    name: "VLAN11-MGT-K3S"
     subnet: "192.168.11.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.11.1"
     dns: ["192.168.11.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: "allow-ping"
     site: site-a
     zone: mgt
     scope: platform
     env: mgt
-    tenancy: null
+    tenancy: platform
     purpose: "mgt k3s plane"
     admin: true
 
   # ── Dev (platform env — soft multi-tenant default) ───────────────────────
   dev:
     vlan_id: 20
-    portgroup: "VLAN20-DEV-SVC"
-    name: "VLAN20-DEV-SVC"
     subnet: "192.168.20.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.20.1"
     dns: ["192.168.20.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: "allow-ping"
     site: site-a
     zone: dev
     scope: platform
     env: dev
-    tenancy: null
+    tenancy: platform
     purpose: "shared dev workloads (soft multi-tenant)"
     admin: false
 
   # Lab cluster (swarm / vault labs share this L2)
   dev_cluster:
     vlan_id: 21
-    portgroup: "VLAN21-DEV-CLUSTER"
-    name: "VLAN21-DEV-CLUSTER"
     subnet: "192.168.21.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.21.1"
     dns: ["192.168.21.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: "allow-ping"
     site: site-a
     zone: dev
     scope: platform
     env: dev
-    tenancy: null
+    tenancy: platform
     purpose: "lab/swarm/cluster on dev L2"
     admin: false
 
   # ── Production (platform env — soft multi-tenant default) ────────────────
   prod:
     vlan_id: 30
-    portgroup: "VLAN30-PROD-SVC"
-    name: "VLAN30-PROD-SVC"
     subnet: "192.168.30.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.30.1"
     dns: ["192.168.30.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: "allow-ping"
     site: site-a
     zone: prod
     scope: platform
     env: prod
-    tenancy: null
+    tenancy: platform
     purpose: "shared prod workloads (soft multi-tenant)"
     admin: false
 
   prod_k3s:
     vlan_id: 31
-    portgroup: "VLAN31-PROD-K3S"
-    name: "VLAN31-PROD-K3S"
     subnet: "192.168.31.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.31.1"
     dns: ["192.168.31.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: "allow-ping"
     site: site-a
     zone: prod
     scope: platform
     env: prod
-    tenancy: null
+    tenancy: platform
     purpose: "prod k3s plane"
     admin: false
 
   # ── Other platform zones ─────────────────────────────────────────────────
   iot:
     vlan_id: 40
-    portgroup: "VLAN40-IOT"
-    name: "VLAN40-IOT"
     subnet: "192.168.40.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.40.1"
     dns: ["192.168.40.1"]
+    targets: [esxi, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-a
     zone: iot
     scope: platform
     env: null
-    tenancy: null
+    tenancy: platform
     purpose: "IoT / constrained devices"
     admin: false
 
   # Legacy multi-tenant parking L2 (shared fabric, not one customer).
-  # Prefer named hard-tenant segments (acme_prod / acme_dev) for real isolation.
+  # Prefer named hard-tenant segments (acme_prod / acme_dev) for isolation.
   tenants:
     vlan_id: 50
-    portgroup: "VLAN50-TENANTS"
-    name: "VLAN50-TENANTS"
     subnet: "192.168.50.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.50.1"
     dns: ["192.168.50.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-a
     zone: tenant
     scope: platform
     env: null
-    tenancy: null
+    tenancy: platform
     purpose: "legacy multi-tenant parking L2 (prefer hard segments)"
     admin: false
 
+  # insecure: true relaxes the port-group security policy — scratch lab only.
   lab:
     vlan_id: 120
-    portgroup: "VLAN120-LAB"
-    name: "VLAN120-LAB"
     subnet: "192.168.120.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.120.1"
     dns: ["192.168.120.1"]
+    targets: [esxi, switches]
+    vswitch: "vDS-Lab"
+    insecure: true
+    ports: []
+    mgmt_profile: null
     site: site-b
     zone: lab
     scope: platform
     env: null
-    tenancy: null
+    tenancy: platform
     purpose: "scratch / throwaway lab"
     admin: false
 
@@ -266,12 +302,14 @@ underlay: &underlay
   # Inventory hard path: tenancy=acme, env=prod, network_segment=acme_prod
   acme_prod:
     vlan_id: 60
-    portgroup: "VLAN60-ACME-PROD"
-    name: "VLAN60-ACME-PROD"
     subnet: "192.168.60.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.60.1"
     dns: ["192.168.60.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-a
     zone: tenant
     scope: tenant
@@ -282,12 +320,14 @@ underlay: &underlay
 
   acme_dev:
     vlan_id: 61
-    portgroup: "VLAN61-ACME-DEV"
-    name: "VLAN61-ACME-DEV"
     subnet: "192.168.61.0/24"
-    netmask: "255.255.255.0"
     gateway: "192.168.61.1"
     dns: ["192.168.61.1"]
+    targets: [esxi, firewall, switches]
+    vswitch: "vDS-Lab"
+    insecure: false
+    ports: []
+    mgmt_profile: null
     site: site-a
     zone: tenant
     scope: tenant
@@ -296,106 +336,128 @@ underlay: &underlay
     purpose: "acme development hard isolation"
     admin: false
 
-# Legacy alias — prefer underlay.* in new code.
-networks: *underlay
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. Stage-1 derivation — flatten + compute shared fields ONCE
+# ═══════════════════════════════════════════════════════════════════════════
+# Statement-loop over the dict; each item = entry | combine(derived fields).
+# Ends with to_json (see the 2.16 note in the header) — consumers from_json.
+network_underlay_items: >-
+  {%- set out = [] -%}
+  {%- for key, net in network_underlay.items() -%}
+  {%-   set base = key -%}
+  {%-   if key.startswith(net.tenancy ~ '_') -%}
+  {%-     set base = key[(net.tenancy | length) + 1:] -%}
+  {%-   endif -%}
+  {%-   set _ = out.append(net | combine({
+          'network_key': key,
+          'display_name': 'VLAN%02d' | format(net.vlan_id)
+                          ~ '-' ~ (net.tenancy | upper)
+                          ~ '-' ~ (base | upper | replace('_', '-')),
+          'gateway_cidr': net.gateway ~ '/'
+                          ~ (net.subnet | ansible.utils.ipaddr('prefix')),
+        })) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
 
-# Segments with admin: true (operator/admin source CIDRs).
-underlay_admin_cidrs:
-  - "{{ underlay.mgt.subnet }}"
-  - "{{ underlay.infra.subnet }}"
-  - "{{ underlay.site_b.subnet }}"
+# key → display_name convenience map (inventory selection / vsphere_vm_network).
+network_underlay_names: >-
+  {%- set out = {} -%}
+  {%- for it in network_underlay_items | from_json -%}
+  {%-   set _ = out.update({it.network_key: it.display_name}) -%}
+  {%- endfor -%}
+  {{ out | to_json }}
+
+# Segments with admin: true (operator/admin source CIDRs) — now derived.
+underlay_admin_cidrs: >-
+  {{ network_underlay_items | from_json
+     | selectattr('admin')
+     | map(attribute='subnet') | list }}
 network_admin_cidrs: "{{ underlay_admin_cidrs }}"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 2. vcenter — port-groups (hypervisor L2 plane)
+# 3. Stage-2 projections — per-platform views (selectattr + json_query)
 # ═══════════════════════════════════════════════════════════════════════════
-vcenter:
-  vds_name: "vDS-Lab"
-  portgroups:
-    - { name: TRUNK, vlan_id: "0-4094", trunk: true, description: "edge router VLAN trunk" }
 
-    # Site infrastructure
-    - { name: VLAN00-INFRA, vlan_id: 0 }
-    - { name: VLAN01-SITE-B, vlan_id: 1 }
+# ── ESXi port groups (community.vmware.vmware_portgroup) ────────────────────
+# Consume with:  loop: "{{ esxi_portgroups }}"
+#                loop_control: { loop_var: pg, label: "{{ pg.name }}" }
+esxi_portgroups: >-
+  {{ (network_underlay_items | from_json
+      | selectattr('targets', 'contains', 'esxi')
+      | map('community.general.json_query',
+            '{name: display_name, switch: vswitch, vlan: vlan_id, insecure: insecure}')
+      | list)
+     + esxi_portgroups_static }}
 
-    # Mock residential / tenant L2 (names only — no underlay L3 entries)
-    - { name: VLAN02-RES-A, vlan_id: 2 }
-    - { name: VLAN03-RES-B, vlan_id: 3 }
-    - { name: VLAN04-RES-C, vlan_id: 4 }
-    - { name: VLAN05-SHARED, vlan_id: 5 }
-    - { name: VLAN06-TENANT1, vlan_id: 6 }
-    - { name: VLAN07-TENANT2, vlan_id: 7 }
-    - { name: VLAN08-RES-IOT, vlan_id: 8 }
+# Port groups with no L3 underlay entry (trunk, residential/tenant L2-only,
+# extra k3s planes, PoC sandboxes) — appended verbatim to esxi_portgroups.
+esxi_portgroups_static:
+  - { name: TRUNK, switch: vDS-Lab, vlan: "0-4094", insecure: false, trunk: true }
+  - { name: VLAN02-RES-A, switch: vDS-Lab, vlan: 2, insecure: false }
+  - { name: VLAN03-RES-B, switch: vDS-Lab, vlan: 3, insecure: false }
+  - { name: VLAN04-RES-C, switch: vDS-Lab, vlan: 4, insecure: false }
+  - { name: VLAN05-SHARED, switch: vDS-Lab, vlan: 5, insecure: false }
+  - { name: VLAN06-TENANT1, switch: vDS-Lab, vlan: 6, insecure: false }
+  - { name: VLAN07-TENANT2, switch: vDS-Lab, vlan: 7, insecure: false }
+  - { name: VLAN08-RES-IOT, switch: vDS-Lab, vlan: 8, insecure: false }
+  - { name: VLAN12-MGT-K3S-WKR, switch: vDS-Lab, vlan: 12, insecure: false }
+  - { name: VLAN13-MGT-K3S-LB, switch: vDS-Lab, vlan: 13, insecure: false }
+  - { name: VLAN22-DEV-K3S-WKR, switch: vDS-Lab, vlan: 22, insecure: false }
+  - { name: VLAN23-DEV-K3S-LB, switch: vDS-Lab, vlan: 23, insecure: false }
+  - { name: VLAN32-PROD-K3S-WKR, switch: vDS-Lab, vlan: 32, insecure: false }
+  - { name: VLAN33-PROD-K3S-LB, switch: vDS-Lab, vlan: 33, insecure: false }
+  - { name: VLAN501-SANDBOX01-INSIDE, switch: vDS-Lab, vlan: 501, insecure: false }
+  - { name: VLAN502-SANDBOX02-INSIDE, switch: vDS-Lab, vlan: 502, insecure: false }
 
-    # DMZ + management + K3s planes
-    - { name: VLAN09-DMZ, vlan_id: 9 }
-    - { name: VLAN10-MGT-SVC, vlan_id: 10 }
-    - { name: VLAN11-MGT-K3S-CP, vlan_id: 11 }
-    - { name: VLAN12-MGT-K3S-WKR, vlan_id: 12 }
-    - { name: VLAN13-MGT-K3S-LB, vlan_id: 13 }
+# ── Firewall L3 subinterfaces (paloaltonetworks.panos) ──────────────────────
+# ip = gateway_cidr: the firewall subinterface IS the segment gateway.
+palo_interfaces: >-
+  {{ network_underlay_items | from_json
+     | selectattr('targets', 'contains', 'firewall')
+     | map('community.general.json_query',
+           '{name: join(``, [`ethernet1/1.`, to_string(vlan_id)]),
+             tag: vlan_id,
+             ip: gateway_cidr,
+             management_profile: mgmt_profile,
+             zone_name: zone,
+             comment: display_name}')
+     | list }}
 
-    # Development + cluster lab + K3s planes
-    - { name: VLAN20-DEV-SVC, vlan_id: 20 }
-    - { name: VLAN21-DEV-CLUSTER, vlan_id: 21 }
-    - { name: VLAN21-DEV-K3S-CP, vlan_id: 21 }
-    - { name: VLAN22-DEV-K3S-WKR, vlan_id: 22 }
-    - { name: VLAN23-DEV-K3S-LB, vlan_id: 23 }
+# ── Switch VLAN ids (physical L2 plane) ─────────────────────────────────────
+# Unique sorted vlan_ids of every segment targeting the switches, plus the
+# L2-only ids that have no underlay entry.
+switch_vlans: >-
+  {{ ((network_underlay_items | from_json
+       | selectattr('targets', 'contains', 'switches')
+       | map(attribute='vlan_id') | list)
+      + switch_vlans_static)
+     | unique | sort }}
 
-    # Production + K3s planes
-    - { name: VLAN30-PROD-SVC, vlan_id: 30 }
-    - { name: VLAN31-PROD-K3S, vlan_id: 31 }
-    - { name: VLAN31-PROD-K3S-CP, vlan_id: 31 }
-    - { name: VLAN32-PROD-K3S-WKR, vlan_id: 32 }
-    - { name: VLAN33-PROD-K3S-LB, vlan_id: 33 }
-
-    # IoT / tenants / lab
-    - { name: VLAN40-IOT, vlan_id: 40 }
-    - { name: VLAN50-TENANTS, vlan_id: 50 }
-    - { name: VLAN120-LAB, vlan_id: 120 }
-
-    # Hard-tenant examples (underlay.acme_prod / underlay.acme_dev)
-    - { name: VLAN60-ACME-PROD, vlan_id: 60 }
-    - { name: VLAN61-ACME-DEV, vlan_id: 61 }
-
-    # Mock PoC sandboxes (trunk range 500-599)
-    - { name: VLAN501-SANDBOX01-INSIDE, vlan_id: 501 }
-    - { name: VLAN502-SANDBOX02-INSIDE, vlan_id: 502 }
+# L2-only VLANs with no underlay entry (residential/tenant + PoC sandboxes).
+switch_vlans_static: [2, 3, 4, 5, 6, 7, 8, 12, 13, 22, 23, 32, 33, 501, 502]
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 3. dell — switch VLANs + trunks (physical L2 plane)
+# 4. Non-derivable platform data (kept as-is)
 # ═══════════════════════════════════════════════════════════════════════════
+
+# Firewall device metadata + zones (zones are policy anchors, not per-VLAN).
+palo:
+  device_group: "lab"
+  vsys: "vsys1"
+  template: "lab-template"
+  zones:
+    infra: { name: "infra", mode: layer3 }
+    dmz: { name: "dmz", mode: layer3 }
+    mgt: { name: "mgt", mode: layer3 }
+    dev: { name: "dev", mode: layer3 }
+    prod: { name: "prod", mode: layer3 }
+    iot: { name: "iot", mode: layer3 }
+    tenant: { name: "tenant", mode: layer3 }
+    lab: { name: "lab", mode: layer3 }
+    edge: { name: "edge", mode: layer3 }
+
+# Switch trunk ports — hand-curated (physical cabling, not derivable).
 dell:
-  vlans:
-    - { id: 0, name: INFRA }
-    - { id: 1, name: SITE-B }
-    - { id: 2, name: RES-A }
-    - { id: 3, name: RES-B }
-    - { id: 4, name: RES-C }
-    - { id: 5, name: SHARED }
-    - { id: 6, name: TENANT1 }
-    - { id: 7, name: TENANT2 }
-    - { id: 8, name: RES-IOT }
-    - { id: 9, name: DMZ }
-    - { id: 10, name: MGT-SVC }
-    - { id: 11, name: MGT-K3S-CP }
-    - { id: 12, name: MGT-K3S-WKR }
-    - { id: 13, name: MGT-K3S-LB }
-    - { id: 20, name: DEV-SVC }
-    - { id: 21, name: DEV-CLUSTER }
-    - { id: 22, name: DEV-K3S-WKR }
-    - { id: 23, name: DEV-K3S-LB }
-    - { id: 30, name: PROD-SVC }
-    - { id: 31, name: PROD-K3S }
-    - { id: 32, name: PROD-K3S-WKR }
-    - { id: 33, name: PROD-K3S-LB }
-    - { id: 40, name: IOT }
-    - { id: 50, name: TENANTS }
-    - { id: 60, name: ACME-PROD }
-    - { id: 61, name: ACME-DEV }
-    - { id: 120, name: LAB }
-    - { id: 501, name: SANDBOX01 }
-    - { id: 502, name: SANDBOX02 }
-
   trunks:
     - name: esxi-01
       description: "ESXi-01 uplink(s)"
@@ -428,77 +490,6 @@ dell:
       native_vlan: 0
       allowed_vlans: "500-599"
       peer: esxi-all
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 4. palo — zones + subinterfaces (security plane scaffold)
-# ═══════════════════════════════════════════════════════════════════════════
-palo:
-  device_group: "lab"
-  vsys: "vsys1"
-  template: "lab-template"
-
-  zones:
-    infra: { name: "infra", mode: layer3 }
-    dmz: { name: "dmz", mode: layer3 }
-    mgt: { name: "mgt", mode: layer3 }
-    dev: { name: "dev", mode: layer3 }
-    prod: { name: "prod", mode: layer3 }
-    iot: { name: "iot", mode: layer3 }
-    tenant: { name: "tenant", mode: layer3 }
-    lab: { name: "lab", mode: layer3 }
-    edge: { name: "edge", mode: layer3 }
-
-  interfaces:
-    - name: ethernet1/1.10
-      vlan_id: "{{ underlay.mgt.vlan_id }}"
-      subnet: "{{ underlay.mgt.subnet }}"
-      zone: mgt
-      ip: ""
-    - name: ethernet1/1.11
-      vlan_id: "{{ underlay.mgt_k3s.vlan_id }}"
-      subnet: "{{ underlay.mgt_k3s.subnet }}"
-      zone: mgt
-      ip: ""
-    - name: ethernet1/1.20
-      vlan_id: "{{ underlay.dev.vlan_id }}"
-      subnet: "{{ underlay.dev.subnet }}"
-      zone: dev
-      ip: ""
-    - name: ethernet1/1.21
-      vlan_id: "{{ underlay.dev_cluster.vlan_id }}"
-      subnet: "{{ underlay.dev_cluster.subnet }}"
-      zone: dev
-      ip: ""
-    - name: ethernet1/1.30
-      vlan_id: "{{ underlay.prod.vlan_id }}"
-      subnet: "{{ underlay.prod.subnet }}"
-      zone: prod
-      ip: ""
-    - name: ethernet1/1.31
-      vlan_id: "{{ underlay.prod_k3s.vlan_id }}"
-      subnet: "{{ underlay.prod_k3s.subnet }}"
-      zone: prod
-      ip: ""
-    - name: ethernet1/1.9
-      vlan_id: "{{ underlay.dmz.vlan_id }}"
-      subnet: "{{ underlay.dmz.subnet }}"
-      zone: dmz
-      ip: ""
-    - name: ethernet1/1.50
-      vlan_id: "{{ underlay.tenants.vlan_id }}"
-      subnet: "{{ underlay.tenants.subnet }}"
-      zone: tenant
-      ip: ""
-    - name: ethernet1/1.60
-      vlan_id: "{{ underlay.acme_prod.vlan_id }}"
-      subnet: "{{ underlay.acme_prod.subnet }}"
-      zone: tenant
-      ip: ""
-    - name: ethernet1/1.61
-      vlan_id: "{{ underlay.acme_dev.vlan_id }}"
-      subnet: "{{ underlay.acme_dev.subnet }}"
-      zone: tenant
-      ip: ""
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. docker_swarm — encrypted overlay subnets (east-west app plane)
@@ -536,3 +527,14 @@ swarm_overlay_subnets:
   mattermost: "{{ docker_swarm.mattermost.subnet }}"
   splunk: "{{ docker_swarm.splunk.subnet }}"
   elk: "{{ docker_swarm.elk.subnet }}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. Legacy aliases — prefer network_underlay.* / the projections in new code
+# ═══════════════════════════════════════════════════════════════════════════
+# NOTE: per-entry portgroup/name/netmask fields are GONE — use display_name
+# (derived), network_underlay_names, or subnet | ansible.utils.ipaddr('netmask').
+underlay: "{{ network_underlay }}"
+networks: "{{ network_underlay }}"
+
+# Fallback only — inventory should derive from the selected segment's subnet.
+network_netmask: "255.255.255.0"

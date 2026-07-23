@@ -16,15 +16,16 @@ tenancy: "example"
 vault_kv_env: "prod"
 
 # ── 2. Primary underlay segment ─────────────────────────────────────────────
-# Pick one key from playbooks/group_vars/all/networks.yml → underlay.*
-#   mgt → underlay.mgt          (VLAN10)
-#   dev → underlay.dev          (VLAN20)
-#   prod → underlay.prod        (VLAN30)
-#   labs → underlay.dev_cluster (VLAN21)
-network_gateway: "{{ underlay.prod.gateway }}"
-vsphere_vm_network: "{{ underlay.prod.portgroup }}"
-vsphere_vm_gateway: "{{ underlay.prod.gateway }}"
-vsphere_vm_dns: "{{ underlay.prod.dns }}"
+# Pick ONE key from playbooks/group_vars/all/networks.yml → network_underlay
+#   mgt (VLAN10) | dev (VLAN20) | prod (VLAN30) | dev_cluster (VLAN21)
+#   hard tenant: acme_prod (VLAN60) / acme_dev (VLAN61)
+# Port-group name and netmask are DERIVED — no per-entry portgroup/netmask.
+network_segment: "prod"
+network_gateway: "{{ network_underlay[network_segment].gateway }}"
+network_netmask: "{{ network_underlay[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
+vsphere_vm_network: "{{ (network_underlay_names | from_json)[network_segment] }}"
+vsphere_vm_gateway: "{{ network_underlay[network_segment].gateway }}"
+vsphere_vm_dns: "{{ network_underlay[network_segment].dns }}"
 
 # ── 3. VM naming (inherited by every group unless overridden) ───────────────
 # Prefix = ${env}${distro_letter}  →  mgta | deva | proda
