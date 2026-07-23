@@ -365,33 +365,78 @@ network_underlay_items: |
   {{ items | to_json }}
 
 # ============================================================
-# Stage 1b – generated pool (example / placeholder)
-# Adjust the generator to match your real 19-set logic
+# Stage 1b – generated pools (spec-driven)
 # ============================================================
+# Each pool declares its own shape; the generator emits sets × roles items.
+# NAMING IS DATA, not generator logic: key_pattern / name_pattern are plain
+# Python str.format strings (both optional — defaults preserve the global
+# convention). Available placeholders:
+#   {prefix} {pool} {tenant} {role} {role_uc} {vlan} {n} {nn}
+# One pool can name port groups VLAN2004-ACME-MONITOR-01 while another uses
+# LAB-{nn}-{role}, purely from data. display_name feeds every projection,
+# so a pool's pattern flows to ESXi/firewall/switch consumers automatically;
+# duplicate_display_names below still guards against a colliding pattern
+# (e.g. one that omits both {vlan} and {nn}).
+
+network_pools:
+  # Defaults demo: key {prefix}-{n}-{role}, name VLAN{vlan}-{tenant}-{role_uc}-{nn}
+  acme_lab:
+    prefix: acme-dev
+    tenancy: acme
+    zone: pool
+    vlan_base: 2000
+    sets: 2
+    roles: [app, monitor]
+    targets: [esxi, switches]
+    vswitch: vDS-Lab
+
+  # Custom per-pool convention demo: {nn} keeps names unique without {vlan}.
+  globex_lab:
+    prefix: globex-lab
+    tenancy: globex
+    zone: pool
+    vlan_base: 2100
+    sets: 2
+    roles: [sandbox]
+    targets: [esxi, switches]
+    vswitch: vDS-Lab
+    name_pattern: "LAB-{nn}-{role}"
+
 network_pool_items: |
   {% set items = [] %}
-  {# Example generator – replace with your real pool logic #}
-  {% for i in range(1, 20) %}
-  {%   set tenant = 'POOL' %}
-  {%   set role = 'SET' ~ '%02d' | format(i) %}
-  {%   set vlan = 1000 + i %}
-  {%   set display_name = 'VLAN' ~ vlan ~ '-' ~ tenant ~ '-' ~ role %}
-  {%   set _ = items.append({
-          'original_key': 'pool_' ~ i,
-          'display_name': display_name,
-          'vlan_id': vlan,
-          'tenancy': tenant,
-          'network_role': role,
-          'zone': 'pool',
-          'targets': ['esxi', 'switches'],
-          'vswitch': 'vDS-Lab',
-          'insecure': false,
-          'gateway': '',
-          'subnet': '',
-          'gateway_cidr': '',
-          'management_profile': '',
-          'dns': ''
-        }) %}
+  {% for pool_key, pool in network_pools.items() %}
+  {%   set tenant = (pool.tenancy | default(pool_key) | upper | trim) %}
+  {%   set roles = pool.roles | default(['set']) %}
+  {%   for n in range(1, (pool.sets | default(1)) + 1) %}
+  {%     for role_name in roles %}
+  {%       set vlan = (pool.vlan_base | default(1000))
+                      + ((n - 1) * (roles | length)) + loop.index0 %}
+  {%       set nctx = {'prefix': pool.prefix | default(pool_key),
+                       'pool': pool_key, 'tenant': tenant,
+                       'role': role_name, 'role_uc': role_name | upper,
+                       'vlan': vlan, 'n': n, 'nn': '%02d' | format(n)} %}
+  {%       set item_key = (pool.key_pattern
+               | default('{prefix}-{n}-{role}')).format(**nctx) %}
+  {%       set item_name = (pool.name_pattern
+               | default('VLAN{vlan}-{tenant}-{role_uc}-{nn}')).format(**nctx) %}
+  {%       set _ = items.append({
+              'original_key': item_key,
+              'display_name': item_name,
+              'vlan_id': vlan,
+              'tenancy': tenant,
+              'network_role': role_name | upper,
+              'zone': pool.zone | default('pool'),
+              'targets': pool.targets | default(['esxi', 'switches']),
+              'vswitch': pool.vswitch | default(''),
+              'insecure': pool.insecure | default(false) | bool,
+              'gateway': '',
+              'subnet': '',
+              'gateway_cidr': '',
+              'management_profile': '',
+              'dns': ''
+            }) %}
+  {%     endfor %}
+  {%   endfor %}
   {% endfor %}
   {{ items | to_json }}
 
