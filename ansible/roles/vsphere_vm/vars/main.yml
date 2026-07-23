@@ -1,14 +1,5 @@
 ---
-# roles/vsphere_vm/vars/main.yml
-# Non-overridable constants (high precedence — do not put env values here).
-
-# Dotted-netmask octet → set-bit count, for the dependency-free netmask → CIDR
-# prefix conversion in templates/guestinfo_metadata.yaml.j2. cloud-init
-# network-config v2 wants an address in CIDR form (192.0.2.10/24), but the role's
-# public contract is a dotted netmask (vsphere_vm_netmask). ansible.utils.ipaddr
-# would need the netaddr Python lib (not installed in the ansible312 venv), so we
-# sum the bit counts of the four octets instead — valid netmasks only ever use
-# these nine octet values.
+# Dotted-netmask octet → bit count (GuestInfo CIDR; avoids ansible.utils.ipaddr/netaddr).
 vsphere_vm_netmask_bits:
   "0": 0
   "128": 1

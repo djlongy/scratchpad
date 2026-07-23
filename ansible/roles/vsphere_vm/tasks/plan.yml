@@ -1,18 +1,8 @@
 ---
-# roles/vsphere_vm/tasks/plan.yml
-# PURELY INVENTORY-DERIVED plan, per host — NO vCenter read. The desired state is
-# whatever the host declares (_vsphere_guest.state); vmware_guest /
-# deploy_folder_template are idempotent, so we go straight to create/destroy and
-# let the module reconcile (an existing VM = a fast per-VM no-op) instead of
-# gathering the WHOLE vCenter inventory up front (vmware_vm_info) just to test
-# existence — that gather was the slow part and told us nothing the module can't
-# resolve itself, cheaper, by name.
-#
-# All set_fact only → no module_defaults / vCenter connection needed here.
+# Inventory-only plan — no vCenter read. Modules reconcile existence cheaply per-VM.
 
 - name: Plan | Derive this host's plan from its declared state (no vCenter read)
   ansible.builtin.set_fact:
-    # absent → destroy (opt-in); anything else → ensure present (idempotent create).
     _vsphere_desired_absent: "{{ _vsphere_guest.state == 'absent' }}"
     _vsphere_desired_present: "{{ _vsphere_guest.state != 'absent' }}"
     _vsphere_to_create: "{{ _vsphere_guest.state != 'absent' }}"
@@ -20,19 +10,12 @@
   delegate_to: localhost
   become: false
 
-# Consolidated pre-build report — printed ONCE (run_once) before any VM is touched,
-# so the operator can see EVERYTHING about to be built across the whole play: vCenter
-# object name, guest OS hostname, IP/mask/gateway, template, placement, hardware,
-# disks and provisioning mode, per host. Reads each host's already-built _vsphere_guest
-# from hostvars (spec.yml ran for every host first). Hosts build CONCURRENTLY (bounded
-# by `forks`), so this is your one chance to eyeball the plan before it fans out.
+# One pre-build report for the whole play (hosts then fan out in parallel).
 - name: Plan | Report everything about to be built (all hosts)
   run_once: true
   delegate_to: localhost
   become: false
   ansible.builtin.debug:
-    # Build the report as a LIST of lines (debug prints one per line). Deterministic —
-    # avoids block-scalar whitespace/newline pitfalls with the per-NIC inner loop.
     msg: >-
       {%- set L = ['===== vSphere build plan — ' ~ (ansible_play_hosts | length) ~
                    ' host(s), built concurrently (forks) ====='] -%}
@@ -66,10 +49,6 @@
       {%- set _ = L.append('=' * 84) -%}
       {{ L }}
 
-# Same contract call-out for the redeploy path — `--tags redeploy` WITHOUT the
-# force var quietly degrades to a plain ensure (create/connect also carry the
-# tag), so say so up front instead of letting a green changed=0 run masquerade
-# as a wipe.
 - name: Plan | Advise that redeploy is not armed (ensure-only run)
   ansible.builtin.debug:
     msg: >-
@@ -83,9 +62,6 @@
   delegate_to: localhost
   become: false
 
-# Make the destroy CONTRACT explicit when something is marked absent — otherwise
-# a plain run silently no-ops (destroy is var/tag-gated) and the operator just
-# sees changed=0 with no clue why.
 - name: Plan | Advise how to remove a VM marked absent
   ansible.builtin.debug:
     msg: >-

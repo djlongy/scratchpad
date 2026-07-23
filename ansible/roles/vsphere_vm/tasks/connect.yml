@@ -1,28 +1,6 @@
 ---
-# roles/vsphere_vm/tasks/connect.yml
-# PERMANENT, SELF-HEALING, RACE-PROOF fix for the clone+customize NIC-disconnect
-# bug. After a VM is built, vSphere clears the NIC's "connect at power on", so the
-# guest boots with a dead NIC and never gets an IP. Worse, the disconnect is a
-# ONE-TIME event applied during the guest's ASYNC first-boot customization, which
-# can re-disconnect the vNIC AFTER a single up-front reconnect — so one reconnect
-# loses the race and a single long IP wait just times out.
-#
-# Runs per host over ITS OWN VM (freshly created AND already present — main.yml
-# gates on _vsphere_desired_present), so a plain re-run heals a NIC an earlier
-# run left disconnected, not just fresh clones. An up-front IP pre-check
-# short-circuits an already-healthy VM (has IP ⇒ NIC connected) so a normal re-run
-# is a single cheap read, not redundant NIC writes. It is a bounded MULTI-PASS
-# poll-and-reconnect (connect_pass.yml): each pass re-asserts every
-# still-disconnected NIC then briefly polls for an IP, repeating until the VM
-# has an IP or vsphere_vm_connect_passes is exhausted. Whichever pass lands just
-# after customization finishes makes the reconnect stick, so recovery is ~one
-# pass-interval rather than a single long timeout. Every pass is idempotent and
-# bounded.
-#
-# vsphere_vm_connect_nics gates this whole phase from main.yml, which includes
-# this file dynamically — set it false to skip the reconnect entirely and let
-# vCenter settle the NIC on its own. The vCenter connection is set on the block
-# below because module_defaults cannot ride a TaskInclude.
+# Multi-pass NIC reconnect + IP wait. Pre-check short-circuits healthy VMs.
+# Connection args on the block (module_defaults cannot ride TaskInclude).
 
 - name: Connect | Reconnect this VM's NICs (bounded multi-pass)
   module_defaults:
@@ -32,14 +10,6 @@
       password: "{{ vsphere_vm_password }}"
       validate_certs: "{{ vsphere_vm_validate_certs }}"
   block:
-    # POLL-IP-FIRST short-circuit. A VM that ALREADY reports an IPv4 is demonstrably
-    # past the one-time customization NIC-disconnect window (has IP ⇒ NIC connected),
-    # so it needs no reconcile — reconnecting its NICs would be redundant vCenter
-    # writes on every healthy re-run. Only a VM WITHOUT an IP (a fresh clone still in
-    # customization, or one an earlier run left disconnected — connect.yml runs for
-    # already-present VMs too, to self-heal those) is marked pending and falls into the
-    # reconcile passes below. When wait_for_ip is off there is no IP completion signal,
-    # so we keep the original always-pending behaviour (reconcile every pass).
     - name: Connect | Pre-check whether this VM already has an IP
       community.vmware.vmware_guest_info:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -49,10 +19,7 @@
       delegate_to: localhost
       become: false
 
-    # A FAILED pre-check (wrong datacenter/name, auth, vCenter down) leaves
-    # `instance` undefined, which reads downstream as "no IP yet" and sends the
-    # run into the full reconnect+poll budget for a VM it can never inspect.
-    # Surface the real reason instead of waiting silently on a broken call.
+    # failed_when:false → missing instance is the error signal (not `is failed`).
     - name: Connect | Warn that the IP pre-check could not query the VM
       ansible.builtin.debug:
         msg: >-
@@ -60,10 +27,6 @@
           passes below cannot see this VM's IP and will burn their whole budget.
           Check vsphere_vm_datacenter / the VM name / credentials. vCenter said:
           {{ _vsphere_ip_precheck.msg | default('(no message)') }}
-      # NOT `is failed`: failed_when:false forces failed=false, so that test is
-      # dead code. A successful lookup always returns `instance`; a failed one
-      # returns only `msg` — so a missing `instance` IS the error signal, and it
-      # also distinguishes "call broke" from "call worked, no IP yet".
       when: _vsphere_ip_precheck.instance is not defined
       delegate_to: localhost
       become: false
@@ -76,15 +39,10 @@
       delegate_to: localhost
       become: false
 
-    # Each include is one reconnect+poll pass; connect_pass.yml clears
-    # _vsphere_connect_pending once the VM has an IP, so later passes no-op. The
-    # include is skipped wholesale for a VM the pre-check already found healthy.
     - name: Connect | Multi-pass reconnect until the VM has an IP
       ansible.builtin.include_tasks: connect_pass.yml
       when: _vsphere_connect_pending | bool
       loop: "{{ range(0, vsphere_vm_connect_passes | int) | list }}"
-      # loop_var: _pass so the outer pass counter never collides with the `item`
-      # the looped tasks inside connect_pass.yml use.
       loop_control:
         loop_var: _pass
         label: "pass {{ _pass + 1 }}/{{ vsphere_vm_connect_passes }} ({{ _vsphere_guest.name if _vsphere_connect_pending else 'done' }})"

@@ -1,219 +1,75 @@
 ---
-# roles/vsphere_vm/defaults/main.yml
-#
-# Portable vCenter VM lifecycle role: create (clone from template) and destroy
-# VMs via community.vmware.vmware_guest. All modules run on the control node
-# (delegate_to: localhost). HOST-CENTRIC: the play targets the VM hosts and each
-# host provisions its own VM from its own vars. Idempotent — vmware_guest
-# reconciles to the declared state.
-#
-# Behavioural defaults live here; env-specific values (vCenter address, Vault
-# path, datacenter/cluster/datastore) are commented out for discoverability and
-# MUST be set in inventory.
+# vsphere_vm defaults — behavioural only. Env values (vCenter, Vault, placement) live in inventory.
 
 # ── vCenter connection ───────────────────────────────────────────────────────
-# ENV-SPECIFIC — set in inventory:
 # vsphere_vm_server: "vcenter.example.com"
 # vsphere_vm_vault_secret: "kv-<env>/data/platform/vsphere/vcenter/runtime"
 vsphere_vm_username: "administrator@vsphere.local"
-vsphere_vm_password_field: "admin_password"   # field within vsphere_vm_vault_secret
-vsphere_vm_password: ""                        # set directly to bypass the Vault lookup
-vsphere_vm_validate_certs: false               # labs use self-signed vCenter certs
+vsphere_vm_password_field: "admin_password"
+vsphere_vm_password: ""                        # non-empty bypasses Vault lookup
+vsphere_vm_validate_certs: false
 
-# ── Placement (ENV-SPECIFIC — set in inventory) ──────────────────────────────
+# ── Placement ────────────────────────────────────────────────────────────────
 # vsphere_vm_datacenter: "Datacenter"
-# vsphere_vm_cluster: "Cluster"               # OR vsphere_vm_esxi_host for standalone
-# vsphere_vm_esxi_host: "192.0.2.11"          # standalone host (no DRS cluster)
-# vsphere_vm_resource_pool: "Resources"       # pool NAME (not a path); standalone host default is "Resources"
-# Inventory folder for new VMs, RELATIVE to this datacenter's VM root — the path
-# you see under "VMs and Templates", with no leading slash and no /<DC>/vm prefix.
-# Empty = the VM root itself. Nested paths are created whole ("swarm/alma").
-# The datacenter is NOT repeated here; it comes from vsphere_vm_datacenter, and
-# spec.yml derives both the absolute and relative forms the two vSphere modules
-# want. See spec.yml for why both exist.
-vsphere_vm_folder: ""                          # e.g. "swarm/alma"; "" = DC VM root
-vsphere_vm_datastore: ""                       # default datastore for clones
+# vsphere_vm_cluster: "Cluster"               # OR vsphere_vm_esxi_host
+# vsphere_vm_esxi_host: "192.0.2.11"
+# vsphere_vm_resource_pool: "Resources"       # pool name (not path)
+# Folder relative to DC VM root — no leading slash, no /DC/vm prefix. Nested ok.
+vsphere_vm_folder: ""
+vsphere_vm_datastore: ""
 
-# ── Per-VM hardware (native community.vmware.vmware_guest `hardware` dict) ───
-# Passed 1:1 as the module's `hardware:` parameter. Shape matches the module
-# contract exactly — see community.vmware.vmware_guest (num_cpus, memory_mb,
-# boot_firmware, scsi, hotadd_cpu, nested_virt, …). Keys never set inherit from
-# the source template (right behaviour for clones). Inventory may replace this
-# dict wholesale; include every key you care about when overriding.
-#
-# Deprecated aliases (still honoured if set in inventory, no role default):
-#   vsphere_vm_cpu     → folds into hardware.num_cpus
-#   vsphere_vm_memory  → folds into hardware.memory_mb (MB)
+# ── Hardware (native vmware_guest `hardware` dict, 1:1) ──────────────────────
+# Unset keys inherit from the template. Inventory replaces the whole dict.
+# Optional aliases: vsphere_vm_cpu → num_cpus, vsphere_vm_memory → memory_mb
 vsphere_vm_hardware:
   num_cpus: 2
   memory_mb: 4096
 vsphere_vm_disk:
-  - size_gb: 40                                  # primary disk — must be >= the template's
+  - size_gb: 40                                  # primary; must be >= template
     type: thin                                   # thin | thick | eagerzeroedthick
 vsphere_vm_wait_for_ip: true
-vsphere_vm_state: poweredon                      # default state for created guests
-# SCSI controller type the data disks hang off — used by the disk-grow step
-# (vmware_guest_disk needs it to address the controller). Modern templates use
-# paravirtual (VMware PVSCSI); set lsilogic / lsilogicsas / buslogic if yours differs.
-vsphere_vm_scsi_type: paravirtual
+vsphere_vm_state: poweredon
+vsphere_vm_scsi_type: paravirtual                # for disk-grow (vmware_guest_disk)
 
-# ── Handoff to on-guest roles in the SAME play ───────────────────────────────
-# Everything this role does runs on the control node (delegate_to: localhost) and
-# never touches the guest. Set this true to append a final step that waits until
-# the freshly-built guest answers SSH (returns immediately once it does — a poll,
-# not a fixed sleep) and then gathers its facts, so an on-guest role can follow in
-# the same play, e.g. `roles: [vsphere_vm, storage]`. REQUIRES: the play uses
-# gather_facts: false (the VM doesn't exist at play start), the template bakes in
-# the ansible SSH user + key, and host-key checking is off for the fresh host
-# (ANSIBLE_HOST_KEY_CHECKING=False). Left false → original localhost-only behaviour.
+# ── Guest SSH handoff (chain on-guest roles in the same play) ────────────────
+# Play needs gather_facts: false; template must bake ansible user+key;
+# ANSIBLE_HOST_KEY_CHECKING=False for the new host.
 vsphere_vm_wait_for_ssh: false
-vsphere_vm_ssh_timeout: 300                       # max seconds to wait for guest SSH
+vsphere_vm_ssh_timeout: 300
 
-# ── Robust spin-up (NIC state + bounded waits) ───────────────────────────────
-# GOSC creates are STAGED (see create.yml): clone powered off, assert every vNIC
-# connected+start-connected while off, then power on — the NIC enters first boot
-# live and is never disconnected, so a fresh clone reaches its IP in ~80-90 s
-# with no reconnect needed. (The one-call clone+customize+power-on path loses
-# the connect flags and orphans the NIC permanently — live-proven 2026-07-23.)
-#
-# The bounded MULTI-PASS poll-and-reconnect below remains as defense-in-depth
-# for VMs an earlier (pre-staged) run left disconnected, manual power events,
-# or any regression: each pass re-asserts every still-disconnected NIC, then
-# briefly waits for an IP; it repeats until the VM has an IP or the passes run
-# out. On a healthy staged create it is just the bounded IP wait (the pre-check
-# short-circuits the NIC writes). Bounded total =
-# connect_passes * connect_pass_retries * connect_pass_delay seconds.
-#
-# Set vsphere_vm_connect_nics: false for "trust vCenter" mode — the entire
-# reconnect phase is skipped as a single task, so a run that does not need the
-# reconcile stays quiet instead of emitting a poll pass per VM. Use it when the
-# NIC-disconnect bug does not apply: GuestInfo provisioning (no GOSC, see below),
-# a template that does not disconnect, or when the guest is simply left to come
-# good on its own and nothing in the same play needs its IP.
-#
-# Two consequences when it is false, both by design:
-#   * No IP is ever waited for — vsphere_vm_wait_for_ip only takes effect inside
-#     this phase, so the run finishes as soon as the VM is defined.
-#   * vsphere_vm_wait_for_ssh (handoff) has nothing to guarantee the NIC is up,
-#     so it will burn its full vsphere_vm_ssh_timeout if the NIC really is
-#     disconnected. Keep the reconnect enabled when handing off to on-guest roles.
-vsphere_vm_connect_nics: true                    # false = trust vCenter, skip the whole phase
-vsphere_vm_create_retries: 3                     # retry transient vCenter create/gather errors
+# ── NIC reconnect (defense-in-depth after staged GOSC create) ────────────────
+# Staged create keeps NIC connected on first boot. This multi-pass heals VMs
+# left disconnected by older runs / power events. false = skip whole phase.
+# Budget = connect_passes × connect_pass_retries × connect_pass_delay seconds.
+vsphere_vm_connect_nics: true
+vsphere_vm_create_retries: 3
 vsphere_vm_create_delay: 15
-# Multi-pass reconnect cadence. Default: 8 passes x (10 polls x 10s) = up to 800s
-# total, re-asserting every disconnected NIC about once per ~100s — tight enough
-# to catch the customization re-disconnect quickly.
-vsphere_vm_connect_passes: 8                     # reconnect+wait cycles before giving up
-vsphere_vm_connect_pass_retries: 10              # IP polls per pass
-vsphere_vm_connect_pass_delay: 10                # seconds between polls within a pass
+vsphere_vm_connect_passes: 8
+vsphere_vm_connect_pass_retries: 10
+vsphere_vm_connect_pass_delay: 10
 
-# ── Provisioning mode: GOSC (default) vs cloud-init GuestInfo ─────────────────
-# The NIC-disconnect above is caused by vSphere Guest OS Customization (GOSC) —
-# the clone-time `customization:` spec that sets the static IP/hostname ALSO fires
-# an async first-boot event that drops the NIC. The multi-pass reconnect heals it.
-#
-# GuestInfo mode is the DURABLE CURE: clone with NO customization spec and hand the
-# hostname + static network to cloud-init via the guestinfo.metadata advanced
-# setting instead. No GOSC → the NIC never disconnects → the reconnect phase above
-# becomes a fast no-op. It consumes the SAME per-guest fields the GOSC path does
-# (ansible_host/hostname/gateway/dns/netmask/network), so flipping this flag needs
-# no new inventory. See the role README (GuestInfo provisioning mode).
-#
-# REQUIRES a GuestInfo-ready template: cloud-init with the VMware datasource
-# (`datasource_list: [VMware, ...]`, `allow_raw_data: true`) and
-# `disable_vmware_customization: true`. Verify on a host with
-# `cloud-init query platform` → must return `vmware`.
+# ── GOSC (default) vs GuestInfo (cloud-init; no NIC disconnect race) ─────────
+# GuestInfo needs a template with VMware datasource + disable_vmware_customization.
+# Same inventory fields as GOSC (networks/hostname/dns). Multi-NIC: name each
+# guest device (default ens192/ens224/…); override with interface: when needed.
 vsphere_vm_provision_via_guestinfo: false
-# GuestInfo networking is MULTI-NIC: every entry in a guest's `networks` becomes a
-# cloud-init ethernet keyed by an EXPLICIT guest device name. cloud-init's RHEL/
-# NetworkManager renderer ignores netplan `match:` globs (an unmatched block is
-# dropped and the NIC DHCPs), so each NIC names its device. The default names
-# follow the VMware VMXNET3 slot order — ens192, ens224, ens256, … in list order —
-# so a single-NIC guest needs nothing extra. Override per NIC with `interface:`
-# when the template uses different names (eth0, ens160, …):
-#   networks:
-#     - {name: "VLAN10-MGT",     interface: ens192, ip: 192.0.2.10,  netmask: 255.255.255.0, gateway: 192.0.2.1}
-#     - {name: "VLAN30-STORAGE", interface: ens224, ip: 10.0.30.10,  netmask: 255.255.255.0}   # no gateway
-#     - {name: "VLAN40-ACCESS",  interface: ens256, ip: 10.0.40.10,  netmask: 255.255.255.0}
-# The primary NIC (first one with a gateway; else NIC 0) carries the resolvers.
-# Per-NIC firewalld zones/services/rules are NOT this role's job — a firewalld/
-# baseline role wires those post-provision, keyed off these interface names.
-# Optional per-guest raw #cloud-config user-data: set item.guestinfo_userdata on a
-# guest to inject guestinfo.userdata alongside the metadata (packages, users, an
-# authoritative resolv.conf, …). Left unset → only metadata (network + hostname).
-# ── HOST-CENTRIC model: each play host provisions ITS OWN VM ──────────────────
-# Target the VM hosts in the play (hosts: <vm_group>, gather_facts: false) —
-# every host builds its VM from its OWN vars in single task calls (all vCenter
-# API calls delegate to localhost; the not-yet-existing host is never contacted).
-# The vsphere_vm_guests list / from_inventory / inventory_group inputs are
-# RETIRED; the role refuses them with a migration message. Per-host vars (all
-# optional except the template; they fall back to the role defaults above):
-#   vsphere_vm_template (required), vsphere_vm_name (default: inventory_hostname),
-#   vsphere_vm_hardware (native num_cpus/memory_mb/…) / _disk / _state / _folder /
-#   _datastore, vsphere_vm_networks (else derived from ansible_host + the vars
-#   below), vsphere_vm_customization (else derived from hostname/domain/dns),
-#   vsphere_vm_provision_via_guestinfo, vsphere_vm_tags, vsphere_vm_guestinfo_userdata.
-#
-# DROP-IN MAPPING for inventories whose hosts already carry exported bare vars
-# (cpus, memory [MB], disks, networks, folder, template + customisation
-# domain/hostname/dns_server_list): bind them ONCE in the group's group_vars —
-# group_vars templates resolve per host, so each host's values flow through:
-#   vsphere_vm_template: "{{ template }}"
-#   vsphere_vm_folder: "{{ folder }}"
-#   vsphere_vm_hardware:
-#     num_cpus: "{{ cpus | int }}"
-#     memory_mb: "{{ memory | int }}"
-#   vsphere_vm_disk: "{{ disks }}"
-#   vsphere_vm_networks: "{{ networks }}"
-#   vsphere_vm_customization:
-#     hostname: "{{ hostname | default(inventory_hostname) }}"
-#     domain: "{{ domain }}"
-#     dns_servers: "{{ dns_server_list }}"
-#
-# The vCenter VM NAME and the guest OS HOSTNAME are decoupled (important for a
-# shared/multi-tenant vCenter — see README "Multi-tenant vCenter naming"):
-#   vsphere_vm_name     → vCenter object name. Default: canonical_hostname, else
-#                         inventory_hostname. Override (usually in group_vars) to a
-#                         globally-unique, tenant-scoped name, e.g.
-#                         "{{ tenant }}-{{ env }}-{{ canonical_hostname }}".
-#   vsphere_vm_hostname → guest OS hostname. Default: canonical_hostname, else
-#                         inventory_hostname. Stays clean/canonical regardless of
-#                         the vCenter name.
-# Both are intentionally NOT defaulted here (their default is computed per host).
-# Defaults for the auto-derived static NIC (override per host/group as needed):
-vsphere_vm_network: ""                        # dvPortGroup / network name
-vsphere_vm_netmask: "255.255.255.0"
-# vsphere_vm_gateway: ""       # UNSET = no gateway (an unrouted data/storage NIC). Set it to
-# make the derived NIC routable. Per-NIC gateways in a custom vsphere_vm_networks list work
-# the same way.
-# Opt-in convenience: when true AND vsphere_vm_gateway is unset, derive the gateway as the
-# FIRST USABLE of the host's subnet from ansible_host + the netmask (respects /25../27 —
-# e.g. .65 on a /26). Off by default so unset stays "no gateway"; an explicit gateway always
-# wins. Set per host/group for routable fleets that don't want to spell out each gateway.
-vsphere_vm_gateway_auto: false
-vsphere_vm_dns: []                            # DNS servers for guest customization
 
-# ── vSphere tags (tenant / environment / …) ──────────────────────────────────
-# vCenter tags applied to created VMs, as a {Category: tag} map. The role ensures
-# each category + tag exists, then associates them. Set vsphere_vm_tags per
-# host/group.
-#   vsphere_vm_tags: {Tenant: prod, Environment: alma}
-# The VM folder (vsphere_vm_folder) may be a NESTED path — e.g. prod/alma — the
-# role creates the whole tree first (one call).
+# ── Per-host identity (host-centric: each play host builds its own VM) ───────
+# Optional except template. Defaults computed per host when unset:
+#   vsphere_vm_name     → vCenter object (canonical_hostname / inventory_hostname)
+#   vsphere_vm_hostname → guest OS hostname (same default; independent of name)
+vsphere_vm_network: ""
+vsphere_vm_netmask: "255.255.255.0"
+# vsphere_vm_gateway: ""       # UNSET = no gateway. Explicit value always wins.
+vsphere_vm_gateway_auto: false # true + no gateway → first usable of ansible_host subnet
+vsphere_vm_dns: []
+
+# ── Tags {Category: tag} — role ensures category/tag then associates ─────────
 vsphere_vm_tags: {}
 
-# ── Force destroy / force redeploy (DESTRUCTIVE — single var each) ───────────
-# These wipe real VMs and disks. Default false. Pass via -e for an intentional
-# run; never leave them true in inventory. Not soft "permission" flags — they
-# *are* the redeploy/destroy action.
-#
-#   # Full play: delete guest+disks → rebuild from template → continue daisy chain
-#   ansible-playbook ... -e vsphere_vm_force_redeploy=true
-#
-#   # Full play: delete guests whose state is absent
-#   ansible-playbook ... -e vsphere_vm_state=absent -e vsphere_vm_force_destroy=true
-#
-# Optional --tags redeploy|destroy only narrows *which* roles run (vsphere-only
-# pass). The force_* var is still what arms the destructive phase.
-vsphere_vm_force_redeploy: false   # DESTRUCTIVE: wipe guest + disks, rebuild from template
-vsphere_vm_force_destroy: false    # DESTRUCTIVE: delete guest when state is absent
+# ── Destructive gates (never leave true in inventory; pass via -e) ───────────
+# -e vsphere_vm_force_redeploy=true           # wipe + rebuild, play continues
+# -e vsphere_vm_state=absent -e vsphere_vm_force_destroy=true
+# --tags redeploy|destroy only narrows scope; force_* still required.
+vsphere_vm_force_redeploy: false
+vsphere_vm_force_destroy: false

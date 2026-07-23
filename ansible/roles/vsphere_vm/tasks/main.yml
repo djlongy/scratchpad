@@ -1,55 +1,23 @@
 ---
-# roles/vsphere_vm/tasks/main.yml
-#
-# HOST-CENTRIC: the play targets the VM hosts themselves (hosts: <vm_group>,
-# gather_facts: false) and every host provisions ITS OWN VM from its own vars —
-# no group loop, no controller-side guest list. All vCenter calls delegate to
-# localhost, so the (possibly not-yet-existing) host is never contacted.
-#
-# Phase order (inventory-derived plan → apply, per host — NO current-state read):
-#   preflight → assert connection inputs + resolve the vCenter password
-#   spec      → build THIS host's guest spec from its own vars
-#   plan      → derive create/destroy purely from the declared state (no vCenter read)
-#   redeploy  → DELETE this host's VM BEFORE create (delete → create). Opt-in via
-#               vsphere_vm_force_redeploy=true (full play continues). Optional
-#               --tags redeploy scopes to vsphere-only (later roles skipped).
-#   create    → ensure this host's VM (idempotent — reconciles an existing VM)
-#   connect   → NIC reconnect + bounded IP wait for this host's VM
-#   destroy   → remove this host's VM when state=absent. Opt-in via
-#               vsphere_vm_force_destroy=true (optional --tags destroy to scope).
-#
-# We deliberately do NOT gather vCenter's inventory to test existence first: the
-# vmware modules are idempotent, so going straight to create lets each module do a
-# cheap per-VM reconcile instead of a slow whole-inventory vmware_vm_info gather.
-# Destructive phases are when:-gated on a single force_* var (not never-tagged)
-# so a normal untagged run can wipe-and-rebuild then continue the rest of the
-# play — same pattern as audit_logging_mode / ssh_agent_key vars.
+# Host-centric: play targets VM hosts; each builds its own guest from its vars.
+# All vCenter work delegates to localhost. Plan is inventory-only (no vCenter read).
+# Phases: preflight → spec → plan → [redeploy] → create → connect → [handoff] → [destroy]
 
 - name: Run vSphere VM preflight (inputs + credentials)
   ansible.builtin.import_tasks: preflight.yml
-  # `always` so the vCenter password is resolved for create, redeploy, and destroy
-  # even when the play is tag-filtered (e.g. --tags redeploy / --tags destroy).
-  tags: [vsphere_vm, preflight, always]
+  tags: [vsphere_vm, preflight, always]   # always: password for create/redeploy/destroy
 
 - name: Build this host's guest spec
   ansible.builtin.import_tasks: spec.yml
-  # `always` so the spec exists for both create and destroy.
   tags: [vsphere_vm, always]
 
-# Inventory-only plan — no vCenter read, so no module_defaults needed here.
-# `always` so the plan exists for both create and destroy phases.
 - name: Compute this host's plan from its declared state
   ansible.builtin.import_tasks: plan.yml
   tags: [vsphere_vm, plan, always]
 
-# vCenter connection for every community.vmware module task, injected per phase
-# via module_defaults (password is resolved by preflight, which is `always`-tagged,
-# before any module task runs). The anchor is defined here on the redeploy import —
-# the first vCenter phase in file order — and aliased by create/connect/destroy.
+# module_defaults anchor defined here; create/destroy alias it.
 - name: Redeploy | Delete this host's VM first so create rebuilds it (opt-in)
   ansible.builtin.import_tasks: redeploy.yml
-  # DESTRUCTIVE gate: vsphere_vm_force_redeploy=true. Untagged play continues
-  # the daisy chain after rebuild; --tags redeploy is optional vsphere-only scope.
   when:
     - _vsphere_desired_present | bool
     - vsphere_vm_force_redeploy | default(false) | bool
@@ -64,21 +32,11 @@
 - name: Ensure this host's VM (idempotent — reconciles if it already exists)
   ansible.builtin.import_tasks: create.yml
   when: _vsphere_to_create | bool
-  # `redeploy` so `--tags redeploy` rebuilds after the delete above.
   tags: [vsphere_vm, create, redeploy]
   module_defaults: *vcenter_connection
 
-# Reconnect + verify the NIC for this host's VM (created this run AND already
-# present). Its own phase — not buried in create — so `--tags connect` can heal
-# a disconnected NIC on an existing VM without creating anything, and a full
-# create run (--tags create) still reconnects what it builds.
-#
-# include_tasks (not import) so vsphere_vm_connect_nics: false costs ONE skipped
-# task instead of a skip line per task in the file — the whole phase disappears
-# from the run output. `apply:` carries the tags to the included tasks, which a
-# bare dynamic include would not do. module_defaults cannot ride a TaskInclude
-# (Ansible rejects it), so the vCenter connection is set on the block inside
-# connect.yml instead of via the *vcenter_connection anchor here.
+# include_tasks so vsphere_vm_connect_nics:false is one skip (not N). apply: carries tags.
+# module_defaults cannot ride TaskInclude — connection is set inside connect.yml.
 - name: Reconnect and verify this host's VM NICs
   ansible.builtin.include_tasks:
     file: connect.yml
@@ -89,10 +47,7 @@
     - vsphere_vm_connect_nics | bool
   tags: [vsphere_vm, create, connect, redeploy]
 
-# OPT-IN handoff to on-guest roles in the SAME play (vsphere_vm_wait_for_ssh):
-# wait until the freshly-built guest answers SSH, then gather its facts. No
-# module_defaults / delegation — unlike every phase above, these tasks use the
-# play's own connection to the guest. Lets `roles: [vsphere_vm, storage]` work.
+# Uses the play's guest connection (not localhost). Needs wait_for_ssh + baked SSH key.
 - name: Wait for the new guest over SSH (handoff to on-guest roles)
   ansible.builtin.import_tasks: handoff.yml
   when:
@@ -102,8 +57,6 @@
 
 - name: Destroy this host's VM when marked absent (opt-in)
   ansible.builtin.import_tasks: destroy.yml
-  # DESTRUCTIVE gate: vsphere_vm_force_destroy=true (state must already be absent).
-  # Optional --tags destroy scopes to vsphere-only.
   when:
     - _vsphere_to_destroy | bool
     - vsphere_vm_force_destroy | default(false) | bool

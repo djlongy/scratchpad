@@ -1,19 +1,5 @@
 ---
-# roles/vsphere_vm/tasks/handoff.yml
-# OPT-IN bridge (vsphere_vm_wait_for_ssh) from "VM built on the control node" to
-# "configure the guest over SSH" — so an on-guest role (storage, baseline, …) can
-# follow vsphere_vm in the SAME play. Everything above this ran delegate_to:
-# localhost and never touched the guest; these tasks are the FIRST to use the
-# play's own connection to the VM.
-#
-# It returns the instant SSH answers (wait_for_connection polls; it is not a fixed
-# sleep), then gathers facts — necessary because a play that chains vsphere_vm with
-# on-guest roles must set gather_facts: false (the VM does not exist at play start),
-# so downstream roles would otherwise have no ansible_facts (distro family, etc.).
-#
-# Pure connectivity gate: become: false here (raw SSH readiness). Downstream roles
-# escalate themselves. REQUIRES the template to bake in the ansible SSH user + key,
-# and host-key checking to be off for the fresh host (ANSIBLE_HOST_KEY_CHECKING=False).
+# Wait for guest SSH + gather facts so on-guest roles can follow in the same play.
 
 - name: Handoff | Wait for the new guest to answer SSH
   ansible.builtin.wait_for_connection:

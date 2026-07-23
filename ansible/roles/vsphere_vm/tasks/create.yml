@@ -1,38 +1,8 @@
 ---
-# roles/vsphere_vm/tasks/create.yml
-# Ensure THIS host's VM (main.yml imports this whenever the host's state ≠ absent).
-# GOSC mode makes ONE cheap per-VM existence probe (vmware_guest_info) to split
-# "staged create" from "reconcile" — a fresh clone must be powered on in a separate
-# call from the clone (see the GOSC block), while an existing VM must never be
-# power-cycled by that staging. Still no whole-inventory gather: the probe, like
-# every call here, is per-VM and hosts run in parallel on the controller.
-#
-# Two provisioning modes (_vsphere_guest.provision_via_guestinfo), both reading
-# the same spec fields (networks[*].{name,ip,netmask,gateway,interface},
-# customization):
-#
-#   GOSC (default) → STAGED: clone powered off with the GOSC spec, assert every
-#     vNIC connected+start-connected while off, then power on. The NIC enters
-#     first boot live and never disconnects (one-call clone+power-on loses the
-#     connect flags and orphans the NIC — see the block comment below).
-#     connect.yml stays as defense-in-depth and short-circuits on its IP pre-check.
-#
-#   GuestInfo → clone with NO networks + NO customization, so vmware_guest attaches
-#     NO GOSC spec and the NIC is never disconnected. Each vNIC's portgroup is set
-#     natively with vmware_guest_network (also no GOSC), then the guest is powered
-#     on with the NIC already live, so cloud-init reads guestinfo.metadata at first
-#     boot and applies the static network. All native community.vmware modules — no
-#     govc, no GOSC, and connect.yml converges on its first pass. See the role README
-#     "Known vSphere quirk" + "cloud-init GuestInfo" sections.
+# Ensure this host's VM. GOSC = staged (clone off → NIC start-connected → power on).
+# GuestInfo = no GOSC; cloud-init applies network from guestinfo.metadata.
 
-# ─── Folder tree ──────────────────────────────────────────────────────────────
-# Ensure this VM's (possibly NESTED) folder path exists before placing it.
-# community.vmware.vcenter_folder is single-level, so vmware.vmware.folder is used —
-# it creates the WHOLE path in one call (e.g. swarm/alma → /<DC>/vm/swarm/alma).
-# folder_path is already the DC-relative dialect this module wants (spec.yml derives
-# it); an empty value means the DC VM root, which needs no creating.
-# throttle: 1 — parallel hosts often share a folder path; serialize the (idempotent)
-# create so concurrent same-path calls can't race.
+# Nested folder path (vmware.vmware.folder). throttle:1 serializes shared paths.
 - name: Create | Ensure this VM's (nested) folder path exists
   vmware.vmware.folder:
     hostname: "{{ vsphere_vm_server }}"
@@ -48,24 +18,7 @@
   delegate_to: localhost
   become: false
 
-# ─── GOSC mode (default) — STAGED power-on ────────────────────────────────────
-# vmware_guest's one-call clone+customize+power-on creates the vNIC
-# connected=false/startConnected=false (the flags in `networks` do not survive that
-# path), and a NIC that enters FIRST power-on disconnected is never reconnected by
-# any layer: vpxd only restores NICs it disconnected itself, and the guest's
-# deployPkg enable-nics either no-ops (guestId outside the GOSC matrix) or is
-# reverted when vCenter reasserts its authoritative device state after the GOSC
-# reboot. Live-proven 2026-07-23 (findings.md at the repo root of this branch + .agent/TASK_LOG.md 2026/07/23).
-#
-# The fix is SEQUENCING: clone powered OFF with the GOSC spec attached, assert
-# every NIC connected+start-connected while the VM is off, then power on. The NIC
-# then enters first boot already start-connected and stays connected through
-# customization and the GOSC reboot — static IP in ~80-90 s, no heal needed
-# (proven 5/5, on correct AND wrong template guestIds).
-#
-# An existing VM must never be power-cycled by the staged path, so a cheap per-VM
-# existence probe splits create (staged) from reconcile (plain vmware_guest with
-# the declared state, exactly the old behaviour).
+# GOSC one-call clone+power-on leaves NIC disconnected at first boot — stage instead.
 - name: Create | Build the VM — GOSC, staged power-on
   when: not _vsphere_guest.provision_via_guestinfo
   delegate_to: localhost
@@ -78,14 +31,11 @@
       register: _vsphere_probe
       failed_when: false
 
-    # A successful probe returns `instance`; a failed one only `msg`. Missing
-    # `instance` = the VM does not exist yet → run the staged create below.
+    # Missing instance = not found → staged create; else reconcile (no power cycle).
     - name: Create | Mark whether the staged create is needed
       ansible.builtin.set_fact:
         _vsphere_vm_absent: "{{ _vsphere_probe.instance is not defined }}"
 
-    # Step 1: clone POWERED OFF with the full spec (GOSC customization included —
-    # the imc package is attached at clone time and fires at first power-on).
     - name: Create | Clone powered-off with the GOSC spec ({{ _vsphere_guest.name }})
       community.vmware.vmware_guest:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -107,9 +57,6 @@
       until: _vsphere_created is succeeded
       when: _vsphere_vm_absent | bool
 
-    # Step 2: assert every vNIC connected + start-connected WHILE POWERED OFF.
-    # This is what the one-call path loses; with it set, the NIC enters first
-    # power-on live and vSphere never disconnects it.
     - name: Create | Assert each vNIC start-connected before first power-on
       community.vmware.vmware_guest_network:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -124,8 +71,6 @@
         label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
       when: _vsphere_vm_absent | bool
 
-    # Step 3: first power-on (only when the declared state wants it). GOSC runs
-    # with the NIC connected; connect.yml's IP pre-check then short-circuits.
     - name: Create | Power on (staged first boot)
       community.vmware.vmware_guest_powerstate:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -135,9 +80,6 @@
         - _vsphere_vm_absent | bool
         - _vsphere_guest.state == 'poweredon'
 
-    # Reconcile path: the VM already exists — plain idempotent vmware_guest with
-    # the declared state (never the staged power-off, which would bounce a live
-    # guest). Spec drift (cpu/memory/disk/networks) converges here.
     - name: Create | Reconcile the existing VM ({{ _vsphere_guest.name }})
       community.vmware.vmware_guest:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -159,19 +101,14 @@
       until: _vsphere_reconciled is succeeded
       when: not (_vsphere_vm_absent | bool)
 
-# ─── GuestInfo mode ───────────────────────────────────────────────────────────
+# ── GuestInfo (no GOSC) ──────────────────────────────────────────────────────
 - name: Create | Build the VM — GuestInfo, no GOSC ({{ _vsphere_guest.name }})
   when: _vsphere_guest.provision_via_guestinfo
   delegate_to: localhost
   become: false
   block:
-    # Step 1: clone powered-OFF with NO networks + NO customization (→ no GOSC spec).
-    # deploy_folder_template has NO customization surface — GOSC-proof by
-    # construction (vmware_guest attaches a GOSC spec to template clones even
-    # without customization:, which re-disconnects the NIC). Field-verified.
-    # NOTE: vmware.vmware modules are outside the community.vmware module_defaults
-    # group → explicit connection args. On a standalone host, resource_pool must be
-    # the host's ROOT pool MOID (e.g. resgroup-362) if the name is ambiguous.
+    # deploy_folder_template has no customization surface → no GOSC NIC disconnect.
+    # Explicit connection args (outside community.vmware module_defaults group).
     - name: Create | Clone powered-off — GuestInfo
       vmware.vmware.deploy_folder_template:
         hostname: "{{ vsphere_vm_server }}"
@@ -192,8 +129,6 @@
       delay: "{{ vsphere_vm_create_delay }}"
       until: _vsphere_gi_cloned is succeeded
 
-    # Step 1b: hardware/disk as a plain RECONFIGURE of the existing powered-off VM
-    # (no clone → vmware_guest attaches no GOSC spec here).
     - name: Create | Reconfigure hardware/disk — GuestInfo
       community.vmware.vmware_guest:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -203,11 +138,7 @@
         hardware: "{{ _vsphere_guest.hardware }}"
         disk: "{{ _vsphere_guest.disk }}"
 
-    # Step 1c: inject the cloud-init GuestInfo extraConfig. MUST use
-    # vmware.vmware.vm_advanced_settings — community.vmware.vmware_guest's
-    # advanced_settings is a SILENT NO-OP on a reconfigure of an existing VM (it only
-    # applies during clone/create), so the guestinfo keys never persist and the guest
-    # DHCPs. vm_advanced_settings takes a settings DICT and reliably sets extraConfig.
+    # vmware_guest advanced_settings is a no-op on reconfigure — use vm_advanced_settings.
     - name: Create | Inject cloud-init GuestInfo extraConfig
       vmware.vmware.vm_advanced_settings:
         hostname: "{{ vsphere_vm_server }}"
@@ -224,9 +155,6 @@
                         'guestinfo.userdata.encoding': 'base64'}
                        if (_vsphere_guest.guestinfo_userdata | length > 0) else {}) }}
 
-    # Step 2: set each vNIC's portgroup + start-connected natively (no GOSC). One call
-    # per NIC; NIC 0 modifies the template's adapter, 1+ add new adapters, in list
-    # order — the same order the guest names ens192/ens224/ens256 in the metadata.
     - name: Create | Set each vNIC portgroup + start-connected (native)
       community.vmware.vmware_guest_network:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -240,23 +168,14 @@
       loop_control:
         label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
 
-    # Step 3: power on. The NIC is start-connected, so it is live at first boot and
-    # cloud-init applies the static network from guestinfo.metadata (no reconnect race).
     - name: Create | Power on
       community.vmware.vmware_guest_powerstate:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
         state: powered-on
 
-# ─── Ensure disk sizes (grow) ───────────────────────────────────────────────────
-# community.vmware.vmware_guest does NOT resize existing disks on a reconfigure (it
-# returns ok/no-change), so the create paths above can create disks but never GROW
-# them. vmware_guest_disk is the dedicated module that reliably resizes a vmdk on an
-# existing VM by SCSI controller + unit. Idempotent: a no-op when every disk already
-# matches; grows (never shrinks — vSphere forbids it) when vsphere_vm_disk was bumped.
-# Maps vsphere_vm_disk 1:1 onto controller 0, units 0,1,2,… (unit 7 is the controller,
-# so it is skipped). Runs in BOTH modes; community.vmware.* inherit the vCenter
-# connection from main.yml's module_defaults.
+# vmware_guest does not grow disks on reconfigure — vmware_guest_disk does.
+# Maps disk list 1:1 onto controller 0 (unit 7 is the controller — skipped).
 - name: Create | Ensure each disk is at its declared size (grow)
   community.vmware.vmware_guest_disk:
     datacenter: "{{ vsphere_vm_datacenter }}"
@@ -275,12 +194,7 @@
   delegate_to: localhost
   become: false
 
-# ─── Tags ─────────────────────────────────────────────────────────────────────
-# Apply this host's vSphere tags (vsphere_vm_tags {Category: tag}) — e.g. tenant/env.
-# Ensure the category and tag exist, then associate. throttle: 1 on the ensure
-# steps — parallel hosts usually share categories/tags; serialize the idempotent
-# creates so concurrent same-name calls can't race.
-# community.vmware.* inherit the vCenter connection from main.yml's module_defaults.
+# Tags: ensure category/tag (throttle:1 for shared names), then associate.
 - name: Create | Apply vSphere tags ({{ _vsphere_guest.name }})
   when: _vsphere_guest.tags | length > 0
   delegate_to: localhost
@@ -316,8 +230,3 @@
         object_type: VirtualMachine
         tag_names: "{{ (_vsphere_guest.tags.keys() | list) | zip(_vsphere_guest.tags.values() | list) | map('join', ':') | list }}"
         state: present
-
-# NOTE: NIC reconnect + bounded IP wait is its own phase (connect.yml, imported
-# from main.yml). It uses vmware_guest_network (never a GOSC-triggering path), so it
-# is safe in both modes: under GOSC it heals the disconnect; under GuestInfo the NIC
-# is already up, so it converges on its first pass and just confirms the IP.

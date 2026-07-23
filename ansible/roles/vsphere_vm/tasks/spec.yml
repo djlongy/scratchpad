@@ -1,10 +1,5 @@
 ---
-# roles/vsphere_vm/tasks/spec.yml
-# Build THIS host's guest spec from its own vars — the host IS the inventory item,
-# so no group loop and no hostvars[] indirection: plain var references resolve in
-# this host's own context (inline inventory + host_vars + group_vars merged).
-# Role defaults fill any gaps; ansible_host becomes the static IP unless the host
-# defines vsphere_vm_networks. The result is the single dict _vsphere_guest.
+# Build _vsphere_guest from this host's vars (host-centric — no hostvars loop).
 
 - name: Spec | Assert the template is set
   ansible.builtin.assert:
@@ -22,9 +17,7 @@
     _vsphere_guest:
       name: "{{ vsphere_vm_name | default(canonical_hostname | default(inventory_hostname)) }}"
       template: "{{ vsphere_vm_template }}"
-      # Native community.vmware.vmware_guest `hardware` dict (num_cpus,
-      # memory_mb, …), passed 1:1. Optional deprecated aliases vsphere_vm_cpu /
-      # vsphere_vm_memory fold on top when inventory still sets them.
+      # Native hardware dict; optional vsphere_vm_cpu / vsphere_vm_memory fold on top.
       hardware: >-
         {{ vsphere_vm_hardware
            | combine({'num_cpus': vsphere_vm_cpu | int}
@@ -32,15 +25,8 @@
            | combine({'memory_mb': vsphere_vm_memory | int}
                      if (vsphere_vm_memory is defined) else {}) }}
       disk: "{{ vsphere_vm_disk }}"
-      # The two vSphere modules want different dialects of the SAME location:
-      #   folder      → community.vmware.vmware_guest `folder:`      — ABSOLUTE
-      #                 inventory path, datacenter included
-      #   folder_path → vmware.vmware.folder `relative_path:`        — RELATIVE
-      #                 to this datacenter's VM root
-      # Both are BUILT here by concatenation from the one declared
-      # vsphere_vm_folder, never by parsing one back out of the other: a prefix
-      # strip half-matches when vsphere_vm_datacenter and the declared path
-      # disagree, and silently creates a junk nested folder tree.
+      # folder = absolute (vmware_guest); folder_path = relative (vmware.vmware.folder).
+      # Both derived from vsphere_vm_folder — never parse one from the other.
       folder: "/{{ vsphere_vm_datacenter }}/vm{{ ('/' ~ vsphere_vm_folder) if vsphere_vm_folder else '' }}"
       folder_path: "{{ vsphere_vm_folder }}"
       datastore: "{{ vsphere_vm_datastore }}"
@@ -51,14 +37,7 @@
       guestinfo_userdata: "{{ vsphere_vm_guestinfo_userdata | default('') }}"
       tags: "{{ vsphere_vm_tags }}"
   vars:
-    # Static NIC derived from ansible_host. Gateway precedence:
-    #   1. explicit vsphere_vm_gateway            → use it
-    #   2. else vsphere_vm_gateway_auto: true      → FIRST USABLE of this host's subnet,
-    #      computed from ansible_host + netmask (block = 256 - mask_last_octet; net = ip -
-    #      ip%block; gw = net + 1 — respects /25../27, e.g. .65 on a /26)
-    #   3. else                                    → NO gateway (unrouted data/storage NIC)
-    # The gateway key is omitted entirely in case 3, exactly like leaving `gateway` off a
-    # custom vsphere_vm_networks entry. Opt into the auto compute per host or group.
+    # Gateway: explicit → auto (first usable of ansible_host subnet) → omit (unrouted).
     _base_nic:
       name: "{{ vsphere_vm_network }}"
       type: static
@@ -73,9 +52,7 @@
     _derived_nic: >-
       {{ _base_nic | combine({'gateway': _eff_gw} if (_eff_gw | length > 0) else {}) }}
     _derived_cust:
-      # Guest OS hostname is INDEPENDENT of the vCenter VM name (_vsphere_guest.name):
-      # the VM name may be tenant-scoped/globally-unique while the OS hostname
-      # stays clean/canonical.
+      # Guest OS hostname is independent of vCenter VM name.
       hostname: "{{ vsphere_vm_hostname | default(canonical_hostname | default(inventory_hostname)) }}"
       domain: "{{ domain | default('') }}"
       dns_servers: "{{ vsphere_vm_dns }}"

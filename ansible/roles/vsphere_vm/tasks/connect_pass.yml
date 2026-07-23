@@ -1,15 +1,5 @@
 ---
-# roles/vsphere_vm/tasks/connect_pass.yml
-# ONE pass of the bounded multi-pass poll-and-reconnect for THIS host's VM
-# (skipped once _vsphere_connect_pending is cleared):
-#   1. gather every adapter on the VM,
-#   2. force each NIC connected + start_connected (by MAC — multi-NIC safe),
-#   3. briefly poll for the guest IP,
-#   4. clear _vsphere_connect_pending when the IP is there.
-# connect.yml includes this once per pass. Whichever pass runs just AFTER guest
-# customization finishes makes the reconnect stick (the disconnect is a one-time
-# customization event), so the IP appears within ~one pass. Idempotent: an
-# already-connected NIC with an IP clears the flag and is never touched again.
+# One reconnect+poll pass. Clears _vsphere_connect_pending when IP appears.
 
 - name: Connect | Reconcile NICs ({{ _vsphere_guest.name }})
   when: _vsphere_connect_pending | bool
@@ -56,8 +46,7 @@
   register: _vsphere_ipwait
   retries: "{{ vsphere_vm_connect_pass_retries }}"
   delay: "{{ vsphere_vm_connect_pass_delay }}"
-  # default('', true) coerces a None ipv4 (not-yet-assigned) to '' — a bare
-  # default() leaves None in place and `None | length` then errors.
+  # default('', true) so None ipv4 does not break | length
   until: (_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0
   failed_when: false
   when:

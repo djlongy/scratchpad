@@ -1,26 +1,10 @@
 #jinja2: trim_blocks:True, lstrip_blocks:True
-{#
-  cloud-init metadata for the VMware GuestInfo datasource — rendered per guest and
-  injected (base64) as guestinfo.metadata by tasks/create.yml when
-  vsphere_vm_provision_via_guestinfo is true. Drives first-boot hostname + static
-  networking WITHOUT a vSphere GOSC customization spec, so the NIC never
-  async-disconnects (see the role README (GOSC vs GuestInfo)).
-
-  Multi-NIC: every entry in _vsphere_guest.networks becomes its own cloud-init ethernet,
-  keyed by an EXPLICIT interface name. cloud-init's RHEL/NetworkManager renderer
-  does NOT honour netplan `match:` globs — an unmatched block is silently dropped
-  and the guest falls back to DHCP — so each NIC must name its guest device.
-  Default device names follow the VMware VMXNET3 slot order (ens192, ens224,
-  ens256, …); override per NIC with `interface:` when the template differs.
-
-  Reads the same per-host fields the GOSC path uses (no new inventory needed):
-    _vsphere_guest.customization.hostname, _vsphere_guest.customization.dns_servers,
-    _vsphere_guest.networks[*].{ip, netmask, gateway, interface}.
-#}
+{# cloud-init GuestInfo metadata: hostname + multi-NIC network (no GOSC).
+   Device names: interface: or ens192/ens224/… (VMXNET3 slot order). #}
 {%- set _host = _vsphere_guest.customization.hostname | default(_vsphere_guest.name) -%}
 {%- set _dns = _vsphere_guest.customization.dns_servers | default([]) -%}
 {%- set _nics = _vsphere_guest.networks | default([]) -%}
-{#- Primary NIC = first with a gateway (its resolvers become the system's); else NIC 0. -#}
+{#- Primary NIC = first with a gateway; else NIC 0 (carries resolvers). -#}
 {%- set _ns = namespace(primary=-1) -%}
 {%- for n in _nics %}
 {%-   if _ns.primary < 0 and n.gateway is defined and n.gateway | string | length > 0 %}

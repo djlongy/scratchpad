@@ -1,10 +1,5 @@
 ---
-# roles/vsphere_vm/tasks/preflight.yml
-# Validate the connection inputs and resolve the vCenter password (Vault unless
-# vsphere_vm_password was supplied directly). Runs per host on the controller —
-# facts (incl. the resolved password consumed by main.yml's module_defaults) must
-# exist on EVERY play host, and a run_once set_fact would land on the first host
-# only. The hashi_vault lookup executes on the controller either way.
+# Assert connection inputs; resolve password (declared var first, Vault fallback).
 
 - name: Preflight | Assert required connection + placement inputs are set
   ansible.builtin.assert:
@@ -21,9 +16,6 @@
   delegate_to: localhost
   become: false
 
-# Credential contract: Ansible Vault var FIRST (vsphere_vm_password, e.g. from an encrypted
-# group_var), HashiCorp Vault only as a fallback. The assert above already guarantees one
-# source is set, so proceed straight to the lookup.
 - name: Preflight | Resolve vCenter password from Vault (fallback when no declared var)
   ansible.builtin.set_fact:
     vsphere_vm_password: >-
