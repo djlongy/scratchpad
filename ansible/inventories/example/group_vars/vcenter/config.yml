@@ -12,7 +12,7 @@ vcenter_config:
   # playbooks/group_vars/all/networks.yml. Replaces the old hand list; the
   # role's loop (_vcenter_desired.portgroups) is unchanged. All rows reference
   # the vDS-Lab declared above, so vcenter_config_validate stays green.
-  portgroups: "{{ fabric_vcenter_portgroups }}"
+  portgroups: "{{ _fabric_vcenter_portgroups }}"
   resource_pools: []
   folders:
     - { name: platform, folder_type: vm }

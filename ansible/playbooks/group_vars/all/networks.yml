@@ -7,8 +7,9 @@
 # fabric_pools generator specs, the hand-curated custom/static rows and the
 # non-derivable platform data. Every DERIVED list/map (projections, validation,
 # names) lives in networks_derived.yml next door — nothing there needs editing.
-# Vars prefixed `_` are internal machinery; consume only the public outputs
-# documented in networks_derived.yml.
+# Underscores mark derived vars: consume the single-underscore EXPOSED CONTRACT
+# documented at the top of networks_derived.yml; double-underscore vars are
+# internal pipeline stages. Raw (no-underscore) config lives only in THIS file.
 #
 # Controller dependencies (consumed by networks_derived.yml):
 #   pip:         jmespath (json_query), netaddr (ansible.utils.ipaddr)
@@ -28,7 +29,7 @@
 #   network_segment: prod            # soft share  OR  acme_prod for hard L2
 #   network_gateway:    "{{ fabric_underlays[network_segment].gateway }}"
 #   network_netmask:    "{{ fabric_underlays[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
-#   vsphere_vm_network: "{{ (fabric_names | from_json)[network_segment] }}"
+#   vsphere_vm_network: "{{ (_fabric_names | from_json)[network_segment] }}"
 #   vsphere_vm_gateway: "{{ fabric_underlays[network_segment].gateway }}"
 #   vsphere_vm_dns:     "{{ fabric_underlays[network_segment].dns }}"
 #
@@ -49,7 +50,7 @@
 #              management_profile (firewall; '' = none)
 #   Placement: site, zone
 #   Ownership: scope (platform|tenant), env (mgt|dev|prod|null), tenancy
-#   Ops:       description (string), admin (bool → fabric_admin_cidrs)
+#   Ops:       description (string), admin (bool → _fabric_admin_cidrs)
 #
 #   targets          — which platform projections pick this segment up; each
 #                      derived list filters selectattr('targets', 'contains', …)
@@ -403,7 +404,7 @@ fabric_underlays:
 #   name_parts: [tenant, env, role, nn]          -> TENANT_X-DEV-ENDPOINT-01
 #   name_parts: [vlan_label, vid, tenant, role]  -> VLAN-2200-TENANT_X-ENDPOINT
 # display_name feeds every projection, so the order flows to ESXi/firewall/
-# switch consumers automatically; fabric_duplicate_names / fabric_duplicate_vlans
+# switch consumers automatically; _fabric_duplicate_names / _fabric_duplicate_vlans
 # still guard against a parts list too short to stay unique.
 #
 # DESCRIPTION (free-form prose): unlike the NAME, desc_template IS a str.format
@@ -520,7 +521,7 @@ esxi_port_groups_custom:
 
 # L2-only VLANs with no underlay entry (residential/tenant + PoC sandboxes).
 # NOT auto-appended — concatenate where a play needs them:
-#   "{{ (switch_vlans + switch_vlans_static) | unique | sort }}"
+#   "{{ (_switch_vlans + switch_vlans_static) | unique | sort }}"
 switch_vlans_static: [2, 3, 4, 5, 6, 7, 8, 12, 13, 22, 23, 32, 33, 501, 502]
 
 # ============================================================

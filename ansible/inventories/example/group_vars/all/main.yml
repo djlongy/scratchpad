@@ -23,7 +23,7 @@ vault_kv_env: "prod"
 network_segment: "prod"
 network_gateway: "{{ fabric_underlays[network_segment].gateway }}"
 network_netmask: "{{ fabric_underlays[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
-vsphere_vm_network: "{{ (fabric_names | from_json)[network_segment] }}"
+vsphere_vm_network: "{{ (_fabric_names | from_json)[network_segment] }}"
 vsphere_vm_gateway: "{{ fabric_underlays[network_segment].gateway }}"
 vsphere_vm_dns: "{{ fabric_underlays[network_segment].dns }}"
 

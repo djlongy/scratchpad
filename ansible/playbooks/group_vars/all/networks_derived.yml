@@ -4,25 +4,50 @@
 # Users configure networks.yml; this file only changes when the derivation
 # logic itself evolves.
 #
-# Convention: `_`-prefixed vars are INTERNAL stages — never consume them from
-# inventories/roles. The public outputs are:
-#   fabric_names              key → display_name map (JSON string; | from_json)
-#   esxi_port_groups          combined port-group rows (dynamic + custom)
-#   fabric_vcenter_portgroups combined vCenter dvs port groups
-#   palo_interfaces           firewall L3 subinterfaces
-#   switch_vlans              sorted unique VLAN ids targeting switches
-#   fabric_config_errors      validation: config-shape errors (JSON; | from_json)
-#   fabric_missing_fields     validation: per-segment fields (JSON; | from_json)
-#   fabric_duplicate_names / fabric_duplicate_vlans   validation lists
-#   fabric_admin_cidrs        admin source subnets
+# NAMING TIERS — an underscore means "dynamically calculated, never set by a
+# user"; the count says whether you may read it:
+#   (none)  raw user config — lives ONLY in networks.yml (fabric_underlays,
+#           fabric_pools, fabric_name_parts/_name_case, esxi_port_groups_custom,
+#           switch_vlans_static, palo, dell, docker_swarm)
+#   _one    derived + EXPOSED — the contract below; safe to consume anywhere
+#   __two   derived + INTERNAL — pipeline stages; never consume, shape may
+#           change without notice
+#
+# ══════════════════════ EXPOSED CONTRACT ══════════════════════
+# JSON-string outputs (2.16 bridge — always decode with | from_json):
+#   _fabric_names            dict  key → display_name
+#                            e.g. vsphere_vm_network: "{{ (_fabric_names | from_json)[network_segment] }}"
+#   _fabric_config_errors    list  config-shape problems (missing/mistyped
+#                            roots, unknown naming tokens, malformed roles)
+#   _fabric_missing_fields   list  per-segment required-field gaps
+# Native outputs (use directly):
+#   _esxi_port_groups        list of {name, switch, vlan, insecure,
+#                            promiscuous_mode, forged_transmits, trunk?}
+#                            → loop for ESXi port-group reconciliation
+#   _fabric_vcenter_portgroups  list of {vds, name, vlan_id, vlan_trunk?,
+#                            security?{allow_promiscuous, allow_forged_transmits,
+#                            allow_mac_change}}
+#                            → vcenter_config.portgroups: "{{ _fabric_vcenter_portgroups }}"
+#   _palo_interfaces         list of {name, tag, ip, management_profile,
+#                            zone_name, comment} → panos subinterface loop
+#   _switch_vlans            sorted unique VLAN ids targeting switches
+#                            (+ switch_vlans_static where a play needs the
+#                            L2-only extras)
+#   _fabric_admin_cidrs      list of operator/admin source subnets
+#   _fabric_duplicate_names  list of colliding display names (want: empty)
+#   _fabric_duplicate_vlans  list of colliding VLAN ids   (want: empty)
+# Protection: these are DATA — nothing fails by itself. Run the preflight
+# assert (documented above _fabric_missing_fields; live copy in
+# playbooks/fabric_info.yml) first in every consuming play.
+# ══════════════════════════════════════════════════════════════
 #
 # GRACEFUL DEGRADATION: every stage guards its inputs (fabric_underlays /
 # fabric_pools / esxi_port_groups_custom default to empty), so a missing root
 # dict renders empty outputs instead of a mid-template crash whose only symptom
 # is a generic JSON-decode error downstream. Unknown name_parts/key_parts
 # tokens render as dropped-empty instead of raising. WHAT went missing is
-# reported by fabric_config_errors — assert it first (see the preflight task
-# below fabric_missing_fields).
+# reported by _fabric_config_errors — assert it first (see the preflight task
+# below _fabric_missing_fields).
 #
 # No set_fact, no runtime loops for derivation: Ansible templates vars lazily
 # at reference time, so these projections re-evaluate wherever consumed.
@@ -42,7 +67,7 @@
 # dropped, name_case applied to the joined string. The KEY is always the
 # literal dict key. gateway_cidr only when the segment targets the firewall
 # AND declares gateway + subnet.
-_fabric_underlay_items: |
+__fabric_underlay_items: |
   {% set items = [] %}
   {% for key, net in (fabric_underlays | default({}, true)).items() %}
   {%   set tenant = (net.tenancy | default('') | upper | trim) %}
@@ -64,7 +89,7 @@ _fabric_underlay_items: |
   {%   set name_case = net.name_case
                        | default(fabric_name_case | default('upper')) %}
   {#   vals.get(t, '') instead of extract: an unknown token renders as a
-       dropped-empty part (no crash); fabric_config_errors names the typo. #}
+       dropped-empty part (no crash); _fabric_config_errors names the typo. #}
   {%   set parts = [] %}
   {%   for t in name_parts %}{% set _ = parts.append(vals.get(t, '') | string) %}{% endfor %}
   {%   set _name = parts | select | join('-') %}
@@ -102,7 +127,7 @@ _fabric_underlay_items: |
 # Stage 1b – generated pools (spec-driven)
 # ============================================================
 # Spec + naming/roles documentation: networks.yml (fabric_pools).
-_fabric_pool_items: |
+__fabric_pool_items: |
   {% set items = [] %}
   {% for pool_key, pool in (fabric_pools | default({}, true)).items() %}
   {%   set tenant = (pool.tenancy | default(pool_key) | upper | trim) %}
@@ -170,7 +195,7 @@ _fabric_pool_items: |
            lowercase — vars are referenced lowercase, no exceptions. #}
   {%       set name_case = pool.name_case | default('upper') %}
   {#       vals.get(t, '') instead of extract: an unknown token renders as a
-           dropped-empty part (no crash); fabric_config_errors names the typo. #}
+           dropped-empty part (no crash); _fabric_config_errors names the typo. #}
   {%       set nparts = [] %}
   {%       for t in name_parts %}{% set _ = nparts.append(vals.get(t, '') | string) %}{% endfor %}
   {%       set _name = nparts | select | join('-') %}
@@ -223,9 +248,9 @@ _fabric_pool_items: |
 # ============================================================
 # Stage 1 – final union (static + pool)
 # ============================================================
-_fabric_all_items: >-
-  {{ ((_fabric_underlay_items | from_json)
-      + (_fabric_pool_items | from_json)) | to_json }}
+__fabric_all_items: >-
+  {{ ((__fabric_underlay_items | from_json)
+      + (__fabric_pool_items | from_json)) | to_json }}
 
 # ============================================================
 # Validation – missing / empty fields (conditional on targets)
@@ -236,16 +261,16 @@ _fabric_all_items: >-
 #   - name: Validate fabric config
 #     ansible.builtin.assert:
 #       that:
-#         - (fabric_config_errors | from_json | length) == 0
-#         - (fabric_missing_fields | from_json | length) == 0
-#         - fabric_duplicate_names | length == 0
-#         - fabric_duplicate_vlans | length == 0
+#         - (_fabric_config_errors | from_json | length) == 0
+#         - (_fabric_missing_fields | from_json | length) == 0
+#         - _fabric_duplicate_names | length == 0
+#         - _fabric_duplicate_vlans | length == 0
 #       fail_msg: >-
 #         Fabric validation failed!
-#         Config errors: {{ fabric_config_errors | from_json }}
-#         Missing/empty fields: {{ fabric_missing_fields | from_json }}
-#         Duplicate names: {{ fabric_duplicate_names }}
-#         Duplicate VLAN IDs: {{ fabric_duplicate_vlans }}
+#         Config errors: {{ _fabric_config_errors | from_json }}
+#         Missing/empty fields: {{ _fabric_missing_fields | from_json }}
+#         Duplicate names: {{ _fabric_duplicate_names }}
+#         Duplicate VLAN IDs: {{ _fabric_duplicate_vlans }}
 #       quiet: true
 #     run_once: true
 
@@ -253,7 +278,7 @@ _fabric_all_items: >-
 # malformed role entries. These are the cases that used to surface as a
 # generic 'json decoder' crash — now they render empty (guarded) and this var
 # says exactly what is wrong.
-fabric_config_errors: |
+_fabric_config_errors: |
   {% set errs = [] %}
   {% set tokens_underlay = ['key', 'tenant', 'role', 'env', 'site', 'zone',
                             'scope', 'vlan', 'vlan_label', 'vid'] %}
@@ -311,7 +336,7 @@ fabric_config_errors: |
   {% endif %}
   {{ errs | to_json }}
 
-fabric_missing_fields: |
+_fabric_missing_fields: |
   {% set req_common = ['vlan_id', 'tenancy', 'network_role', 'zone', 'targets'] %}
   {% set req_by_target = {
         'esxi': ['vswitch', 'insecure'],
@@ -339,8 +364,8 @@ fabric_missing_fields: |
 # ============================================================
 # Validation – duplicates across the FULL union
 # ============================================================
-fabric_duplicate_names: >-
-  {{ _fabric_all_items | from_json
+_fabric_duplicate_names: >-
+  {{ __fabric_all_items | from_json
      | map(attribute='display_name')
      | community.general.counter
      | dict2items
@@ -348,8 +373,8 @@ fabric_duplicate_names: >-
      | map(attribute='key')
      | list }}
 
-fabric_duplicate_vlans: >-
-  {{ _fabric_all_items | from_json
+_fabric_duplicate_vlans: >-
+  {{ __fabric_all_items | from_json
      | map(attribute='vlan_id')
      | community.general.counter
      | dict2items
@@ -358,16 +383,16 @@ fabric_duplicate_vlans: >-
      | list }}
 
 # key → display_name convenience map (inventory selection / vsphere_vm_network).
-fabric_names: |
+_fabric_names: |
   {% set out = {} %}
-  {% for it in _fabric_all_items | from_json %}
+  {% for it in __fabric_all_items | from_json %}
   {%   set _ = out.update({it.original_key: it.display_name}) %}
   {% endfor %}
   {{ out | to_json }}
 
 # Segments with admin: true (operator/admin source CIDRs) — derived from
 # the source dict (admin is an ownership field, not projected into items).
-fabric_admin_cidrs: >-
+_fabric_admin_cidrs: >-
   {{ fabric_underlays | default({}, true) | dict2items
      | selectattr('value.admin', 'defined') | selectattr('value.admin')
      | map(attribute='value.subnet') | list }}
@@ -381,12 +406,12 @@ fabric_admin_cidrs: >-
 # (esxi_port_groups_custom in networks.yml) → ONE combined list the consumer
 # loops. Every row shares the shape { name, switch, vlan, insecure,
 # promiscuous_mode, forged_transmits, trunk? }. Consume the COMBINED list only:
-#   loop: "{{ esxi_port_groups }}"
+#   loop: "{{ _esxi_port_groups }}"
 #   loop_control: { loop_var: pg, label: "{{ pg.name }}" }
 
 # 1) Dynamic — matrix-backed segments, projected to the row shape.
-_fabric_esxi_dynamic: >-
-  {{ _fabric_all_items | from_json
+__fabric_esxi_dynamic: >-
+  {{ __fabric_all_items | from_json
      | selectattr('targets', 'contains', 'esxi')
      | map('community.general.json_query',
            '{name: display_name, switch: vswitch, vlan: vlan_id, insecure: insecure,
@@ -394,7 +419,7 @@ _fabric_esxi_dynamic: >-
      | list }}
 
 # 2) Combined — the ONLY list consumers loop. Dynamic first, custom last.
-esxi_port_groups: "{{ _fabric_esxi_dynamic + (esxi_port_groups_custom | default([], true)) }}"
+_esxi_port_groups: "{{ __fabric_esxi_dynamic + (esxi_port_groups_custom | default([], true)) }}"
 
 # ── vCenter distributed port groups (roles/vcenter config-as-code) ──────────
 # Same dynamic+custom pattern, but in the shape roles/vcenter's
@@ -402,7 +427,7 @@ esxi_port_groups: "{{ _fabric_esxi_dynamic + (esxi_port_groups_custom | default(
 # vcenter_config.portgroups):
 #   { vds, name, vlan_id, vlan_trunk?, security?: {allow_promiscuous,
 #     allow_forged_transmits, allow_mac_change} }
-# Wire it in inventory:  vcenter_config.portgroups: "{{ fabric_vcenter_portgroups }}"
+# Wire it in inventory:  vcenter_config.portgroups: "{{ _fabric_vcenter_portgroups }}"
 # The role's loop var is unchanged — only the data source moves to the SSOT.
 #
 # security is emitted ONLY for a segment that relaxes a knob, so every other
@@ -410,9 +435,9 @@ esxi_port_groups: "{{ _fabric_esxi_dynamic + (esxi_port_groups_custom | default(
 # preserving today's behaviour where nothing sets item.security.
 
 # 1) Dynamic — matrix-backed segments, reshaped for the vCenter dvs module.
-_fabric_vcenter_dynamic: |
+__fabric_vcenter_dynamic: |
   {% set out = [] %}
-  {% for it in _fabric_all_items | from_json
+  {% for it in __fabric_all_items | from_json
               | selectattr('targets', 'contains', 'esxi') %}
   {%   set pg = {'vds': it.vswitch, 'name': it.display_name,
                  'vlan_id': it.vlan_id} %}
@@ -429,7 +454,7 @@ _fabric_vcenter_dynamic: |
 # 2) Custom — DERIVED from esxi_port_groups_custom (single source for the
 #    leftovers) and reshaped: switch->vds, vlan->vlan_id, trunk->vlan_trunk,
 #    flat security flags -> nested security map (emitted only when relaxed).
-_fabric_vcenter_static: |
+__fabric_vcenter_static: |
   {% set out = [] %}
   {% for pg in (esxi_port_groups_custom | default([], true)) %}
   {%   set row = {'vds': pg.switch, 'name': pg.name, 'vlan_id': pg.vlan} %}
@@ -450,14 +475,14 @@ _fabric_vcenter_static: |
   {{ out | to_json }}
 
 # 3) Combined — wire this into vcenter_config.portgroups. Dynamic first.
-fabric_vcenter_portgroups: >-
-  {{ (_fabric_vcenter_dynamic | from_json)
-     + (_fabric_vcenter_static | from_json) }}
+_fabric_vcenter_portgroups: >-
+  {{ (__fabric_vcenter_dynamic | from_json)
+     + (__fabric_vcenter_static | from_json) }}
 
 # ── Firewall L3 subinterfaces (paloaltonetworks.panos) ──────────────────────
 # ip = gateway_cidr: the firewall subinterface IS the segment gateway.
-palo_interfaces: >-
-  {{ _fabric_all_items | from_json
+_palo_interfaces: >-
+  {{ __fabric_all_items | from_json
      | selectattr('targets', 'contains', 'firewall')
      | map('community.general.json_query',
            '{name: display_name, tag: vlan_id, ip: gateway_cidr,
@@ -467,8 +492,8 @@ palo_interfaces: >-
 
 # ── Switch VLAN ids (physical L2 plane) ─────────────────────────────────────
 # L2-only extras: switch_vlans_static in networks.yml (NOT auto-appended).
-switch_vlans: >-
-  {{ _fabric_all_items | from_json
+_switch_vlans: >-
+  {{ __fabric_all_items | from_json
      | selectattr('targets', 'contains', 'switches')
      | map(attribute='vlan_id')
      | unique

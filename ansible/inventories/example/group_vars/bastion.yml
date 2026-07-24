@@ -4,7 +4,7 @@
 # VM name/hostname come from group_vars/all (vsphere_vm_name_*).
 # Only put bastion-specific policy and sizing here.
 
-bastion_client_cidrs: "{{ fabric_admin_cidrs }}"
+bastion_client_cidrs: "{{ _fabric_admin_cidrs }}"
 bastion_destination_cidrs:
   - "{{ fabric_underlays.prod.subnet }}"
   - "{{ fabric_underlays.prod_cluster.subnet }}"

@@ -27,44 +27,44 @@
         facts_passed:
           # Health first — all three MUST be empty for a valid catalog.
           validation:
-            fabric_missing_fields: "{{ fabric_missing_fields | from_json }}"
-            fabric_duplicate_names: "{{ fabric_duplicate_names }}"
-            fabric_duplicate_vlans: "{{ fabric_duplicate_vlans }}"
+            _fabric_missing_fields: "{{ _fabric_missing_fields | from_json }}"
+            _fabric_duplicate_names: "{{ _fabric_duplicate_names }}"
+            _fabric_duplicate_vlans: "{{ _fabric_duplicate_vlans }}"
           # Every generated POOL network, showing BOTH names side by side:
           #   key  = original_key  (shaped by key_parts / key_case)
           #   name = display_name  (shaped by name_parts / name_case)
           # Static underlay segments: per-entry `description` (was purpose).
           underlays: >-
-            {{ _fabric_underlay_items | from_json
+            {{ __fabric_underlay_items | from_json
                | map('community.general.json_query',
                      '{vlan: vlan_id, key: original_key, name: display_name,
                        desc: description}')
                | list }}
           # Generated pool networks: dynamic `desc_template`-rendered description.
           pools:
-            count: "{{ _fabric_pool_items | from_json | length }}"
+            count: "{{ __fabric_pool_items | from_json | length }}"
             items: >-
-              {{ _fabric_pool_items | from_json
+              {{ __fabric_pool_items | from_json
                  | map('community.general.json_query',
                        '{vlan: vlan_id, key: original_key, name: display_name,
                          desc: description}')
                  | list }}
           # ESXi port groups (display shape) — dynamic SSOT + custom leftovers.
-          esxi_port_groups:
-            dynamic_count: "{{ _fabric_esxi_dynamic | length }}"
+          _esxi_port_groups:
+            dynamic_count: "{{ __fabric_esxi_dynamic | length }}"
             custom_count: "{{ esxi_port_groups_custom | length }}"
-            combined_count: "{{ esxi_port_groups | length }}"
-            combined: "{{ esxi_port_groups }}"
+            combined_count: "{{ _esxi_port_groups | length }}"
+            combined: "{{ _esxi_port_groups }}"
           # vCenter dvs port groups (role shape) — dynamic + custom.
           vcenter_portgroups:
-            from_ssot_count: "{{ _fabric_vcenter_dynamic | from_json | length }}"
-            static_count: "{{ _fabric_vcenter_static | from_json | length }}"
-            combined_count: "{{ fabric_vcenter_portgroups | length }}"
-            combined: "{{ fabric_vcenter_portgroups }}"
+            from_ssot_count: "{{ __fabric_vcenter_dynamic | from_json | length }}"
+            static_count: "{{ __fabric_vcenter_static | from_json | length }}"
+            combined_count: "{{ _fabric_vcenter_portgroups | length }}"
+            combined: "{{ _fabric_vcenter_portgroups }}"
           # Other platform projections.
-          palo_interfaces: "{{ palo_interfaces }}"
-          switch_vlans: "{{ switch_vlans }}"
-          fabric_admin_cidrs: "{{ fabric_admin_cidrs }}"
+          _palo_interfaces: "{{ _palo_interfaces }}"
+          _switch_vlans: "{{ _switch_vlans }}"
+          _fabric_admin_cidrs: "{{ _fabric_admin_cidrs }}"
 
 - name: Smoke-check the dynamic + custom port-group pattern
   hosts: localhost
@@ -73,19 +73,19 @@
   vars:
     # Matrix segments that target esxi — dynamic MUST cover every one of these.
     _matrix_esxi_names: >-
-      {{ _fabric_all_items | from_json
+      {{ __fabric_all_items | from_json
          | selectattr('targets', 'contains', 'esxi')
          | map(attribute='display_name') | list }}
-    _esxi_names: "{{ esxi_port_groups | map(attribute='name') | list }}"
-    _dyn_names: "{{ _fabric_esxi_dynamic | map(attribute='name') | list }}"
+    _esxi_names: "{{ _esxi_port_groups | map(attribute='name') | list }}"
+    _dyn_names: "{{ __fabric_esxi_dynamic | map(attribute='name') | list }}"
     _cust_names: "{{ esxi_port_groups_custom | map(attribute='name') | list }}"
-    _vc: "{{ fabric_vcenter_portgroups }}"
-    _vc_names: "{{ fabric_vcenter_portgroups | map(attribute='name') | list }}"
+    _vc: "{{ _fabric_vcenter_portgroups }}"
+    _vc_names: "{{ _fabric_vcenter_portgroups | map(attribute='name') | list }}"
     _declared_vds: ["vDS-Lab"]   # matches inventories/example vcenter_config.vds
     # esxi matrix segments with ANY relaxed knob (insecure | promiscuous |
     # forged) — these, and only these, must carry a vCenter security map.
     _esxi_matrix: >-
-      {{ _fabric_all_items | from_json
+      {{ __fabric_all_items | from_json
          | selectattr('targets', 'contains', 'esxi') | list }}
     _relaxed_esxi: >-
       {{ (_esxi_matrix | selectattr('insecure') | list)
@@ -95,8 +95,8 @@
     - name: "Smoke | ESXi — concat length = dynamic + custom, TRUNK present, matrix covered, no overlap"
       ansible.builtin.assert:
         that:
-          - (esxi_port_groups | length)
-            == (_fabric_esxi_dynamic | length) + (esxi_port_groups_custom | length)
+          - (_esxi_port_groups | length)
+            == (__fabric_esxi_dynamic | length) + (esxi_port_groups_custom | length)
           - "'TRUNK' in _esxi_names"
           - (_matrix_esxi_names | difference(_esxi_names)) | length == 0
           - (_dyn_names | intersect(_cust_names)) | length == 0
@@ -106,18 +106,18 @@
           matrix_uncovered={{ _matrix_esxi_names | difference(_esxi_names) }},
           dyn∩custom={{ _dyn_names | intersect(_cust_names) }}
         success_msg: >-
-          ESXi OK — {{ _fabric_esxi_dynamic | length }} dynamic
+          ESXi OK — {{ __fabric_esxi_dynamic | length }} dynamic
           + {{ esxi_port_groups_custom | length }} custom
-          = {{ esxi_port_groups | length }} combined; TRUNK present;
+          = {{ _esxi_port_groups | length }} combined; TRUNK present;
           all {{ _matrix_esxi_names | length }} matrix segments covered; no overlap.
         quiet: true
 
     - name: "Smoke | vCenter — concat length, unique names, every vds is declared"
       ansible.builtin.assert:
         that:
-          - (fabric_vcenter_portgroups | length)
-            == (_fabric_vcenter_dynamic | from_json | length)
-               + (_fabric_vcenter_static | from_json | length)
+          - (_fabric_vcenter_portgroups | length)
+            == (__fabric_vcenter_dynamic | from_json | length)
+               + (__fabric_vcenter_static | from_json | length)
           - (_vc_names | length) == (_vc_names | unique | length)
           - (_vc | map(attribute='vds') | unique | difference(_declared_vds)) | length == 0
           - _vc | selectattr('name', 'equalto', 'TRUNK') | first
@@ -126,9 +126,9 @@
           vCenter pattern broke — combined={{ _vc_names | length }},
           undeclared_vds={{ _vc | map(attribute='vds') | unique | difference(_declared_vds) }}
         success_msg: >-
-          vCenter OK — {{ _fabric_vcenter_dynamic | from_json | length }} dynamic
-          + {{ _fabric_vcenter_static | from_json | length }} custom
-          = {{ fabric_vcenter_portgroups | length }} combined; names unique;
+          vCenter OK — {{ __fabric_vcenter_dynamic | from_json | length }} dynamic
+          + {{ __fabric_vcenter_static | from_json | length }} custom
+          = {{ _fabric_vcenter_portgroups | length }} combined; names unique;
           every vds ∈ {{ _declared_vds }}; TRUNK carries vlan_trunk.
         quiet: true
 

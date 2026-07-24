@@ -33,20 +33,20 @@
     - name: Preflight | fail fast on a broken or ambiguous fabric
       ansible.builtin.assert:
         that:
-          - (fabric_config_errors | from_json | length) == 0
-          - (fabric_missing_fields | from_json | length) == 0
-          - fabric_duplicate_names | length == 0
-          - fabric_duplicate_vlans | length == 0
+          - (_fabric_config_errors | from_json | length) == 0
+          - (_fabric_missing_fields | from_json | length) == 0
+          - _fabric_duplicate_names | length == 0
+          - _fabric_duplicate_vlans | length == 0
         fail_msg: >-
           Fabric validation failed!
-          Config errors: {{ fabric_config_errors | from_json }}
-          Missing/empty fields: {{ fabric_missing_fields | from_json }}
-          Duplicate names: {{ fabric_duplicate_names }}
-          Duplicate VLAN IDs: {{ fabric_duplicate_vlans }}
+          Config errors: {{ _fabric_config_errors | from_json }}
+          Missing/empty fields: {{ _fabric_missing_fields | from_json }}
+          Duplicate names: {{ _fabric_duplicate_names }}
+          Duplicate VLAN IDs: {{ _fabric_duplicate_vlans }}
         success_msg: >-
-          fabric OK — {{ fabric_names | from_json | length }} networks
+          fabric OK — {{ _fabric_names | from_json | length }} networks
           ({{ fabric_underlays | length }} static segments,
-          {{ (fabric_names | from_json | length) - (fabric_underlays | length) }} pool-generated)
+          {{ (_fabric_names | from_json | length) - (fabric_underlays | length) }} pool-generated)
         quiet: true
       run_once: true
       tags: [always]
@@ -57,7 +57,7 @@
         facts_passed:
           segment_selected:
             key: "{{ network_segment }}"
-            display_name: "{{ (fabric_names | from_json)[network_segment] }}"
+            display_name: "{{ (_fabric_names | from_json)[network_segment] }}"
             vlan_id: "{{ fabric_underlays[network_segment].vlan_id }}"
             subnet: "{{ fabric_underlays[network_segment].subnet }}"
             gateway: "{{ fabric_underlays[network_segment].gateway }}"
@@ -66,21 +66,21 @@
             targets: "{{ fabric_underlays[network_segment].targets }}"
             zone: "{{ fabric_underlays[network_segment].zone }}"
             tenancy: "{{ fabric_underlays[network_segment].tenancy }}"
-          fabric_names: "{{ fabric_names | from_json }}"
-          fabric_admin_cidrs: "{{ fabric_admin_cidrs }}"
-          esxi_port_group_names: "{{ esxi_port_groups | map(attribute='name') | list }}"
+          _fabric_names: "{{ _fabric_names | from_json }}"
+          _fabric_admin_cidrs: "{{ _fabric_admin_cidrs }}"
+          esxi_port_group_names: "{{ _esxi_port_groups | map(attribute='name') | list }}"
           vcenter_portgroups:
-            rows: "{{ fabric_vcenter_portgroups | length }}"
-            security_relaxed: "{{ fabric_vcenter_portgroups
+            rows: "{{ _fabric_vcenter_portgroups | length }}"
+            security_relaxed: "{{ _fabric_vcenter_portgroups
                                   | selectattr('security', 'defined')
                                   | map(attribute='name') | list }}"
-          palo_interfaces: "{{ palo_interfaces }}"
-          switch_vlans:
-            derived: "{{ switch_vlans }}"
+          _palo_interfaces: "{{ _palo_interfaces }}"
+          _switch_vlans:
+            derived: "{{ _switch_vlans }}"
             static_l2_only: "{{ switch_vlans_static }}"
-            combined: "{{ (switch_vlans + switch_vlans_static) | unique | sort }}"
+            combined: "{{ (_switch_vlans + switch_vlans_static) | unique | sort }}"
           validation:
-            config_errors: "{{ fabric_config_errors | from_json }}"
-            missing_fields: "{{ fabric_missing_fields | from_json }}"
-            duplicate_names: "{{ fabric_duplicate_names }}"
-            duplicate_vlans: "{{ fabric_duplicate_vlans }}"
+            config_errors: "{{ _fabric_config_errors | from_json }}"
+            missing_fields: "{{ _fabric_missing_fields | from_json }}"
+            duplicate_names: "{{ _fabric_duplicate_names }}"
+            duplicate_vlans: "{{ _fabric_duplicate_vlans }}"
