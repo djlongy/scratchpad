@@ -1,0 +1,86 @@
+---
+# playbooks/fabric_info.yml
+#
+# facts.yml + the fabric catalog: after the preflight gate, gather the target's
+# facts and print them NEXT TO every derived fabric view a consumer typically
+# needs — the selected segment, key→name map, platform projections and the
+# validation outputs. Read-only — it changes nothing.
+#
+#   # localhost tour of the catalog (no inventory needed)
+#   ansible-playbook -i localhost, -c local playbooks/fabric_info.yml
+#
+#   # a different segment
+#   ansible-playbook -i localhost, -c local playbooks/fabric_info.yml -e network_segment=mgt
+#
+#   # against a real host: its facts + the fabric it would inherit
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/fabric_info.yml \
+#     -e facts_hosts=myhost
+#
+# The validation vars are DATA — they stop nothing by themselves. It is the
+# preflight assert below that turns "duplicate names/VLANs list is non-empty"
+# into a failed play. Copy that task (verbatim) ahead of anything that consumes
+# the fabric.
+
+- name: Fabric catalog — validate, then show it next to the host facts
+  hosts: "{{ facts_hosts | default('localhost') }}"
+  gather_facts: false          # the facts role gathers subset=all itself
+  become: false
+  vars:
+    # The segment an inventory would select (override with -e network_segment=…)
+    network_segment: prod
+
+  pre_tasks:
+    - name: Preflight | fail fast on a broken or ambiguous fabric
+      ansible.builtin.assert:
+        that:
+          - (fabric_config_errors | from_json | length) == 0
+          - (fabric_missing_fields | from_json | length) == 0
+          - fabric_duplicate_names | length == 0
+          - fabric_duplicate_vlans | length == 0
+        fail_msg: >-
+          Fabric validation failed!
+          Config errors: {{ fabric_config_errors | from_json }}
+          Missing/empty fields: {{ fabric_missing_fields | from_json }}
+          Duplicate names: {{ fabric_duplicate_names }}
+          Duplicate VLAN IDs: {{ fabric_duplicate_vlans }}
+        success_msg: >-
+          fabric OK — {{ fabric_names | from_json | length }} networks
+          ({{ fabric_underlays | length }} static segments,
+          {{ (fabric_names | from_json | length) - (fabric_underlays | length) }} pool-generated)
+        quiet: true
+      run_once: true
+      tags: [always]
+
+  roles:
+    - role: facts
+      vars:
+        facts_passed:
+          segment_selected:
+            key: "{{ network_segment }}"
+            display_name: "{{ (fabric_names | from_json)[network_segment] }}"
+            vlan_id: "{{ fabric_underlays[network_segment].vlan_id }}"
+            subnet: "{{ fabric_underlays[network_segment].subnet }}"
+            gateway: "{{ fabric_underlays[network_segment].gateway }}"
+            netmask: "{{ fabric_underlays[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
+            dns: "{{ fabric_underlays[network_segment].dns }}"
+            targets: "{{ fabric_underlays[network_segment].targets }}"
+            zone: "{{ fabric_underlays[network_segment].zone }}"
+            tenancy: "{{ fabric_underlays[network_segment].tenancy }}"
+          fabric_names: "{{ fabric_names | from_json }}"
+          fabric_admin_cidrs: "{{ fabric_admin_cidrs }}"
+          esxi_port_group_names: "{{ esxi_port_groups | map(attribute='name') | list }}"
+          vcenter_portgroups:
+            rows: "{{ fabric_vcenter_portgroups | length }}"
+            security_relaxed: "{{ fabric_vcenter_portgroups
+                                  | selectattr('security', 'defined')
+                                  | map(attribute='name') | list }}"
+          palo_interfaces: "{{ palo_interfaces }}"
+          switch_vlans:
+            derived: "{{ switch_vlans }}"
+            static_l2_only: "{{ switch_vlans_static }}"
+            combined: "{{ (switch_vlans + switch_vlans_static) | unique | sort }}"
+          validation:
+            config_errors: "{{ fabric_config_errors | from_json }}"
+            missing_fields: "{{ fabric_missing_fields | from_json }}"
+            duplicate_names: "{{ fabric_duplicate_names }}"
+            duplicate_vlans: "{{ fabric_duplicate_vlans }}"
