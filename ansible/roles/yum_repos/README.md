@@ -67,6 +67,42 @@ Run it:
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags yum_repos
 ```
 
+## EPEL on EL10
+
+EPEL 10 branched per RHEL minor, which changes three things in a catalog entry
+(EL8/9 entries stay as they are):
+
+- **baseurl** — on EL10 `$releasever` expands to the minor (e.g. `10.2`) and
+  released minors are served from the z-stream dir (`10.2z`; plain minor dirs
+  are pruned at EOL). Use the official `$releasever${releasever_minor:+z}`
+  form. That substitution needs EL10 libdnf, so gate per host.
+- **gpgkey** — the signing key is per-major only (`RPM-GPG-KEY-EPEL-10`; no
+  `10.x` keys). Use `{{ ansible_distribution_major_version }}`, not
+  `$releasever`.
+- **epel-next** — discontinued for EL10; give the entry `state: absent` there.
+
+Pattern (rendered per host — the role's fact self-heal guarantees the distro
+facts):
+
+```yaml
+epel_releasever: >-
+  {{ '$releasever${releasever_minor:+z}'
+     if ansible_distribution_major_version | int >= 10
+     else '$releasever' }}
+
+yum_repos_repos:
+  - name: epel
+    file: epel-nexus
+    baseurl: "https://nexus.{{ env }}.{{ domain }}/repository/yum-epel-proxy/{{ epel_releasever }}/Everything/$basearch/"
+    gpgcheck: true
+    gpgkey: "https://nexus.{{ env }}.{{ domain }}/repository/yum-epel-proxy/RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}"
+  - name: epel-next
+    file: epel-nexus
+    baseurl: "https://nexus.{{ env }}.{{ domain }}/repository/yum-epel-next-proxy/$releasever/Everything/$basearch/"
+    enabled: false
+    state: "{{ 'absent' if ansible_distribution_major_version | int >= 10 else 'present' }}"
+```
+
 ## Behaviour
 
 1. **assert** — every repo has a `name` + `baseurl`; refuses to run if the

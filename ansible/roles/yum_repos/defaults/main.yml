@@ -35,6 +35,14 @@ yum_repos_dir: /etc/yum.repos.d
 #     gpgcheck: true
 #     gpgkey: "https://nexus.{{ env }}.{{ domain }}/repository/yum-epel-proxy/RPM-GPG-KEY-EPEL-$releasever"
 #
+# EPEL 10: on EL10 $releasever expands to the minor (e.g. 10.2) and released
+# minors are served from the z-stream dir, so the baseurl path becomes
+# "$releasever${releasever_minor:+z}" and the gpgkey uses the concrete major
+# ("RPM-GPG-KEY-EPEL-{{ ansible_distribution_major_version }}" — no 10.x keys).
+# ${releasever_minor:+z} needs EL10 libdnf — gate per host on
+# ansible_distribution_major_version and keep plain $releasever for EL8/9.
+# epel-next ended with EL9: give it state: absent on EL10+. See README.
+#
 # Supported per-entry keys (all optional except name + baseurl):
 #   name, baseurl, file, description, enabled, gpgcheck, gpgkey, sslverify,
 #   priority, module_hotfixes, metadata_expire, state
