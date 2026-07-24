@@ -4,7 +4,7 @@
 # group_vars/all — they drift. Env-specific *selection* lives in the single
 # inventory you clone (see inventories/example/):
 #
-#   networks.yml:  underlay.*, vcenter.*, dell.*, palo.*, docker_swarm.*
+#   networks.yml:  fabric_underlays.*, dell.*, palo.*, docker_swarm.*
 #   this file:     domain, tenancy (default), vault path formulas, canonical_*
 #   inventory:     env, tenancy (override), vault_kv_env, network_gateway,
 #                  vsphere_vm_* segment selection + name prefix
@@ -45,7 +45,7 @@ vsphere_vm_esxi_host: "192.168.0.12"          # template host (override)
 vsphere_vm_resource_pool: "Resources"
 vsphere_vm_datastore: "datastore01"
 vsphere_vm_template: "linux-almalinux-9"
-vsphere_vm_netmask: "{{ network_netmask }}"
+vsphere_vm_netmask: "{{ network_netmask | default('255.255.255.0') }}"
 vsphere_vm_folder: ""
 vsphere_vm_connect_pass_retries: 10
 

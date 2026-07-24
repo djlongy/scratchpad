@@ -6,15 +6,23 @@
 #
 # Convention: `_`-prefixed vars are INTERNAL stages — never consume them from
 # inventories/roles. The public outputs are:
-#   network_underlays_names   key → display_name map (JSON string; | from_json)
+#   fabric_names              key → display_name map (JSON string; | from_json)
 #   esxi_port_groups          combined port-group rows (dynamic + custom)
-#   network_vcenter_portgroups combined vCenter dvs port groups
+#   fabric_vcenter_portgroups combined vCenter dvs port groups
 #   palo_interfaces           firewall L3 subinterfaces
 #   switch_vlans              sorted unique VLAN ids targeting switches
-#   missing_required_fields   validation (JSON string; | from_json)
-#   duplicate_display_names / duplicate_vlans   validation lists
-#   underlay_admin_cidrs / network_admin_cidrs  admin source subnets
-#   underlay / networks       legacy aliases of network_underlays
+#   fabric_config_errors      validation: config-shape errors (JSON; | from_json)
+#   fabric_missing_fields     validation: per-segment fields (JSON; | from_json)
+#   fabric_duplicate_names / fabric_duplicate_vlans   validation lists
+#   fabric_admin_cidrs        admin source subnets
+#
+# GRACEFUL DEGRADATION: every stage guards its inputs (fabric_underlays /
+# fabric_pools / esxi_port_groups_custom default to empty), so a missing root
+# dict renders empty outputs instead of a mid-template crash whose only symptom
+# is a generic JSON-decode error downstream. Unknown name_parts/key_parts
+# tokens render as dropped-empty instead of raising. WHAT went missing is
+# reported by fabric_config_errors — assert it first (see the preflight task
+# below fabric_missing_fields).
 #
 # No set_fact, no runtime loops for derivation: Ansible templates vars lazily
 # at reference time, so these projections re-evaluate wherever consumed.
@@ -30,13 +38,13 @@
 # ============================================================
 # Normalises every entry to one fixed field set. display_name uses the same
 # ordered-token mechanism as the pools: name_parts (per-segment override →
-# estate default network_underlays_name_parts) joined by '-', empty tokens
+# estate default fabric_name_parts) joined by '-', empty tokens
 # dropped, name_case applied to the joined string. The KEY is always the
 # literal dict key. gateway_cidr only when the segment targets the firewall
 # AND declares gateway + subnet.
-_network_underlays_items: |
+_fabric_underlay_items: |
   {% set items = [] %}
-  {% for key, net in network_underlays.items() %}
+  {% for key, net in (fabric_underlays | default({}, true)).items() %}
   {%   set tenant = (net.tenancy | default('') | upper | trim) %}
   {%   set role   = (net.network_role | default('') | upper | trim) %}
   {%   set vlan_prefix = net.vlan_prefix | default('VLAN') %}
@@ -51,12 +59,15 @@ _network_underlays_items: |
                    'vlan_label': vlan_prefix,
                    'vid': net.vlan_id} %}
   {%   set name_parts = net.name_parts
-                        | default(network_underlays_name_parts
+                        | default(fabric_name_parts
                                   | default(['vlan', 'tenant', 'role'])) %}
   {%   set name_case = net.name_case
-                       | default(network_underlays_name_case | default('upper')) %}
-  {%   set _name = name_parts | map('extract', vals) | map('string')
-                   | select | join('-') %}
+                       | default(fabric_name_case | default('upper')) %}
+  {#   vals.get(t, '') instead of extract: an unknown token renders as a
+       dropped-empty part (no crash); fabric_config_errors names the typo. #}
+  {%   set parts = [] %}
+  {%   for t in name_parts %}{% set _ = parts.append(vals.get(t, '') | string) %}{% endfor %}
+  {%   set _name = parts | select | join('-') %}
   {%   set display_name = (_name | upper) if name_case == 'upper'
                           else ((_name | lower) if name_case == 'lower' else _name) %}
   {%   set gateway_cidr = '' %}
@@ -90,10 +101,10 @@ _network_underlays_items: |
 # ============================================================
 # Stage 1b – generated pools (spec-driven)
 # ============================================================
-# Spec + naming/roles documentation: networks.yml (network_pools).
-_network_pool_items: |
+# Spec + naming/roles documentation: networks.yml (fabric_pools).
+_fabric_pool_items: |
   {% set items = [] %}
-  {% for pool_key, pool in network_pools.items() %}
+  {% for pool_key, pool in (fabric_pools | default({}, true)).items() %}
   {%   set tenant = (pool.tenancy | default(pool_key) | upper | trim) %}
   {%   set roles_raw = pool.roles | default(['set']) %}
   {#   Normalise roles to [{name, offset, meta}]:
@@ -158,12 +169,16 @@ _network_pool_items: |
            name; 'keep' leaves the source casing as-is. The KEY is ALWAYS
            lowercase — vars are referenced lowercase, no exceptions. #}
   {%       set name_case = pool.name_case | default('upper') %}
-  {%       set _name = name_parts | map('extract', vals) | map('string')
-                       | select | join('-') %}
+  {#       vals.get(t, '') instead of extract: an unknown token renders as a
+           dropped-empty part (no crash); fabric_config_errors names the typo. #}
+  {%       set nparts = [] %}
+  {%       for t in name_parts %}{% set _ = nparts.append(vals.get(t, '') | string) %}{% endfor %}
+  {%       set _name = nparts | select | join('-') %}
   {%       set item_name = (_name | upper) if name_case == 'upper'
                            else ((_name | lower) if name_case == 'lower' else _name) %}
-  {%       set item_key = key_parts | map('extract', vals) | map('string')
-                          | map('lower') | select | join('-') %}
+  {%       set kparts = [] %}
+  {%       for t in key_parts %}{% set _ = kparts.append(vals.get(t, '') | string | lower) %}{% endfor %}
+  {%       set item_key = kparts | select | join('-') %}
   {#       description is FREE-FORM prose, so unlike names it IS a str.format
            template — literals are welcome. Same token names as naming (source
            casing here; vlan = 'VLAN'+id, vid = id). Per-role desc_template
@@ -208,35 +223,102 @@ _network_pool_items: |
 # ============================================================
 # Stage 1 – final union (static + pool)
 # ============================================================
-_network_all_items: >-
-  {{ ((_network_underlays_items | from_json)
-      + (_network_pool_items | from_json)) | to_json }}
+_fabric_all_items: >-
+  {{ ((_fabric_underlay_items | from_json)
+      + (_fabric_pool_items | from_json)) | to_json }}
 
 # ============================================================
 # Validation – missing / empty fields (conditional on targets)
 # ============================================================
-# Preflight task consuming all three validation vars:
-#   - name: Validate network_underlays + pool
+# Preflight task consuming all four validation vars — put this FIRST in any
+# play that consumes the fabric, so a broken config fails with a NAMED reason
+# instead of a downstream JSON/undefined error:
+#   - name: Validate fabric config
 #     ansible.builtin.assert:
 #       that:
-#         - (missing_required_fields | from_json | length) == 0
-#         - duplicate_display_names | length == 0
-#         - duplicate_vlans | length == 0
+#         - (fabric_config_errors | from_json | length) == 0
+#         - (fabric_missing_fields | from_json | length) == 0
+#         - fabric_duplicate_names | length == 0
+#         - fabric_duplicate_vlans | length == 0
 #       fail_msg: >-
-#         Network validation failed!
-#         Missing/empty fields: {{ missing_required_fields | from_json }}
-#         Duplicate names: {{ duplicate_display_names }}
-#         Duplicate VLAN IDs: {{ duplicate_vlans }}
+#         Fabric validation failed!
+#         Config errors: {{ fabric_config_errors | from_json }}
+#         Missing/empty fields: {{ fabric_missing_fields | from_json }}
+#         Duplicate names: {{ fabric_duplicate_names }}
+#         Duplicate VLAN IDs: {{ fabric_duplicate_vlans }}
 #       quiet: true
 #     run_once: true
-missing_required_fields: |
+
+# Config-SHAPE errors: missing root dicts, wrong types, unknown naming tokens,
+# malformed role entries. These are the cases that used to surface as a
+# generic 'json decoder' crash — now they render empty (guarded) and this var
+# says exactly what is wrong.
+fabric_config_errors: |
+  {% set errs = [] %}
+  {% set tokens_underlay = ['key', 'tenant', 'role', 'env', 'site', 'zone',
+                            'scope', 'vlan', 'vlan_label', 'vid'] %}
+  {% set tokens_pool = ['prefix', 'pool', 'tenant', 'env', 'role', 'vlan',
+                        'vlan_label', 'vid', 'base', 'offset', 'n', 'nn'] %}
+  {% if fabric_underlays is not defined %}
+  {%   set _ = errs.append('fabric_underlays is not defined — declare the segment matrix in networks.yml') %}
+  {% elif fabric_underlays is not mapping %}
+  {%   set _ = errs.append('fabric_underlays must be a dict of segments, got ' ~ (fabric_underlays | type_debug)) %}
+  {% else %}
+  {%   for t in fabric_name_parts | default([]) %}
+  {%     if t not in tokens_underlay %}
+  {%       set _ = errs.append("fabric_name_parts: unknown token '" ~ t ~ "' (allowed: " ~ (tokens_underlay | join(', ')) ~ ')') %}
+  {%     endif %}
+  {%   endfor %}
+  {%   for key, net in fabric_underlays.items() %}
+  {%     if net is not mapping %}
+  {%       set _ = errs.append('fabric_underlays.' ~ key ~ ' must be a dict, got ' ~ (net | type_debug)) %}
+  {%     else %}
+  {%       if net.vlan_id is not defined %}
+  {%         set _ = errs.append('fabric_underlays.' ~ key ~ ': vlan_id is required') %}
+  {%       endif %}
+  {%       for t in net.name_parts | default([]) %}
+  {%         if t not in tokens_underlay %}
+  {%           set _ = errs.append('fabric_underlays.' ~ key ~ ": unknown name_parts token '" ~ t ~ "' (allowed: " ~ (tokens_underlay | join(', ')) ~ ')') %}
+  {%         endif %}
+  {%       endfor %}
+  {%     endif %}
+  {%   endfor %}
+  {% endif %}
+  {% if fabric_pools is defined and fabric_pools is not mapping and fabric_pools is not none %}
+  {%   set _ = errs.append('fabric_pools must be a dict of pool specs, got ' ~ (fabric_pools | type_debug)) %}
+  {% elif fabric_pools is defined and fabric_pools is mapping %}
+  {%   for pkey, pool in fabric_pools.items() %}
+  {%     if pool is not mapping %}
+  {%       set _ = errs.append('fabric_pools.' ~ pkey ~ ' must be a dict, got ' ~ (pool | type_debug)) %}
+  {%     else %}
+  {%       for t in (pool.name_parts | default([])) + (pool.key_parts | default([])) %}
+  {%         if t not in tokens_pool %}
+  {%           set _ = errs.append('fabric_pools.' ~ pkey ~ ": unknown name_parts/key_parts token '" ~ t ~ "' (allowed: " ~ (tokens_pool | join(', ')) ~ ')') %}
+  {%         endif %}
+  {%       endfor %}
+  {%       if pool.roles is defined and pool.roles is not mapping %}
+  {%         for rentry in pool.roles %}
+  {%           if rentry is mapping and (rentry.keys() | list | length) != 1 %}
+  {%             set _ = errs.append('fabric_pools.' ~ pkey ~ ': a list-form role map entry needs exactly ONE key ({role: {...}}), got keys [' ~ (rentry.keys() | list | join(', ')) ~ ']') %}
+  {%           endif %}
+  {%         endfor %}
+  {%       endif %}
+  {%     endif %}
+  {%   endfor %}
+  {% endif %}
+  {% if esxi_port_groups_custom is defined and (esxi_port_groups_custom is mapping or esxi_port_groups_custom is string) %}
+  {%   set _ = errs.append('esxi_port_groups_custom must be a LIST of port-group rows, got ' ~ (esxi_port_groups_custom | type_debug)) %}
+  {% endif %}
+  {{ errs | to_json }}
+
+fabric_missing_fields: |
   {% set req_common = ['vlan_id', 'tenancy', 'network_role', 'zone', 'targets'] %}
   {% set req_by_target = {
         'esxi': ['vswitch', 'insecure'],
         'firewall': ['gateway', 'subnet', 'management_profile']
      } %}
   {% set bad = [] %}
-  {% for key, net in network_underlays.items() %}
+  {% for key, net in (fabric_underlays | default({}, true)).items() %}
   {%   set targets = net.targets | default([]) %}
   {%   if targets | length == 0 %}
   {%     set _ = bad.append(key ~ ': targets list is empty') %}
@@ -257,8 +339,8 @@ missing_required_fields: |
 # ============================================================
 # Validation – duplicates across the FULL union
 # ============================================================
-duplicate_display_names: >-
-  {{ _network_all_items | from_json
+fabric_duplicate_names: >-
+  {{ _fabric_all_items | from_json
      | map(attribute='display_name')
      | community.general.counter
      | dict2items
@@ -266,8 +348,8 @@ duplicate_display_names: >-
      | map(attribute='key')
      | list }}
 
-duplicate_vlans: >-
-  {{ _network_all_items | from_json
+fabric_duplicate_vlans: >-
+  {{ _fabric_all_items | from_json
      | map(attribute='vlan_id')
      | community.general.counter
      | dict2items
@@ -276,20 +358,19 @@ duplicate_vlans: >-
      | list }}
 
 # key → display_name convenience map (inventory selection / vsphere_vm_network).
-network_underlays_names: |
+fabric_names: |
   {% set out = {} %}
-  {% for it in _network_all_items | from_json %}
+  {% for it in _fabric_all_items | from_json %}
   {%   set _ = out.update({it.original_key: it.display_name}) %}
   {% endfor %}
   {{ out | to_json }}
 
 # Segments with admin: true (operator/admin source CIDRs) — derived from
 # the source dict (admin is an ownership field, not projected into items).
-underlay_admin_cidrs: >-
-  {{ network_underlays | dict2items
+fabric_admin_cidrs: >-
+  {{ fabric_underlays | default({}, true) | dict2items
      | selectattr('value.admin', 'defined') | selectattr('value.admin')
      | map(attribute='value.subnet') | list }}
-network_admin_cidrs: "{{ underlay_admin_cidrs }}"
 
 # ============================================================
 # Platform projections – filter by targets FIRST, then reshape
@@ -304,8 +385,8 @@ network_admin_cidrs: "{{ underlay_admin_cidrs }}"
 #   loop_control: { loop_var: pg, label: "{{ pg.name }}" }
 
 # 1) Dynamic — matrix-backed segments, projected to the row shape.
-_esxi_port_groups_dynamic: >-
-  {{ _network_all_items | from_json
+_fabric_esxi_dynamic: >-
+  {{ _fabric_all_items | from_json
      | selectattr('targets', 'contains', 'esxi')
      | map('community.general.json_query',
            '{name: display_name, switch: vswitch, vlan: vlan_id, insecure: insecure,
@@ -313,7 +394,7 @@ _esxi_port_groups_dynamic: >-
      | list }}
 
 # 2) Combined — the ONLY list consumers loop. Dynamic first, custom last.
-esxi_port_groups: "{{ _esxi_port_groups_dynamic + esxi_port_groups_custom }}"
+esxi_port_groups: "{{ _fabric_esxi_dynamic + (esxi_port_groups_custom | default([], true)) }}"
 
 # ── vCenter distributed port groups (roles/vcenter config-as-code) ──────────
 # Same dynamic+custom pattern, but in the shape roles/vcenter's
@@ -321,7 +402,7 @@ esxi_port_groups: "{{ _esxi_port_groups_dynamic + esxi_port_groups_custom }}"
 # vcenter_config.portgroups):
 #   { vds, name, vlan_id, vlan_trunk?, security?: {allow_promiscuous,
 #     allow_forged_transmits, allow_mac_change} }
-# Wire it in inventory:  vcenter_config.portgroups: "{{ network_vcenter_portgroups }}"
+# Wire it in inventory:  vcenter_config.portgroups: "{{ fabric_vcenter_portgroups }}"
 # The role's loop var is unchanged — only the data source moves to the SSOT.
 #
 # security is emitted ONLY for a segment that relaxes a knob, so every other
@@ -329,9 +410,9 @@ esxi_port_groups: "{{ _esxi_port_groups_dynamic + esxi_port_groups_custom }}"
 # preserving today's behaviour where nothing sets item.security.
 
 # 1) Dynamic — matrix-backed segments, reshaped for the vCenter dvs module.
-_network_vcenter_portgroups_from_ssot: |
+_fabric_vcenter_dynamic: |
   {% set out = [] %}
-  {% for it in _network_all_items | from_json
+  {% for it in _fabric_all_items | from_json
               | selectattr('targets', 'contains', 'esxi') %}
   {%   set pg = {'vds': it.vswitch, 'name': it.display_name,
                  'vlan_id': it.vlan_id} %}
@@ -348,9 +429,9 @@ _network_vcenter_portgroups_from_ssot: |
 # 2) Custom — DERIVED from esxi_port_groups_custom (single source for the
 #    leftovers) and reshaped: switch->vds, vlan->vlan_id, trunk->vlan_trunk,
 #    flat security flags -> nested security map (emitted only when relaxed).
-_network_vcenter_portgroups_static: |
+_fabric_vcenter_static: |
   {% set out = [] %}
-  {% for pg in esxi_port_groups_custom %}
+  {% for pg in (esxi_port_groups_custom | default([], true)) %}
   {%   set row = {'vds': pg.switch, 'name': pg.name, 'vlan_id': pg.vlan} %}
   {%   if pg.trunk | default(false) | bool %}
   {%     set _ = row.update({'vlan_trunk': true}) %}
@@ -369,14 +450,14 @@ _network_vcenter_portgroups_static: |
   {{ out | to_json }}
 
 # 3) Combined — wire this into vcenter_config.portgroups. Dynamic first.
-network_vcenter_portgroups: >-
-  {{ (_network_vcenter_portgroups_from_ssot | from_json)
-     + (_network_vcenter_portgroups_static | from_json) }}
+fabric_vcenter_portgroups: >-
+  {{ (_fabric_vcenter_dynamic | from_json)
+     + (_fabric_vcenter_static | from_json) }}
 
 # ── Firewall L3 subinterfaces (paloaltonetworks.panos) ──────────────────────
 # ip = gateway_cidr: the firewall subinterface IS the segment gateway.
 palo_interfaces: >-
-  {{ _network_all_items | from_json
+  {{ _fabric_all_items | from_json
      | selectattr('targets', 'contains', 'firewall')
      | map('community.general.json_query',
            '{name: display_name, tag: vlan_id, ip: gateway_cidr,
@@ -387,16 +468,8 @@ palo_interfaces: >-
 # ── Switch VLAN ids (physical L2 plane) ─────────────────────────────────────
 # L2-only extras: switch_vlans_static in networks.yml (NOT auto-appended).
 switch_vlans: >-
-  {{ _network_all_items | from_json
+  {{ _fabric_all_items | from_json
      | selectattr('targets', 'contains', 'switches')
      | map(attribute='vlan_id')
      | unique
      | sort }}
-
-# ============================================================
-# Legacy aliases — prefer network_underlays.* / the projections in new code
-# ============================================================
-# NOTE: per-entry portgroup/name/netmask fields are GONE — use display_name
-# (derived), network_underlays_names, or subnet | ansible.utils.ipaddr('netmask').
-underlay: "{{ network_underlays }}"
-networks: "{{ network_underlays }}"

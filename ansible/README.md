@@ -73,7 +73,7 @@ not Ansible-specific.
 - Defaults in `roles/<name>/defaults/main.yml` are the source of truth
   for variable shapes; READMEs explain the contract and gotchas.
 - Start from `inventories/example/` — copy the folder per environment.
-  `group_vars/all/main.yml` holds env + underlay + VM prefix; large
+  `group_vars/all/main.yml` holds env + fabric segment + VM prefix; large
   groups use `group_vars/<group>/{main.yml,vault.yml}`.
   `vault.yml.example` is the unencrypted template; the real `vault.yml`
   is `ansible-vault encrypt`'d.

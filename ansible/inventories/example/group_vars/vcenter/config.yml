@@ -8,8 +8,11 @@ vcenter_config:
   hosts: []
   vds:
     - { name: vDS-Lab, version: "8.0.0", mtu: 9000, uplink_quantity: 2 }
-  portgroups:
-    - { name: VLAN10-MGT, vds: vDS-Lab, vlan_id: "10", num_ports: 8, port_binding: ephemeral }
+  # Dynamic SSOT (matrix segments) + custom leftovers, from
+  # playbooks/group_vars/all/networks.yml. Replaces the old hand list; the
+  # role's loop (_vcenter_desired.portgroups) is unchanged. All rows reference
+  # the vDS-Lab declared above, so vcenter_config_validate stays green.
+  portgroups: "{{ fabric_vcenter_portgroups }}"
   resource_pools: []
   folders:
     - { name: platform, folder_type: vm }

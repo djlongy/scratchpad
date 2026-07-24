@@ -3,21 +3,21 @@
 ## Reference inventory
 
 **`example/`** is the only inventory structure to copy. It is a complete
-production-shaped skeleton: identity, underlay selection, VM naming, group
+production-shaped skeleton: identity, fabric segment selection, VM naming, group
 vars layout, and a few host groups.
 
 ```bash
 cp -a inventories/example inventories/mgt
 # edit inventories/mgt/group_vars/all/main.yml:
-#   env, vault_kv_env, underlay.*, vsphere_vm_name_prefix
+#   env, vault_kv_env, network_segment, vsphere_vm_name_prefix
 # edit inventories/mgt/hosts.yml IPs + groups
 ```
 
 | After copy | `env` | Underlay | `vsphere_vm_name_prefix` |
 |---|---|---|---|
-| `mgt` | mgt | `underlay.mgt` | `mgta` |
-| `dev` | dev | `underlay.dev` | `deva` |
-| `prod` | prod | `underlay.prod` | `proda` |
+| `mgt` | mgt | `fabric_underlays.mgt` | `mgta` |
+| `dev` | dev | `fabric_underlays.dev` | `deva` |
+| `prod` | prod | `fabric_underlays.prod` | `proda` |
 
 Estate constants stay in `playbooks/group_vars/all/` (domain, networks,
 canonical formulas) — one place for every inventory.
@@ -86,7 +86,7 @@ inventory plugins — not the estate template. Prefer `example/` for new work.
 
 1. **One inventory folder = one env.** Do not invent parallel trees for
    “scenarios”; if a lab needs VLAN21, set `env: dev` and
-   `underlay.dev_cluster` in that folder’s `all/main.yml`.
+   `fabric_underlays.dev_cluster` in that folder’s `all/main.yml`.
 2. **Groups are nouns** (`vault`, `bastion`, `gitlab`) — never
    `install_vault` or `sw_vault`.
 3. **Secrets in group dirs**, not `all/`: `group_vars/vault/vault.yml`
@@ -94,6 +94,6 @@ inventory plugins — not the estate template. Prefer `example/` for new work.
 4. **No kitchen-sink `firewall_rules` in `all/`** — each role opens its
    own ports; bastion gets destination CIDRs in `bastion.yml`.
 5. **IPs live on hosts** (or IPAM later); gateways/portgroups come from
-   `underlay.*`, never hard-coded twice.
+   `fabric_underlays.*`, never hard-coded twice.
 6. **Copy the folder, don’t fork the formulas** — domain/canonical/network
    catalog stay estate-wide so envs cannot drift.

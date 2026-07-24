@@ -39,7 +39,7 @@ that is what your role will `loop:`.
 Real estates are larger; the **shape** is what matters.
 
 ```yaml
-network_underlays:
+fabric_underlays:
   mgt:
     vlan_id: 10
     portgroup: "VLAN10-MGT-SVC"
@@ -97,7 +97,7 @@ network_underlays:
 ```
 
 ```text
-network_underlays          ← dict (map)
+fabric_underlays          ← dict (map)
 ├── mgt:     { vlan_id, subnet, site, … }
 ├── prod:    { … }
 ├── infra:   { … }
@@ -111,7 +111,7 @@ network_underlays          ← dict (map)
 ```
 ┌─────────────────────────┐
 │  SSOT dict (matrix)     │  key → {vlan_id, subnet, site, …}
-│  network_underlays.*    │
+│  fabric_underlays.*    │
 └───────────┬─────────────┘
             │  lazy Jinja (at reference time)
             ▼
@@ -126,7 +126,7 @@ network_underlays          ← dict (map)
 **Rules of thumb**
 
 1. Define a fact **once** in the matrix. Never re-type a VLAN ID in host_vars.
-2. Inventory only **selects** a row: `network_underlays[network_segment].gateway`.
+2. Inventory only **selects** a row: `fabric_underlays[network_segment].gateway`.
 3. Pick the lightest trick that produces the AFTER shape you need.
 4. Hand-curate only what is not in the matrix (trunks, legacy absents).
 5. At a new job: check core version + `jinja2_native` (next section).
@@ -194,7 +194,7 @@ jinja2_native = True
 # Stage 1 — always materialise complex structures as JSON text
 my_items: |
   {% set items = [] %}
-  {% for key, net in network_underlays.items() %}
+  {% for key, net in fabric_underlays.items() %}
   {%   set _ = items.append({'key': key, 'vlan_id': net.vlan_id | int, ...}) %}
   {% endfor %}
   {{ items | to_json }}
@@ -373,7 +373,7 @@ callback_result_format = yaml
 
 ### BEFORE
 ```yaml
-network_underlays:                    # dict
+fabric_underlays:                    # dict
   mgt:
     gateway: "192.168.10.1"
     portgroup: "VLAN10-MGT-SVC"
@@ -385,10 +385,10 @@ network_underlays:                    # dict
 
 ### Jinja
 ```yaml
-network_gateway:    "{{ network_underlays.mgt.gateway }}"
-guest_portgroup: "{{ network_underlays.mgt.portgroup }}"
+network_gateway:    "{{ fabric_underlays.mgt.gateway }}"
+guest_portgroup: "{{ fabric_underlays.mgt.portgroup }}"
 # inventory sets network_segment: prod
-# network_gateway: "{{ network_underlays[network_segment].gateway }}"
+# network_gateway: "{{ fabric_underlays[network_segment].gateway }}"
 ```
 
 ### AFTER
@@ -407,7 +407,7 @@ guest_portgroup: "VLAN10-MGT-SVC"      # string
 
 ### BEFORE
 ```yaml
-network_underlays:                    # dict
+fabric_underlays:                    # dict
   mgt:     { vlan_id: 10, … }
   prod:    { vlan_id: 30, … }
   infra:   { vlan_id: 0,  … }
@@ -416,19 +416,19 @@ network_underlays:                    # dict
 
 ### Jinja
 ```yaml
-network_underlay_keys: "{{ network_underlays.keys() | list }}"
-network_underlay_items_raw: "{{ network_underlays | dict2items }}"
+fabric_underlay_keys: "{{ fabric_underlays.keys() | list }}"
+fabric_underlay_items_raw: "{{ fabric_underlays | dict2items }}"
 ```
 
 ### AFTER
 ```yaml
-network_underlay_keys:                # list of strings
+fabric_underlay_keys:                # list of strings
   - mgt
   - prod
   - infra
   - site_b_lab
 
-network_underlay_items_raw:           # list of {key, value}
+fabric_underlay_items_raw:           # list of {key, value}
   - key: mgt
     value:
       vlan_id: 10
@@ -458,7 +458,7 @@ AFTER:   [ {key, value}, … ]          list  (loopable)
 
 ### BEFORE
 ```yaml
-network_underlays:
+fabric_underlays:
   mgt:     { admin: true,  subnet: "192.168.10.0/24", … }
   prod:    {               subnet: "192.168.30.0/24", … }   # no admin
   infra:   { admin: true,  subnet: "192.168.0.0/24",  … }
@@ -467,8 +467,8 @@ network_underlays:
 
 ### Jinja
 ```yaml
-network_underlay_admin_cidrs: >-
-  {{ network_underlays | dict2items
+fabric_admin_cidrs: >-
+  {{ fabric_underlays | dict2items
      | selectattr('value.admin', 'defined')
      | selectattr('value.admin')
      | map(attribute='value.subnet')
@@ -477,7 +477,7 @@ network_underlay_admin_cidrs: >-
 
 ### AFTER
 ```yaml
-network_underlay_admin_cidrs:         # list of strings
+fabric_admin_cidrs:         # list of strings
   - "192.168.10.0/24"                 # mgt
   - "192.168.0.0/24"                  # infra
 # prod + site_b_lab gone
@@ -498,7 +498,7 @@ AFTER:   ["cidr", "cidr"]             only flagged rows
 
 ### BEFORE
 ```yaml
-network_underlays:
+fabric_underlays:
   mgt:     { vlan_id: 10, subnet: "192.168.10.0/24" }
   prod:    { vlan_id: 30, subnet: "192.168.30.0/24" }
   infra:   { vlan_id: 0,  subnet: "192.168.0.0/24" }
@@ -507,15 +507,15 @@ network_underlays:
 
 ### Jinja
 ```yaml
-network_underlay_vlan_ids: >-
-  {{ network_underlays | dict2items
+fabric_underlay_vlan_ids: >-
+  {{ fabric_underlays | dict2items
      | map(attribute='value.vlan_id')
      | list | unique | sort }}
 ```
 
 ### AFTER
 ```yaml
-network_underlay_vlan_ids:            # list of ints
+fabric_underlay_vlan_ids:            # list of ints
   - 0
   - 10
   - 30
@@ -535,7 +535,7 @@ AFTER:   [0, 10, 30, 100]             just that column
 
 ### BEFORE
 ```yaml
-network_underlays:
+fabric_underlays:
   mgt:
     vlan_id: 10
     portgroup: "VLAN10-MGT-SVC"
@@ -555,9 +555,9 @@ network_underlays:
 
 ### Jinja
 ```yaml
-network_underlay_items: |
+fabric_underlay_items: |
   {% set items = [] %}
-  {% for key, net in network_underlays.items() %}
+  {% for key, net in fabric_underlays.items() %}
   {%   set prefixlen = (net.subnet.split('/')[1] | int)
          if (net.subnet is defined and '/' in (net.subnet | string))
          else 24 %}
@@ -580,7 +580,7 @@ network_underlay_items: |
   {% endfor %}
   {{ items | to_json }}
 
-# always:  {{ network_underlay_items | from_json | selectattr(...) }}
+# always:  {{ fabric_underlay_items | from_json | selectattr(...) }}
 ```
 
 Line-by-line walk-through of this block → **[Appendix A](#appendix-a--annotated-t4-enrich-loop)**.
@@ -627,7 +627,7 @@ AFTER:   list of flat dicts, every row same schema + flags
 
 ### BEFORE
 ```yaml
-# network_underlay_items | from_json
+# fabric_underlay_items | from_json
 - { key: mgt,     site: site_a, tagged: true,  has_fw: true }
 - { key: prod,    site: site_a, tagged: true,  has_fw: true }
 - { key: infra,   site: site_a, tagged: false, has_fw: false }
@@ -636,12 +636,12 @@ AFTER:   list of flat dicts, every row same schema + flags
 
 ### Jinja
 ```yaml
-network_underlays_site_a: >-
-  {{ network_underlay_items | from_json
+fabric_underlays_site_a: >-
+  {{ fabric_underlay_items | from_json
      | selectattr('site', 'equalto', 'site_a') | list }}
 
-network_underlays_tagged: >-
-  {{ network_underlay_items | from_json | selectattr('tagged') | list }}
+fabric_underlays_tagged: >-
+  {{ fabric_underlay_items | from_json | selectattr('tagged') | list }}
 ```
 
 ### AFTER (`…_site_a`)
@@ -697,11 +697,11 @@ AFTER:   [ row, row ]              fewer rows, same shape
 ### Jinja
 ```yaml
 network_wifi_lid_vlans: >-
-  {{ network_underlay_items | from_json
+  {{ fabric_underlay_items | from_json
      | json_query('[?has_wifi && wifi_site==`a`].{name: wifi_name, vlan_id: vlan_id, purpose: `vlan-only`}') }}
 
 network_switch_vlans: >-
-  {{ network_underlay_items | from_json
+  {{ fabric_underlay_items | from_json
      | json_query('[?on_switch].{id: vlan_id, name: switch_name}') }}
 ```
 
@@ -746,7 +746,7 @@ AFTER:   [{name, vlan_id, purpose}, …]     fewer fields + fewer rows
 ### Jinja
 ```yaml
 network_fw_site_a_vlans: >-
-  {{ network_underlay_items | from_json
+  {{ fabric_underlay_items | from_json
      | selectattr('has_fw')
      | selectattr('site', 'equalto', 'site_a')
      | selectattr('tagged')
@@ -802,7 +802,7 @@ AFTER:   interface / vlan_id / descr          (module-shaped)
 ```yaml
 _network_fw_site_a_interfaces_json: |
   {% set items = [] %}
-  {% for it in network_underlay_items | from_json
+  {% for it in fabric_underlay_items | from_json
        if it.has_fw and it.site == 'site_a' and it.tagged %}
   {%   set _ = items.append({
          'descr': it.fw_descr,
@@ -849,20 +849,20 @@ AFTER:   interface="eth1.10"      (one string the module wants)
 
 ### Jinja
 ```yaml
-network_underlay_vlan_by_key: >-
-  {{ network_underlay_items | from_json
+fabric_underlay_vlan_by_key: >-
+  {{ fabric_underlay_items | from_json
      | items2dict(key_name='key', value_name='vlan_id') }}
 ```
 
 ### AFTER
 ```yaml
-network_underlay_vlan_by_key:         # dict, not list
+fabric_underlay_vlan_by_key:         # dict, not list
   mgt: 10
   prod: 30
   infra: 0
   site_b_lab: 100
 
-# "{{ network_underlay_vlan_by_key['mgt'] }}"  →  10
+# "{{ fabric_underlay_vlan_by_key['mgt'] }}"  →  10
 ```
 
 ```text
@@ -933,7 +933,7 @@ AFTER:   one list the role already loops
 
 ### Jinja
 ```yaml
-network_underlays_by_site: "{{ network_underlay_items | from_json | groupby('site') }}"
+fabric_underlays_by_site: "{{ fabric_underlay_items | from_json | groupby('site') }}"
 ```
 
 ### AFTER
@@ -1022,8 +1022,8 @@ AFTER:   [10, 30, 100]     then optional "10,30,100" at task time
 
 ### Jinja
 ```yaml
-network_duplicate_vlans: >-
-  {{ network_underlay_items | from_json
+fabric_duplicate_vlans: >-
+  {{ fabric_underlay_items | from_json
      | selectattr('tagged')
      | map(attribute='vlan_id')
      | community.general.counter
@@ -1035,7 +1035,7 @@ network_duplicate_vlans: >-
 
 ### AFTER
 ```yaml
-network_duplicate_vlans:
+fabric_duplicate_vlans:
   - 10                    # appeared more than once
 # [] means clean
 ```
@@ -1110,7 +1110,7 @@ AFTER:   one guaranteed string per row
 ### Jinja
 ```yaml
 network_cidrs_svc: >-
-  {{ network_underlay_items | from_json
+  {{ fabric_underlay_items | from_json
      | selectattr('role', 'equalto', 'svc')
      | map(attribute='subnet')
      | list }}
@@ -1140,7 +1140,7 @@ Dicts are not sorted by nested attributes in Jinja — flatten first, then sort.
 
 ### BEFORE
 ```yaml
-network_underlays:                    # dict — insertion order ≠ vlan order
+fabric_underlays:                    # dict — insertion order ≠ vlan order
   prod:  { vlan_id: 30, site: site_a, portgroup: "VLAN30-PROD-SVC" }
   mgt:   { vlan_id: 10, site: site_a, portgroup: "VLAN10-MGT-SVC" }
   infra: { vlan_id: 0,  site: site_a, portgroup: "VLAN00-INFRA" }
@@ -1150,24 +1150,24 @@ network_underlays:                    # dict — insertion order ≠ vlan order
 ### Jinja
 ```yaml
 # Sort by nested field on each value
-network_underlays_by_vlan: >-
-  {{ network_underlays | dict2items
+fabric_underlays_by_vlan: >-
+  {{ fabric_underlays | dict2items
      | sort(attribute='value.vlan_id')
      | list }}
 
 # Descending
-network_underlays_by_vlan_desc: >-
-  {{ network_underlays | dict2items
+fabric_underlays_by_vlan_desc: >-
+  {{ fabric_underlays | dict2items
      | sort(attribute='value.vlan_id', reverse=true)
      | list }}
 
 # Already flat (T4)? sort the list directly:
-# {{ network_underlay_items | from_json | sort(attribute='vlan_id') }}
+# {{ fabric_underlay_items | from_json | sort(attribute='vlan_id') }}
 ```
 
 ### AFTER
 ```yaml
-network_underlays_by_vlan:            # list of {key, value} — vlan order
+fabric_underlays_by_vlan:            # list of {key, value} — vlan order
   - key: infra
     value: { vlan_id: 0, site: site_a, portgroup: "VLAN00-INFRA" }
   - key: mgt
@@ -1183,7 +1183,7 @@ network_underlays_by_vlan:            # list of {key, value} — vlan order
 - name: Show segments in VLAN number order
   ansible.builtin.debug:
     msg: "{{ item.key }} → vlan {{ item.value.vlan_id }} ({{ item.value.portgroup }})"
-  loop: "{{ network_underlays_by_vlan }}"
+  loop: "{{ fabric_underlays_by_vlan }}"
   loop_control:
     label: "{{ '%04d' | format(item.value.vlan_id | int) }} {{ item.key }}"
 ```
@@ -1196,7 +1196,7 @@ AFTER:   [ {key, value}, … ] sorted by value.vlan_id         list (display ord
 ### Values only (drop the key wrapper)
 ```yaml
 segments_by_vlan: >-
-  {{ network_underlays | dict2items
+  {{ fabric_underlays | dict2items
      | sort(attribute='value.vlan_id')
      | map(attribute='value')
      | list }}
@@ -1213,9 +1213,9 @@ segments_by_vlan: >-
 
 ### Optional: multi-key sort (vlan, then segment name)
 ```yaml
-network_underlays_by_vlan_name: |
+fabric_underlays_by_vlan_name: |
   {% set out = [] %}
-  {% for k, v in network_underlays.items() %}
+  {% for k, v in fabric_underlays.items() %}
   {%   set _ = out.append(
          v | combine({
            'key': k,
@@ -1224,7 +1224,7 @@ network_underlays_by_vlan_name: |
        ) %}
   {% endfor %}
   {{ out | sort(attribute='sort_key') | to_json }}
-# use:  {{ network_underlays_by_vlan_name | from_json }}
+# use:  {{ fabric_underlays_by_vlan_name | from_json }}
 ```
 
 **When:** inventory dumps, docs generation, “print the fabric in VLAN order”,
@@ -1248,7 +1248,7 @@ hypervisor_port_groups:
 ### AFTER (T4/T7 for 90% + T10 for the tail)
 ```yaml
 hypervisor_port_groups_dynamic: >-
-  {{ network_underlay_items | from_json
+  {{ fabric_underlay_items | from_json
      | selectattr('virt')
      | map('community.general.json_query',
            '{name: portgroup, vlan_id: vlan_id, switch: `vDS-Core`}')
@@ -1280,15 +1280,15 @@ Role still: `loop: "{{ hypervisor_port_groups }}"` — only the source of the li
 
 | Consumer | Vars | Trick(s) |
 |---|---|---|
-| Inventory host net | `network_underlays.<seg>.*` | T0 |
-| Admin / bastion sources | `network_underlay_admin_cidrs` | T2 |
+| Inventory host net | `fabric_underlays.<seg>.*` | T0 |
+| Admin / bastion sources | `fabric_admin_cidrs` | T2 |
 | fw-site-a-01 | `network_fw_site_a_*` | T7 / T8 |
 | fw-site-b-01 | `network_fw_site_b_*` | T8 |
 | Wi-Fi controller | `network_wifi_*_vlans` | T6 + T10 |
 | edge-FW PoC | `network_edgefw_*` | T8 |
 | leaf switch OS | `network_switch_*` | T6 + T12 |
 | hypervisor / virt-mgmt | `network_virt_portgroups` | T7 + T10 |
-| Preflight | `network_duplicate_*` | T13 |
+| Preflight | `fabric_duplicate_*` | T13 |
 
 ---
 
@@ -1364,7 +1364,7 @@ BEFORE/AFTER only; this is the line-by-line when you need it.
 
 ```yaml
 # YAML multi-line string = whole Jinja program (templated lazily on reference).
-network_underlay_items: |
+fabric_underlay_items: |
 
   {# ── 1. Empty accumulator ───────────────────────────────────────────── #}
   {# `items` will hold one flat dict per SSOT row.                         #}
@@ -1374,7 +1374,7 @@ network_underlay_items: |
   {# .items() → (key, net) pairs                                          #}
   {#   key = "mgt" | "prod" | …                                           #}
   {#   net = { vlan_id, subnet, gateway, … }                              #}
-  {% for key, net in network_underlays.items() %}
+  {% for key, net in fabric_underlays.items() %}
 
   {# ── 3. Derive prefix length from CIDR ──────────────────────────────── #}
   {# "192.168.10.0/24" → split("/") → index [1] → 24                      #}
@@ -1410,12 +1410,12 @@ network_underlay_items: |
   {% endfor %}
 
   {# ── 5. Emit JSON text (not a raw Python list) ──────────────────────── #}
-  {# Consumers MUST:  network_underlay_items | from_json | …              #}
+  {# Consumers MUST:  fabric_underlay_items | from_json | …              #}
   {# Portable on 2.16 (jinja2_native off) and 2.18 (on).                  #}
   {{ items | to_json }}
 
 # Outside the template:
-#   {{ network_underlay_items | from_json | selectattr('tagged') | list }}
+#   {{ fabric_underlay_items | from_json | selectattr('tagged') | list }}
 ```
 
 ### Reading order

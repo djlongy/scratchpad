@@ -3,8 +3,8 @@
 # Loaded for every play under playbooks/ (playbook-adjacent group_vars/all).
 # Do NOT redeclare these roots in inventory group_vars/all — they drift.
 #
-# THIS file is the one users edit: the network_underlays matrix, the
-# network_pools generator specs, the hand-curated custom/static rows and the
+# THIS file is the one users edit: the fabric_underlays matrix, the
+# fabric_pools generator specs, the hand-curated custom/static rows and the
 # non-derivable platform data. Every DERIVED list/map (projections, validation,
 # names) lives in networks_derived.yml next door — nothing there needs editing.
 # Vars prefixed `_` are internal machinery; consume only the public outputs
@@ -26,11 +26,11 @@
 #   env: prod
 #   tenancy: acme                    # soft or hard — always set
 #   network_segment: prod            # soft share  OR  acme_prod for hard L2
-#   network_gateway:    "{{ network_underlays[network_segment].gateway }}"
-#   network_netmask:    "{{ network_underlays[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
-#   vsphere_vm_network: "{{ (network_underlays_names | from_json)[network_segment] }}"
-#   vsphere_vm_gateway: "{{ network_underlays[network_segment].gateway }}"
-#   vsphere_vm_dns:     "{{ network_underlays[network_segment].dns }}"
+#   network_gateway:    "{{ fabric_underlays[network_segment].gateway }}"
+#   network_netmask:    "{{ fabric_underlays[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
+#   vsphere_vm_network: "{{ (fabric_names | from_json)[network_segment] }}"
+#   vsphere_vm_gateway: "{{ fabric_underlays[network_segment].gateway }}"
+#   vsphere_vm_dns:     "{{ fabric_underlays[network_segment].dns }}"
 #
 # All addresses below are lab/mock RFC1918 examples — replace for production.
 
@@ -49,7 +49,7 @@
 #              management_profile (firewall; '' = none)
 #   Placement: site, zone
 #   Ownership: scope (platform|tenant), env (mgt|dev|prod|null), tenancy
-#   Ops:       description (string), admin (bool → underlay_admin_cidrs)
+#   Ops:       description (string), admin (bool → fabric_admin_cidrs)
 #
 #   targets          — which platform projections pick this segment up; each
 #                      derived list filters selectattr('targets', 'contains', …)
@@ -82,10 +82,10 @@
 #   Key convention hard: <tenancy>_<env>  (e.g. acme_prod)
 
 # Estate-wide display-name defaults (override per segment with the same keys).
-network_underlays_name_parts: [vlan, tenant, role]
-network_underlays_name_case: upper
+fabric_name_parts: [vlan, tenant, role]
+fabric_name_case: upper
 
-network_underlays:
+fabric_underlays:
   # ── Site infrastructure (platform, not env-scoped) ───────────────────────
   infra:
     vlan_id: 0
@@ -403,7 +403,7 @@ network_underlays:
 #   name_parts: [tenant, env, role, nn]          -> TENANT_X-DEV-ENDPOINT-01
 #   name_parts: [vlan_label, vid, tenant, role]  -> VLAN-2200-TENANT_X-ENDPOINT
 # display_name feeds every projection, so the order flows to ESXi/firewall/
-# switch consumers automatically; duplicate_display_names / duplicate_vlans
+# switch consumers automatically; fabric_duplicate_names / fabric_duplicate_vlans
 # still guard against a parts list too short to stay unique.
 #
 # DESCRIPTION (free-form prose): unlike the NAME, desc_template IS a str.format
@@ -412,11 +412,11 @@ network_underlays:
 # vid=id). A per-role desc_template overrides the pool default; unset -> ''. e.g.
 #   desc_template: "{tenant} {env} {role} (VLAN {vid}, set {nn})"
 #     -> "tenant_x dev endpoint (VLAN 2200, set 01)"
-# Static network_underlays entries instead carry a plain per-entry `description`
+# Static fabric_underlays entries instead carry a plain per-entry `description`
 # string. Both paths land in the item's `description` field, uniform across
 # static + pool.
 
-network_pools:
+fabric_pools:
   # ── Defaults + KEY control ───────────────────────────────────────────────
   # Name takes every default (name_parts [vlan, tenant, env, role, nn], UPPER);
   # env is unset so it drops out -> VLAN2000-ACME-APP-01.
@@ -614,6 +614,3 @@ swarm_overlay_subnets:
   mattermost: "{{ docker_swarm.mattermost.subnet }}"
   splunk: "{{ docker_swarm.splunk.subnet }}"
   elk: "{{ docker_swarm.elk.subnet }}"
-
-# Fallback only — inventory should derive from the selected segment's subnet.
-network_netmask: "255.255.255.0"
