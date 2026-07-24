@@ -72,10 +72,16 @@ ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags 
 EPEL 10 branched per RHEL minor, which changes three things in a catalog entry
 (EL8/9 entries stay as they are):
 
-- **baseurl** — on EL10 `$releasever` expands to the minor (e.g. `10.2`) and
-  released minors are served from the z-stream dir (`10.2z`; plain minor dirs
-  are pruned at EOL). Use the official `$releasever${releasever_minor:+z}`
-  form. That substitution needs EL10 libdnf, so gate per host.
+- **baseurl** — on EL10 `$releasever` expands to the minor (e.g. `10.2`).
+  Which path form works depends on what your proxy's remote is:
+  - Remote = the **master mirror** (`dl.fedoraproject.org/pub/epel/`): released
+    minors get their updates in z-stream dirs (`10.2z`) and plain minor dirs
+    are pruned at EOL there — use the stock `epel-release` form
+    `$releasever${releasever_minor:+z}` (needs EL10 libdnf, so gate per host).
+  - Remote = the **redirector** (`download.fedoraproject.org/pub/epel/`): the
+    z-stream dirs 404, but the plain minor dirs are served and their content
+    tracks the z-stream (identical repomd) — keep plain `$releasever` on every
+    major. Verify which one your proxy points at before choosing.
 - **gpgkey** — the signing key is per-major only (`RPM-GPG-KEY-EPEL-10`; no
   `10.x` keys). Use `{{ ansible_distribution_major_version }}`, not
   `$releasever`.
@@ -85,6 +91,8 @@ Pattern (rendered per host — the role's fact self-heal guarantees the distro
 facts):
 
 ```yaml
+# Only needed when the proxy remote is the MASTER mirror; for a
+# redirector-backed proxy use plain "$releasever" instead of this helper.
 epel_releasever: >-
   {{ '$releasever${releasever_minor:+z}'
      if ansible_distribution_major_version | int >= 10
