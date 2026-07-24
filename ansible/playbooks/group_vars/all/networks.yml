@@ -1,23 +1,18 @@
 ---
-# ── Estate network catalog (single source of truth) ─────────────────────────
+# ── Estate network catalog — VALUES (user configuration) ────────────────────
 # Loaded for every play under playbooks/ (playbook-adjacent group_vars/all).
 # Do NOT redeclare these roots in inventory group_vars/all — they drift.
 #
-# ONE dict — network_underlays — drives every platform config (ESXi port
-# groups, firewall interfaces/zones, switch VLANs) through DERIVED vars.
-# No set_fact, no runtime loops for derivation: Ansible templates vars
-# lazily at reference time, so the projections below re-evaluate wherever
-# they are consumed.
+# THIS file is the one users edit: the network_underlays matrix, the
+# network_pools generator specs, the hand-curated custom/static rows and the
+# non-derivable platform data. Every DERIVED list/map (projections, validation,
+# names) lives in networks_derived.yml next door — nothing there needs editing.
+# Vars prefixed `_` are internal machinery; consume only the public outputs
+# documented in networks_derived.yml.
 #
-# Controller dependencies:
+# Controller dependencies (consumed by networks_derived.yml):
 #   pip:         jmespath (json_query), netaddr (ansible.utils.ipaddr)
 #   collections: community.general, ansible.utils
-#
-# ansible-core 2.16 compatibility: every statement-loop var ends with
-# `{{ ... | to_json }}` and every consumer starts with `| from_json`.
-# The old templating engine would otherwise hand stage 2 a STRING repr of
-# the list. (Alternative: jinja2_native=true — default-forced from 2.19+ —
-# but the to_json/from_json bridge works on every core version.)
 #
 # Hybrid multi-tenancy:
 #   • Global catalog — platform sees ALL tenants × ALL envs (fabric SoT).
@@ -42,12 +37,13 @@
 # ============================================================
 # Source of truth – static underlay
 # ============================================================
-# The dict KEY is the segment's short name (inventory selector); the
-# display name is DERIVED as VLAN<id>-<TENANCY>-<NETWORK_ROLE>.
+# The dict KEY is the segment's short name (inventory selector) — keys are
+# literal (never generated), so selectors stay predictable.
 #
 # Schema (every segment):
 #   Fabric:    vlan_id, subnet, gateway, dns[]
 #   Naming:    network_role (display-name component; key stays the selector)
+#              name_parts / name_case / vlan_prefix (optional — see NAMING)
 #   Platforms: targets[] (esxi|firewall|switches), vswitch, insecure,
 #              promiscuous_mode, forged_transmits,
 #              management_profile (firewall; '' = none)
@@ -64,10 +60,30 @@
 #                      Set either explicitly to relax just that knob while
 #                      leaving insecure false (customer-tunable per segment).
 #
+# NAMING — same ordered-token mechanism as the pools (display_name only; the
+# KEY is always the literal dict key). An ORDERED LIST of var tokens joined by
+# '-'; empty tokens (e.g. env on a null-env segment) are dropped, so there are
+# no doubled dashes. Set the estate default below, override per segment:
+#   name_parts (default [vlan, tenant, role])  → display_name token order
+#   name_case  (default upper) = upper | lower | keep ('keep' = source casing)
+#   vlan_prefix (default 'VLAN')               → the vlan/vlan_label token text
+# Tokens (value):
+#   key (dict key) · tenant (tenancy) · role (network_role) · env · site ·
+#   zone · scope · vlan (label+id, e.g. VLAN10) · vlan_label · vid (id only)
+# Examples:
+#   (default)                                  → VLAN10-PLATFORM-MGT-SVC
+#   name_parts: [vlan, env, role]              → VLAN10-MGT-MGT-SVC
+#   name_parts: [vlan_label, vid, tenant, role], name_case: lower
+#                                              → vlan-10-platform-mgt-svc
+#
 # Rules:
 #   scope:platform + tenancy:platform → soft multi-tenancy underlay (default)
 #   scope:tenant   + tenancy:<org>    → hard L2 isolation for that org
 #   Key convention hard: <tenancy>_<env>  (e.g. acme_prod)
+
+# Estate-wide display-name defaults (override per segment with the same keys).
+network_underlays_name_parts: [vlan, tenant, role]
+network_underlays_name_case: upper
 
 network_underlays:
   # ── Site infrastructure (platform, not env-scoped) ───────────────────────
@@ -336,47 +352,7 @@ network_underlays:
     admin: false
 
 # ============================================================
-# Stage 1a – static items (pure)
-# ============================================================
-# Normalises every entry to one fixed field set; display_name is
-# VLAN<id>-<TENANCY>-<NETWORK_ROLE>; gateway_cidr only when the segment
-# targets the firewall AND declares gateway + subnet.
-network_underlays_items: |
-  {% set items = [] %}
-  {% for key, net in network_underlays.items() %}
-  {%   set tenant = (net.tenancy | default('') | upper | trim) %}
-  {%   set role   = (net.network_role | default('') | upper | trim) %}
-  {%   set display_name = 'VLAN' ~ net.vlan_id ~ '-' ~ tenant ~ '-' ~ role %}
-  {%   set gateway_cidr = '' %}
-  {%   if 'firewall' in (net.targets | default([])) and net.gateway is defined and net.subnet is defined %}
-  {%     set gateway_cidr = net.gateway ~ '/' ~ (net.subnet | ansible.utils.ipaddr('prefix')) %}
-  {%   endif %}
-  {%   set _ = items.append({
-          'original_key': key,
-          'display_name': display_name,
-          'vlan_id': net.vlan_id,
-          'tenancy': tenant,
-          'network_role': role,
-          'zone': net.zone | default(''),
-          'targets': net.targets | default([]),
-          'vswitch': net.vswitch | default(''),
-          'insecure': net.insecure | default(false) | bool,
-          'promiscuous_mode': net.promiscuous_mode
-                              | default(net.insecure | default(false)) | bool,
-          'forged_transmits': net.forged_transmits
-                              | default(net.insecure | default(false)) | bool,
-          'gateway': net.gateway | default(''),
-          'subnet': net.subnet | default(''),
-          'gateway_cidr': gateway_cidr,
-          'management_profile': net.management_profile | default(''),
-          'description': net.description | default(''),
-          'dns': net.dns | default('')
-        }) %}
-  {% endfor %}
-  {{ items | to_json }}
-
-# ============================================================
-# Stage 1b – generated pools (spec-driven)
+# Generated pools (spec-driven) — the generator lives in networks_derived.yml
 # ============================================================
 # Each pool declares its own shape; the generator emits sets × roles items.
 #
@@ -390,6 +366,15 @@ network_underlays_items: |
 #
 # roles may be EITHER form:
 #   list  — [app, monitor]              role_offset = list position (0,1,2,…)
+#           A list entry may also be a single-key map to attach per-role
+#           metadata inline (flow or block style — both are the same YAML):
+#             roles: [app, monitor, {dmz: {insecure: true}}]
+#             roles:
+#               - app
+#               - monitor
+#               - dmz:
+#                   insecure: true
+#           offset stays the list position unless the map sets offset.
 #   dict  — app: {offset: 0}            role_offset = explicit offset (default
 #           monitor: {offset: 4,          declaration order); the value map is
 #                     insecure: true}     per-role metadata inherited by every
@@ -419,7 +404,7 @@ network_underlays_items: |
 #   name_parts: [vlan_label, vid, tenant, role]  -> VLAN-2200-TENANT_X-ENDPOINT
 # display_name feeds every projection, so the order flows to ESXi/firewall/
 # switch consumers automatically; duplicate_display_names / duplicate_vlans
-# below still guard against a parts list too short to stay unique.
+# still guard against a parts list too short to stay unique.
 #
 # DESCRIPTION (free-form prose): unlike the NAME, desc_template IS a str.format
 # string — literals + {tokens} are welcome, because a description is prose, not
@@ -453,13 +438,21 @@ network_pools:
   # renames the label; name_case lowercases the whole joined name:
   #   vlan_prefix: net, name_parts [vlan_label, vid, tenant, role, nn],
   #   name_case: lower  ->  net-2100-globex-dev-sandbox-01
+  # The tap role shows INLINE per-role metadata in list form — a single-key
+  # map entry ({tap: {promiscuous_mode: true, forged_transmits: true}}) relaxes
+  # just the SPAN knobs for that role while sandbox/mgmt keep the defaults.
   globex_lab:
     prefix: lab
     tenancy: globex
     zone: pool
     vlan_base: 2100
     sets: 2
-    roles: [sandbox, tap, mgmt]
+    roles:
+      - sandbox
+      - tap:
+          promiscuous_mode: true
+          forged_transmits: true
+      - mgmt
     targets: [esxi, switches]
     vswitch: vDS-Lab
     vlan_prefix: net
@@ -498,222 +491,15 @@ network_pools:
         forged_transmits: true
         desc_template: "{tenant} {env} SPAN/sniffer port (VLAN {vid}, set {nn})"
 
-network_pool_items: |
-  {% set items = [] %}
-  {% for pool_key, pool in network_pools.items() %}
-  {%   set tenant = (pool.tenancy | default(pool_key) | upper | trim) %}
-  {%   set roles_raw = pool.roles | default(['set']) %}
-  {#   Normalise roles to [{name, offset, meta}]: list form -> positional
-       offset + empty meta; dict form -> explicit offset (default declaration
-       order) + the value map as per-role metadata. #}
-  {%   set role_specs = [] %}
-  {%   if roles_raw is mapping %}
-  {%     for rname, rmeta_raw in roles_raw.items() %}
-  {%       set rmeta = rmeta_raw | default({}, true) %}
-  {%       set _ = role_specs.append({'name': rname,
-                     'offset': rmeta.offset | default(loop.index0),
-                     'meta': rmeta}) %}
-  {%     endfor %}
-  {%   else %}
-  {%     for rname in roles_raw %}
-  {%       set _ = role_specs.append({'name': rname,
-                     'offset': loop.index0, 'meta': {}}) %}
-  {%     endfor %}
-  {%   endif %}
-  {#   Stride defaults to the role count -> unset stride tight-packs sets. #}
-  {%   set stride = pool.vlan_stride | default(role_specs | length) %}
-  {%   for n in range(1, (pool.sets | default(1)) + 1) %}
-  {%     set base = (pool.vlan_base | default(1000)) + ((n - 1) * stride) %}
-  {%     for rs in role_specs %}
-  {%       set role_name = rs.name %}
-  {%       set rmeta = rs.meta %}
-  {%       set vlan = base + rs.offset %}
-  {#       Effective security default: role insecure -> pool insecure -> false.
-           The two granular knobs fall back to it when unset. #}
-  {%       set eff_insecure = rmeta.insecure | default(pool.insecure | default(false)) %}
-  {#       Naming = an ORDERED list of var tokens joined by '-' (no templates).
-           display_name uppercases + drops empty tokens (e.g. env when unset);
-           original_key lowercases. Override order/selection per pool with
-           name_parts / key_parts; otherwise the defaults below apply. #}
-  {%       set vlan_prefix = pool.vlan_prefix | default('VLAN') %}
-  {%       set vals = {'prefix': pool.prefix | default(pool_key),
-                       'pool': pool_key,
-                       'tenant': tenant,
-                       'env': pool.env | default(''),
-                       'role': role_name,
-                       'vlan': vlan_prefix ~ vlan,
-                       'vlan_label': vlan_prefix,
-                       'vid': vlan,
-                       'base': base, 'offset': rs.offset,
-                       'n': n, 'nn': '%02d' | format(n)} %}
-  {%       set name_parts = pool.name_parts
-                            | default(['vlan', 'tenant', 'env', 'role', 'nn']) %}
-  {%       set key_parts = pool.key_parts | default(['prefix', 'n', 'role']) %}
-  {#       name_case is a per-pool choice (default UPPER), applied to the whole
-           joined string (dashes unaffected) so lower gives a clean lowercase
-           name; 'keep' leaves the source casing as-is. The KEY is ALWAYS
-           lowercase — vars are referenced lowercase, no exceptions. #}
-  {%       set name_case = pool.name_case | default('upper') %}
-  {%       set _name = name_parts | map('extract', vals) | map('string')
-                       | select | join('-') %}
-  {%       set item_name = (_name | upper) if name_case == 'upper'
-                           else ((_name | lower) if name_case == 'lower' else _name) %}
-  {%       set item_key = key_parts | map('extract', vals) | map('string')
-                          | map('lower') | select | join('-') %}
-  {#       description is FREE-FORM prose, so unlike names it IS a str.format
-           template — literals are welcome. Same token names as naming (source
-           casing here; vlan = 'VLAN'+id, vid = id). Per-role desc_template
-           overrides the pool default; unset -> '' (no description). #}
-  {%       set desc_tmpl = rmeta.desc_template
-                           | default(pool.desc_template | default('')) %}
-  {%       set desc_ctx = {'prefix': pool.prefix | default(pool_key),
-                           'pool': pool_key, 'tenant': pool.tenancy | default(pool_key),
-                           'env': pool.env | default(''), 'role': role_name,
-                           'vlan': 'VLAN' ~ vlan, 'vid': vlan,
-                           'vlan_label': vlan_prefix, 'base': base, 'offset': rs.offset,
-                           'n': n, 'nn': '%02d' | format(n)} %}
-  {%       set item_desc = desc_tmpl.format(**desc_ctx) %}
-  {%       set _ = items.append({
-              'original_key': item_key,
-              'display_name': item_name,
-              'vlan_id': vlan,
-              'tenancy': tenant,
-              'network_role': role_name | upper,
-              'zone': rmeta.zone | default(pool.zone | default('pool')),
-              'targets': rmeta.targets
-                         | default(pool.targets | default(['esxi', 'switches'])),
-              'vswitch': rmeta.vswitch | default(pool.vswitch | default('')),
-              'insecure': eff_insecure | bool,
-              'promiscuous_mode': rmeta.promiscuous_mode
-                          | default(pool.promiscuous_mode | default(eff_insecure)) | bool,
-              'forged_transmits': rmeta.forged_transmits
-                          | default(pool.forged_transmits | default(eff_insecure)) | bool,
-              'gateway': '',
-              'subnet': '',
-              'gateway_cidr': '',
-              'management_profile': rmeta.management_profile
-                                    | default(pool.management_profile | default('')),
-              'description': item_desc,
-              'dns': ''
-            }) %}
-  {%     endfor %}
-  {%   endfor %}
-  {% endfor %}
-  {{ items | to_json }}
-
 # ============================================================
-# Stage 1 – final union (static + pool)
-# ============================================================
-network_all_items: >-
-  {{ ((network_underlays_items | from_json)
-      + (network_pool_items | from_json)) | to_json }}
-
-# ============================================================
-# Validation – missing / empty fields (conditional on targets)
-# Fix B applied – no loop scoping issue
-# ============================================================
-# Preflight task consuming all three validation vars:
-#   - name: Validate network_underlays + pool
-#     ansible.builtin.assert:
-#       that:
-#         - (missing_required_fields | from_json | length) == 0
-#         - duplicate_display_names | length == 0
-#         - duplicate_vlans | length == 0
-#       fail_msg: >-
-#         Network validation failed!
-#         Missing/empty fields: {{ missing_required_fields | from_json }}
-#         Duplicate names: {{ duplicate_display_names }}
-#         Duplicate VLAN IDs: {{ duplicate_vlans }}
-#       quiet: true
-#     run_once: true
-missing_required_fields: |
-  {% set req_common = ['vlan_id', 'tenancy', 'network_role', 'zone', 'targets'] %}
-  {% set req_by_target = {
-        'esxi': ['vswitch', 'insecure'],
-        'firewall': ['gateway', 'subnet', 'management_profile']
-     } %}
-  {% set bad = [] %}
-  {% for key, net in network_underlays.items() %}
-  {%   set targets = net.targets | default([]) %}
-  {%   if targets | length == 0 %}
-  {%     set _ = bad.append(key ~ ': targets list is empty') %}
-  {%   endif %}
-  {%   set required = (req_common
-          + (targets | map('extract', req_by_target)
-             | select('defined') | flatten | list)) | unique | list %}
-  {%   for f in required %}
-  {%     if f not in net or net[f] is none
-            or (net[f] is string and net[f] | trim == '')
-            or (net[f] is sequence and net[f] | length == 0) %}
-  {%       set _ = bad.append(key ~ ': missing or empty ' ~ f) %}
-  {%     endif %}
-  {%   endfor %}
-  {% endfor %}
-  {{ bad | to_json }}
-
-# ============================================================
-# Validation – duplicates across the FULL union
-# ============================================================
-duplicate_display_names: >-
-  {{ network_all_items | from_json
-     | map(attribute='display_name')
-     | community.general.counter
-     | dict2items
-     | selectattr('value', '>', 1)
-     | map(attribute='key')
-     | list }}
-
-duplicate_vlans: >-
-  {{ network_all_items | from_json
-     | map(attribute='vlan_id')
-     | community.general.counter
-     | dict2items
-     | selectattr('value', '>', 1)
-     | map(attribute='key')
-     | list }}
-
-# key → display_name convenience map (inventory selection / vsphere_vm_network).
-network_underlays_names: |
-  {% set out = {} %}
-  {% for it in network_all_items | from_json %}
-  {%   set _ = out.update({it.original_key: it.display_name}) %}
-  {% endfor %}
-  {{ out | to_json }}
-
-# Segments with admin: true (operator/admin source CIDRs) — derived from
-# the source dict (admin is an ownership field, not projected into items).
-underlay_admin_cidrs: >-
-  {{ network_underlays | dict2items
-     | selectattr('value.admin', 'defined') | selectattr('value.admin')
-     | map(attribute='value.subnet') | list }}
-network_admin_cidrs: "{{ underlay_admin_cidrs }}"
-
-# ============================================================
-# Platform projections – filter by targets FIRST, then reshape
+# Hand-curated custom / static rows (no matrix pattern)
 # ============================================================
 
-# ── ESXi port groups (dynamic SSOT + custom leftovers) ──────────────────────
-# ~90% dynamic (every matrix segment that targets esxi) + ~10% custom (hand rows
-# with no matrix pattern) → ONE combined list the consumer loops. Every row
-# shares the shape { name, switch, vlan, insecure, promiscuous_mode,
-# forged_transmits, trunk? }. Consume the COMBINED list only:
-#   loop: "{{ esxi_port_groups }}"
-#   loop_control: { loop_var: pg, label: "{{ pg.name }}" }
-
-# 1) Dynamic — matrix-backed segments, projected to the row shape.
-esxi_port_groups_dynamic: >-
-  {{ network_all_items | from_json
-     | selectattr('targets', 'contains', 'esxi')
-     | map('community.general.json_query',
-           '{name: display_name, switch: vswitch, vlan: vlan_id, insecure: insecure,
-             promiscuous_mode: promiscuous_mode, forged_transmits: forged_transmits}')
-     | list }}
-
-# 2) Custom — ONLY rows with no matrix pattern: trunk, residential/tenant
-#    L2-only, extra cluster planes, PoC sandboxes. Keep this short; do NOT push
-#    one-offs into the SSOT matrix. Names/VLANs here stay OUTSIDE the matrix
-#    ranges, so the concat below needs no dedupe. This is also the single
-#    source for the vCenter custom rows (reshaped in network_vcenter_* below).
+# ESXi custom rows — ONLY rows with no matrix pattern: trunk, residential/
+# tenant L2-only, extra cluster planes, PoC sandboxes. Keep this short; do NOT
+# push one-offs into the SSOT matrix. Names/VLANs here stay OUTSIDE the matrix
+# ranges, so the combined list in networks_derived.yml needs no dedupe. This is
+# also the single source for the vCenter custom rows (reshaped there).
 esxi_port_groups_custom:
   - { name: TRUNK, switch: vDS-Lab, vlan: "0-4094", insecure: false, trunk: true }
   - { name: VLAN02-RES-A, switch: vDS-Lab, vlan: 2, insecure: false }
@@ -731,86 +517,6 @@ esxi_port_groups_custom:
   - { name: VLAN33-PROD-CLUSTER-LB, switch: vDS-Lab, vlan: 33, insecure: false }
   - { name: VLAN501-SANDBOX01-INSIDE, switch: vDS-Lab, vlan: 501, insecure: false }
   - { name: VLAN502-SANDBOX02-INSIDE, switch: vDS-Lab, vlan: 502, insecure: false }
-
-# 3) Combined — the ONLY list consumers loop. Dynamic first, custom last.
-esxi_port_groups: "{{ esxi_port_groups_dynamic + esxi_port_groups_custom }}"
-
-# ── vCenter distributed port groups (roles/vcenter config-as-code) ──────────
-# Same dynamic+custom pattern, but in the shape roles/vcenter's
-# domains/portgroups.yml loops over (_vcenter_desired.portgroups →
-# vcenter_config.portgroups):
-#   { vds, name, vlan_id, vlan_trunk?, security?: {allow_promiscuous,
-#     allow_forged_transmits, allow_mac_change} }
-# Wire it in inventory:  vcenter_config.portgroups: "{{ network_vcenter_portgroups }}"
-# The role's loop var is unchanged — only the data source moves to the SSOT.
-#
-# security is emitted ONLY for a segment that relaxes a knob, so every other
-# port group keeps network_policy.inherited=true (inherits the vDS policy) —
-# preserving today's behaviour where nothing sets item.security.
-
-# 1) Dynamic — matrix-backed segments, reshaped for the vCenter dvs module.
-network_vcenter_portgroups_from_ssot: |
-  {% set out = [] %}
-  {% for it in network_all_items | from_json
-              | selectattr('targets', 'contains', 'esxi') %}
-  {%   set pg = {'vds': it.vswitch, 'name': it.display_name,
-                 'vlan_id': it.vlan_id} %}
-  {%   if it.insecure or it.promiscuous_mode or it.forged_transmits %}
-  {%     set _ = pg.update({'security': {
-              'allow_promiscuous': it.promiscuous_mode | bool,
-              'allow_forged_transmits': it.forged_transmits | bool,
-              'allow_mac_change': it.insecure | bool}}) %}
-  {%   endif %}
-  {%   set _ = out.append(pg) %}
-  {% endfor %}
-  {{ out | to_json }}
-
-# 2) Custom — DERIVED from esxi_port_groups_custom (single source for the
-#    leftovers) and reshaped: switch->vds, vlan->vlan_id, trunk->vlan_trunk,
-#    flat security flags -> nested security map (emitted only when relaxed).
-network_vcenter_portgroups_static: |
-  {% set out = [] %}
-  {% for pg in esxi_port_groups_custom %}
-  {%   set row = {'vds': pg.switch, 'name': pg.name, 'vlan_id': pg.vlan} %}
-  {%   if pg.trunk | default(false) | bool %}
-  {%     set _ = row.update({'vlan_trunk': true}) %}
-  {%   endif %}
-  {%   if pg.insecure | default(false) or pg.promiscuous_mode | default(false)
-          or pg.forged_transmits | default(false) %}
-  {%     set _ = row.update({'security': {
-              'allow_promiscuous':
-                  pg.promiscuous_mode | default(pg.insecure | default(false)) | bool,
-              'allow_forged_transmits':
-                  pg.forged_transmits | default(pg.insecure | default(false)) | bool,
-              'allow_mac_change': pg.insecure | default(false) | bool}}) %}
-  {%   endif %}
-  {%   set _ = out.append(row) %}
-  {% endfor %}
-  {{ out | to_json }}
-
-# 3) Combined — wire this into vcenter_config.portgroups. Dynamic first.
-network_vcenter_portgroups: >-
-  {{ (network_vcenter_portgroups_from_ssot | from_json)
-     + (network_vcenter_portgroups_static | from_json) }}
-
-# ── Firewall L3 subinterfaces (paloaltonetworks.panos) ──────────────────────
-# ip = gateway_cidr: the firewall subinterface IS the segment gateway.
-palo_interfaces: >-
-  {{ network_all_items | from_json
-     | selectattr('targets', 'contains', 'firewall')
-     | map('community.general.json_query',
-           '{name: display_name, tag: vlan_id, ip: gateway_cidr,
-             management_profile: management_profile,
-             zone_name: zone, comment: tenancy}')
-     | list }}
-
-# ── Switch VLAN ids (physical L2 plane) ─────────────────────────────────────
-switch_vlans: >-
-  {{ network_all_items | from_json
-     | selectattr('targets', 'contains', 'switches')
-     | map(attribute='vlan_id')
-     | unique
-     | sort }}
 
 # L2-only VLANs with no underlay entry (residential/tenant + PoC sandboxes).
 # NOT auto-appended — concatenate where a play needs them:
@@ -908,14 +614,6 @@ swarm_overlay_subnets:
   mattermost: "{{ docker_swarm.mattermost.subnet }}"
   splunk: "{{ docker_swarm.splunk.subnet }}"
   elk: "{{ docker_swarm.elk.subnet }}"
-
-# ============================================================
-# Legacy aliases — prefer network_underlays.* / the projections in new code
-# ============================================================
-# NOTE: per-entry portgroup/name/netmask fields are GONE — use display_name
-# (derived), network_underlays_names, or subnet | ansible.utils.ipaddr('netmask').
-underlay: "{{ network_underlays }}"
-networks: "{{ network_underlays }}"
 
 # Fallback only — inventory should derive from the selected segment's subnet.
 network_netmask: "255.255.255.0"

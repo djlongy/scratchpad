@@ -1,0 +1,150 @@
+---
+# playbooks/net_show.yml
+#
+# Localhost display + smoke checks for the derived network catalog
+# (group_vars/all/networks.yml). Read-only — provisions nothing, needs no
+# real inventory.
+#
+#   source /Users/longy/venvs/ansible312/bin/activate
+#   ansible-playbook -i inventories/localhost/hosts.yml playbooks/net_show.yml
+#
+# Play 1 prints, as YAML via the `facts` role: validation (dup names/VLANs,
+# missing fields), every generated pool network with BOTH its key and name,
+# the ESXi + vCenter port-group lists, and the palo/switch/admin projections.
+# Play 2 asserts the dynamic+custom concat pattern holds (counts, TRUNK present,
+# matrix coverage, no overlaps, vds referential integrity).
+
+- name: Show derived network catalog
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    facts_pause: false
+    facts_known_keys: [os_family]
+  roles:
+    - role: facts
+      vars:
+        facts_passed:
+          # Health first — all three MUST be empty for a valid catalog.
+          validation:
+            missing_required_fields: "{{ missing_required_fields | from_json }}"
+            duplicate_display_names: "{{ duplicate_display_names }}"
+            duplicate_vlans: "{{ duplicate_vlans }}"
+          # Every generated POOL network, showing BOTH names side by side:
+          #   key  = original_key  (shaped by key_parts / key_case)
+          #   name = display_name  (shaped by name_parts / name_case)
+          # Static underlay segments: per-entry `description` (was purpose).
+          underlays: >-
+            {{ _network_underlays_items | from_json
+               | map('community.general.json_query',
+                     '{vlan: vlan_id, key: original_key, name: display_name,
+                       desc: description}')
+               | list }}
+          # Generated pool networks: dynamic `desc_template`-rendered description.
+          pools:
+            count: "{{ _network_pool_items | from_json | length }}"
+            items: >-
+              {{ _network_pool_items | from_json
+                 | map('community.general.json_query',
+                       '{vlan: vlan_id, key: original_key, name: display_name,
+                         desc: description}')
+                 | list }}
+          # ESXi port groups (display shape) — dynamic SSOT + custom leftovers.
+          esxi_port_groups:
+            dynamic_count: "{{ _esxi_port_groups_dynamic | length }}"
+            custom_count: "{{ esxi_port_groups_custom | length }}"
+            combined_count: "{{ esxi_port_groups | length }}"
+            combined: "{{ esxi_port_groups }}"
+          # vCenter dvs port groups (role shape) — dynamic + custom.
+          vcenter_portgroups:
+            from_ssot_count: "{{ _network_vcenter_portgroups_from_ssot | from_json | length }}"
+            static_count: "{{ _network_vcenter_portgroups_static | from_json | length }}"
+            combined_count: "{{ network_vcenter_portgroups | length }}"
+            combined: "{{ network_vcenter_portgroups }}"
+          # Other platform projections.
+          palo_interfaces: "{{ palo_interfaces }}"
+          switch_vlans: "{{ switch_vlans }}"
+          underlay_admin_cidrs: "{{ underlay_admin_cidrs }}"
+
+- name: Smoke-check the dynamic + custom port-group pattern
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Matrix segments that target esxi — dynamic MUST cover every one of these.
+    _matrix_esxi_names: >-
+      {{ _network_all_items | from_json
+         | selectattr('targets', 'contains', 'esxi')
+         | map(attribute='display_name') | list }}
+    _esxi_names: "{{ esxi_port_groups | map(attribute='name') | list }}"
+    _dyn_names: "{{ _esxi_port_groups_dynamic | map(attribute='name') | list }}"
+    _cust_names: "{{ esxi_port_groups_custom | map(attribute='name') | list }}"
+    _vc: "{{ network_vcenter_portgroups }}"
+    _vc_names: "{{ network_vcenter_portgroups | map(attribute='name') | list }}"
+    _declared_vds: ["vDS-Lab"]   # matches inventories/example vcenter_config.vds
+    # esxi matrix segments with ANY relaxed knob (insecure | promiscuous |
+    # forged) — these, and only these, must carry a vCenter security map.
+    _esxi_matrix: >-
+      {{ _network_all_items | from_json
+         | selectattr('targets', 'contains', 'esxi') | list }}
+    _relaxed_esxi: >-
+      {{ (_esxi_matrix | selectattr('insecure') | list)
+         | union(_esxi_matrix | selectattr('promiscuous_mode') | list)
+         | union(_esxi_matrix | selectattr('forged_transmits') | list) }}
+  tasks:
+    - name: "Smoke | ESXi — concat length = dynamic + custom, TRUNK present, matrix covered, no overlap"
+      ansible.builtin.assert:
+        that:
+          - (esxi_port_groups | length)
+            == (_esxi_port_groups_dynamic | length) + (esxi_port_groups_custom | length)
+          - "'TRUNK' in _esxi_names"
+          - (_matrix_esxi_names | difference(_esxi_names)) | length == 0
+          - (_dyn_names | intersect(_cust_names)) | length == 0
+          - (_esxi_names | length) == (_esxi_names | unique | length)
+        fail_msg: >-
+          ESXi pattern broke — combined={{ _esxi_names | length }},
+          matrix_uncovered={{ _matrix_esxi_names | difference(_esxi_names) }},
+          dyn∩custom={{ _dyn_names | intersect(_cust_names) }}
+        success_msg: >-
+          ESXi OK — {{ _esxi_port_groups_dynamic | length }} dynamic
+          + {{ esxi_port_groups_custom | length }} custom
+          = {{ esxi_port_groups | length }} combined; TRUNK present;
+          all {{ _matrix_esxi_names | length }} matrix segments covered; no overlap.
+        quiet: true
+
+    - name: "Smoke | vCenter — concat length, unique names, every vds is declared"
+      ansible.builtin.assert:
+        that:
+          - (network_vcenter_portgroups | length)
+            == (_network_vcenter_portgroups_from_ssot | from_json | length)
+               + (_network_vcenter_portgroups_static | from_json | length)
+          - (_vc_names | length) == (_vc_names | unique | length)
+          - (_vc | map(attribute='vds') | unique | difference(_declared_vds)) | length == 0
+          - _vc | selectattr('name', 'equalto', 'TRUNK') | first
+                | community.general.json_query('vlan_trunk')
+        fail_msg: >-
+          vCenter pattern broke — combined={{ _vc_names | length }},
+          undeclared_vds={{ _vc | map(attribute='vds') | unique | difference(_declared_vds) }}
+        success_msg: >-
+          vCenter OK — {{ _network_vcenter_portgroups_from_ssot | from_json | length }} dynamic
+          + {{ _network_vcenter_portgroups_static | from_json | length }} custom
+          = {{ network_vcenter_portgroups | length }} combined; names unique;
+          every vds ∈ {{ _declared_vds }}; TRUNK carries vlan_trunk.
+        quiet: true
+
+    - name: "Smoke | vCenter — security emitted ONLY where a knob is relaxed"
+      ansible.builtin.assert:
+        that:
+          # Exactly the relaxed matrix segments carry a security map; the rest
+          # inherit the vDS policy (no security key).
+          - (_vc | selectattr('security', 'defined') | list | length)
+            == (_relaxed_esxi | length)
+        fail_msg: >-
+          security emitted on {{ _vc | selectattr('security', 'defined') | list | length }}
+          port group(s) but {{ _relaxed_esxi | length }} matrix segment(s) are relaxed.
+        success_msg: >-
+          vCenter OK — security map present on exactly the
+          {{ _relaxed_esxi | length }} relaxed port group(s)
+          ({{ _relaxed_esxi | map(attribute='display_name') | list }});
+          all others inherit the vDS policy.
+        quiet: true
