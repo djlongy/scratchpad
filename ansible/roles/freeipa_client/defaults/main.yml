@@ -1,4 +1,7 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+freeipa_client_enabled: true
+
 # roles/freeipa_client/defaults/main.yml
 #
 # Portable FreeIPA client role. Enrols a host into a FreeIPA realm and configures
@@ -143,14 +146,42 @@ freeipa_client_packages:
 freeipa_client_offline_resilient: true
 
 # ── FreeIPA-issued service certs via certmonger (--tags certs; optional) ──────
-# Empty = phase skipped. Each entry requests an auto-renewing cert chained to the
-# IPA CA, using THIS host's own principal (no server-side admin needed):
-#   - cert_path: /etc/pki/tls/vault/vault.crt   # where certmonger writes the cert
-#     key_path:  /etc/pki/tls/vault/vault.key
-#     dnsname:   vault.example.com              # SAN + CN (default: the host FQDN)
-#     principal: host/<fqdn>@REALM              # optional (default: host principal)
-#     postsave:  "systemctl reload foo"         # optional post-issue/renew command
+# Empty = phase skipped. Each entry requests an auto-renewing multi-SAN cert
+# chained to the IPA CA, using THIS host's principal (no server-side admin):
+#
+#   freeipa_client_service_certs:
+#     - cert_path: /etc/pki/tls/nginx-proxy/fullchain.pem
+#       key_path:  /etc/pki/tls/nginx-proxy/privkey.pem
+#       dnsnames:                                # preferred (multi-SAN)
+#         - lb-01.mgt.example.internal
+#         - prometheus.mgt.example.internal
+#       # dnsname: vault.example.com             # legacy single SAN
+#       # cn / principal / postsave              # optional
+#
+# SAN set change (add/remove name) → automatic re-issue on next run.
 freeipa_client_service_certs: []
+
+# ── Service principals for non-host SANs ─────────────────────────────────────
+# Dogtag validates every dNSName in the CSR against a Kerberos principal built
+# from the REQUESTING principal's service component plus that name. A SAN that
+# is not this host's FQDN therefore needs <service>/<name> to exist and to be
+# managed by this host, or the request dies at CA_UNREACHABLE with
+#   4001 (The service principal for subject alt name <name> ... does not exist).
+# When true, the role creates <service>/freeipa_client_fqdn (with this host as
+# manager) plus one principal alias per non-host SAN, and requests the cert
+# under that service principal instead of the host principal.
+# Needs admin credentials — same ones the DNS seed already uses.
+# A pinned service `principal:` is adopted and names the service object; a pinned
+# host principal is replaced, since FreeIPA resolves a non-host SAN under it to a
+# HOST object it will not create as a service. Entries with no non-host SAN never
+# reach any of this and need no privilege.
+freeipa_client_manage_service_principals: true
+# Kerberos service component for those principals. Per-entry override: `service:`.
+# The value is a Kerberos service name only — it does not restrict what protocol
+# the certificate may be used for.
+freeipa_client_cert_service_prefix: "HTTP"
+# Always add freeipa_client_fqdn to every cert's SAN set (even if omitted).
+freeipa_client_certs_include_host_fqdn: true
 # ipa-getcert ships with ipa-client (installed at enrol); certmonger is the daemon.
 freeipa_client_cert_packages: [certmonger, ipa-client]
 

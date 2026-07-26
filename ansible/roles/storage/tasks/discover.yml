@@ -5,6 +5,9 @@
 # device and derives partition/dm names without assuming any layout, then
 # records whether the volume's stack already exists. Output: _storage_resolved
 # (each input volume + _disk, _part_dev, _pv, _dm_dev, _exists, _vg_exists).
+#
+# Consumes the LOCAL volume list only — network volumes have no block stack and
+# are mounted by mount_net.yml.
 
 # ── Reset accumulators (MUST be first) ───────────────────────────────────
 # _storage_disks / _storage_pv_map / _storage_resolved are built by APPENDING
@@ -20,6 +23,24 @@
     _storage_pv_map: []
     _storage_resolved: []
     _storage_disk_report: {}
+
+# Partition device names: kernels insert 'p' before the number for some
+# basenames (nvme0n1p1) and not others (sda1). Built from defaults so users
+# can extend without forking discover tasks.
+- name: Build partition-name 'p'-suffix device regex
+  ansible.builtin.set_fact:
+    _storage_part_suffix_re: >-
+      {{ (storage_part_suffix_devices + storage_part_suffix_devices_extra)
+         | map('trim') | select | unique | join('|') }}
+
+- name: Assert partition-suffix device list is non-empty
+  ansible.builtin.assert:
+    that: _storage_part_suffix_re | length > 0
+    fail_msg: >-
+      storage_part_suffix_devices (+ _extra) resolved empty — discovery
+      cannot derive partition device names (nvme0n1p1 vs sda1). Restore the
+      role defaults or set at least one basename prefix.
+    quiet: true
 
 # ── Root disk(s) — always excluded from auto-selection / provisioning ────
 - name: Identify the physical disk(s) backing /
@@ -221,7 +242,7 @@
          | selectattr('1', 'in', _bysize_gib_targets)
          | map(attribute='0')
          | select('in', _storage_blank_disks) | list }}
-  loop: "{{ _storage_input | selectattr('disk', 'defined')
+  loop: "{{ _storage_local_input | selectattr('disk', 'defined')
             | selectattr('disk', 'match', '^by-size:') | list }}"
   loop_control:
     label: "{{ item.name }}"
@@ -274,7 +295,7 @@
     _part_dev: >-
       {{ '' if (_resolved_disk | length == 0)
          else (_resolved_disk ~ 'p' ~ (item.partition_number | string))
-              if (_resolved_disk | basename is match('(nvme|mmcblk|loop|nbd)'))
+              if (_resolved_disk | basename is match('(' ~ _storage_part_suffix_re ~ ')'))
          else (_resolved_disk ~ (item.partition_number | string)) }}
     _pv: >-
       {{ _existing_pv if ((_vg_exists | bool) and (_existing_pv | length > 0))
@@ -283,7 +304,7 @@
     _dm_dev: "{{ ('/dev/mapper/' ~ item.vg ~ '-' ~ item.lv) if (item.lvm | bool) else _part_dev }}"
     _exists: "{{ (_lv_exists | bool) if (item.lvm | bool) else (_part_dev in _storage_fs_devices) }}"
     _entry: "{{ item | combine({'_disk': _resolved_disk, '_part_dev': _part_dev, '_pv': _pv, '_dm_dev': _dm_dev, '_exists': _exists | bool, '_vg_exists': _vg_exists | bool}) }}"
-  loop: "{{ _storage_volumes }}"
+  loop: "{{ _storage_local_volumes }}"
   loop_control:
     label: "{{ item.name }}"
 

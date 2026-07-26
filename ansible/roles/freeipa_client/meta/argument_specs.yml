@@ -105,9 +105,38 @@ argument_specs:
         required: false
         default: []
         description: >-
-          FreeIPA-issued certs to request via certmonger (--tags certs). Each:
-          {cert_path, key_path, dnsname?, principal?, postsave?}. Uses the host
-          principal by default (no server-side admin needed). Empty = skipped.
+          FreeIPA-issued multi-SAN certs via certmonger (--tags certs). Each:
+          {cert_path, key_path, dnsnames? | dnsname?, cn?, service?, principal?,
+          postsave?}. dnsnames is the preferred multi-SAN list; changing the set
+          re-issues. A SAN that is not freeipa_client_fqdn is requested under
+          <service>/<fqdn> and its principal is created server-side; a cert whose
+          only SAN is the host FQDN uses the host principal and touches nothing
+          server-side. A pinned service principal is adopted; a pinned host
+          principal is replaced when the entry declares a non-host SAN, which it
+          cannot issue. Empty = skipped.
+      freeipa_client_manage_service_principals:
+        type: bool
+        required: false
+        default: true
+        description: >-
+          Create the Kerberos service principal each non-host SAN needs
+          (<service>/<fqdn> plus one alias per SAN, managed by this host).
+          Needs IPA admin credentials. False fails the run early rather than
+          leaving certmonger stuck at CA_UNREACHABLE. No effect on certs whose
+          only SAN is freeipa_client_fqdn.
+      freeipa_client_cert_service_prefix:
+        type: str
+        required: false
+        default: HTTP
+        description: >-
+          Kerberos service component used for those principals. Per-entry
+          override: service:. A Kerberos service name only — it does not
+          restrict the protocol the certificate may serve.
+      freeipa_client_certs_include_host_fqdn:
+        type: bool
+        required: false
+        default: true
+        description: Always include freeipa_client_fqdn in every cert SAN set.
       freeipa_client_cert_packages:
         type: list
         elements: str

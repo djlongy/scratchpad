@@ -10,6 +10,9 @@ argument_specs:
       - Growing is automatic and non-destructive; provisioning (create and
         format) is opt-in via C(storage_provision) and refuses any disk
         carrying an existing filesystem or partition signature.
+      - NFS and CIFS volumes are declared in the same list with C(kind); they
+        bypass the block phases entirely and are gated by
+        C(storage_manage_nfs) / C(storage_manage_cifs).
     options:
       storage_volumes:
         type: list
@@ -21,6 +24,35 @@ argument_specs:
             type: str
             required: true
             description: Logical handle for the volume.
+          kind:
+            type: str
+            choices: [local, nfs, cifs]
+            description: >-
+              Volume kind (default local). Network kinds are mount-only and
+              must not declare any block-device field.
+          server:
+            type: str
+            description: Network volume only — NFS/SMB server hostname or IP.
+          export:
+            type: str
+            description: NFS volume only — export path on the server.
+          share:
+            type: str
+            description: CIFS volume only — SMB share name.
+          credentials_username:
+            type: str
+            description: >-
+              CIFS volume only — username written to the 0600 root-owned
+              credentials file.
+          credentials_password:
+            type: str
+            no_log: true
+            description: >-
+              CIFS volume only — password written to the 0600 root-owned
+              credentials file. Supply from Vault via inventory, never inline.
+          credentials_domain:
+            type: str
+            description: CIFS volume only — optional AD/workgroup domain.
           disk:
             type: str
             description: >-
@@ -47,8 +79,10 @@ argument_specs:
             description: Size — absolute (40G) or relative (100%FREE, 50%VG).
           fstype:
             type: str
-            choices: [xfs, ext4]
-            description: Filesystem type.
+            choices: [xfs, ext4, nfs, nfs4, cifs]
+            description: >-
+              Filesystem type. Local volumes use xfs or ext4; nfs/nfs4 and
+              cifs apply to network volumes (defaulted per kind).
           mount:
             type: str
             description: Mount point ('' manages the block stack without mounting).
@@ -109,3 +143,75 @@ argument_specs:
         type: bool
         default: false
         description: Emit discovery and provisioning-plan debug output.
+      storage_manage_nfs:
+        type: bool
+        default: false
+        description: >-
+          Mount declared C(kind: nfs) volumes. When false they are skipped
+          with a message naming this flag, not failed.
+      storage_manage_cifs:
+        type: bool
+        default: false
+        description: >-
+          Mount declared C(kind: cifs) volumes. When false they are skipped
+          with a message naming this flag, not failed.
+      storage_allow_nested_mounts:
+        type: bool
+        default: false
+        description: >-
+          Allow a network mount point nested inside another declared mount
+          point (V9). Refused by default.
+      storage_cifs_credentials_dir:
+        type: str
+        default: /etc/cifs-credentials
+        description: >-
+          Root-owned 0700 directory holding one 0600 credentials file per
+          CIFS volume, referenced from fstab by path.
+      storage_net_protected_mounts:
+        type: list
+        elements: str
+        default: [/, /boot, /etc, /usr, /var, /home]
+        description: >-
+          Mount points a NETWORK volume may never claim (V7). Local volumes
+          are not subject to this list.
+      storage_default_kind:
+        type: str
+        default: local
+        choices: [local, nfs, cifs]
+        description: Kind applied to entries that do not declare one.
+      storage_default_nfs_fstype:
+        type: str
+        default: nfs4
+        description: Filesystem type applied to nfs volumes that omit fstype.
+      storage_default_cifs_fstype:
+        type: str
+        default: cifs
+        description: Filesystem type applied to cifs volumes that omit fstype.
+      storage_default_nfs_opts:
+        type: str
+        default: hard,noatime,x-systemd.mount-timeout=30
+        description: >-
+          Mount options applied to nfs volumes that omit opts. C(_netdev) and
+          C(nofail) are appended regardless.
+      storage_default_cifs_opts:
+        type: str
+        default: x-systemd.mount-timeout=30
+        description: >-
+          Mount options applied to cifs volumes that omit opts. C(_netdev),
+          C(nofail) and C(credentials=) are appended regardless.
+      storage_part_suffix_devices:
+        type: list
+        elements: str
+        default: [nvme, mmcblk, loop, nbd]
+        description: >-
+          Kernel device basename prefixes whose partitions use a 'p' separator
+          (nvme0n1p1, mmcblk0p1) instead of a bare number (sda1). Override the
+          full list, or leave defaults and append via
+          storage_part_suffix_devices_extra.
+      storage_part_suffix_devices_extra:
+        type: list
+        elements: str
+        default: []
+        description: >-
+          Extra basename prefixes merged with storage_part_suffix_devices so
+          new controller naming can be added without restating the built-ins.

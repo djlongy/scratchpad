@@ -1,4 +1,7 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+storage_enabled: true
+
 # storage — universal, hardware/name-agnostic disk role.
 #
 # Provisions, grows, formats, and mounts Linux storage on any machine — VM,
@@ -19,7 +22,11 @@
 # both `auto` selection and provisioning.
 
 # ── Master volume list ──────────────────────────────────────────────────
-# Each entry (all fields except `name` optional — defaults below fill them):
+# Each entry carries a `kind` (local | nfs | cifs, default local). Local
+# volumes drive the block stack below; network volumes are mount-only and
+# never enter discover/grow/provision.
+#
+# LOCAL entries (all fields except `name` optional — defaults below fill them):
 #   name:             logical handle (labels, selection, fstab comment)   [required]
 #   disk:             auto | /dev/sdb | by-size:50G | by-serial:X
 #                     | by-id:X | by-wwn:X     (ignored for grow-only LVM
@@ -41,6 +48,20 @@
 #                     FRESH-guarded)
 #   grow:             participate in the grow pass
 #   owner/group/mode: mountpoint ownership/permissions
+#
+# NETWORK entries (kind: nfs | cifs) — mount-only, no block fields:
+#   name:             logical handle (credentials filename, messages)   [required]
+#   kind:             nfs | cifs                                        [required]
+#   server:           NFS/SMB server hostname or IP                     [required]
+#   export:           NFS export path                          [required for nfs]
+#   share:            SMB share name                          [required for cifs]
+#   mount:            mount point                                       [required]
+#   fstype:           nfs | nfs4 (default nfs4) | cifs (default cifs)
+#   opts:             mount options (_netdev and nofail are force-appended)
+#   credentials_username / _password / _domain:  cifs only; written to a
+#                     0600 root:root file, never to /etc/fstab
+#   owner/group/mode: mountpoint ownership/permissions (applied to the
+#                     directory before it is mounted over)
 storage_volumes: []
 
 # ── Named presets (optional sugar) ──────────────────────────────────────
@@ -57,7 +78,45 @@ storage_manage_fstab: true         # write UUID + nofail fstab entries + mount
 storage_manage_selinux: true       # semanage/restorecon on EL
 storage_debug: false               # emit discovery/plan debug output
 
+# ── Network filesystem support (opt-in, per kind) ───────────────────────
+# A declared nfs/cifs volume whose flag is false is SKIPPED with a message
+# naming the flag — never a failure.
+storage_manage_nfs: false          # mount declared kind: nfs volumes
+storage_manage_cifs: false         # mount declared kind: cifs volumes
+
+# Refuse a network mount nested inside another declared mount (/data and
+# /data/sub). Set true when the nesting is deliberate.
+storage_allow_nested_mounts: false
+
+# Root-owned 0700 directory holding one 0600 <volume-name>.cred file per CIFS
+# volume. Credentials are referenced from fstab by path, never inlined.
+storage_cifs_credentials_dir: /etc/cifs-credentials
+
+# Mount points a NETWORK volume may never claim — shadowing one of these with
+# a remote filesystem breaks the host on the next boot. Local volumes are not
+# subject to this: /var and /var/lib/dirsrv are legitimate local mounts.
+storage_net_protected_mounts:
+  - /
+  - /boot
+  - /etc
+  - /usr
+  - /var
+  - /home
+
+# ── Kernel device basenames that use a 'p' before the partition number ───
+# nvme0n1 → nvme0n1p1, mmcblk0 → mmcblk0p1; plain disks are sda → sda1.
+# Override the full list, or append via storage_part_suffix_devices_extra
+# without restating the built-ins (e.g. future controllers: virtio-blk quirks,
+# multipath dm aliases that need 'p', etc.).
+storage_part_suffix_devices:
+  - nvme
+  - mmcblk
+  - loop
+  - nbd
+storage_part_suffix_devices_extra: []
+
 # ── Per-volume defaults (applied to any field an entry omits) ────────────
+storage_default_kind: local
 storage_default_lvm: true
 storage_default_partition: true
 storage_default_partition_number: 1
@@ -68,8 +127,20 @@ storage_default_owner: root
 storage_default_group: root
 storage_default_mode: "0755"
 
+# ── Network per-volume defaults ─────────────────────────────────────────
+# hard is deliberate for NFS: an audit/archive mount must stall rather than
+# silently truncate when the server goes away. _netdev and nofail are appended
+# by mount_net_one.yml, so they are not restated here.
+storage_default_nfs_fstype: nfs4
+storage_default_cifs_fstype: cifs
+storage_default_nfs_opts: "hard,noatime,x-systemd.mount-timeout=30"
+storage_default_cifs_opts: "x-systemd.mount-timeout=30"
+
 # ── Distro-agnostic prerequisite packages (keyed by ansible_os_family) ───
 # growpart ships in cloud-utils-growpart (EL) / cloud-guest-utils (Debian).
+# The nfs:/cifs: sub-maps are installed ONLY when a volume of that kind is
+# declared and its storage_manage_<kind> flag is true — the base list stays
+# the block-storage prerequisites.
 storage_packages:
   RedHat:
     - parted
@@ -90,3 +161,17 @@ storage_packages:
     - xfsprogs
     - e2fsprogs
     - growpart
+  nfs:
+    RedHat:
+      - nfs-utils
+    Debian:
+      - nfs-common
+    Suse:
+      - nfs-client
+  cifs:
+    RedHat:
+      - cifs-utils
+    Debian:
+      - cifs-utils
+    Suse:
+      - cifs-utils

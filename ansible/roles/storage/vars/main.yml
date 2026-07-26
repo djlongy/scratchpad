@@ -1,10 +1,8 @@
 ---
 # storage — non-overridable constants.
-
-# Disk basenames whose partitions take a 'p' separator before the number
-# (nvme0n1 -> nvme0n1p1) versus the bare form (sda -> sda1). Used by
-# discover.yml to derive partition device names without assuming a layout.
-storage_part_suffix_devices: "nvme|mmcblk|loop|nbd"
+#
+# Partition device-name prefixes (nvme → nvme0n1p1 vs sda → sda1) live in
+# defaults as storage_part_suffix_devices / _extra so inventory can extend them.
 
 # Filesystem grow commands by fstype. {dev} / {mount} are substituted in
 # grow.yml. xfs grows by mountpoint and is grow-only; ext4 grows by device.
@@ -17,3 +15,32 @@ storage_fs_grow:
 storage_fs_grow_changed_token:
   xfs: "data blocks changed"
   ext4: "blocks long"
+
+# Volume kinds. Network kinds bypass the block phases entirely; anything not
+# listed here is rejected by validate.yml (V6) before any phase acts.
+storage_net_kinds:
+  - nfs
+  - cifs
+storage_kinds:
+  - local
+  - nfs
+  - cifs
+
+# Forced on every network mount. Without _netdev systemd may order the mount
+# before the network is up and hang boot; nofail keeps an unreachable server
+# from wedging the boot sequence.
+storage_net_forced_opts:
+  - _netdev
+  - nofail
+
+# Block-stack fields a network volume must never declare, and network fields a
+# local volume must never declare (validate.yml V2/V3).
+storage_block_only_fields:
+  - disk
+  - lvm
+  - vg
+  - lv
+  - size
+  - partition
+  - partition_number
+storage_net_only_field_re: "^(server|export|share|credentials_)"

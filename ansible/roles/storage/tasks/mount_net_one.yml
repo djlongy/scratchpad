@@ -1,0 +1,100 @@
+---
+# storage/tasks/mount_net_one.yml — mount one network volume.
+# `vol` is a normalised network entry: kind (nfs|cifs), _src, mount, fstype,
+# opts, and for cifs the credentials_* fields.
+
+- name: "{{ vol.name }} | resolve the credentials file path"
+  ansible.builtin.set_fact:
+    _n_cred: "{{ (storage_cifs_credentials_dir ~ '/' ~ vol.name ~ '.cred') if vol.kind == 'cifs' else '' }}"
+
+# Deterministic option string: any operator-supplied credentials= is dropped
+# (the role owns that file), _netdev + nofail are forced on, and the result is
+# de-duplicated and sorted. ansible.posix.mount rewrites /etc/fstab whenever
+# the option ORDER differs, so an unsorted string reports changed every run.
+- name: "{{ vol.name }} | build the mount option string"
+  ansible.builtin.set_fact:
+    _n_opts: >-
+      {{ ((vol.opts | split(',') | map('trim') | select | reject('match', '^credentials=') | list)
+          + storage_net_forced_opts
+          + ([('credentials=' ~ _n_cred)] if vol.kind == 'cifs' else []))
+         | unique | sort | join(',') }}
+
+- name: "{{ vol.name }} | check whether {{ vol.mount }} is already a mount point"
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, SOURCE, --mountpoint, "{{ vol.mount }}"]
+  register: _n_mounted
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# Only while the path is still a plain directory. Once the remote filesystem is
+# mounted over it, owner/group/mode belong to the server and writing them would
+# either fail or mutate the share's root.
+- name: "{{ vol.name }} | ensure mount point {{ vol.mount }} exists"
+  become: true  # root: creates the mount-point directory
+  ansible.builtin.file:
+    path: "{{ vol.mount }}"
+    state: directory
+    owner: "{{ vol.owner }}"
+    group: "{{ vol.group }}"
+    mode: "{{ vol.mode }}"
+  when: _n_mounted.rc != 0
+
+- name: "{{ vol.name }} | ensure the CIFS credentials directory exists"
+  become: true  # root: holds share credentials, must not be world-readable
+  ansible.builtin.file:
+    path: "{{ storage_cifs_credentials_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: vol.kind == 'cifs'
+
+# /etc/fstab is world-readable, so the password never goes in opts — fstab
+# references this file by path via credentials=.
+- name: "{{ vol.name }} | write the CIFS credentials file"
+  become: true  # root: writes a 0600 root-owned credentials file
+  ansible.builtin.copy:
+    dest: "{{ _n_cred }}"
+    content: "{{ _cred_lines | join(_nl) ~ _nl }}"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    _nl: "\n"
+    _cred_lines: >-
+      {{ ['username=' ~ vol.credentials_username, 'password=' ~ vol.credentials_password]
+         + (['domain=' ~ vol.credentials_domain] if (vol.credentials_domain | length > 0) else []) }}
+  no_log: true  # contains the share password
+  when: vol.kind == 'cifs'
+
+- name: "{{ vol.name }} | mount {{ vol.mount }} from {{ vol._src }} ({{ vol.fstype }})"
+  become: true  # root: mounts the filesystem + writes /etc/fstab
+  ansible.posix.mount:
+    path: "{{ vol.mount }}"
+    src: "{{ vol._src }}"
+    fstype: "{{ vol.fstype }}"
+    opts: "{{ _n_opts }}"
+    state: mounted
+
+- name: "{{ vol.name }} | read back the live mount source"
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, SOURCE, --mountpoint, "{{ vol.mount }}"]
+  register: _n_verify
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "{{ vol.name }} | assert {{ vol.mount }} is mounted from {{ vol._src }}"
+  ansible.builtin.assert:
+    that:
+      - _n_verify.rc == 0
+      - (_n_verify.stdout | trim | regex_replace('/+$', '')) == (vol._src | regex_replace('/+$', ''))
+    fail_msg: >-
+      {{ vol.mount }} is not serving {{ vol._src }} after the mount
+      (findmnt rc={{ _n_verify.rc }}, source='{{ _n_verify.stdout | default('') | trim }}').
+      Check that {{ vol.server }} is reachable and the
+      {{ 'export' if vol.kind == 'nfs' else 'share' }} exists.
+    quiet: true
+  when: not ansible_check_mode

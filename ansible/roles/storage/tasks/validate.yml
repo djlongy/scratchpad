@@ -1,0 +1,188 @@
+---
+# storage/tasks/validate.yml — fail-fast declaration checks (V1–V9).
+#
+# Runs on every invocation, before any acting phase, so a bad declaration can
+# never reach discover/provision/mount. V1–V7 and V9 are pure Jinja over the
+# declared list; only V8 touches the host, and only when network volumes are
+# actually enabled.
+#
+# The block-field / network-field rules read the RAW declared entries
+# (_storage_local_input / _storage_net_input), not the normalised ones — after
+# normalisation every field is present and "did the operator declare this?"
+# is no longer answerable.
+
+- name: Assert every volume declares a supported kind (V6)
+  ansible.builtin.assert:
+    that: _bad_kinds | length == 0
+    fail_msg: >-
+      Unsupported storage kind(s):
+      {{ _bad_kinds | map(attribute='name') | zip(_bad_kinds | map(attribute='kind')) | list }}.
+      kind must be one of {{ storage_kinds | join(', ') }}.
+    quiet: true
+  vars:
+    _bad_kinds: >-
+      {{ _storage_input | selectattr('kind', 'defined')
+         | rejectattr('kind', 'in', storage_kinds) | list }}
+
+- name: Assert local volumes declare no network fields (V2)
+  ansible.builtin.assert:
+    that: _bad_fields | length == 0
+    fail_msg: >-
+      Local volume '{{ item.name }}' declares network-only field(s)
+      {{ _bad_fields | join(', ') }}. Give it kind: nfs or kind: cifs, or drop
+      those fields.
+    quiet: true
+  vars:
+    _bad_fields: "{{ item.keys() | list | select('match', storage_net_only_field_re) | list }}"
+  loop: "{{ _storage_local_input }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert network volumes declare no block-device fields (V3)
+  ansible.builtin.assert:
+    that: _bad_fields | length == 0
+    fail_msg: >-
+      Network volume '{{ item.name }}' (kind {{ item.kind }}) declares
+      block-only field(s) {{ _bad_fields | join(', ') }}. A network volume has
+      no disk, LVM stack or provisioning step — remove them.
+    quiet: true
+  vars:
+    _bad_fields: >-
+      {{ (item.keys() | list | select('in', storage_block_only_fields) | list)
+         + (['provision'] if (item.provision | default(false) | bool) else []) }}
+  loop: "{{ _storage_net_input }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert NFS volumes declare server and export (V4)
+  ansible.builtin.assert:
+    that:
+      - (item.server | default('') | trim | length) > 0
+      - (item.export | default('') | trim | length) > 0
+    fail_msg: >-
+      NFS volume '{{ item.name }}' needs both server and export
+      (got server='{{ item.server | default('') }}',
+      export='{{ item.export | default('') }}').
+    quiet: true
+  loop: "{{ _storage_net_input | selectattr('kind', 'equalto', 'nfs') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert CIFS volumes declare server and share (V4)
+  ansible.builtin.assert:
+    that:
+      - (item.server | default('') | trim | length) > 0
+      - (item.share | default('') | trim | length) > 0
+    fail_msg: >-
+      CIFS volume '{{ item.name }}' needs both server and share
+      (got server='{{ item.server | default('') }}',
+      share='{{ item.share | default('') }}').
+    quiet: true
+  loop: "{{ _storage_net_input | selectattr('kind', 'equalto', 'cifs') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# A local volume may legitimately declare mount: '' (manage the block stack,
+# do not mount). A network volume that is not mounted does nothing at all.
+- name: Assert network volumes declare a mount point (V5)
+  ansible.builtin.assert:
+    that: (item.mount | default('') | trim | length) > 0
+    fail_msg: >-
+      Network volume '{{ item.name }}' (kind {{ item.kind }}) declares no
+      mount point. mount is required for nfs and cifs volumes.
+    quiet: true
+  loop: "{{ _storage_net_input }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Scoped to NETWORK volumes on purpose: /var and /var/lib/dirsrv are shipped
+# local mount points in the estate profile catalogue, and shadowing an OS
+# directory is only a hazard when the filesystem behind it is remote.
+- name: Assert network mount points are absolute and not OS directories (V7)
+  ansible.builtin.assert:
+    that:
+      - item.mount | trim is match('^/')
+      - _norm not in storage_net_protected_mounts
+    fail_msg: >-
+      Network volume '{{ item.name }}' mounts at '{{ item.mount }}'. A network
+      mount point must be an absolute path and must not be one of
+      {{ storage_net_protected_mounts | join(', ') }}.
+    quiet: true
+  vars:
+    _norm: "{{ '/' if (item.mount | trim) == '/' else (item.mount | trim | regex_replace('/+$', '')) }}"
+  loop: "{{ _storage_net_input | selectattr('mount', 'defined') | rejectattr('mount', 'equalto', '') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert no two volumes claim the same mount point (V1)
+  ansible.builtin.assert:
+    that: (_mounts | select('equalto', item) | list | length) == 1
+    fail_msg: >-
+      Mount point '{{ item }}' is claimed by volumes
+      {{ _storage_volumes | selectattr('mount', 'equalto', item) | map(attribute='name') | join(', ') }}.
+      Every mount point must be claimed by exactly one volume.
+    quiet: true
+  vars:
+    _mounts: "{{ _storage_volumes | map(attribute='mount') | map('trim') | reject('equalto', '') | list }}"
+  loop: "{{ _mounts | unique | list }}"
+
+# Pairs (network mount, any declared mount). Nested mounts work in Linux but
+# hide the parent's contents and reorder on boot, so they are opt-in.
+- name: Assert network mount points are not nested inside another declared mount (V9)
+  ansible.builtin.assert:
+    that: not ((_child != _parent) and (_child ~ '/').startswith(_parent ~ '/'))
+    fail_msg: >-
+      Network mount '{{ _child }}' is nested inside declared mount
+      '{{ _parent }}'. Set storage_allow_nested_mounts: true if that is
+      deliberate, otherwise give it a mount point of its own.
+    quiet: true
+  vars:
+    _net_mounts: >-
+      {{ _storage_net_volumes | map(attribute='mount') | map('trim')
+         | reject('equalto', '') | map('regex_replace', '/+$', '') | list }}
+    _all_mounts: >-
+      {{ _storage_volumes | map(attribute='mount') | map('trim')
+         | reject('equalto', '') | map('regex_replace', '/+$', '') | list }}
+    _child: "{{ item.0 }}"
+    _parent: "{{ item.1 }}"
+  loop: "{{ _net_mounts | product(_all_mounts) | list }}"
+  loop_control:
+    label: "{{ item.0 }} under {{ item.1 }}"
+  when: not (storage_allow_nested_mounts | bool)
+
+# ── V8: runtime shadow check ─────────────────────────────────────────────
+# Declared-list rules cannot see what is ALREADY mounted. Probe reality before
+# mounting anything: a mount point already serving a different source means the
+# declaration would clobber live storage.
+- name: Check network mount points for an existing foreign mount (V8)
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, SOURCE, --mountpoint, "{{ item.1 }}"]
+  register: _storage_shadow_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: "{{ _storage_net_targets }}"
+  loop_control:
+    label: "{{ item.0 }} -> {{ item.1 }}"
+  vars:
+    _storage_net_targets: >-
+      {{ _storage_net_active | map(attribute='name')
+         | zip(_storage_net_active | map(attribute='mount'),
+               _storage_net_active | map(attribute='_src')) | list }}
+  when: _storage_net_active | length > 0
+
+- name: Assert no network mount point is shadowing a different source (V8)
+  ansible.builtin.assert:
+    that: (_found | length == 0) or (_found == _declared)
+    fail_msg: >-
+      Mount point '{{ item.item.1 }}' already carries '{{ _found }}', but
+      volume '{{ item.item.0 }}' declares '{{ _declared }}'. Refusing to mount
+      over existing storage — unmount it, or point the volume somewhere else.
+    quiet: true
+  vars:
+    _found: "{{ item.stdout | default('') | trim | regex_replace('/+$', '') }}"
+    _declared: "{{ item.item.2 | regex_replace('/+$', '') }}"
+  loop: "{{ _storage_shadow_probe.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.0 }} -> {{ item.item.1 }}"
+  when: _storage_shadow_probe.results is defined

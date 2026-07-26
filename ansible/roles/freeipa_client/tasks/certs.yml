@@ -1,14 +1,28 @@
 ---
 # roles/freeipa_client/tasks/certs.yml
-# Request FreeIPA-issued (Dogtag CA) service certificates via certmonger, so a
-# service on this enrolled host (e.g. Vault) can serve a cert that chains to the
-# environment CA — auto-renewing, no self-signed trust.
 #
-# Uses this host's OWN Kerberos identity (host/<fqdn>@REALM in /etc/krb5.keytab,
-# created at enrolment) — so NO server-side admin is needed here (a host may
-# request a cert for its own principal). Each entry in freeipa_client_service_certs:
-#   {cert_path, key_path, dnsname, principal(optional), postsave(optional)}
-# Idempotent: skips a cert already tracked by certmonger for that cert_path.
+# FreeIPA-issued (Dogtag) service certificates via certmonger.
+#
+# Easy multi-SAN leaf (e.g. nginx LB front doors):
+#   freeipa_client_service_certs:
+#     - cert_path: /etc/pki/tls/nginx-proxy/fullchain.pem
+#       key_path:  /etc/pki/tls/nginx-proxy/privkey.pem
+#       dnsnames:                          # preferred — full SAN set
+#         - lb-01.mgt.example.internal
+#         - prometheus.mgt.example.internal
+#         - splunk.mgt.example.internal
+#       # dnsname: still works for a single name
+#       service: HTTP                      # optional; Kerberos service component
+#       principal: host/<fqdn>@REALM       # optional; pins the requesting principal
+#       cn: lb-01.mgt.example.internal     # optional; default host FQDN
+#       postsave: "systemctl reload foo"   # optional on issue/renew
+#
+# Re-issue rule: tracked SAN set ≠ desired → stop-track, wipe leaf+key, request
+# again with every -D. Unchanged set → no-op. Expiry renewal stays with certmonger.
+#
+# A SAN that is not freeipa_client_fqdn needs a matching Kerberos principal
+# server-side (see service_principals.yml). The role creates it and requests
+# under <service>/<fqdn> unless the entry pins `principal:`.
 
 - name: "Certs | Install certmonger + IPA cert helper"
   ansible.builtin.package:
@@ -23,36 +37,161 @@
     enabled: true
   become: true
 
+- name: "Certs | Assert each cert entry has paths"
+  ansible.builtin.assert:
+    that:
+      - item.cert_path | default('') | length > 0
+      - item.key_path | default('') | length > 0
+    fail_msg: >-
+      freeipa_client_service_certs entries need cert_path and key_path.
+      Optional: dnsnames: [..] (multi-SAN) or dnsname: (single), cn, principal,
+      postsave.
+    quiet: true
+  loop: "{{ freeipa_client_service_certs }}"
+  loop_control:
+    label: "{{ item.cert_path | default('?') }}"
+
+# One normalised list: SAN set (sorted unique), CN, principal, postsave, plus
+# the server-side principal work each entry implies.
+#   extra_sans         SANs that are not this host's FQDN — each needs a principal
+#   service            Kerberos service component carrying them
+#   service_principal  <service>/<host> the certificate is requested under
+#   principal_aliases  <service>/<san> for every extra SAN
+#   manage_principals  this entry needs server-side principals
+#   principal_override a pinned host/ principal was replaced (see below)
+#
+# Dogtag builds the principal it validates each dNSName against by taking the
+# REQUESTING principal and swapping its hostname for that name, keeping the
+# service component. Three consequences the shape below encodes:
+#   · a SAN equal to the requesting principal's own name validates trivially,
+#     so a host-FQDN-only certificate needs nothing server-side;
+#   · a service SAN under HTTP/<host> resolves to HTTP/<san>, which is why one
+#     service object carrying aliases is enough;
+#   · a service SAN under host/<host> resolves to host/<san>, which IPA looks up
+#     as a HOST object and refuses to create as a service. A pinned host
+#     principal is therefore unissuable with such a SAN and is replaced.
+#
+# Aliases are concatenated, not regex_replace'd: a '\1' backreference inside a
+# YAML+Jinja string arrives at the filter literally.
+- name: "Certs | Build normalised cert specs"
+  ansible.builtin.set_fact:
+    _freeipa_client_cert_specs: "{{ _built }}"
+  vars:
+    _built: >-
+      {%- set out = [] -%}
+      {%- for item in freeipa_client_service_certs -%}
+        {%- set raw = (item.dnsnames | default([]))
+              if (item.dnsnames | default([]) | length > 0)
+              else (
+                [item.dnsname]
+                if (item.dnsname | default('') | length > 0)
+                else [freeipa_client_fqdn]
+              ) -%}
+        {%- set merged = (raw + ([freeipa_client_fqdn]
+              if freeipa_client_certs_include_host_fqdn | bool else []))
+              | map('trim') | reject('equalto', '') | list -%}
+        {%- set sans = merged | unique | sort -%}
+        {%- set extra = sans | reject('equalto', freeipa_client_fqdn) | list -%}
+        {%- set pin = item.principal | default('') | trim -%}
+        {%- set pin_svc = pin.split('/')[0] if '/' in pin else '' -%}
+        {%- set pin_host = pin.split('/')[1].split('@')[0] if '/' in pin else '' -%}
+        {%- set svc_explicit = (item.service | default('') | trim | length) > 0 -%}
+        {%- set pin_is_service = (pin_svc | length > 0) and pin_svc != 'host' -%}
+        {%- set wants_alias = (extra | length > 0) or svc_explicit -%}
+        {# A pinned service principal must itself exist, aliases or not. #}
+        {%- set needs_service = wants_alias or pin_is_service -%}
+        {%- set pin_usable = (pin | length > 0)
+              and not (wants_alias and pin_svc == 'host') -%}
+        {%- set svc = (item.service | trim) if svc_explicit
+              else (pin_svc if (pin_usable and pin_svc not in ['', 'host'])
+                    else freeipa_client_cert_service_prefix) -%}
+        {%- set svc_host = pin_host if (pin_host | length > 0)
+              else freeipa_client_fqdn -%}
+        {%- set aliases = [] -%}
+        {%- for name in extra -%}
+          {%- set _ = aliases.append(svc ~ '/' ~ name) -%}
+        {%- endfor -%}
+        {%- set _ = out.append({
+              'cert_path': item.cert_path,
+              'key_path': item.key_path,
+              'dnsnames': sans,
+              'extra_sans': extra,
+              'service': svc,
+              'service_principal': svc ~ '/' ~ svc_host,
+              'principal_aliases': aliases,
+              'manage_principals': needs_service,
+              'principal_override': (pin | length > 0) and not pin_usable,
+              'cn': item.cn | default(freeipa_client_fqdn),
+              'principal': pin if pin_usable else (
+                  ((svc if needs_service else 'host')
+                   ~ '/' ~ svc_host ~ '@' ~ freeipa_client_realm)),
+              'postsave': item.postsave | default(''),
+            }) -%}
+      {%- endfor -%}
+      {{ out }}
+
+# Fail here, not eight tasks later: without the principal certmonger parks the
+# request at CA_UNREACHABLE and `ipa-getcert request -w` returns rc=3 with no
+# clue as to why.
+- name: "Certs | Assert non-host SANs can have their service principals created"
+  ansible.builtin.assert:
+    that:
+      - freeipa_client_manage_service_principals | bool
+      - not (freeipa_client_use_otp | bool)
+      - (freeipa_client_admin_password | default('') | length > 0)
+        or (freeipa_client_vault_secret | default('') | length > 0)
+    fail_msg: >-
+      {{ item.cert_path }} declares SAN(s) {{ item.extra_sans | join(', ') }},
+      which are not this host's FQDN ({{ freeipa_client_fqdn }}). FreeIPA will
+      reject the request — "4001 The service principal for subject alt name
+      {{ item.extra_sans | first }} in certificate request does not exist" —
+      unless {{ item.service }}/{{ item.extra_sans | first }} exists as an alias
+      of {{ item.service_principal }} and this host manages it. Creating that
+      needs IPA admin credentials: set
+      freeipa_client_manage_service_principals: true plus
+      freeipa_client_admin_password or freeipa_client_vault_secret. An
+      OTP-joined host has no admin credentials — create the principals
+      server-side and leave this flag false. Dropping the SAN also resolves it.
+    quiet: true
+  loop: "{{ _freeipa_client_cert_specs | selectattr('manage_principals') | list }}"
+  loop_control:
+    label: "{{ item.cert_path }}"
+
+- name: "Certs | Report a pinned host principal replaced by a service principal"
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.cert_path }} pins a host principal but declares non-host SAN(s)
+      {{ item.extra_sans | join(', ') }}. Under a host principal FreeIPA
+      resolves each of those to a HOST object of that name and refuses the
+      request; the certificate is requested under {{ item.principal }} instead.
+      Contents are unchanged — same CN, same SAN set.
+  loop: "{{ _freeipa_client_cert_specs }}"
+  loop_control:
+    label: "{{ item.cert_path }}"
+  when: item.principal_override
+
+- name: "Certs | Ensure service principals for every non-host SAN"
+  ansible.builtin.include_tasks: service_principals.yml
+  when: (_freeipa_client_cert_specs | selectattr('manage_principals') | list | length) > 0
+
 - name: "Certs | Ensure each cert's output directory exists"
   ansible.builtin.file:
     path: "{{ item.cert_path | dirname }}"
     state: directory
     owner: root
     group: root
-    mode: "0755"
-  loop: "{{ freeipa_client_service_certs }}"
+    # Do not force mode: consumers (nginx_lb ssl dir 0750) own directory policy.
+    # Setting 0755 here flip-flops mode every dual-role run.
+  loop: "{{ _freeipa_client_cert_specs }}"
   loop_control:
     label: "{{ item.cert_path | dirname }}"
   become: true
 
 # ── postsave placeholders ────────────────────────────────────────────────────
-# certmonger records the -C hook at REQUEST time and runs it immediately on
-# first issue. When the hook is installed by a role that necessarily runs LATER
-# (it usually consumes the cert this role issues), that first post-save execs a
-# command that does not exist yet, and whether a failed -C drops the request out
-# of MONITORING is version-dependent — which would fail the verify task below.
-#
-# Seeding a no-op placeholder removes the question. force: false means the real
-# hook, once installed, is never reverted; from then on post-save failures are
-# meant to be LOUD, so only the missing-command case is softened.
-# Only absolute commands are seeded — a bare `systemctl reload foo` needs no
-# placeholder. The executable is item.split()[0]; a regex backref is avoided
-# deliberately, since '\1' arrives literal through YAML+Jinja in this repo.
 - name: "Certs | Resolve postsave hook commands"
   ansible.builtin.set_fact:
     _freeipa_client_postsave_bins: >-
-      {{ freeipa_client_service_certs
-         | selectattr('postsave', 'defined')
+      {{ _freeipa_client_cert_specs
          | map(attribute='postsave')
          | map('trim')
          | select('match', '^/')
@@ -86,11 +225,6 @@
     path: /usr/sbin/fapolicyd-cli
   register: _freeipa_client_fapolicyd_cli
 
-# fapolicyd blocks execution of anything absent from its trust db. On a hardened
-# build it is already enforcing by the time certmonger fires the first post-save,
-# so an untrusted stub is denied — which defeats the stub's entire purpose. Trust
-# by hash, then notify the daemon (the unit reports CanReload=no, so `--update`
-# refreshes the db in place rather than restarting a security daemon).
 - name: "Certs | Trust each seeded post-save stub in fapolicyd"
   become: true  # root: updates the fapolicyd trust database
   ansible.builtin.shell:
@@ -109,12 +243,11 @@
     - _freeipa_client_stub_seeded is changed
   notify: Update the fapolicyd trust database
 
-# certmonger tracks by request; getcert list -f <cert> is non-zero/empty when the
-# cert is not yet tracked. This is the idempotency probe (never changes state).
+# ── Tracked state ────────────────────────────────────────────────────────────
 - name: "Certs | Check which certs certmonger already tracks"
   ansible.builtin.command:
     cmd: "getcert list -f {{ item.cert_path }}"
-  loop: "{{ freeipa_client_service_certs }}"
+  loop: "{{ _freeipa_client_cert_specs }}"
   loop_control:
     label: "{{ item.cert_path }}"
   register: _freeipa_client_getcert_list
@@ -122,32 +255,69 @@
   failed_when: false
   become: true
 
-# Tracking is keyed only by cert_path. After a host rename (inventory_hostname /
-# freeipa_client_fqdn changes), the same path stays MONITORING under the OLD
-# principal + SAN, so request is skipped forever and the served cert never
-# matches the new host identity. Detect that drift, drop tracking, AND remove
-# the on-disk cert+key — certmonger otherwise rebuilds a CSR from the old
-# material (subject stays the previous hostname) while -K uses the new
-# principal, and FreeIPA rejects with "hostname in subject does not match
-# principal".
-- name: "Certs | Stop tracking certs whose DNS/principal drifted from inventory"
+# Parse tracked SANs with Python (Jinja list compare is unreliable across
+# AnsibleUnsafeText / generator / unique-filter edge cases and caused perpetual
+# re-issue every run).
+- name: "Certs | Parse tracked SAN sets and principals"
+  become: true  # root: getcert
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import json, re, subprocess, sys
+        path = sys.argv[1]
+        desired = json.loads(sys.argv[2])
+        desired_principal = sys.argv[3]
+        proc = subprocess.run(
+            ["getcert", "list", "-f", path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        tracked = (
+            proc.returncode == 0
+            and out.strip()
+            and "No request found" not in out
+        )
+        sans = []
+        for line in re.findall(r"(?mi)^[\t ]*dns:[\t ]*(.+)$", out):
+            sans.extend(p.strip() for p in line.split(",") if p.strip())
+        tracked_sans = sorted(set(sans))
+        desired_sans = sorted(set(desired))
+        principal_ok = (not desired_principal) or (desired_principal in out)
+        result = {
+            "tracked": tracked,
+            "san_drift": tracked and tracked_sans != desired_sans,
+            "principal_drift": tracked and (not principal_ok),
+            "tracked_sans": tracked_sans,
+            "desired_sans": desired_sans,
+        }
+        print(json.dumps(result))
+      - "{{ item.cert_path }}"
+      - "{{ item.dnsnames | to_json }}"
+      - "{{ item.principal }}"
+  loop: "{{ _freeipa_client_cert_specs }}"
+  loop_control:
+    label: "{{ item.cert_path }}"
+  register: _freeipa_client_drift_parse
+  changed_when: false
+
+- name: "Certs | Stop tracking certs whose SAN set or principal drifted"
   ansible.builtin.command:
     cmd: "getcert stop-tracking -f {{ item.item.cert_path }}"
-  loop: "{{ _freeipa_client_getcert_list.results }}"
+  loop: "{{ _freeipa_client_drift_parse.results }}"
   loop_control:
     label: "{{ item.item.cert_path }}"
   vars:
-    _desired_dns: "{{ item.item.dnsname | default(freeipa_client_fqdn) }}"
-    _desired_principal: >-
-      {{ item.item.principal
-         | default('host/' ~ freeipa_client_fqdn ~ '@' ~ freeipa_client_realm) }}
+    _parsed: "{{ item.stdout | default('{}') | from_json }}"
   when:
     - item.rc == 0
-    - item.stdout | default('') | length > 0
-    - "'No request found' not in (item.stdout | default('') ~ item.stderr | default(''))"
+    - (_parsed.tracked | default(false) | bool)
     - >-
-      ('dns: ' ~ _desired_dns) not in item.stdout
-      or ('principal name: ' ~ _desired_principal) not in item.stdout
+        (_parsed.san_drift | default(false) | bool)
+        or (_parsed.principal_drift | default(false) | bool)
   register: _freeipa_client_getcert_untrack
   changed_when: _freeipa_client_getcert_untrack.rc == 0
   become: true
@@ -164,7 +334,6 @@
           | selectattr('changed', 'defined') | selectattr('changed')
           | map(attribute='item.item.key_path') | list)
       }}
-  when: _freeipa_client_getcert_untrack is changed
 
 - name: "Certs | Remove drifted cert/key material so the CSR is rebuilt clean"
   ansible.builtin.file:
@@ -174,71 +343,124 @@
   when: (_freeipa_client_drift_paths | default([]) | length) > 0
   become: true
 
-# -w waits for issuance so the cert EXISTS on return (before any consumer starts).
-# -K uses this host's principal by default (self-managed; no admin needed).
-- name: "Certs | Request each service certificate via ipa-getcert"
+- name: "Certs | Re-check tracking after drift cleanup"
+  ansible.builtin.command:
+    cmd: "getcert list -f {{ item.cert_path }}"
+  loop: "{{ _freeipa_client_cert_specs }}"
+  loop_control:
+    label: "{{ item.cert_path }}"
+  register: _freeipa_client_getcert_list2
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: "Certs | Request each multi-SAN service certificate via ipa-getcert"
   ansible.builtin.command:
     cmd: >-
       ipa-getcert request -w
       -f {{ item.item.cert_path }}
       -k {{ item.item.key_path }}
-      -K {{ item.item.principal | default('host/' ~ freeipa_client_fqdn ~ '@' ~ freeipa_client_realm) }}
-      -D {{ item.item.dnsname | default(freeipa_client_fqdn) }}
-      -N CN={{ item.item.dnsname | default(freeipa_client_fqdn) }}
-      {{ ("-C '" ~ item.item.postsave ~ "'") if (item.item.postsave | default('')) else '' }}
-  loop: "{{ _freeipa_client_getcert_list.results }}"
+      -K {{ item.item.principal }}
+      -N CN={{ item.item.cn }}
+      {{ item.item.dnsnames | map('regex_replace', '^(.*)$', '-D \1') | join(' ') }}
+      {{ ("-C '" ~ item.item.postsave ~ "'") if (item.item.postsave | length > 0) else '' }}
+  loop: "{{ _freeipa_client_getcert_list2.results }}"
   loop_control:
-    label: "{{ item.item.cert_path }}"
+    label: "{{ item.item.cert_path }} ({{ item.item.dnsnames | length }} SANs)"
   vars:
-    _desired_dns: "{{ item.item.dnsname | default(freeipa_client_fqdn) }}"
-    _desired_principal: >-
-      {{ item.item.principal
-         | default('host/' ~ freeipa_client_fqdn ~ '@' ~ freeipa_client_realm) }}
+    _tracked: "{{ item.stdout | default('') }}"
     _was_untracked: >-
       {{ item.rc != 0
-         or ('No request found' in (item.stdout | default('') ~ item.stderr | default('')))
-         or (item.stdout | default('') | trim | length == 0) }}
-    _identity_drifted: >-
-      {{ item.rc == 0
-         and (item.stdout | default('') | length > 0)
-         and (
-           ('dns: ' ~ _desired_dns) not in item.stdout
-           or ('principal name: ' ~ _desired_principal) not in item.stdout
-         ) }}
-  when: _was_untracked | bool or _identity_drifted | bool
+         or ('No request found' in (_tracked ~ (item.stderr | default(''))))
+         or (_tracked | trim | length == 0) }}
+  when: _was_untracked | bool
   register: _freeipa_client_getcert_req
-  changed_when: "'New signing request' in (_freeipa_client_getcert_req.stdout | default(''))
-                 or 'Submitting' in (_freeipa_client_getcert_req.stdout | default(''))"
+  changed_when: >-
+    'New signing request' in (_freeipa_client_getcert_req.stdout | default(''))
+    or 'Submitting' in (_freeipa_client_getcert_req.stdout | default(''))
   become: true
 
-- name: "Certs | Verify each certificate was issued (MONITORING/tracked)"
+- name: "Certs | Verify each certificate (MONITORING + full SAN set)"
   ansible.builtin.command:
     cmd: "getcert list -f {{ item.cert_path }}"
-  loop: "{{ freeipa_client_service_certs }}"
+  loop: "{{ _freeipa_client_cert_specs }}"
   loop_control:
     label: "{{ item.cert_path }}"
   register: _freeipa_client_getcert_verify
   changed_when: false
-  # MONITORING alone is not enough: a failed re-issue can leave MONITORING with
-  # a ca-error and the OLD leaf still on disk (host-rename drift). Require the
-  # tracked identity to match inventory and no ca-error line.
-  failed_when: >-
-    _freeipa_client_getcert_verify.rc != 0
-    or 'status: MONITORING' not in _freeipa_client_getcert_verify.stdout
-    or 'ca-error:' in _freeipa_client_getcert_verify.stdout
-    or (
-      ('dns: ' ~ (item.dnsname | default(freeipa_client_fqdn)))
-      not in _freeipa_client_getcert_verify.stdout
-    )
+  failed_when: false
   become: true
 
-# CONVERGENCE, not just creation. `ipa-getcert request -C` above only runs for an
-# UNTRACKED cert, so a cert already tracked never picks up a new/changed postsave
-# — the host was enrolled before the hook existed, or the hook path changed, and
-# certmonger keeps its original (or empty) command. Inventory then claims
-# renewals are wired while nothing runs at renewal, and every playbook run stays
-# green. That is the same silent-staleness failure the hook exists to prevent, so
-# reconcile the tracked command against the declared one on every run.
+- name: "Certs | Assert MONITORING and SAN set match for each cert"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - "'status: MONITORING' in (item.stdout | default(''))"
+      - "'ca-error:' not in (item.stdout | default(''))"
+      - >-
+          (item.stdout | default('')
+           | regex_findall('(?mi)^[\\t ]*dns:[\\t ]*(.+)$') | join(',')
+           | regex_findall('[A-Za-z0-9][A-Za-z0-9._-]*\\.[A-Za-z0-9._-]+')
+           | unique | sort | list)
+          == (item.item.dnsnames | sort | list)
+    fail_msg: >-
+      FreeIPA cert {{ item.item.cert_path }} not ready or SAN set mismatch.
+      desired={{ item.item.dnsnames | sort | join(',') }};
+      tracked={{ item.stdout | default('')
+        | regex_findall('(?mi)^[\\t ]*dns:[\\t ]*(.+)$') | join(',')
+        | regex_findall('[A-Za-z0-9][A-Za-z0-9._-]*\\.[A-Za-z0-9._-]+')
+        | unique | sort | join(',') }};
+      status snippet={{ item.stdout | default(item.stderr | default('')) | truncate(400) }}
+    success_msg: >-
+      FreeIPA cert {{ item.item.cert_path }} MONITORING —
+      SANs={{ item.item.dnsnames | join(', ') }}
+  loop: "{{ _freeipa_client_getcert_verify.results }}"
+  loop_control:
+    label: "{{ item.item.cert_path }}"
+
+# certmonger's own view is a tracked REQUEST; the file nginx/MinIO/Stroom opens
+# is the only thing that proves issuance. Read the leaf itself.
+- name: "Certs | Read the SAN extension of each issued certificate"
+  become: true  # root: leaf certs live under root-owned /etc/pki
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -noout
+      - -ext
+      - subjectAltName
+      - -in
+      - "{{ item.cert_path }}"
+  loop: "{{ _freeipa_client_cert_specs }}"
+  loop_control:
+    label: "{{ item.cert_path }}"
+  register: _freeipa_client_san_read
+  changed_when: false
+  failed_when: false
+
+- name: "Certs | Assert each issued certificate carries the declared SAN set"
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - >-
+          (item.stdout | default('') | regex_findall('DNS:([A-Za-z0-9*._-]+)')
+           | map('lower') | unique | sort | list)
+          == (item.item.dnsnames | map('lower') | unique | sort | list)
+    fail_msg: >-
+      Issued certificate {{ item.item.cert_path }} does not carry the declared
+      SAN set. declared={{ item.item.dnsnames | sort | join(',') }};
+      on disk={{ item.stdout | default('')
+        | regex_findall('DNS:([A-Za-z0-9*._-]+)') | unique | sort | join(',') }};
+      openssl rc={{ item.rc }}
+      {{ item.stderr | default('') | truncate(200) }}
+    success_msg: >-
+      {{ item.item.cert_path }} carries SANs
+      {{ item.item.dnsnames | join(', ') }}
+    quiet: true
+  loop: "{{ _freeipa_client_san_read.results }}"
+  loop_control:
+    label: "{{ item.item.cert_path }}"
+
 - name: "Certs | Reconcile the tracked post-save command (drift)"
   ansible.builtin.command:
     cmd: >-
@@ -250,8 +472,6 @@
     label: "{{ item.item.cert_path }}"
   when:
     - item.item.postsave | default('') | length > 0
-    # Single-quoted: the expression contains ": " which YAML would otherwise
-    # read as a mapping key inside a plain scalar.
     - '("post-save command: " ~ item.item.postsave) not in (item.stdout | default(""))'
   changed_when: true
   become: true

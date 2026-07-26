@@ -1,0 +1,11 @@
+---
+# storage/tasks/mount_net.yml — mount the enabled network volumes.
+# Only volumes whose kind flag (storage_manage_nfs / storage_manage_cifs) is
+# true reach this file; the rest were reported as skipped in main.yml.
+
+- name: Mount network volumes
+  ansible.builtin.include_tasks: mount_net_one.yml
+  loop: "{{ _storage_net_active }}"
+  loop_control:
+    loop_var: vol
+    label: "{{ vol.name }} -> {{ vol.mount }}"

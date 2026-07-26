@@ -1,0 +1,68 @@
+---
+# roles/freeipa_client/tasks/service_principals.yml
+#
+# Server-side Kerberos principals for the non-host SANs declared in
+# freeipa_client_service_certs. Included from certs.yml only when at least one
+# entry has manage_principals — a cert whose only SAN is this host's FQDN never
+# reaches this file and needs no admin credentials.
+#
+# Shape (proven by roles/nginx_lb): ONE service per cert entry, the principal
+# the certificate is requested under, carrying one alias per extra SAN. Not one
+# service per SAN — Dogtag resolves an alias to the same service object, and a
+# single object keeps the managedby relationship in one place.
+#
+# force + skip_host_check: the service is named after a host object, and its
+# extra SANs usually have no host object and may have no DNS record at run time.
+# Both flags suppress those server-side existence checks; without them
+# service-add refuses the name. host: makes this host the manager, which is what
+# grants it write access to the alias's usercertificate — the attribute Dogtag
+# checks before issuing. The principal existing is not by itself enough.
+#
+# Runs ON the enrolled client (python3-ipalib from ipa-client, IPA context in
+# /etc/ipa/default.conf), unprivileged: the modules authenticate to the IPA API
+# with the admin password, not with local root.
+
+- name: "Service principals | Resolve admin password (standalone --tags certs run)"
+  ansible.builtin.include_tasks: resolve_admin_password.yml
+
+- name: "Service principals | Assert the admin password resolved"
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_client_admin_pw | default('') | length) > 0
+    fail_msg: >-
+      No IPA admin password available, so the service principals for the
+      non-host SANs cannot be created. Set freeipa_client_admin_password, or
+      freeipa_client_vault_secret with a readable
+      {{ freeipa_client_admin_password_field }} field.
+    quiet: true
+
+- name: "Service principals | Ensure the base service principal for each cert"
+  become: false  # authenticates to the IPA API as admin, not via local root
+  freeipa.ansible_freeipa.ipaservice:
+    ipaadmin_principal: "{{ freeipa_client_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_client_admin_pw }}"
+    name: "{{ item.service_principal }}"
+    force: true
+    skip_host_check: true
+    host:
+      - "{{ freeipa_client_fqdn }}"
+    state: present
+  loop: "{{ _freeipa_client_cert_specs | selectattr('manage_principals') | list }}"
+  loop_control:
+    label: "{{ item.service_principal }}"
+  no_log: true
+
+- name: "Service principals | Ensure a principal alias per non-host SAN"
+  become: false  # authenticates to the IPA API as admin, not via local root
+  freeipa.ansible_freeipa.ipaservice:
+    ipaadmin_principal: "{{ freeipa_client_admin_principal }}"
+    ipaadmin_password: "{{ _freeipa_client_admin_pw }}"
+    name: "{{ item.service_principal }}"
+    principal: "{{ item.principal_aliases }}"
+    action: member
+    state: present
+  loop: "{{ _freeipa_client_cert_specs | selectattr('manage_principals') | list }}"
+  loop_control:
+    label: "{{ item.principal_aliases | join(', ') }}"
+  when: (item.principal_aliases | length) > 0
+  no_log: true

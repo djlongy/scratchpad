@@ -16,7 +16,9 @@
     label: "{{ vol.mount }} -> {{ vol.sefcontext }}"
   register: _se_fcontext
 
-- name: Restore SELinux context where the fcontext changed
+# Relabels per volume, immediately after that volume's fcontext changed — a
+# play-end handler cannot loop over the per-item sefcontext results.
+- name: Restore SELinux context where the fcontext changed  # noqa: no-handler
   become: true  # root: restorecon relabels files on disk
   ansible.builtin.command:
     cmd: "restorecon -Rv {{ item.vol.mount }}"

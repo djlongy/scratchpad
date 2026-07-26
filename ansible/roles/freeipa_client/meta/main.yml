@@ -26,5 +26,6 @@ galaxy_info:
     - sssd
 
 # Requires the freeipa.ansible_freeipa collection (declared in
-# ansible/requirements.yml). Pairs with the freeipa_server role.
+# ansible/requirements.yml) — ipaclient, ipadnsrecord, ipaservice.
+# Pairs with the freeipa_server role.
 dependencies: []
