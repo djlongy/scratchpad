@@ -1,4 +1,7 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+freeipa_server_enabled: true
+
 # roles/freeipa_server/defaults/main.yml
 #
 # Portable FreeIPA server role. Behavioural defaults live here; env-specific values
@@ -40,7 +43,10 @@ freeipa_server_ip_addresses:
 # NetworkManager connection on a REPLICA whose DNS is repointed at the primary for
 # enrolment. Empty (and no legacy `connection_name` inventory var) → the repoint is
 # skipped and /etc/hosts alone carries enrolment resolution.
-freeipa_server_replica_connection: "{{ connection_name | default('') }}"
+freeipa_server_replica_connection: >-
+  {{ connection_name
+     | default(primary_interface, true)
+     | default('', true) }}
 
 # ── Credentials: declared Ansible var FIRST, HashiCorp Vault as fallback ─────
 # For every secret: use the declared var below if non-empty, else look it up at
@@ -126,6 +132,21 @@ freeipa_server_trusted_external_cas: []
 #  - { name: partner-root, url: "https://artifacts.example.com/pki/partner-root.pem" }
 freeipa_server_trusted_ca_staging_dir: "/root/.freeipa-trusted-cas"
 
+# ── Post-install CA reparent (self-signed → external; opt-in --tags reparent_ca) ─
+# Converts a FULLY WORKING CA-ful FreeIPA to an externally signed IPA CA without
+# reinstall. Driven by --tags reparent_ca (phase 1 emit CSR, phase 2 apply signed chain).
+# Host-side work lives in reparent_ca_emit.yml / reparent_ca_apply.yml.
+#
+# freeipa_reparent_require_self_signed: when true (default), phase 1 fails if the
+# IPA CA is already externally signed — guards accidental re-runs. Set false to
+# allow the same flow as external-ca renewal.
+freeipa_reparent_require_self_signed: true
+# CSR path written by `ipa-cacert-manage renew --external-ca` (renew path; install
+# uses /root/ipa.csr — do not conflate the two).
+freeipa_reparent_csr_host_path: "/var/lib/ipa/ca.csr"
+# Staged host paths for phase 2 (playbook fills freeipa_reparent_external_cert_files).
+freeipa_reparent_external_cert_files: []
+
 # ── Backup restore / offload (wraps upstream ipabackup; backup.yml runs ipa-backup) ─
 # RESTORE is DESTRUCTIVE break-glass: `never`-tagged (runs only with --tags restore) and
 # must name a backup on the server (e.g. "ipa-full-2026-06-22-12-00-00"). DM password from Vault.
@@ -152,7 +173,7 @@ freeipa_server_no_pkinit: false
 # ── Active Directory trust (cross-forest identity; opt-in, default off) ──────
 # Trust an AD forest so AD users authenticate against IPA resources. Needs setup_adtrust
 # (passes --setup-adtrust), reachable AD DCs, and two-way DNS. Each trust → upstream ipatrust;
-# IPA admin + each AD admin password from Vault. Not exercised in this environment (no AD).
+# IPA admin + each AD admin password from Vault. Not exercised when AD trust is unused.
 freeipa_server_setup_adtrust: false
 freeipa_server_ad_trusts: []
 #  - { realm: "AD.EXAMPLE.COM", admin: "Administrator", password_field: "ad_trust_password", two_way: true, trust_type: "ad" }
@@ -161,7 +182,9 @@ freeipa_server_ad_trusts: []
 # With setup_dns: false the role maps NONE of the DNS options below to the
 # installer (upstream rejects them without --setup-dns) — leave them as-is.
 freeipa_server_setup_dns: true
-freeipa_server_forwarders: []            # ENV-SPECIFIC: e.g. ["192.0.2.1"]
+# Upstream resolvers for names outside IPA-hosted zones. Applied at install AND
+# day-2 (ipadnsconfig). ENV-SPECIFIC: e.g. ["{{ network_gateway }}"] → pfSense Unbound.
+freeipa_server_forwarders: []
 freeipa_server_forward_policy: "only"    # only | first
 freeipa_server_no_forwarders: false
 freeipa_server_auto_reverse: true
@@ -169,13 +192,14 @@ freeipa_server_reverse_zones: []
 freeipa_server_no_dnssec_validation: true
 freeipa_server_allow_zone_overlap: true
 
-# ── DNS hardening (integrated DNS only) ──────────────────────────────────────
+# ── DNS hardening (integrated DNS only; every DNS server) ────────────────────
 # Own the two BIND include files FreeIPA creates empty for admin customisation:
 #   /etc/named/ipa-ext.conf         — top-level: defines the `trusted_network` ACL
 #   /etc/named/ipa-options-ext.conf — inside options{}: recursion/query-cache scope + dnssec
 # Applied ONLY when freeipa_server_dns_trusted_networks is non-empty (else skipped, files
-# left untouched). named-checkconf validates before a `rndc reconfig` reload. Primary only.
-freeipa_server_dns_trusted_networks: []   # ENV-SPECIFIC: e.g. ["192.0.2.0/24", "127.0.0.1", "::1"]
+# left untouched). named-checkconf validates before a `rndc reconfig` reload.
+# File-local (not LDAP) — runs on every integrated-DNS host, not primary-only.
+freeipa_server_dns_trusted_networks: []   # ENV-SPECIFIC: e.g. ["10.0.0.0/8", "127.0.0.1", "::1"]
 # Restrict recursion + query-cache to the trusted_network ACL (the reason for the ACL).
 freeipa_server_dns_restrict_recursion: true
 # dnssec-validation stanza written into the options include. "" → omit the line (leave the
@@ -183,20 +207,22 @@ freeipa_server_dns_restrict_recursion: true
 freeipa_server_dns_options_dnssec_validation: "no"
 
 # Declarative DNS (primary only; needs integrated DNS) via upstream ipadns* modules; idempotent.
-# MINIMAL AUTHORING — the reverse path is derived, never hand-written:
+# MINIMAL AUTHORING — reverse path is derived, never hand-written:
 #   * reverse zone: name_from_ip: <CIDR> — IPA derives the in-addr.arpa name
-#   * PTRs: create_reverse: true on the A/AAAA record (needs the reverse zone to exist).
-#     ADD-TIME ONLY — it never retro-creates PTRs for records that already exist.
-#   * DDNS hosts: zone dynamic_update + allow_sync_ptr — BIND syncs their PTRs itself.
-# ADOPTING AN EXPORT: the snapshot is RAW. Drop the realm zone's installer-owned plumbing
-# (SRV / _kerberos TXT / ipa-ca / the servers' own A records — the installer creates and
-# IPA maintains them; re-applying an old snapshot can inject STALE server entries) and
-# replace raw PTRs with create_reverse on the forward records. Keep your zones + app records.
+#   * dynamic_update (zone): clients may DDNS/nsupdate records into the zone
+#   * allow_sync_ptr (zone): keep A/AAAA ↔ PTR paired when address records change
+#     (orthogonal to dynamic_update — see role README "dynamic_update vs allow_sync_ptr")
+#   * create_reverse (record): one-shot PTR at A/AAAA add time (API/Ansible; not a zone policy)
+# ADOPTING AN EXPORT: snapshot is RAW. Drop realm installer plumbing (SRV / _kerberos
+# TXT / ipa-ca / server A records) and replace raw PTRs with create_reverse on forward A.
 # Zones — forward (name) OR reverse (name_from_ip). To REMOVE a reverse zone use its
 # explicit name (state: absent + name: "0.0.10.in-addr.arpa."), not name_from_ip.
 freeipa_server_dns_zones: []
+#  # clients self-register (DDNS) + auto PTR:
 #  - { name: "internal.example.com", dynamic_update: true, allow_sync_ptr: true }
-#  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true, skip_overlap_check: true }  # reverse
+#  - { name_from_ip: "10.0.0.0/24", allow_sync_ptr: true, skip_overlap_check: true }
+#  # static Ansible-owned A only (no client DDNS):
+#  - { name: "apps.example.com", dynamic_update: false, allow_sync_ptr: true }
 freeipa_server_dns_forward_zones: []
 #  - { name: "corp.example.com", forwarders: ["10.0.0.53"], forwardpolicy: "first" }
 # Records — record_value is list-typed (single or many, same field). Or drive a whole
@@ -204,11 +230,10 @@ freeipa_server_dns_forward_zones: []
 freeipa_server_dns_records: []
 #  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
 #  - { zone_name: "internal.example.com", name: "vip",  record_type: "A", record_value: ["10.0.0.21", "10.0.0.22"] }
-#  - { zone_name: "internal.example.com", name: "vcenter", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR
-#  - { zone_name: "internal.example.com", records: [ { record_name: "esx01", a_record: ["10.0.0.31"], create_reverse: true } ] }  # bulk per zone
-# GLOBAL PTR default: true → every A/AAAA record (flat AND bulk `records:` entries)
-# gets create_reverse unless the record sets its own. Needs the matching reverse
-# zone (+ allow_sync_ptr) declared above. Per-record create_reverse always wins.
+#  - { zone_name: "internal.example.com", name: "vcenter", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR at add
+#  - { zone_name: "internal.example.com", records: [ { record_name: "esx01", a_record: ["10.0.0.31"], create_reverse: true } ] }
+# GLOBAL PTR default: true → every A/AAAA (flat AND bulk) gets create_reverse unless the
+# record sets its own. Needs the matching reverse zone. Per-record create_reverse wins.
 freeipa_server_dns_create_reverse: false
 
 # ── Automember (auto group/hostgroup membership by attribute regex; primary only) ──
@@ -555,7 +580,7 @@ freeipa_server_export_stock_hbacsvcs:
   - systemd-user
   - vsftpd
 
-# ── IPA-to-IPA realm migration (opt-in; via playbooks/freeipa_migrate.yml) ──
+# ── IPA-to-IPA realm migration (opt-in; via playbooks/20_idm_freeipa_migrate.yml) ──
 # Runs ipa-migrate on this (new-realm) primary, pulling identities from a source (old) realm.
 # Passwords are NOT migrated (Kerberos keys are realm-salted).
 freeipa_migrate_dryrun: true                    # SAFE default — set false to actually write
@@ -567,7 +592,7 @@ freeipa_migrate_source_ca_path: "/etc/ipa/ca.crt"   # CA cert path on the source
 freeipa_migrate_log: "/var/log/ipa-migrate.log"
 freeipa_migrate_restart_sssd: true
 freeipa_migrate_disable_mode_after: false       # keep migration mode ON for the password campaign
-# ENV-SPECIFIC — set in inventory (see group_vars/idm.yml):
+# ENV-SPECIFIC — set in inventory (see group_vars/freeipa.yml):
 # freeipa_migrate_source: "ipa-source-01.example.com"  # source IPA FQDN (ipa-migrate arg)
 # freeipa_migrate_source_host: "ipa-source-01"         # inventory host for CA slurp
 # freeipa_migrate_bind_pw_vault: "kv-<env>/data/platform/freeipa/runtime"  # source DM pw path

@@ -181,14 +181,21 @@ argument_specs:
       freeipa_server_forwarders:
         type: list
         elements: str
-        description: Upstream DNS forwarders for the IPA-managed zone (required for a DNS-enabled install unless no_forwarders).
+        description: >-
+          Upstream DNS forwarders (IPs) for names outside IPA zones. Applied at
+          install AND day-2 via ipadnsconfig (e.g. pfSense Unbound gateway).
+          Required for a DNS-enabled install unless no_forwarders.
       freeipa_server_forward_policy:
         type: str
         choices: [only, first]
-        description: DNS forward policy.
+        description: >-
+          Global DNS forward policy (install + day-2). only = use forwarders
+          exclusively; first = forwarders then root hints.
       freeipa_server_no_forwarders:
         type: bool
-        description: Install DNS with no forwarders (root-hint resolution).
+        description: >-
+          No upstream forwarders (root-hint resolution). Day-2 sets
+          forward_policy none when true.
       freeipa_server_auto_reverse:
         type: bool
         description: Auto-create the reverse zone at install.
@@ -206,10 +213,13 @@ argument_specs:
       # ── DNS / automember (declarative, day-2; primary only) ────────────────
       freeipa_server_dns_zones:
         type: list
-        description: IPA-hosted DNS zones (ipadnszone). Forward zones need name; reverse zones just name_from_ip (a CIDR — IPA derives the in-addr.arpa name). dynamic_update + allow_sync_ptr lets BIND sync DDNS hosts' PTRs automatically.
+        description: IPA-hosted DNS zones (ipadnszone). Forward zones need name; reverse zones just name_from_ip (a CIDR — IPA derives the in-addr.arpa name). Zone flags are orthogonal — dynamic_update allows client DDNS/nsupdate into the zone; allow_sync_ptr pairs A/AAAA with PTR when address records change (needs a reverse zone). create_reverse on records is separate (add-time PTR via API).
       freeipa_server_dns_forward_zones:
         type: list
-        description: Conditional forward zones to manage (ipadnsforwardzone). Each item needs name.
+        description: >-
+          Conditional forward zones (ipadnsforwardzone). Each item needs name;
+          optional forwarders (list of IP strings or {ip_address, port} dicts),
+          forwardpolicy (only|first|none), skip_overlap_check, state.
       freeipa_server_dns_records:
         type: list
         description: DNS records (ipadnsrecord), single or whole-zone `records:` bulk form. Minimal item = zone_name + name + record_type + record_value; add create_reverse true for the PTR (add-time only — never retro-creates for existing records). Do NOT re-declare installer-owned realm plumbing (SRV/_kerberos TXT/ipa-ca) from an export.

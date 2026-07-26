@@ -1,0 +1,275 @@
+---
+# roles/freeipa_server/tasks/reparent_ca_apply.yml
+#
+# Phase 2 (host side) of post-install CA reparent: feed the externally signed
+# IPA CA cert + chain into a RUNNING FreeIPA, then refresh local trust.
+#   ipa-cacert-manage renew --external-cert-file=… --external-cert-file=…
+#   ipa-certupdate
+#
+# Expects freeipa_reparent_external_cert_files as a list of host paths (signed
+# IPA CA cert first, then chain) — staged by the playbook before this include.
+# Primary only. DM password via stdin (never argv).
+
+- name: Reparent apply | Assert this is the FreeIPA primary
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_is_primary | bool
+    fail_msg: >-
+      CA reparent apply runs on the FreeIPA primary only. Re-run with --limit
+      on the primary host.
+    quiet: true
+
+- name: Reparent apply | Assert FreeIPA is installed
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_reparent_apply_conf
+
+- name: Reparent apply | Fail if FreeIPA is not installed
+  ansible.builtin.assert:
+    that:
+      - _freeipa_reparent_apply_conf.stat.exists
+    fail_msg: >-
+      /etc/ipa/default.conf is missing — cannot apply an external CA cert to a
+      non-installed host. Finish install first (or use signed_install).
+    quiet: true
+
+- name: Reparent apply | Assert external cert file list is non-empty
+  ansible.builtin.assert:
+    that:
+      - freeipa_reparent_external_cert_files | default([]) | length >= 2
+    fail_msg: >-
+      freeipa_reparent_external_cert_files must list at least the signed IPA CA
+      cert and the chain (two host paths). The reparent_ca playbook stages them
+      under /root before calling this task file.
+    quiet: true
+
+- name: Reparent apply | Stat each staged external cert file
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ freeipa_reparent_external_cert_files }}"
+  register: _freeipa_reparent_cert_stats
+  become: true
+
+- name: Reparent apply | Fail if any staged cert file is missing
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - (item.stat.size | default(0)) > 0
+    fail_msg: >-
+      Staged external cert file is missing or empty: {{ item.item }}. Re-run
+      phase 1 (sign) then phase 2 so the playbook copies cert + chain to the host.
+    quiet: true
+  loop: "{{ _freeipa_reparent_cert_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Idempotency: skip only when the live externally-signed IPA CA is byte-identical
+# (SHA-256) to the staged cert. Same key under a *different* issuer (wrong twin
+# hierarchy, re-sign under cleaned escrow) must re-apply.
+- name: Reparent apply | Compare live vs staged IPA CA cert fingerprint
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      d=$(mktemp -d)
+      trap 'rm -rf "$d"' EXIT
+      openssl crl2pkcs7 -nocrl -certfile /etc/ipa/ca.crt | openssl pkcs7 -print_certs \
+        | awk -v d="$d" '/-----BEGIN CERTIFICATE-----/{n++} n>0{print > (d"/c"n".pem")}'
+      # Prefer externally-signed IPA CA (issuer!=subject); FreeIPA keeps the
+      # prior self-signed CA for rollover and it often appears first.
+      live_f=""; self_f=""
+      for f in "$d"/c*.pem; do
+        [ -s "$f" ] || continue
+        s=$(openssl x509 -in "$f" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject=//')
+        case "$s" in
+          *"CN=Certificate Authority"*)
+            i=$(openssl x509 -in "$f" -noout -issuer -nameopt RFC2253 2>/dev/null | sed 's/^issuer=//')
+            if [ "$s" != "$i" ]; then live_f="$f"; break; fi
+            if [ -z "$self_f" ]; then self_f="$f"; fi
+            ;;
+        esac
+      done
+      [ -n "$live_f" ] || live_f="${self_f:-/etc/ipa/ca.crt}"
+      live_fp=$(openssl x509 -in "$live_f" -noout -fingerprint -sha256 | sed 's/^.*=//')
+      staged_fp=$(openssl x509 -in "{{ freeipa_reparent_external_cert_files[0] }}" -noout -fingerprint -sha256 | sed 's/^.*=//')
+      if [ "$live_fp" = "$staged_fp" ]; then
+        echo skip
+      else
+        echo apply
+      fi
+  register: _freeipa_reparent_apply_decision
+  changed_when: false
+  become: true
+
+- name: Reparent apply | Set need-apply fact from decision
+  ansible.builtin.set_fact:
+    _freeipa_reparent_need_apply: >-
+      {{ (_freeipa_reparent_apply_decision.stdout | trim) == 'apply' }}
+
+- name: Reparent apply | Announce skip when already reparented to this cert
+  ansible.builtin.debug:
+    msg: >-
+      Live IPA CA already matches the staged cert fingerprint — skipping
+      ipa-cacert-manage renew apply (idempotent re-run).
+  when: not (_freeipa_reparent_need_apply | bool)
+
+- name: Reparent apply | Resolve Directory Manager password
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [dm]
+  when: _freeipa_reparent_need_apply | bool
+
+# Build argv as a real list (not a folded string). Each cert gets its own
+# --external-cert-file= flag (upstream requires one flag per file).
+- name: Reparent apply | Build ipa-cacert-manage renew argv
+  ansible.builtin.set_fact:
+    _freeipa_reparent_renew_argv: >-
+      {{ ['ipa-cacert-manage', 'renew']
+         + (freeipa_reparent_external_cert_files
+            | map('regex_replace', '^(.*)$', '--external-cert-file=\1')
+            | list) }}
+  when: _freeipa_reparent_need_apply | bool
+
+- name: Reparent apply | Install externally signed CA cert (ipa-cacert-manage renew)
+  ansible.builtin.command:
+    argv: "{{ _freeipa_reparent_renew_argv }}"
+  args:
+    stdin: "{{ _freeipa_dm_password }}"
+  register: _freeipa_reparent_renew
+  become: true  # ipa-cacert-manage requires root
+  no_log: true
+  when: _freeipa_reparent_need_apply | bool
+  changed_when: true
+
+- name: Reparent apply | Refresh local IPA trust material (ipa-certupdate)
+  ansible.builtin.command:
+    argv:
+      - ipa-certupdate
+  register: _freeipa_reparent_certupdate
+  become: true  # ipa-certupdate requires root
+  # Always run: even on apply-skip, clients/servers may need a refresh after a
+  # prior interrupted run. Idempotent against LDAP cert store.
+  changed_when: >-
+    'already up-to-date' not in (_freeipa_reparent_certupdate.stdout | default('') | lower)
+    and 'nothing to do' not in (_freeipa_reparent_certupdate.stdout | default('') | lower)
+
+# FreeIPA keeps prior IPA CA certs (self-signed + any earlier external parent)
+# in /etc/ipa/ca.crt for rollover. Do NOT pick "first external" from that soup —
+# after re-signing under a cleaned escrow the wrong twin often still sorts first.
+# Prefer the staged phase-2 files (exact cert + issuing we just applied).
+- name: Reparent apply | Build httpd intermediate chain (staged IPA CA + issuing)
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      python3 - <<'PY'
+      from pathlib import Path
+      from cryptography import x509
+      from cryptography.hazmat.primitives import serialization
+      from cryptography.x509.oid import ExtensionOID
+
+      out_path = Path("/var/lib/ipa/certs/httpd-chain.crt")
+      staged_ipa = Path("{{ freeipa_reparent_external_cert_files[0] }}")
+      staged_chain = Path("{{ freeipa_reparent_external_cert_files[1] }}")
+
+      def load_all(path: Path):
+          certs = []
+          raw = path.read_bytes()
+          for part in raw.split(b"-----BEGIN CERTIFICATE-----")[1:]:
+              pem = b"-----BEGIN CERTIFICATE-----" + part
+              if b"-----END CERTIFICATE-----" not in pem:
+                  continue
+              certs.append(x509.load_pem_x509_certificate(pem))
+          return certs
+
+      def pem(cert):
+          return cert.public_bytes(serialization.Encoding.PEM)
+
+      if not staged_ipa.is_file() or not staged_chain.is_file():
+          raise SystemExit(
+              f"staged reparent certs missing: {staged_ipa} / {staged_chain}"
+          )
+
+      ipa_certs = load_all(staged_ipa)
+      chain_certs = load_all(staged_chain)
+      if not ipa_certs:
+          raise SystemExit(f"no cert in staged IPA CA file {staged_ipa}")
+      if not chain_certs:
+          raise SystemExit(f"no cert in staged chain file {staged_chain}")
+
+      reparented_ipa = ipa_certs[0]
+      # External chain is issuing then root — use issuing only (root stays client-side)
+      issuing = chain_certs[0]
+      if reparented_ipa.subject == reparented_ipa.issuer:
+          raise SystemExit("staged IPA CA is self-signed — refuse httpd chain")
+      if issuing.subject != reparented_ipa.issuer:
+          raise SystemExit(
+              "staged chain[0] subject does not match IPA CA issuer: "
+              f"{issuing.subject.rfc4514_string()} vs "
+              f"{reparented_ipa.issuer.rfc4514_string()}"
+          )
+      # Crypto: IPA CA must verify under issuing public key
+      from cryptography.hazmat.primitives.asymmetric import padding
+      try:
+          issuing.public_key().verify(
+              reparented_ipa.signature,
+              reparented_ipa.tbs_certificate_bytes,
+              padding.PKCS1v15(),
+              reparented_ipa.signature_hash_algorithm,
+          )
+      except Exception as exc:
+          raise SystemExit(f"staged IPA CA not signed by staged issuing: {exc}") from exc
+
+      new = pem(reparented_ipa) + pem(issuing)
+      old = out_path.read_bytes() if out_path.is_file() else b""
+      out_path.write_bytes(new)
+      out_path.chmod(0o644)
+      print("changed" if new != old else "unchanged")
+      print(
+          "chain:",
+          reparented_ipa.subject.rfc4514_string(),
+          "<-",
+          reparented_ipa.issuer.rfc4514_string(),
+      )
+      print(
+          "      ",
+          issuing.subject.rfc4514_string(),
+          "<-",
+          issuing.issuer.rfc4514_string(),
+      )
+      PY
+  register: _freeipa_reparent_httpd_chain
+  become: true
+  changed_when: >-
+    (_freeipa_reparent_httpd_chain.stdout_lines | default([]) | first | default(''))
+    == 'changed'
+
+- name: Reparent apply | Install Apache SSLCertificateChainFile drop-in
+  ansible.builtin.copy:
+    dest: /etc/httpd/conf.d/ipa-httpd-chain.conf
+    mode: "0644"
+    content: |
+      # Managed by freeipa_server reparent_ca_apply.
+      # Leaf remains SSLCertificateFile=/var/lib/ipa/certs/httpd.crt (certmonger).
+      # Intermediates: reparented IPA CA + offline/Vault issuing CA.
+      # Root is not sent — clients must trust the organisation root CA.
+      SSLCertificateChainFile /var/lib/ipa/certs/httpd-chain.crt
+  register: _freeipa_reparent_httpd_chain_conf
+  become: true
+
+- name: Reparent apply | Validate and reload httpd for the new chain
+  when: >-
+    (_freeipa_reparent_httpd_chain is changed)
+    or (_freeipa_reparent_httpd_chain_conf is changed)
+  block:
+    - name: Reparent apply | apachectl configtest
+      ansible.builtin.command:
+        argv: [apachectl, configtest]
+      become: true
+      changed_when: false
+
+    - name: Reparent apply | Reload httpd
+      ansible.builtin.service:
+        name: httpd
+        state: reloaded
+      become: true

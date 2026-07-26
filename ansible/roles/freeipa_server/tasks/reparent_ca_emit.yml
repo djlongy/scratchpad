@@ -1,0 +1,156 @@
+---
+# roles/freeipa_server/tasks/reparent_ca_emit.yml
+#
+# Phase 1 (host side) of post-install CA reparent: ask a RUNNING FreeIPA CA to
+# emit a renewal CSR signed by an external CA. Upstream path:
+#   ipa-cacert-manage renew --external-ca  →  /var/lib/ipa/ca.csr
+#
+# Non-disruptive: the realm keeps serving the current CA cert until phase 2
+# applies the signed cert. Primary only. Called from the reparent_ca playbook
+# flow (playbooks/freeipa.yml --tags reparent_ca).
+
+- name: Reparent emit | Assert this is the FreeIPA primary
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_is_primary | bool
+    fail_msg: >-
+      CA reparent runs on the FreeIPA primary only (the CA renewal master).
+      Re-run with --limit on the primary host.
+    quiet: true
+
+- name: Reparent emit | Assert FreeIPA is already installed
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_reparent_default_conf
+
+- name: Reparent emit | Fail if this host is not an installed FreeIPA server
+  ansible.builtin.assert:
+    that:
+      - _freeipa_reparent_default_conf.stat.exists
+    fail_msg: >-
+      /etc/ipa/default.conf is missing — this host is not a finished FreeIPA
+      install. Use --tags signed_install for a new external-ca install, or
+      complete the default install first, then reparent.
+    quiet: true
+
+- name: Reparent emit | Assert the IPA CA certificate is present (not ca-less)
+  ansible.builtin.stat:
+    path: /etc/ipa/ca.crt
+  register: _freeipa_reparent_ca_crt
+
+- name: Reparent emit | Fail on ca-less servers
+  ansible.builtin.assert:
+    that:
+      - _freeipa_reparent_ca_crt.stat.exists
+    fail_msg: >-
+      /etc/ipa/ca.crt is missing (ca-less install). Reparent only applies to
+      CA-ful FreeIPA servers.
+    quiet: true
+
+# Classify chaining from the IPA CA cert (CN=Certificate Authority), same probe
+# as ca_report.yml — do not trust the first PEM in /etc/ipa/ca.crt (may be root).
+- name: Reparent emit | Read IPA CA subject and issuer
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+      openssl crl2pkcs7 -nocrl -certfile /etc/ipa/ca.crt | openssl pkcs7 -print_certs \
+        | awk -v d="$d" '/-----BEGIN CERTIFICATE-----/{n++} n>0{print > (d"/c"n".pem")}'
+      # Prefer externally-signed IPA CA (issuer!=subject); FreeIPA keeps the
+      # prior self-signed cert and it often sorts first.
+      subj=""; iss=""; self_s=""; self_i=""
+      for f in "$d"/c*.pem; do
+        [ -s "$f" ] || continue
+        s=$(openssl x509 -in "$f" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject=//')
+        case "$s" in
+          *"CN=Certificate Authority"*)
+            i=$(openssl x509 -in "$f" -noout -issuer -nameopt RFC2253 2>/dev/null | sed 's/^issuer=//')
+            if [ "$s" != "$i" ]; then subj="$s"; iss="$i"; break; fi
+            if [ -z "$self_s" ]; then self_s="$s"; self_i="$i"; fi
+            ;;
+        esac
+      done
+      if [ -z "$subj" ] && [ -n "$self_s" ]; then
+        subj="$self_s"; iss="$self_i"
+      fi
+      if [ -z "$subj" ]; then
+        subj=$(openssl x509 -in /etc/ipa/ca.crt -noout -subject -nameopt RFC2253 | sed 's/^subject=//')
+        iss=$( openssl x509 -in /etc/ipa/ca.crt -noout -issuer  -nameopt RFC2253 | sed 's/^issuer=//')
+      fi
+      printf 'subject=%s\nissuer=%s\n' "$subj" "$iss"
+  register: _freeipa_reparent_names
+  changed_when: false
+  become: true  # read IPA CA material
+
+- name: Reparent emit | Derive chaining facts
+  ansible.builtin.set_fact:
+    _freeipa_reparent_subject: >-
+      {{ (_freeipa_reparent_names.stdout_lines
+          | select('match', '^subject=') | first | default('subject=')
+         ).split('subject=', 1)[1] | trim }}
+    _freeipa_reparent_issuer: >-
+      {{ (_freeipa_reparent_names.stdout_lines
+          | select('match', '^issuer=') | first | default('issuer=')
+         ).split('issuer=', 1)[1] | trim }}
+
+- name: Reparent emit | Assert self-signed when required (default)
+  ansible.builtin.assert:
+    that:
+      - _freeipa_reparent_subject == _freeipa_reparent_issuer
+    fail_msg: >-
+      IPA CA is already externally signed
+      (subject={{ _freeipa_reparent_subject }} issuer={{ _freeipa_reparent_issuer }}).
+      Default freeipa_reparent_require_self_signed=true refuses a second reparent.
+      For pure renewal of an already-external CA, re-run with
+      -e freeipa_reparent_require_self_signed=false (or use the external-ca
+      renewal runbook).
+    quiet: true
+  when: freeipa_reparent_require_self_signed | default(true) | bool
+
+- name: Reparent emit | Remind operator to backup before phase 2
+  ansible.builtin.debug:
+    msg: >-
+      Phase 1 will emit /var/lib/ipa/ca.csr (non-disruptive). Take an ipa-backup
+      or VM snapshot BEFORE phase 2 applies the signed cert. Current chaining:
+      {{ 'self-signed' if _freeipa_reparent_subject == _freeipa_reparent_issuer
+         else 'external-ca' }}.
+
+- name: Reparent emit | Resolve Directory Manager password
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _freeipa_resolve: [dm]
+
+# DM password via stdin — never argv (ps-visible). Upstream accepts it on the
+# renew path; certmonger then writes the CSR for the existing CA keypair.
+- name: Reparent emit | Emit external-CA renewal CSR (ipa-cacert-manage renew --external-ca)
+  ansible.builtin.command:
+    argv:
+      - ipa-cacert-manage
+      - renew
+      - --external-ca
+  args:
+    stdin: "{{ _freeipa_dm_password }}"
+  register: _freeipa_reparent_emit
+  become: true  # ipa-cacert-manage requires root
+  no_log: true
+  # Always re-emits a CSR for the current CA key; treat as changed when the
+  # CSR file is (re)written successfully (rc=0).
+  changed_when: _freeipa_reparent_emit.rc == 0
+
+- name: Reparent emit | Assert the CSR landed at the expected path
+  ansible.builtin.stat:
+    path: "{{ freeipa_reparent_csr_host_path }}"
+  register: _freeipa_reparent_csr_stat
+  become: true
+
+- name: Reparent emit | Fail if the CSR is missing
+  ansible.builtin.assert:
+    that:
+      - _freeipa_reparent_csr_stat.stat.exists
+      - (_freeipa_reparent_csr_stat.stat.size | default(0)) > 0
+    fail_msg: >-
+      ipa-cacert-manage renew --external-ca finished but
+      {{ freeipa_reparent_csr_host_path }} is missing or empty. Check
+      /var/log/ipaserver-install.log and certmonger for the CA request.
+    quiet: true

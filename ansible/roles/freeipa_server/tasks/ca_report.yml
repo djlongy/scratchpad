@@ -58,17 +58,30 @@
       d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
       openssl crl2pkcs7 -nocrl -certfile /etc/ipa/ca.crt | openssl pkcs7 -print_certs \
         | awk -v d="$d" '/-----BEGIN CERTIFICATE-----/{n++} n>0{print > (d"/c"n".pem")}'
+      # Prefer an IPA CA cert that is externally signed (issuer != subject). After
+      # reparent FreeIPA keeps the prior self-signed cert for rollover, and it often
+      # appears first in /etc/ipa/ca.crt — picking the first CN=Certificate Authority
+      # mis-classifies as self-signed.
       subj=""; iss=""
+      self_subj=""; self_iss=""
       for f in "$d"/c*.pem; do
         [ -s "$f" ] || continue
         s=$(openssl x509 -in "$f" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject=//')
         case "$s" in
           *"CN=Certificate Authority"*)
-            subj="$s"
-            iss=$(openssl x509 -in "$f" -noout -issuer -nameopt RFC2253 2>/dev/null | sed 's/^issuer=//')
-            break;;
+            i=$(openssl x509 -in "$f" -noout -issuer -nameopt RFC2253 2>/dev/null | sed 's/^issuer=//')
+            if [ "$s" != "$i" ]; then
+              subj="$s"; iss="$i"; break
+            fi
+            if [ -z "$self_subj" ]; then
+              self_subj="$s"; self_iss="$i"
+            fi
+            ;;
         esac
       done
+      if [ -z "$subj" ] && [ -n "$self_subj" ]; then
+        subj="$self_subj"; iss="$self_iss"
+      fi
       if [ -z "$subj" ]; then   # fallback: no CN=Certificate Authority match -> first cert
         subj=$(openssl x509 -in /etc/ipa/ca.crt -noout -subject -nameopt RFC2253 | sed 's/^subject=//')
         iss=$( openssl x509 -in /etc/ipa/ca.crt -noout -issuer  -nameopt RFC2253 | sed 's/^issuer=//')

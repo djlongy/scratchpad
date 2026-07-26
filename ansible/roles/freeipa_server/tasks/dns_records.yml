@@ -1,9 +1,10 @@
 ---
 # roles/freeipa_server/tasks/dns_records.yml
-# Declarative DNS for IPA's integrated DNS: manage hosted zones, conditional
-# forward zones, and records via the upstream ipadnszone / ipadnsforwardzone /
-# ipadnsrecord modules. Primary only (replicates to the cluster). Idempotent —
-# the modules reconcile to the declared state. Admin password from Vault.
+# Declarative DNS for IPA's integrated DNS: global forwarders, hosted zones,
+# conditional forward zones, and records via the upstream ipadnsconfig /
+# ipadnszone / ipadnsforwardzone / ipadnsrecord modules. Primary only (LDAP
+# state replicates to the cluster). Idempotent — the modules reconcile to the
+# declared state. Admin password from Vault.
 #
 # Only meaningful when IPA runs integrated DNS (freeipa_server_setup_dns: true).
 
@@ -12,10 +13,35 @@
   vars:
     _freeipa_resolve: [admin]
 
+# ── Global DNS forwarders (day-2) ───────────────────────────────────────────
+# freeipa_server_forwarders / freeipa_server_forward_policy are applied at
+# install by ipaserver/ipareplica, but install is one-shot — live drift leaves
+# "Global DNS configuration is empty" and remote clients get REFUSED
+# (recursion requested but not available). Reconcile every converge so
+# unknowns go to the declared upstream (estate: pfSense Unbound / gateway).
+# action: dnsconfig replaces the full forwarder list (not member-add).
+- name: DNS | Reconcile global DNS forwarders (day-2)
+  freeipa.ansible_freeipa.ipadnsconfig:
+    forwarders: >-
+      {{ freeipa_server_forwarders
+         | map('community.general.dict_kv', 'ip_address')
+         | list }}
+    forward_policy: "{{ freeipa_server_forward_policy }}"
+  when:
+    - freeipa_server_forwarders | length > 0
+    - not (freeipa_server_no_forwarders | bool)
+
+- name: DNS | Disable global DNS forwarders (no_forwarders)
+  freeipa.ansible_freeipa.ipadnsconfig:
+    forward_policy: none
+  when: freeipa_server_no_forwarders | bool
+
 # Forward AND reverse zones in one task. Forward: set `name`. Reverse: set
 # `name_from_ip` to a CIDR (e.g. 10.0.0.0/24) and IPA derives the in-addr.arpa
-# zone name — pair with allow_sync_ptr (and create_reverse on records below) for
-# automatic PTRs. skip_overlap_check helps when a reverse zone overlaps a parent.
+# name. Zone flags are orthogonal: dynamic_update = clients may DDNS/nsupdate;
+# allow_sync_ptr = keep A/AAAA ↔ PTR paired when address records change (needs a
+# reverse zone). create_reverse on records (below) is a separate add-time PTR.
+# skip_overlap_check helps when a reverse zone overlaps a parent.
 - name: DNS | Manage hosted zones (forward + reverse)
   freeipa.ansible_freeipa.ipadnszone:
     name: "{{ item.name | default(omit) }}"
@@ -29,11 +55,22 @@
   loop_control:
     label: "{{ item.name | default(item.name_from_ip) | default('unnamed-zone') }}"
 
+# forwarders: inventory/export use plain IP strings (same contract as
+# freeipa_server_forwarders); the module wants [{ip_address: ...}]. Normalize
+# here so callers never have to hand-build the dict form. Already-dict items
+# (ip_address + optional port) pass through unchanged.
 - name: DNS | Manage conditional forward zones
   freeipa.ansible_freeipa.ipadnsforwardzone:
     name: "{{ item.name }}"
-    forwarders: "{{ item.forwarders | default(omit) }}"
+    forwarders: >-
+      {{ item.forwarders | default([])
+         | map('community.general.dict_kv', 'ip_address')
+         | list
+         if (item.forwarders | default([]) | length > 0
+             and (item.forwarders | first is string))
+         else (item.forwarders | default(omit)) }}
     forwardpolicy: "{{ item.forwardpolicy | default(omit) }}"
+    skip_overlap_check: "{{ item.skip_overlap_check | default(omit) }}"
     state: "{{ item.state | default('present') }}"
   loop: "{{ freeipa_server_dns_forward_zones }}"
   loop_control:
@@ -46,8 +83,8 @@
 #   * flat   — name + record_type + record_value (+ create_reverse for auto-PTR)
 #   * bulk   — zone_name + records: [ {record_name, a_record: [...], create_reverse}, ... ]
 #              (one call per zone; record fields are list-typed too)
-# create_reverse auto-builds the PTR — needs the matching reverse zone above +
-# allow_sync_ptr. Great for vCenter/ESXi hosts sourced from inventory hostvars.
+# create_reverse auto-builds the PTR at A/AAAA add time — needs the matching
+# reverse zone above (not allow_sync_ptr; that is ongoing zone sync).
 # GLOBAL default: freeipa_server_dns_create_reverse: true PTRs every A/AAAA
 # record (flat items via _dns_flat_reverse; bulk `records:` entries via the
 # freeipa_dns_reverse_defaulted filter). A per-record create_reverse always wins,

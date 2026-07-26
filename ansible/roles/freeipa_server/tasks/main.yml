@@ -9,9 +9,9 @@
 #   hardening  → opt-in post-install hardening
 #   backup     → scheduled ipa-backup timer + opt-in controller offload (primary)
 #   iam        → declarative IAM reconciliation (primary only)
-#   dns        → declarative DNS zones/forward-zones/records (primary; opt-in)
+#   dns        → global forwarders + zones/forward-zones/records (primary; opt-in)
 #   automember → auto group/hostgroup membership rules (primary; opt-in)
-#   dns-harden → BIND recursion/query ACL includes (primary; opt-in, integrated DNS)
+#   dns-harden → BIND recursion/query ACL includes (every DNS server; opt-in)
 #   adtrust    → Active Directory trust(s) (primary; opt-in)
 #   reports    → IAM summary + stale-account report (last so they land at the end of
 #                the scroll; --tags stale / --tags report still select them alone)
@@ -20,244 +20,256 @@
 # Self-sufficient about facts: a gather_facts:false caller with a cold fact cache
 # would leave ansible_os_family undefined for preflight/hardening — gather the
 # minimal set only when missing (`always` so --tags runs get it too).
-- name: Gather minimal facts when the play skipped them (cold cache safety)
-  ansible.builtin.setup:
-    gather_subset: ["min"]
-  when: ansible_os_family is not defined
+- name: Skip freeipa_server (freeipa_server_enabled is false)
+  ansible.builtin.debug:
+    msg: "freeipa_server_enabled is false — skipping freeipa_server"
+  when: not (freeipa_server_enabled | bool)
   tags: [always]
 
-- name: Run FreeIPA dependency-ordering preflight guards
-  ansible.builtin.import_tasks: preflight.yml
-  become: true
-  tags: [preflight]
+- name: Configure freeipa_server
+  when: freeipa_server_enabled | bool
+  block:
 
-# Aborted-install guard + opt-in self-heal, BEFORE the upstream include. The
-# import is UNGATED because the fail-fast guard inside (leftover sysrestore
-# state without default.conf = a half-finished ipa-server-install) must always
-# run — installing on top of that debris yields a broken half-install. The
-# mutating repair path (re-render lost httpd/PKI config from FreeIPA's own
-# templates) is opt-in via freeipa_server_heal_enabled — an incident-response
-# tool, not a converge default. Tagged install so a --tags install run is
-# guarded too; --tags heal targets this file alone.
-- name: Guard against aborted installs + self-heal broken httpd/PKI wiring (opt-in)
-  ansible.builtin.import_tasks: heal.yml
-  become: true
-  tags: [install, heal]
+    - name: Gather minimal facts when the play skipped them (cold cache safety)
+      ansible.builtin.setup:
+        gather_subset: ["min"]
+      when: ansible_os_family is not defined
+      tags: [always]
 
-# Host-package install via the upstream ipaserver/ipareplica roles.
-- name: Install FreeIPA (upstream primary or replica)
-  ansible.builtin.import_tasks: install.yml
-  become: true
-  tags: [install]
+    - name: Run FreeIPA dependency-ordering preflight guards
+      ansible.builtin.import_tasks: preflight.yml
+      become: true
+      tags: [preflight]
 
-- name: Apply FreeIPA cold-start resilience fixes
-  ansible.builtin.import_tasks: resilience.yml
-  become: true
-  when: freeipa_server_resilience_enabled | bool
-  tags: [configure, resilience]
+    # Aborted-install guard + opt-in self-heal, BEFORE the upstream include. The
+    # import is UNGATED because the fail-fast guard inside (leftover sysrestore
+    # state without default.conf = a half-finished ipa-server-install) must always
+    # run — installing on top of that debris yields a broken half-install. The
+    # mutating repair path (re-render lost httpd/PKI config from FreeIPA's own
+    # templates) is opt-in via freeipa_server_heal_enabled — an incident-response
+    # tool, not a converge default. Tagged install so a --tags install run is
+    # guarded too; --tags heal targets this file alone.
+    - name: Guard against aborted installs + self-heal broken httpd/PKI wiring (opt-in)
+      ansible.builtin.import_tasks: heal.yml
+      become: true
+      tags: [install, heal]
 
-- name: Import trusted external CA certificates (primary only)
-  ansible.builtin.import_tasks: certs.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_server_trusted_external_cas | length > 0
-    - freeipa_server_ca_mode != 'ca-less'
-  tags: [certs, ca]
+    # Host-package install via the upstream ipaserver/ipareplica roles.
+    - name: Install FreeIPA (upstream primary or replica)
+      ansible.builtin.import_tasks: install.yml
+      become: true
+      tags: [install]
 
-# IPA admin credentials for every freeipa.ansible_freeipa module task, injected once
-# per phase file via module_defaults. `default(omit)` matters: module_defaults are
-# templated for EVERY task in the file, including those running before the phase's
-# shared resolver has set _freeipa_admin_password — module tasks always run after it.
-- name: Apply FreeIPA post-install hardening (opt-in)
-  ansible.builtin.import_tasks: hardening.yml
-  become: true
-  when: freeipa_server_is_primary | bool
-  tags: [hardening]
-  module_defaults: &freeipa_admin_defaults
-    group/freeipa.ansible_freeipa.modules:
-      ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
-      ipaadmin_password: "{{ _freeipa_admin_password | default(omit) }}"
+    - name: Apply FreeIPA cold-start resilience fixes
+      ansible.builtin.import_tasks: resilience.yml
+      become: true
+      when: freeipa_server_resilience_enabled | bool
+      tags: [configure, resilience]
 
-- name: Configure FreeIPA backup (primary only)
-  ansible.builtin.import_tasks: backup.yml
-  become: true
-  when: freeipa_server_is_primary | bool
-  tags: [backup]
+    - name: Import trusted external CA certificates (primary only)
+      ansible.builtin.import_tasks: certs.yml
+      become: true
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_server_trusted_external_cas | length > 0
+        - freeipa_server_ca_mode != 'ca-less'
+      tags: [certs, ca]
 
-# Force an on-demand backup NOW (primary only) — opt-in via `--tags backup_now`
-# only (never on a normal converge). For a nightly CI/CD job: it triggers the
-# deployed backup service synchronously and fails the play (→ red pipeline) if
-# the backup errors. See tasks/backup_run.yml.
-- name: Force a FreeIPA backup on demand (primary only; opt-in)
-  ansible.builtin.import_tasks: backup_run.yml
-  become: true
-  # Guard against tag cascade: a co-tag inherited from the caller can defeat
-  # `never`, so only run when the tag was explicitly passed via --tags.
-  when:
-    - freeipa_server_is_primary | bool
-    - "'backup_now' in ansible_run_tags"
-  tags: [never, backup_now]
+    # IPA admin credentials for every freeipa.ansible_freeipa module task, injected once
+    # per phase file via module_defaults. `default(omit)` matters: module_defaults are
+    # templated for EVERY task in the file, including those running before the phase's
+    # shared resolver has set _freeipa_admin_password — module tasks always run after it.
+    - name: Apply FreeIPA post-install hardening (opt-in)
+      ansible.builtin.import_tasks: hardening.yml
+      become: true
+      when: freeipa_server_is_primary | bool
+      tags: [hardening]
+      module_defaults: &freeipa_admin_defaults
+        group/freeipa.ansible_freeipa.modules:
+          ipaadmin_principal: "{{ freeipa_server_admin_principal }}"
+          ipaadmin_password: "{{ _freeipa_admin_password | default(omit) }}"
 
-# IAM pipeline — three phases: 1. desired (assemble + validate), 2. apply,
-# 3. prune (reconcile.yml). Desired-assembly carries every consumer's tag — apply,
-# reconcile AND the hard-delete ops all need the assembled lists first (delete.yml
-# reads them; prune_preserved needs the break-glass → protected_users augmentation);
-# reconcile.yml interlocks on the sentinel it sets, so a prune can never run unassembled.
-- name: Assemble + validate declarative IAM desired state (primary only)
-  ansible.builtin.import_tasks: iam_desired.yml
-  become: true
-  when: freeipa_server_is_primary | bool
-  tags: [iam, reconcile, delete, prune_preserved, users, groups, hbac, sudo]
+    - name: Configure FreeIPA backup (primary only)
+      ansible.builtin.import_tasks: backup.yml
+      become: true
+      when: freeipa_server_is_primary | bool
+      tags: [backup]
 
-# APPLY (server-side ipalib — runs on the IPA host, works before DNS, bulks
-# groups/users in one call, and covers the full object set). NOT tagged `reconcile`
-# — a prune-only run skips apply. Consumes the desired state assembled above.
-- name: Apply declarative IAM data (primary only)
-  ansible.builtin.import_tasks: iam.yml
-  become: true
-  when: freeipa_server_is_primary | bool
-  tags: [iam, users, groups, hbac, sudo]
-  module_defaults: *freeipa_admin_defaults
+    # Force an on-demand backup NOW (primary only) — opt-in via `--tags backup_now`
+    # only (never on a normal converge). For a nightly CI/CD job: it triggers the
+    # deployed backup service synchronously and fails the play (→ red pipeline) if
+    # the backup errors. See tasks/backup_run.yml.
+    - name: Force a FreeIPA backup on demand (primary only; opt-in)
+      ansible.builtin.import_tasks: backup_run.yml
+      become: true
+      # Guard against tag cascade: a co-tag inherited from the caller can defeat
+      # `never`, so only run when the tag was explicitly passed via --tags.
+      when:
+        - freeipa_server_is_primary | bool
+        - "'backup_now' in ansible_run_tags"
+      tags: [never, backup_now]
 
-# OBJECT reconcile — delete in-scope objects (groups/hostgroups/HBAC/sudo/automember)
-# no longer declared. Driven by the ONE authoritative switch; only names containing
-# freeipa_iam_reconcile_scope are eligible (blank scope = skipped, fail-safe), and the
-# interlock in reconcile.yml aborts if the desired phase above didn't run.
-- name: Reconcile orphaned matrix-managed objects (primary only; authoritative + scoped)
-  ansible.builtin.import_tasks: reconcile.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_server_authoritative | bool
-    - not (freeipa_iam_reconcile_memberships_only | default(false) | bool)
-    - ((freeipa_iam_reconcile_scope | default('')) | length > 0)
-      or (freeipa_iam_reconcile_all | default(false) | bool)
-  tags: [iam, reconcile]
+    # IAM pipeline — three phases: 1. desired (assemble + validate), 2. apply,
+    # 3. prune (reconcile.yml). Desired-assembly carries every consumer's tag — apply,
+    # reconcile AND the hard-delete ops all need the assembled lists first (delete.yml
+    # reads them; prune_preserved needs the break-glass → protected_users augmentation);
+    # reconcile.yml interlocks on the sentinel it sets, so a prune can never run unassembled.
+    - name: Assemble + validate declarative IAM desired state (primary only)
+      ansible.builtin.import_tasks: iam_desired.yml
+      become: true
+      when: freeipa_server_is_primary | bool
+      tags: [iam, reconcile, delete, prune_preserved, users, groups, hbac, sudo]
 
-- name: Manage declarative DNS zones/records (primary only; needs integrated DNS)
-  ansible.builtin.import_tasks: dns_records.yml
-  become: true
-  when:
-    - freeipa_server_setup_dns | bool
-    - freeipa_server_is_primary | bool
-    - (freeipa_server_dns_zones | length > 0) or
-      (freeipa_server_dns_forward_zones | length > 0) or
-      (freeipa_server_dns_records | length > 0)
-  tags: [dns]
-  module_defaults: *freeipa_admin_defaults
+    # APPLY (server-side ipalib — runs on the IPA host, works before DNS, bulks
+    # groups/users in one call, and covers the full object set). NOT tagged `reconcile`
+    # — a prune-only run skips apply. Consumes the desired state assembled above.
+    - name: Apply declarative IAM data (primary only)
+      ansible.builtin.import_tasks: iam.yml
+      become: true
+      when: freeipa_server_is_primary | bool
+      tags: [iam, users, groups, hbac, sudo]
+      module_defaults: *freeipa_admin_defaults
 
-- name: Reconcile automember rules (primary only)
-  ansible.builtin.import_tasks: automember.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_server_automember_rules | length > 0
-  tags: [iam, automember]
-  module_defaults: *freeipa_admin_defaults
+    # OBJECT reconcile — delete in-scope objects (groups/hostgroups/HBAC/sudo/automember)
+    # no longer declared. Driven by the ONE authoritative switch; only names containing
+    # freeipa_iam_reconcile_scope are eligible (blank scope = skipped, fail-safe), and the
+    # interlock in reconcile.yml aborts if the desired phase above didn't run.
+    - name: Reconcile orphaned matrix-managed objects (primary only; authoritative + scoped)
+      ansible.builtin.import_tasks: reconcile.yml
+      become: true
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_server_authoritative | bool
+        - not (freeipa_iam_reconcile_memberships_only | default(false) | bool)
+        - ((freeipa_iam_reconcile_scope | default('')) | length > 0)
+          or (freeipa_iam_reconcile_all | default(false) | bool)
+      tags: [iam, reconcile]
 
-# BIND DNS hardening — own the trusted_network ACL + recursion/query-cache scope via the
-# ipa-ext.conf / ipa-options-ext.conf includes. Integrated DNS only; opt-in via a non-empty
-# freeipa_server_dns_trusted_networks. Validated with named-checkconf before rndc reconfig.
-- name: Harden integrated BIND DNS (recursion/query ACL; primary only)
-  ansible.builtin.import_tasks: dns_hardening.yml
-  become: true
-  when:
-    - freeipa_server_setup_dns | bool
-    - freeipa_server_is_primary | bool
-    - freeipa_server_dns_trusted_networks | length > 0
-  tags: [dns, hardening]
+    - name: Manage declarative DNS forwarders/zones/records (primary only; needs integrated DNS)
+      ansible.builtin.import_tasks: dns_records.yml
+      become: true
+      when:
+        - freeipa_server_setup_dns | bool
+        - freeipa_server_is_primary | bool
+        - (freeipa_server_dns_zones | length > 0) or
+          (freeipa_server_dns_forward_zones | length > 0) or
+          (freeipa_server_dns_records | length > 0) or
+          (freeipa_server_forwarders | length > 0) or
+          (freeipa_server_no_forwarders | bool)
+      tags: [dns]
+      module_defaults: *freeipa_admin_defaults
 
-- name: Establish Active Directory trust(s) (primary only)
-  ansible.builtin.import_tasks: adtrust.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_server_ad_trusts | length > 0
-  tags: [adtrust, trust]
-  module_defaults: *freeipa_admin_defaults
+    - name: Reconcile automember rules (primary only)
+      ansible.builtin.import_tasks: automember.yml
+      become: true
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_server_automember_rules | length > 0
+      tags: [iam, automember]
+      module_defaults: *freeipa_admin_defaults
 
-# ── End-of-run operator reports (last of the default path) ────────────────────
-# Kept AFTER every mutating converge phase (iam/dns/automember/adtrust) so the
-# summaries are the last thing on a normal scroll. never-tagged ops below still
-# come later but only when explicitly requested.
-#
-# IAM summary (after iam + reconcile so prunes are included). On by default;
-# freeipa_iam_report: false to silence.
-- name: Report IAM run summary (primary only)
-  ansible.builtin.import_tasks: iam_report.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_iam_report | default(true) | bool
-  tags: [iam, report]
+    # BIND DNS hardening — own the trusted_network ACL + recursion/query-cache scope via the
+    # ipa-ext.conf / ipa-options-ext.conf includes. File-local on EVERY integrated-DNS
+    # server (not LDAP-replicated). Opt-in via a non-empty freeipa_server_dns_trusted_networks.
+    # Validated with named-checkconf before rndc reconfig.
+    - name: Harden integrated BIND DNS (recursion/query ACL; every DNS server)
+      ansible.builtin.import_tasks: dns_hardening.yml
+      become: true
+      when:
+        - freeipa_server_setup_dns | bool
+        - freeipa_server_dns_trusted_networks | length > 0
+      tags: [dns, hardening]
 
-# READ-ONLY inactive-account sweep — lists users whose last successful Kerberos
-# auth predates freeipa_iam_stale_days. Never disables/archives/deletes; the
-# operator acts on the list. On by default; --tags stale runs it alone.
-- name: Report inactive (stale) user accounts (read-only; primary only)
-  ansible.builtin.import_tasks: iam_stale_report.yml
-  become: true
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_iam_stale_report | default(true) | bool
-  tags: [iam, report, stale]
+    - name: Establish Active Directory trust(s) (primary only)
+      ansible.builtin.import_tasks: adtrust.yml
+      become: true
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_server_ad_trusts | length > 0
+      tags: [adtrust, trust]
+      module_defaults: *freeipa_admin_defaults
 
-- name: Restore FreeIPA from a backup (break-glass; primary only)
-  ansible.builtin.import_tasks: restore.yml
-  become: true
-  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_server_restore_name | length > 0
-    - "'restore' in ansible_run_tags"
-  tags: [never, restore]
+    # ── End-of-run operator reports (last of the default path) ────────────────────
+    # Kept AFTER every mutating converge phase (iam/dns/automember/adtrust) so the
+    # summaries are the last thing on a normal scroll. never-tagged ops below still
+    # come later but only when explicitly requested.
+    #
+    # IAM summary (after iam + reconcile so prunes are included). On by default;
+    # freeipa_iam_report: false to silence.
+    - name: Report IAM run summary (primary only)
+      ansible.builtin.import_tasks: iam_report.yml
+      become: true
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_iam_report | default(true) | bool
+      tags: [iam, report]
 
-- name: Export live config to declarative group_vars (opt-in; primary only)
-  ansible.builtin.import_tasks: export_config.yml
-  become: true
-  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
-  when:
-    - freeipa_server_is_primary | bool
-    - "'export' in ansible_run_tags"
-  tags: [never, export]
+    # READ-ONLY inactive-account sweep — lists users whose last successful Kerberos
+    # auth predates freeipa_iam_stale_days. Never disables/archives/deletes; the
+    # operator acts on the list. On by default; --tags stale runs it alone.
+    - name: Report inactive (stale) user accounts (read-only; primary only)
+      ansible.builtin.import_tasks: iam_stale_report.yml
+      become: true
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_iam_stale_report | default(true) | bool
+      tags: [iam, report, stale]
 
-# Read-only CA-topology probe (primary only). Prints a paste-ready block of
-# freeipa_server_* CA vars so a TEST realm can reproduce this server's CA 1:1.
-# `never`-tagged like export — runs only with --tags ca_report; --check is a
-# no-op since it mutates nothing.
-- name: Report the CA topology as reproducible vars (opt-in; primary only)
-  ansible.builtin.import_tasks: ca_report.yml
-  become: true
-  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
-  when:
-    - freeipa_server_is_primary | bool
-    - "'ca_report' in ansible_run_tags"
-  tags: [never, ca_report]
+    - name: Restore FreeIPA from a backup (break-glass; primary only)
+      ansible.builtin.import_tasks: restore.yml
+      become: true
+      # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_server_restore_name | length > 0
+        - "'restore' in ansible_run_tags"
+      tags: [never, restore]
 
-# HARD-DELETE every DECLARED freeipa_iam_* object (mock/test cleanup). Double-gated:
-# `never` tag (only --tags delete) AND freeipa_iam_delete: true (mock inventories only).
-- name: Delete (HARD-DELETE) declared IAM objects — mock/test cleanup only
-  ansible.builtin.import_tasks: delete.yml
-  become: true
-  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_iam_delete | default(false) | bool
-    - "'delete' in ansible_run_tags"
-  tags: [never, delete]
-  module_defaults: *freeipa_admin_defaults
+    - name: Export live config to declarative group_vars (opt-in; primary only)
+      ansible.builtin.import_tasks: export_config.yml
+      become: true
+      # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+      when:
+        - freeipa_server_is_primary | bool
+        - "'export' in ansible_run_tags"
+      tags: [never, export]
 
-# HARD-DELETE ORPHANED preserved (archived) users — no longer declared anywhere, so
-# --tags delete can't reach them; discovered live. Same single gate (freeipa_iam_delete);
-# the `never` tag picks this op, --check = dry-run.
-- name: Prune (HARD-DELETE) orphaned preserved users
-  ansible.builtin.import_tasks: prune_preserved.yml
-  become: true
-  # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
-  when:
-    - freeipa_server_is_primary | bool
-    - freeipa_iam_delete | default(false) | bool
-    - "'prune_preserved' in ansible_run_tags"
-  tags: [never, prune_preserved]
-  module_defaults: *freeipa_admin_defaults
+    # Read-only CA-topology probe (primary only). Prints a paste-ready block of
+    # freeipa_server_* CA vars so a TEST realm can reproduce this server's CA 1:1.
+    # `never`-tagged like export — runs only with --tags ca_report; --check is a
+    # no-op since it mutates nothing.
+    - name: Report the CA topology as reproducible vars (opt-in; primary only)
+      ansible.builtin.import_tasks: ca_report.yml
+      become: true
+      # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+      when:
+        - freeipa_server_is_primary | bool
+        - "'ca_report' in ansible_run_tags"
+      tags: [never, ca_report]
+
+    # HARD-DELETE every DECLARED freeipa_iam_* object (mock/test cleanup). Double-gated:
+    # `never` tag (only --tags delete) AND freeipa_iam_delete: true (mock inventories only).
+    - name: Delete (HARD-DELETE) declared IAM objects — mock/test cleanup only
+      ansible.builtin.import_tasks: delete.yml
+      become: true
+      # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_iam_delete | default(false) | bool
+        - "'delete' in ansible_run_tags"
+      tags: [never, delete]
+      module_defaults: *freeipa_admin_defaults
+
+    # HARD-DELETE ORPHANED preserved (archived) users — no longer declared anywhere, so
+    # --tags delete can't reach them; discovered live. Same single gate (freeipa_iam_delete);
+    # the `never` tag picks this op, --check = dry-run.
+    - name: Prune (HARD-DELETE) orphaned preserved users
+      ansible.builtin.import_tasks: prune_preserved.yml
+      become: true
+      # ansible_run_tags guard: tag-cascade cannot defeat `never` (estate idiom).
+      when:
+        - freeipa_server_is_primary | bool
+        - freeipa_iam_delete | default(false) | bool
+        - "'prune_preserved' in ansible_run_tags"
+      tags: [never, prune_preserved]
+      module_defaults: *freeipa_admin_defaults

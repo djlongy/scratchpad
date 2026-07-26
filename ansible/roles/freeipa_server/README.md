@@ -43,7 +43,11 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | **Required** | `domain` (→ `freeipa_server_domain`) | `""` | Realm derives from this; the one truly required input |
 | **Required** | `freeipa_server_admin_password` | `""` | IPA admin password (or `freeipa_server_vault_secret` fallback) |
 | When `install` | `freeipa_server_dm_password` | `""` | Directory Manager password, install only |
-| When `install` + DNS | `freeipa_server_forwarders` | `[]` | Upstream DNS forwarders (unless `no_forwarders`) |
+| When DNS | `freeipa_server_forwarders` | `[]` | Upstream DNS forwarders at install **and** day-2 (`ipadnsconfig`) |
+| When DNS | `freeipa_server_dns_trusted_networks` | `[]` | CIDRs allowed to recurse (BIND `trusted_network` ACL; empty = skip harden) |
+| When DNS | `freeipa_server_dns_forward_zones` | `[]` | Conditional forward zones (`ipadnsforwardzone`; IP strings or `{ip_address}` dicts) |
+| Optional | `freeipa_server_enabled` | `true` | Role enable gate — set false to no-op the whole role |
+| Optional | `freeipa_server_setup_dns` | `true` | Integrated DNS at install (not flip-able after install) |
 | Optional | `freeipa_server_vault_secret` | unset | HashiCorp Vault KV path; fallback only when passwords above are empty |
 | Optional | `freeipa_server_ca_mode` | `self-signed` | `self-signed` \| `external-ca` \| `ca-less` |
 | Optional | `freeipa_server_authoritative` | `false` | Soft-prune switch — reconcile deletes/archives undeclared objects when true |
@@ -107,6 +111,9 @@ password directly means no Vault is needed at all.
   `--tags ca_report` is a read-only probe that prints the live CA vars for
   reproducing a server's CA settings elsewhere. `freeipa_server_trusted_external_cas`
   only imports extra trusted CA certs — it does not change the serving CA.
+  To reparent a **working** self-signed CA under an org offline/external CA
+  without reinstall, use `--tags reparent_ca` (`ipa-cacert-manage renew
+  --external-ca`; emit CSR then apply the signed chain).
 - **Self-heal (opt-in)** — a server that has lost some of the httpd/PKI config
   files the installer generates (RPM `%ghost` entries) sails through
   "already configured" and then breaks. `--tags heal` with
@@ -138,6 +145,14 @@ password directly means no Vault is needed at all.
   backup_now` forces a synchronous backup and fails the run on error; `--tags
   restore` (break-glass) restores from a named backup; `freeipa_server_backup_fetch_name`
   offloads a backup to the controller.
+- **DNS (integrated)** — when `freeipa_server_setup_dns: true`, day-2
+  reconcile covers global forwarders (`ipadnsconfig` from
+  `freeipa_server_forwarders` / `forward_policy`), hosted zones + records,
+  and conditional forward zones (`freeipa_server_dns_forward_zones`). Plain
+  IP strings in `forwarders` are accepted (the role normalises to the
+  module's `{ip_address: …}` form). Non-empty
+  `freeipa_server_dns_trusted_networks` arms BIND hardening
+  (`ipa-ext.conf` ACL + `allow-recursion`/`allow-query-cache` options).
 - **Automember** — `freeipa_server_automember_rules` auto-assigns users/hosts
   to an existing group/hostgroup by attribute regex, solving the
   enrol-then-authorize ordering problem for freshly joined hosts.
