@@ -1,0 +1,58 @@
+---
+# ── Recipe: LOOKUPS ────────────────────────────────────────────────────────
+# The small maps. Use these in a template or a host_var when you know the
+# segment key and want one value out of it, instead of filtering _segments
+# every time:
+#
+#   vault_listen_addr: "{{ _gateway_by_key.mgt_svc }}"
+#   my_subnet:         "{{ _subnet_by_key[my_segment] }}"
+#
+# TO LIFT ONE OUT: copy the three lines.
+# TO ADD YOUR OWN: copy any task, change the expression on the `var:` line.
+
+- name: Segment key → VLAN id
+  ansible.builtin.debug:
+    var: _vlan_by_key
+
+- name: Segment key → name
+  ansible.builtin.debug:
+    var: _name_by_key
+
+- name: Segment key → subnet
+  ansible.builtin.debug:
+    var: _subnet_by_key
+
+- name: Segment key → gateway
+  ansible.builtin.debug:
+    var: _gateway_by_key
+
+- name: VLAN id → segment key
+  ansible.builtin.debug:
+    var: _key_by_vlan
+
+- name: Segment key → the whole row
+  ansible.builtin.debug:
+    var: _segment_by_key
+
+- name: Every name the catalog has built
+  # Names are produced by the recipes in network_name_recipes, never typed as
+  # literals — this is what they came out as.
+  ansible.builtin.debug:
+    var: _segment_names
+
+- name: Names built from a recipe, and names pinned on the segment
+  # A pinned name overrides what its recipe would have produced. An empty
+  # pinned list means the estate is fully token-driven.
+  ansible.builtin.debug:
+    msg: "{{ _names_from_recipes | length }} from recipes, {{ _names_pinned | length }} pinned: {{ _names_pinned | map(attribute='key') | list }}"
+
+# ── NARROWED — these wake up when you set the matching knob ────────────────
+
+- name: One key, through every map at once
+  ansible.builtin.debug:
+    msg:
+      vlan: "{{ _vlan_by_key[network_facts_key] }}"
+      name: "{{ _name_by_key[network_facts_key] }}"
+      subnet: "{{ _subnet_by_key[network_facts_key] | default('-') }}"
+      gateway: "{{ _gateway_by_key[network_facts_key] | default('-') }}"
+  when: network_facts_key | length > 0

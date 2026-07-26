@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: network_facts
+  author: scratchpad
+  description: >-
+    Prints what the network catalog holds, one liftable recipe per fact.
+    Read-only — it configures nothing.
+  license: MIT
+  min_ansible_version: "2.14"
+  galaxy_tags: [networking, documentation, facts]
+
+# Collections: none beyond ansible.builtin.
+dependencies: []

@@ -37,7 +37,9 @@ ansible/
 ├── playbooks/group_vars/all/    # estate-wide: domain, canonical_*, networks.yml
 ├── offline-ca/ + scripts/offline-ca.sh  # offline root/issuing CA toolkit
 ├── plugins/
-│   └── action/                  # action plugins (e.g. get_cli_args)
+│   ├── action/                  # action plugins (e.g. get_cli_args)
+│   └── filter/
+│       └── network_catalog.py   # the network-catalog engine (pure Python, 76 unit tests)
 ├── files/                   # reference assets (not Jinja-templated)
 │   └── fapolicyd-rule-templates/  # drop-in rules.d/ examples consumed by roles/common/tasks/fapolicyd.yml
 ├── scripts/                 # shell helpers
@@ -45,8 +47,36 @@ ansible/
 │   └── load_vmware_env.sh       # source VMWARE_* from HCV
 └── docs/                    # ansible-specific long-form guides
     ├── ansible-design-principles.md  # community-standard playbook/role/tag/var conventions
+    ├── network-catalog.md            # the network catalog: full option + workflow reference
     └── vault-env-unlock.md           # unlock-ansible / unlock-vmware shell helpers
 ```
+
+## Network catalog
+
+One segment matrix in `playbooks/group_vars/all/networks.yml` derives every
+per-platform list — vSphere port groups, pfSense VLANs and SVIs, Dell OS10
+VLANs, UniFi networks, Palo subinterfaces and zones — so a new VLAN is one
+declaration rather than five hand-edits that drift.
+
+| File | Role |
+|---|---|
+| `playbooks/group_vars/all/networks.yml` | the segments — **the file you edit** |
+| `playbooks/group_vars/all/networks_config.yml` | platforms, name recipes, required fields, defaults |
+| `playbooks/group_vars/all/networks_platforms.yml` | per-platform output row shapes + hand-written extras |
+| `playbooks/group_vars/all/_networks_derived.yml` | the contract you read (`_net.*`) — machine-owned |
+| `plugins/filter/network_catalog.py` | the engine — estate-agnostic, 76 unit tests |
+| `roles/network_facts` + `playbooks/ops_net_facts.yml` | browse it; each fact is a liftable 3-line task |
+
+```bash
+ansible-playbook -i inventories/example playbooks/ops_net_facts.yml                  # every fact
+ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags validate  # is it well-formed
+ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags vlans \
+  -e network_facts_platform=esxi                                                     # trunk-ready VLAN ranges
+```
+
+Requires `jinja2_native = True` (set in `ansible.cfg`) — without it the derived
+lists come back as strings rather than objects, silently. Full reference:
+[`docs/network-catalog.md`](docs/network-catalog.md).
 
 OS-level reference docs (fapolicyd troubleshooting, EL9 kickstart) live
 at the scratchpad's top level under [`../linux/`](../linux/) — they're

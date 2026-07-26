@@ -1,0 +1,59 @@
+---
+# ── Recipe: PLATFORM LISTS ─────────────────────────────────────────────────
+# `_net.<platform>.<list>` is the payoff of the whole catalog: rows already
+# shaped for the module that consumes them. You do not reshape these — you
+# loop over them.
+#
+#   loop: "{{ _net.esxi.vcenter_portgroups }}"     → vmware_dvs_portgroup
+#   loop: "{{ _net.dell.vlans }}"                  → OS10 VLANs
+#   loop: "{{ _net.pfsense.vlans['site-a'] }}"      → pfSense 802.1q VLANs
+#
+# Some lists are flat; the ones declaring `group_by` are a dict keyed by that
+# field (usually site), so you index the site before looping.
+#
+# TO LIFT ONE OUT: copy the three lines.
+# TO ADD YOUR OWN: add a view in playbooks/group_vars/all/networks_platforms.yml
+# and it appears here automatically — no change needed in this file.
+
+- name: Which platforms publish lists
+  ansible.builtin.debug:
+    var: _net.keys() | list
+
+- name: Which lists each platform publishes
+  # The index. Find your platform, then read _net.<platform>.<list>.
+  ansible.builtin.debug:
+    msg: "_net.{{ item.key }} → {{ item.value.keys() | list | join(', ') }}"
+  loop: "{{ _net | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Every platform, every list, every row
+  # The big one — everything the catalog produces for every platform.
+  ansible.builtin.debug:
+    var: _net
+
+# ── NARROWED — these wake up when you set the matching knob ────────────────
+
+- name: Everything one platform gets
+  ansible.builtin.debug:
+    var: _net[network_facts_platform]
+  when: network_facts_platform | length > 0
+
+- name: One list, every row — the thing you loop over
+  ansible.builtin.debug:
+    var: _net[network_facts_platform][network_facts_list]
+  when:
+    - network_facts_platform | length > 0
+    - network_facts_list | length > 0
+
+- name: One site out of a per-site list
+  # Only fires for a list declaring `group_by`. network_facts_site picks the
+  # site; left empty it takes the first one so the recipe still shows itself.
+  ansible.builtin.debug:
+    var: _net[network_facts_platform][network_facts_list][_site]
+  vars:
+    _site: "{{ network_facts_site or (_net[network_facts_platform][network_facts_list].keys() | first) }}"
+  when:
+    - network_facts_platform | length > 0
+    - network_facts_list | length > 0
+    - _net[network_facts_platform][network_facts_list] is mapping

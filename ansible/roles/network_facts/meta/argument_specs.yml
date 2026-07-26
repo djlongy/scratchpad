@@ -1,0 +1,81 @@
+---
+argument_specs:
+  main:
+    short_description: Print the network catalog, one liftable recipe per fact
+    description:
+      - Read-only browser and worked example for the network catalog.
+      - >-
+        Reads the vars from playbooks/group_vars/all/_networks_derived.yml,
+        so it must be called from a playbook inside playbooks/.
+      - Changes nothing unless network_facts_save is set.
+    options:
+      network_facts_show:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Which recipe groups to run. Empty runs all of them.
+        choices:
+          - segments
+          - vlans
+          - subnets
+          - platform_lists
+          - lookups
+          - validate
+
+      network_facts_platform:
+        type: str
+        default: ""
+        description:
+          - >-
+            A platform label from network_platforms, or a view namespace from
+            network_platform_lists. Wakes up the per-platform recipes.
+
+      network_facts_list:
+        type: str
+        default: ""
+        description:
+          - A list name inside network_facts_platform, e.g. port_groups.
+          - Requires network_facts_platform.
+
+      network_facts_site:
+        type: str
+        default: ""
+        description:
+          - Which site to take out of a per-site (group_by) list.
+          - Empty takes the first site the list has.
+
+      network_facts_key:
+        type: str
+        default: ""
+        description:
+          - One segment key from network_underlays.
+
+      network_facts_group:
+        type: str
+        default: ""
+        description:
+          - >-
+            A partition field to slice by — one of network_partition_fields,
+            or platform. Pair with network_facts_value.
+
+      network_facts_value:
+        type: str
+        default: ""
+        description:
+          - The value of network_facts_group to select.
+
+      network_facts_save:
+        type: str
+        default: ""
+        description:
+          - Controller-side path to write the selection to.
+          - Empty means print only, and the role writes nothing at all.
+
+      network_facts_save_format:
+        type: str
+        default: ""
+        description:
+          - Output format for network_facts_save.
+          - Empty picks json for a .json path, otherwise yaml.
+        choices: ["", yaml, json]

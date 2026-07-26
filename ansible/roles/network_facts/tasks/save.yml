@@ -1,0 +1,44 @@
+---
+# ── Recipe: SAVE ───────────────────────────────────────────────────────────
+# Printing a list is fine for reading it. This writes it out so you can feed
+# it to something else — a review diff, a jq pipeline, a device you configure
+# by hand this once.
+#
+# What gets written is whatever the knobs select:
+#   platform + list  → that one list        (the thing a module loops over)
+#   platform only    → every list it has
+#   neither          → the whole catalog
+#
+# Format follows network_facts_save_format, or the file extension.
+
+- name: Write the selected list to a file
+  ansible.builtin.copy:
+    content: >-
+      {{ _payload | to_nice_json(indent=2) if _format == 'json'
+         else _payload | to_nice_yaml(indent=2, sort_keys=False) }}
+    dest: "{{ network_facts_save }}"
+    mode: "0644"
+  vars:
+    # One expression, not an {% if %} block: jinja2_native (ansible.cfg)
+    # hands back the real list/dict only for a single expression, and
+    # to_nice_yaml would otherwise be handed the text of one.
+    _payload: >-
+      {{ _net[network_facts_platform][network_facts_list]
+         if (network_facts_platform and network_facts_list)
+         else (_net[network_facts_platform] if network_facts_platform else _net) }}
+    _format: "{{ network_facts_save_format or ('json' if network_facts_save.endswith('.json') else 'yaml') }}"
+  # The catalog is controller-side data and the file is a local artefact, so
+  # this never touches the target host and never needs root.
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Say where it went
+  ansible.builtin.debug:
+    msg: "Wrote {{ network_facts_save }} — {{ _selection }}"
+  vars:
+    _selection: >-
+      {{ ('_net.' ~ network_facts_platform ~ '.' ~ network_facts_list)
+         if (network_facts_platform and network_facts_list)
+         else (('_net.' ~ network_facts_platform) if network_facts_platform else '_net (everything)') }}
+  run_once: true

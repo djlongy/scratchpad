@@ -1,0 +1,51 @@
+---
+# ── Recipe: SUBNETS ────────────────────────────────────────────────────────
+# CIDR lists, pre-grouped. This is firewall-rule and allow-list fodder: point
+# a rule at `_cidrs_by.zone.prod` instead of hand-typing seven subnets and
+# forgetting the eighth when someone adds it.
+#
+# TO LIFT ONE OUT: copy the three lines.
+# TO ADD YOUR OWN: copy any task, change the expression on the `var:` line.
+
+- name: Which groupings exist — the fields you can slice subnets by
+  # network_partition_fields decides this list.
+  ansible.builtin.debug:
+    var: _cidrs_by.keys() | list
+
+- name: Every subnet, grouped every way at once
+  ansible.builtin.debug:
+    var: _cidrs_by
+
+- name: Operator source subnets — bastion SSH and proxy allow-lists
+  # The segments flagged operator_source. Feed this straight to a firewall
+  # source list rather than maintaining a parallel copy.
+  ansible.builtin.debug:
+    var: _operator_cidrs
+
+- name: Segment key → subnet
+  ansible.builtin.debug:
+    var: _subnet_by_key
+
+- name: Segment key → gateway
+  ansible.builtin.debug:
+    var: _gateway_by_key
+
+- name: Every subnet as one flat list
+  ansible.builtin.debug:
+    var: _segments | selectattr('subnet', 'defined') | map(attribute='subnet') | list
+
+# ── NARROWED — these wake up when you set the matching knob ────────────────
+
+- name: Subnets sharing one field value
+  # The firewall-rule recipe:
+  #   -e network_facts_group=zone -e network_facts_value=prod
+  ansible.builtin.debug:
+    var: _cidrs_by[network_facts_group][network_facts_value]
+  when:
+    - network_facts_group | length > 0
+    - network_facts_value | length > 0
+
+- name: Subnets one platform is applied to
+  ansible.builtin.debug:
+    var: _cidrs_by.platform[network_facts_platform]
+  when: network_facts_platform | length > 0

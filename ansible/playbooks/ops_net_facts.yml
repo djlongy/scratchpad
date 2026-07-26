@@ -1,0 +1,45 @@
+---
+# ops_net_facts.yml — run the network_facts role. Changes nothing.
+#
+# Two front doors onto the same catalog, for two different jobs:
+#
+#   ops_net_facts.yml   the COOKBOOK — every fact, printed by a task you can
+#                       copy straight into your own role. Start here when you
+#                       need a list to feed a module.
+#   ops_net_show.yml    the BROWSER — formatted tables, search, VLAN
+#                       allocation, pre-flight checks. Start there when you
+#                       need to read the estate.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#   export ANSIBLE_VAULT_PASSWORD=$(cat ~/secrets/vault-password.txt)
+#   source /Users/longy/venvs/ansible312/bin/activate
+#   cd ansible/
+#   alias netfacts='ansible-playbook -i inventories/example playbooks/ops_net_facts.yml'
+#
+#   netfacts                                   # every recipe, every fact
+#   netfacts --tags vlans                      # one recipe group
+#   netfacts --tags subnets,lookups            # several
+#   netfacts --list-tags                       # what groups exist
+#
+#   # Narrow with the knobs — extra tasks wake up when their knob is set
+#   netfacts --tags platform_lists -e network_facts_platform=esxi
+#   netfacts --tags platform_lists -e network_facts_platform=esxi -e network_facts_list=port_groups
+#   netfacts --tags vlans          -e network_facts_platform=switches
+#   netfacts --tags subnets        -e network_facts_group=zone -e network_facts_value=prod
+#   netfacts --tags segments       -e network_facts_key=dev_cluster
+#
+#   # Take the list away with you
+#   netfacts -e network_facts_platform=esxi \
+#            -e network_facts_list=vcenter_portgroups \
+#            -e network_facts_save=/tmp/portgroups.yml
+#
+# Any inventory works — the catalog is estate-wide, not per-inventory.
+# Role: roles/network_facts (defaults/main.yml documents every knob).
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: Network catalog facts
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  roles:
+    - role: network_facts

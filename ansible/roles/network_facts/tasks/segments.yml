@@ -1,0 +1,66 @@
+---
+# ── Recipe: SEGMENTS ───────────────────────────────────────────────────────
+# A segment is one network — one row in the catalog. `_segments` is the flat
+# list of all of them, with your declared fields plus the ones the engine
+# built (names, platforms, tagged, prefixlen, gateway_cidr, on_<platform>).
+#
+# Every task below is `debug: var:`, which prints the expression as its own
+# label — so the output tells you exactly what produced it.
+#
+# TO LIFT ONE OUT: copy the three lines. That is the whole task. The tasks
+# under "NARROWED" carry one `when:` naming the knob that feeds them — delete
+# it and hardcode your value.
+#
+# TO ADD YOUR OWN: copy any task, change the expression on the `var:` line.
+
+- name: How many segments, and how many are real VLANs
+  ansible.builtin.debug:
+    msg: "{{ _segments | length }} segments, {{ _tagged_vlan_ids | length }} tagged VLAN ids"
+
+- name: Every segment key — the names you address a segment by
+  ansible.builtin.debug:
+    var: _segment_keys
+
+- name: One whole row, so you can see every field a segment carries
+  ansible.builtin.debug:
+    var: _segments | first
+
+- name: Segments grouped by every partition field at once
+  # network_partition_fields decides which fields appear here.
+  ansible.builtin.debug:
+    var: _segments_by.keys() | list
+
+- name: Pull one field out of every segment
+  # The shape-it-yourself recipe. Change 'name' to any field — vlan_id,
+  # subnet, gateway, site — and you have that column.
+  ansible.builtin.debug:
+    var: _segments | map(attribute='name') | list
+
+- name: Keep only the segments you want, then pull a field
+  # Change the attribute and the value to filter on anything.
+  ansible.builtin.debug:
+    var: _segments | selectattr('tagged') | map(attribute='name') | list
+
+- name: Every segment, every field
+  # The big one. Everything above is a slice of this.
+  ansible.builtin.debug:
+    var: _segments
+
+# ── NARROWED — these wake up when you set the matching knob ────────────────
+
+- name: One segment, by key
+  ansible.builtin.debug:
+    var: _segment_by_key[network_facts_key]
+  when: network_facts_key | length > 0
+
+- name: Every segment a platform is applied to
+  ansible.builtin.debug:
+    var: _segments_by.platform[network_facts_platform]
+  when: network_facts_platform | length > 0
+
+- name: Every segment sharing one field value
+  ansible.builtin.debug:
+    var: _segments_by[network_facts_group][network_facts_value]
+  when:
+    - network_facts_group | length > 0
+    - network_facts_value | length > 0

@@ -1,0 +1,51 @@
+---
+# ── Recipe: VLANs ──────────────────────────────────────────────────────────
+# Everything you need to configure a switch: which VLAN ids exist, which ones
+# a given platform carries, and those ids pre-compressed into the range
+# tokens a trunk stanza wants.
+#
+# TO LIFT ONE OUT: copy the three lines.
+# TO ADD YOUR OWN: copy any task, change the expression on the `var:` line.
+
+- name: Every VLAN id in the catalog, including untagged
+  ansible.builtin.debug:
+    var: _vlan_ids
+
+- name: Every tagged VLAN id — the real VLANs
+  # Untagged/native segments carry vlan_id 0 and legitimately repeat per site,
+  # so this is the list you want when allocating a new id.
+  ansible.builtin.debug:
+    var: _tagged_vlan_ids
+
+- name: Which VLAN ids each platform carries
+  # Straight trunk membership: platform → sorted unique tagged ids.
+  ansible.builtin.debug:
+    var: _vlan_ids_by_platform
+
+- name: The same ids, compressed to range tokens
+  # ['2-12', '20-22', ...] — what a switch CLI actually wants, instead of a
+  # comma list hundreds of ids long.
+  ansible.builtin.debug:
+    var: _vlan_ranges_by_platform
+
+- name: VLAN id → segment key
+  ansible.builtin.debug:
+    var: _key_by_vlan
+
+# ── NARROWED — these wake up when you set the matching knob ────────────────
+
+- name: VLAN ids one platform carries
+  ansible.builtin.debug:
+    var: _vlan_ids_by_platform[network_facts_platform]
+  when: network_facts_platform | length > 0
+
+- name: Trunk lines, ready to paste into a switch config
+  # The one recipe here that is not a bare `var:` — chunking the range tokens
+  # six to a line is what turns them into config. Change the 6 for a device
+  # with a different line limit.
+  ansible.builtin.debug:
+    msg: "switchport trunk allowed vlan {{ '' if ansible_loop.first else 'add ' }}{{ item | join(',') }}"
+  loop: "{{ _vlan_ranges_by_platform[network_facts_platform] | batch(6) | list }}"
+  loop_control:
+    extended: true
+  when: network_facts_platform | length > 0

@@ -1,0 +1,45 @@
+---
+# ── Recipe: VALIDATE ───────────────────────────────────────────────────────
+# Four lists that all want to be empty. Assert them before you consume any
+# other fact — a catalog with a duplicate VLAN id will happily render lists
+# that then fight each other on the wire.
+#
+# TO LIFT ONE OUT: the assert at the bottom is the one worth copying. Put it
+# at the top of any role that consumes _net, so a broken catalog stops you
+# before it reaches a device.
+
+- name: Config errors — malformed pools, recipes or views
+  ansible.builtin.debug:
+    var: _config_errors
+
+- name: Segments missing a required field
+  # Checked against the segment as written: a field supplied only by
+  # network_segment_defaults still counts as missing.
+  ansible.builtin.debug:
+    var: _missing_required_fields
+
+- name: Duplicate names
+  ansible.builtin.debug:
+    var: _duplicate_names
+
+- name: Duplicate VLAN ids
+  ansible.builtin.debug:
+    var: _duplicate_vlans
+
+- name: The catalog is well-formed
+  ansible.builtin.assert:
+    that:
+      - _config_errors | length == 0
+      - _missing_required_fields | length == 0
+      - _duplicate_names | length == 0
+      - _duplicate_vlans | length == 0
+    fail_msg: |-
+      Catalog validation FAILED — fix these before consuming any list.
+      Config errors      : {{ _config_errors }}
+      Missing/empty      : {{ _missing_required_fields }}
+      Duplicate names    : {{ _duplicate_names }}
+      Duplicate VLAN ids : {{ _duplicate_vlans }}
+    success_msg: >-
+      Catalog is well-formed — {{ _segments | length }} segments,
+      {{ _tagged_vlan_ids | length }} tagged VLANs, {{ _net | length }} platforms.
+  become: false

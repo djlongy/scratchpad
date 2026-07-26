@@ -1,0 +1,64 @@
+---
+# ── network_facts — the switchboard ────────────────────────────────────────
+# EVERY `when:` in this role lives in this file, on purpose.
+#
+# The recipe files it includes hold nothing but the recipes themselves: a
+# name that says what you get, and a one-line expression that gets it. That
+# is what makes them liftable — open one, copy the three lines you want, drop
+# them into your own role, done. Gating them individually would have put a
+# `when: ... in network_facts_show` on every task and ruined that.
+#
+# Adding a recipe group: drop a file in tasks/, add one block here, add its
+# name to the list in defaults/main.yml.
+
+- name: Fail early if the network catalog is not in scope
+  # Every recipe reads _net / _segments / _cidrs_by, which are defined in
+  # playbooks/group_vars/all/_networks_derived.yml. That directory is only
+  # loaded for playbooks living in playbooks/ — from anywhere else every
+  # recipe would fail one by one with an unhelpful undefined-variable error.
+  ansible.builtin.assert:
+    that:
+      - _net is defined
+      - _segments is defined
+    fail_msg: >-
+      The network catalog is not in scope. This role reads the vars defined in
+      playbooks/group_vars/all/_networks_derived.yml, so it has to be called
+      from a playbook inside playbooks/ — e.g. playbooks/ops_net_facts.yml.
+    success_msg: "Catalog in scope — {{ _segments | length }} segments, {{ _net | length }} platforms."
+  become: false
+  tags: [always]
+
+- name: Segments — every segment, and slices of them
+  ansible.builtin.import_tasks: segments.yml
+  when: not network_facts_show or 'segments' in network_facts_show
+  tags: [segments]
+
+- name: VLANs — ids and trunk ranges, for switch work
+  ansible.builtin.import_tasks: vlans.yml
+  when: not network_facts_show or 'vlans' in network_facts_show
+  tags: [vlans]
+
+- name: Subnets — CIDR lists, for firewall rules and allow-lists
+  ansible.builtin.import_tasks: subnets.yml
+  when: not network_facts_show or 'subnets' in network_facts_show
+  tags: [subnets]
+
+- name: Platform lists — the ready-to-loop module inputs
+  ansible.builtin.import_tasks: platform_lists.yml
+  when: not network_facts_show or 'platform_lists' in network_facts_show
+  tags: [platform_lists]
+
+- name: Lookups — the small key → value maps
+  ansible.builtin.import_tasks: lookups.yml
+  when: not network_facts_show or 'lookups' in network_facts_show
+  tags: [lookups]
+
+- name: Validate — is the catalog well-formed
+  ansible.builtin.import_tasks: validate.yml
+  when: not network_facts_show or 'validate' in network_facts_show
+  tags: [validate]
+
+- name: Save — write the selection out as a file
+  ansible.builtin.import_tasks: save.yml
+  when: network_facts_save | length > 0
+  tags: [save]

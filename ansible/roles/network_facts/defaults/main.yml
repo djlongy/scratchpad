@@ -1,0 +1,64 @@
+---
+# ── network_facts — the knobs ──────────────────────────────────────────────
+# This role prints what the network catalog holds. It changes nothing.
+#
+# Two things you can turn:
+#   1. WHICH recipes run   → network_facts_show
+#   2. WHAT they narrow to → the filter knobs below
+#
+# Leave everything at its default and you get every recipe, every fact.
+
+# ── 1. Which recipes run ───────────────────────────────────────────────────
+# Empty = all of them. Narrow it to the group you care about:
+#
+#   -e '{"network_facts_show":["vlans"]}'
+#   --tags vlans                             (same thing, shorter)
+#
+# Valid entries — one per file in tasks/:
+#   segments        every segment, and slices of them
+#   vlans           VLAN ids and trunk ranges — switch work
+#   subnets         CIDR lists — firewall rules and allow-lists
+#   platform_lists  the ready-to-loop lists, _net.<platform>.<list>
+#   lookups         the small key → value maps
+#   validate        is the catalog well-formed
+network_facts_show: []
+
+# ── 2. Filter knobs ────────────────────────────────────────────────────────
+# Every recipe file has two halves: the broad tasks (always run, no knob) and
+# the narrowed tasks (skipped until you set the matching knob). Set one and
+# the extra tasks appear.
+
+# A platform label from network_platforms, or a view namespace from
+# network_platform_lists. Narrows the per-platform recipes.
+#   -e network_facts_platform=esxi
+network_facts_platform: ""
+
+# A list name inside that platform. Needs network_facts_platform set too.
+#   -e network_facts_platform=esxi -e network_facts_list=port_groups
+network_facts_list: ""
+
+# One site out of a per-site list. Empty picks the first site the list has,
+# so the recipe still demonstrates itself without you naming one.
+#   -e network_facts_site=site-a
+network_facts_site: ""
+
+# One segment, by its key in network_underlays.
+#   -e network_facts_key=dev_cluster
+network_facts_key: ""
+
+# A partition field from network_partition_fields (site, zone, role, env,
+# tenancy, pool) plus one of its values. Narrows the grouped recipes.
+#   -e network_facts_group=role -e network_facts_value=svc
+network_facts_group: ""
+network_facts_value: ""
+
+# ── 3. Take the list away with you ─────────────────────────────────────────
+# A path to write the selection to, instead of only printing it. What gets
+# written is whatever `network_facts_platform` (+ `network_facts_list`)
+# selects, so the file is the exact input a module would loop over.
+#   -e network_facts_platform=esxi -e network_facts_list=vcenter_portgroups \
+#   -e network_facts_save=/tmp/portgroups.yml
+network_facts_save: ""
+
+# yaml or json — matched to the extension of network_facts_save when unset.
+network_facts_save_format: ""

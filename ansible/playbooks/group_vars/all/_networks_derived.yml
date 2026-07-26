@@ -1,0 +1,134 @@
+---
+# ── Network catalog — the CONTRACT (do not edit per-estate) ─────────────────
+#
+# The engine is plugins/filter/network_catalog.py — estate-agnostic Python,
+# unit-tested in tests/unit/roles/test_network_catalog.py. This file just calls
+# it once and gives the results names. Everything specific to this estate lives
+# in networks.yml / networks_config.yml / networks_platforms.yml next door.
+#
+# FULL REFERENCE — every config option, default, example and expected output:
+#   docs/network-catalog.md
+#
+# ══════════════════ WHAT YOU READ — jump to your platform ══════════════════
+#
+#   _net.<platform>.<list>       ← THE ONE YOU WANT, 99% of the time
+#
+#     _net.esxi.port_groups          vSphere port groups (matrix + custom)
+#     _net.esxi.vcenter_portgroups   the same, shaped for vmware_dvs_portgroup
+#     _net.dell.vlans                Dell OS10 VLANs
+#     _net.palo.interfaces           Palo L3 subinterfaces
+#     _net.palo.zones                Palo zones
+#     _net.pfsense.vlans.<site>      pfSense 802.1q VLANs, per site
+#     _net.pfsense.interfaces.<site> pfSense SVIs, per site
+#     _net.unifi.vlans.<site>        UniFi vlan-only networks, per site
+#
+#   Browse them without reading YAML:
+#     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags views
+#     …--tags platform -e p=esxi        one platform, everything it gets
+#     …--tags view -e view=dell.vlans   one list, every row
+#
+#   Want the task that pulls one, to copy into your own role?
+#     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags platform_lists
+#   Every fact below has a three-line recipe in roles/network_facts/tasks/.
+#
+#   Wire one into a host:
+#     pfsense_network_vlans: "{{ _net.pfsense.vlans.site-a }}"
+#     vcenter_config.portgroups: "{{ _net.esxi.vcenter_portgroups }}"
+#
+#   Already have a hand-maintained list? Concatenate — same shape, one loop:
+#     loop: "{{ my_existing_rows + _net.esxi.port_groups }}"
+#   (or declare `append:` on the view and get one list for free)
+#
+# ══════════════════════ EVERYTHING ELSE ══════════════════════
+#   _segments        every segment as a flat row (your fields + built names,
+#                    platforms, tagged, prefixlen, gateway_cidr, on_<platform>)
+#   _segments_by.<field>.<v>  partition by any field: _segments_by.role.svc,
+#                    _segments_by.platform.esxi
+#   _cidrs_by.<f>.<v>  the same, as subnet lists — firewall rule fodder
+#   _vlan_ids_by_platform  platform → sorted unique tagged VLAN ids
+#   _vlan_ranges_by_platform  the same ids compressed to range strings
+#                    (['10','2000-2004',…]) — chunk into switch trunk lines:
+#                    {% for c in _vlan_ranges_by_platform.esxi | batch(6) %}
+#                    switchport trunk allowed vlan {{ 'add ' if not loop.first }}{{ c | join(',') }}
+#   _operator_cidrs  subnets flagged operator_source (bastion/proxy allow-lists)
+#   _segment_by_key / _vlan_by_key / _name_by_key / _subnet_by_key /
+#   _gateway_by_key / _key_by_vlan     lookup maps
+#   _segment_keys / _segment_names / _vlan_ids / _tagged_vlan_ids   columns
+#   _names_from_recipes / _names_pinned   what the recipes produce vs pinned
+#   _config_errors / _missing_required_fields / _duplicate_names /
+#   _duplicate_vlans validation — all want to be empty. Assert them first:
+#                    ansible-playbook … ops_net_facts.yml --tags validate
+#
+# Naming tiers: no underscore = your config; _one = derived, safe to consume;
+# __two = internal. `_net` follows that rule — the underscore is also the
+# collision defence, since nothing in ansible-core, any collection or this repo
+# ships an underscore-prefixed global.
+#
+# `_net` is NOT reserved: it is absent from ansible-core's reserved names
+# (checked against 2.18.18), from the playbook keywords, and from the Jinja
+# template globals — unlike `q`, `lookup`, `query`, `now`, `range`, `namespace`.
+# The removed `net_*` MODULES (ansible.netcommon.net_interface et al, EOL
+# 2022-06-01) were module names, which never collide with variable names.
+# Two templates in this repo do use `{{ net }}` — roles/baseline chrony.conf.j2
+# and roles/freeipa_server ipa-ext.conf.j2 — but both as `{% for net in ... %}`
+# loop variables, which shadow only inside their loop. Verified by rendering
+# both with this global in scope.
+# Residual risk: a role's vars/main.yml outranks playbook group_vars, so a role
+# that declares its own `_net` would shadow this one inside that role. Nothing
+# in this repo does; grep before adding one.
+
+# One call. Everything below is a slice of its result.
+__catalog: >-
+  {{ network_underlays | default({}, true) | network_catalog({
+       'pools': network_segment_pools | default({}, true),
+       'names': network_name_recipes | default({}, true),
+       'name_default': network_primary_name_recipe | default('', true),
+       'views': network_platform_lists | default({}, true),
+       'platforms': network_platforms | default([], true),
+       'required': network_required_fields | default({}, true),
+       'defaults': network_segment_defaults | default({}, true),
+       'partition_fields': network_partition_fields | default([], true),
+       'desc_template': network_description_template | default('', true),
+     }) }}
+
+# ── The headline: per-platform lists ───────────────────────────────────────
+_net: "{{ __catalog.views }}"
+
+# ── Segments and partitions ────────────────────────────────────────────────
+_segments: "{{ __catalog.segments }}"
+_segments_by: "{{ __catalog.by }}"
+_cidrs_by: "{{ __catalog.cidrs_by }}"
+_vlan_ids_by_platform: "{{ __catalog.vlan_ids_by_platform }}"
+_vlan_ranges_by_platform: "{{ __catalog.vlan_ranges_by_platform }}"
+
+# ── Columns and lookups ────────────────────────────────────────────────────
+# Subscript, NOT dot: Jinja resolves `foo.bar` by trying getattr(foo, 'bar')
+# first and only falling back to foo['bar']. `keys` is a real dict method, so
+# `__catalog.keys` hands back the bound method instead of the return key —
+# _segment_keys became a builtin_function_or_method, and the first task that
+# printed it crashed the YAML callback with "cannot represent an object".
+# Any return key colliding with a dict attribute (keys/values/items/get/copy)
+# must use the subscript form.
+_segment_keys: "{{ __catalog['keys'] }}"
+_segment_names: "{{ __catalog.names }}"
+_vlan_ids: "{{ __catalog.vlan_ids }}"
+_tagged_vlan_ids: "{{ __catalog.tagged_vlan_ids }}"
+_segment_by_key: "{{ __catalog.by_key }}"
+_vlan_by_key: "{{ __catalog.vlan_by_key }}"
+_name_by_key: "{{ __catalog.name_by_key }}"
+_subnet_by_key: "{{ __catalog.subnet_by_key }}"
+_gateway_by_key: "{{ __catalog.gateway_by_key }}"
+_key_by_vlan: "{{ __catalog.key_by_vlan }}"
+
+# ── Operator source subnets (bastion SSH, proxy allow-lists) ───────────────
+_operator_cidrs: "{{ __catalog.operator_cidrs }}"
+
+# ── Naming diagnostics ─────────────────────────────────────────────────────
+_names_from_recipes: "{{ __catalog.derived_names }}"
+_names_pinned: "{{ __catalog.name_overrides }}"
+
+# ── Validation (assert these before consuming anything) ────────────────────
+_config_errors: "{{ __catalog.errors }}"
+_missing_required_fields: "{{ __catalog.missing }}"
+_duplicate_names: "{{ __catalog.duplicate_names }}"
+_duplicate_vlans: "{{ __catalog.duplicate_vlans }}"

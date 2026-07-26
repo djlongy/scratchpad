@@ -1,617 +1,364 @@
 ---
-# ── Estate network catalog — VALUES (user configuration) ────────────────────
+# ── Network catalog — THE SEGMENTS ─────────────────────────────────────────
 # Loaded for every play under playbooks/ (playbook-adjacent group_vars/all).
 # Do NOT redeclare these roots in inventory group_vars/all — they drift.
 #
-# THIS file is the one users edit: the fabric_underlays matrix, the
-# fabric_pools generator specs, the hand-curated custom/static rows and the
-# non-derivable platform data. Every DERIVED list/map (projections, validation,
-# names) lives in networks_derived.yml next door — nothing there needs editing.
-# Underscores mark derived vars: consume the single-underscore EXPOSED CONTRACT
-# documented at the top of networks_derived.yml; double-underscore vars are
-# internal pipeline stages. Raw (no-underscore) config lives only in THIS file.
+# THIS FILE IS THE ONE YOU EDIT DAY TO DAY: add or change a network segment
+# here and every platform list rebuilds itself. Its three companions:
 #
-# Controller dependencies (consumed by networks_derived.yml):
-#   pip:         jmespath (json_query), netaddr (ansible.utils.ipaddr)
-#   collections: community.general, ansible.utils
+#   networks_config.yml     the engine's knobs — platforms, name recipes,
+#                           required fields, per-segment defaults
+#   networks_platforms.yml  what each platform gets: the output row shapes,
+#                           the hand-written extra rows, device metadata
+#   _networks_derived.yml   the contract you READ (_net.*). Machine-owned.
 #
-# Hybrid multi-tenancy:
-#   • Global catalog — platform sees ALL tenants × ALL envs (fabric SoT).
-#   • Inventory selects identity (tenancy × env) + one segment key.
-#   • Soft isolation (default): share platform env segments (mgt/dev/prod);
-#     tenancy lives in IAM/Vault/tags, not L2.
-#   • Hard isolation: dedicated <tenancy>_<env> key with scope: tenant.
+# A leading underscore — on a var OR a filename — means machine-owned: derived
+# by the engine, never edited by hand.
 #
-# Inventory selection pattern:
+# FULL GUIDE (workflows, troubleshooting, every option): docs/network-catalog.md
+# Browse the results instead of reading YAML:
+#   ansible-playbook -i inventories/example playbooks/ops_net_facts.yml
 #
-#   env: prod
-#   tenancy: acme                    # soft or hard — always set
-#   network_segment: prod            # soft share  OR  acme_prod for hard L2
-#   network_gateway:    "{{ fabric_underlays[network_segment].gateway }}"
-#   network_netmask:    "{{ fabric_underlays[network_segment].subnet | ansible.utils.ipaddr('netmask') }}"
-#   vsphere_vm_network: "{{ (_fabric_names | from_json)[network_segment] }}"
-#   vsphere_vm_gateway: "{{ fabric_underlays[network_segment].gateway }}"
-#   vsphere_vm_dns:     "{{ fabric_underlays[network_segment].dns }}"
+# The ENGINE is plugins/filter/network_catalog.py — pure Python, unit-tested
+# (tests/unit/roles/test_network_catalog.py), and estate-agnostic: it holds no
+# value specific to any one site. _networks_derived.yml is the thin contract
+# that calls it. Both lift and shift into any Ansible repo unchanged; if
+# onboarding an estate seems to need an edit there, the missing knob belongs in
+# the config files instead.
 #
-# All addresses below are lab/mock RFC1918 examples — replace for production.
-
-# ============================================================
-# Source of truth – static underlay
-# ============================================================
-# The dict KEY is the segment's short name (inventory selector) — keys are
-# literal (never generated), so selectors stay predictable.
+# NAMING TIERS — an underscore means "dynamically calculated, never set by a
+# user"; the count says whether you may read it:
+#   (none)  raw user config — this file and its config companions
+#   _one    derived + EXPOSED — the contract in _networks_derived.yml.
+#           The headline is `_net`, keyed by output NAMESPACE:
+#             _net.esxi.port_groups            list of rows
+#             _net.dell.vlans                  list of rows
+#             _net.palo.zones                  list of rows
+#             _net.pfsense.vlans['site-a']     grouped view → dict per site
+#           plus _segments, _segments_by.<field>.<value>,
+#           _cidrs_by.<field>.<value>, _operator_cidrs,
+#           _vlan_ids_by_platform, and the validation vars.
+#   __two   derived + INTERNAL — pipeline stages; never consume.
 #
-# Schema (every segment):
-#   Fabric:    vlan_id, subnet, gateway, dns[]
-#   Naming:    network_role (display-name component; key stays the selector)
-#              name_parts / name_case / vlan_prefix (optional — see NAMING)
-#   Platforms: targets[] (esxi|firewall|switches), vswitch, insecure,
-#              promiscuous_mode, forged_transmits,
-#              management_profile (firewall; '' = none)
+# Controller dependencies: none beyond ansible-core.
+#
+# Inventory only *selects* which segment is this env's primary:
+#   network_gateway:    "{{ network_underlays.mgt.gateway }}"
+#   vsphere_vm_network: "{{ _name_by_key.mgt }}"
+#
+# The object is `network_underlays` — plural, and the only name for it.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# SCHEMA
+#   Fabric:    vlan_id, subnet, netmask, gateway, dns[]
+#   Platforms: platforms[]  ← which platforms this segment applies to
+#   Identity:  tenancy, env, role, instance  (name tokens)
+#   Naming:    name_parts / name_case / name_suffix / vlan_prefix / vlan_pad
 #   Placement: site, zone
-#   Ownership: scope (platform|tenant), env (mgt|dev|prod|null), tenancy
-#   Ops:       description (string), admin (bool → _fabric_admin_cidrs)
+#   Ops:       description, operator_source (bool → _operator_cidrs)
 #
-#   targets          — which platform projections pick this segment up; each
-#                      derived list filters selectattr('targets', 'contains', …)
-#   insecure         — true relaxes the whole vSphere port-group security policy;
-#                      it is the DEFAULT for the two granular knobs below.
-#   promiscuous_mode — vSphere allow-promiscuous flag (default: insecure)
-#   forged_transmits — vSphere allow-forged-transmits flag (default: insecure)
-#                      Set either explicitly to relax just that knob while
-#                      leaving insecure false (customer-tunable per segment).
+# platforms[] — the allowed labels are network_platforms in networks_config.yml.
+# A segment absent from a platform simply never appears in that list;
+# platforms: [catalog_only] documents a segment that reaches no device.
 #
-# NAMING — same ordered-token mechanism as the pools (display_name only; the
-# KEY is always the literal dict key). An ORDERED LIST of var tokens joined by
-# '-'; empty tokens (e.g. env on a null-env segment) are dropped, so there are
-# no doubled dashes. Set the estate default below, override per segment:
-#   name_parts (default [vlan, tenant, role])  → display_name token order
-#   name_case  (default upper) = upper | lower | keep ('keep' = source casing)
-#   vlan_prefix (default 'VLAN')               → the vlan/vlan_label token text
-# Tokens (value):
-#   key (dict key) · tenant (tenancy) · role (network_role) · env · site ·
-#   zone · scope · vlan (label+id, e.g. VLAN10) · vlan_label · vid (id only)
-# Examples:
-#   (default)                                  → VLAN10-PLATFORM-MGT-SVC
-#   name_parts: [vlan, env, role]              → VLAN10-MGT-MGT-SVC
-#   name_parts: [vlan_label, vid, tenant, role], name_case: lower
-#                                              → vlan-10-platform-mgt-svc
+# Naming is built from TOKENS, never typed as a literal — see the recipes in
+# networks_config.yml. A field named after a recipe (`name:`) pins that name
+# outright, which `--tags names` then flags with a `*`.
 #
-# Rules:
-#   scope:platform + tenancy:platform → soft multi-tenancy underlay (default)
-#   scope:tenant   + tenancy:<org>    → hard L2 isolation for that org
-#   Key convention hard: <tenancy>_<env>  (e.g. acme_prod)
+# NOTE: this is a DEMONSTRATION catalog with invented addressing. It exists to
+# exercise every engine feature end to end, not to describe a real network.
+# ═══════════════════════════════════════════════════════════════════════════
 
-# Estate-wide display-name defaults (override per segment with the same keys).
-fabric_name_parts: [vlan, tenant, role]
-fabric_name_case: upper
+network_underlays:
 
-fabric_underlays:
-  # ── Site infrastructure (platform, not env-scoped) ───────────────────────
+  # ── Site infrastructure — untagged/native, repeats legitimately per site ──
   infra:
     vlan_id: 0
-    network_role: infra
     subnet: "192.168.0.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.0.1"
     dns: ["192.168.0.1"]
-    targets: [esxi, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: ""
+    platforms: [esxi, switches]
+    role: infra
     site: site-a
     zone: infra
-    scope: platform
-    env: null
-    tenancy: platform
-    description: "site infrastructure / ESXi mgmt adjacency"
-    admin: true
+    description: "site infrastructure — hypervisor management adjacency"
+    operator_source: true
+    esxi_num_ports: 15
+    # A promiscuous-capable port group: the only rows that emit a `security`
+    # block in the vCenter view (see emit_when_any in networks_platforms.yml).
+    esxi_allow_promiscuous: true
+    esxi_allow_forged_transmits: true
+    esxi_allow_mac_change: true
 
-  site_b:
-    vlan_id: 1
-    network_role: site-b
+  site_b_infra:
+    vlan_id: 0
     subnet: "192.168.1.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.1.1"
     dns: ["192.168.1.1"]
-    targets: [esxi, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: ""
+    platforms: [switches]
+    role: infra
     site: site-b
     zone: infra
-    scope: platform
-    env: null
-    tenancy: platform
-    description: "site-b infrastructure"
-    admin: true
+    description: "second site LAN — untagged, same vlan_id 0 as site-a"
+    # Without this the recipe [vlan, env, role] renders VLAN00-INFRA for BOTH
+    # site-a and site-b infra (neither carries an env token), and the catalog
+    # fails validation on _duplicate_names. An untagged segment that repeats
+    # per site always needs a distinguishing token.
+    name_suffix: sb
 
-  # ── DMZ (platform, not env-scoped) ───────────────────────────────────────
-  dmz:
-    vlan_id: 9
-    network_role: dmz
-    subnet: "192.168.9.0/24"
-    gateway: "192.168.9.1"
-    dns: ["192.168.9.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "default"
-    site: site-a
-    zone: dmz
-    scope: platform
-    env: null
-    tenancy: platform
-    description: "edge / public-facing"
-    admin: false
-
-  # ── Management control plane (platform env — soft multi-tenant default) ──
+  # ── Management plane ──────────────────────────────────────────────────────
   mgt:
     vlan_id: 10
-    network_role: mgt-svc
     subnet: "192.168.10.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.10.1"
     dns: ["192.168.10.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "allow-ping"
+    platforms: [esxi, firewall, switches, unifi, palo]
+    env: mgt
+    role: svc
     site: site-a
     zone: mgt
-    scope: platform
-    env: mgt
-    tenancy: platform
-    description: "shared management control plane"
-    admin: true
+    description: "management services plane"
+    operator_source: true
+    pfsense_parent: vmx1
+    pfsense_descr: "V10_MGT_SVC"
+    unifi_name: "V10_MGT_SVC"
+    unifi_site: sa
 
   mgt_cluster:
     vlan_id: 11
-    network_role: mgt-cluster
     subnet: "192.168.11.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.11.1"
     dns: ["192.168.11.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "allow-ping"
+    platforms: [esxi, firewall, switches, unifi, palo]
+    env: mgt
+    role: cluster
     site: site-a
     zone: mgt
-    scope: platform
-    env: mgt
-    tenancy: platform
-    description: "mgt cluster plane"
-    admin: true
+    description: "management cluster plane"
+    pfsense_parent: vmx1
+    pfsense_descr: "V11_MGT_CLUSTER"
+    unifi_name: "V11_MGT_CLUSTER"
+    unifi_site: sa
 
-  # ── Dev (platform env — soft multi-tenant default) ───────────────────────
+  # ── Development plane ─────────────────────────────────────────────────────
   dev:
     vlan_id: 20
-    network_role: dev-svc
     subnet: "192.168.20.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.20.1"
     dns: ["192.168.20.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "allow-ping"
+    platforms: [esxi, firewall, switches, unifi, palo]
+    env: dev
+    role: svc
     site: site-a
     zone: dev
-    scope: platform
-    env: dev
-    tenancy: platform
-    description: "shared dev workloads (soft multi-tenant)"
-    admin: false
+    description: "dev services plane"
+    pfsense_parent: vmx1
+    pfsense_descr: "V20_DEV_SVC"
+    unifi_name: "V20_DEV_SVC"
+    unifi_site: sa
 
-  # Lab cluster (swarm / vault labs share this L2)
   dev_cluster:
     vlan_id: 21
-    network_role: dev-cluster
     subnet: "192.168.21.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.21.1"
     dns: ["192.168.21.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "allow-ping"
+    platforms: [esxi, firewall, switches, unifi, palo]
+    env: dev
+    role: cluster
     site: site-a
     zone: dev
-    scope: platform
-    env: dev
-    tenancy: platform
-    description: "lab/swarm/cluster on dev L2"
-    admin: false
+    description: "dev cluster plane"
+    pfsense_parent: vmx1
+    pfsense_descr: "V21_DEV_CLUSTER"
+    unifi_name: "V21_DEV_CLUSTER"
+    unifi_site: sa
 
-  # ── Production (platform env — soft multi-tenant default) ────────────────
+  # ── Production plane ──────────────────────────────────────────────────────
   prod:
     vlan_id: 30
-    network_role: prod-svc
     subnet: "192.168.30.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.30.1"
     dns: ["192.168.30.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "allow-ping"
+    platforms: [esxi, firewall, switches, unifi, palo]
+    env: prod
+    role: svc
     site: site-a
     zone: prod
-    scope: platform
-    env: prod
-    tenancy: platform
-    description: "shared prod workloads (soft multi-tenant)"
-    admin: false
+    description: "production services plane"
+    pfsense_parent: vmx1
+    pfsense_descr: "V30_PROD_SVC"
+    unifi_name: "V30_PROD_SVC"
+    unifi_site: sa
 
   prod_cluster:
     vlan_id: 31
-    network_role: prod-cluster
     subnet: "192.168.31.0/24"
+    netmask: "255.255.255.0"
     gateway: "192.168.31.1"
     dns: ["192.168.31.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "allow-ping"
+    platforms: [esxi, firewall, switches, unifi, palo]
+    env: prod
+    role: cluster
     site: site-a
     zone: prod
-    scope: platform
-    env: prod
-    tenancy: platform
-    description: "prod cluster plane"
-    admin: false
+    description: "production cluster plane"
+    pfsense_parent: vmx1
+    pfsense_descr: "V31_PROD_CLUSTER"
+    unifi_name: "V31_PROD_CLUSTER"
+    unifi_site: sa
 
-  # ── Other platform zones ─────────────────────────────────────────────────
-  iot:
-    vlan_id: 40
-    network_role: iot
-    subnet: "192.168.40.0/24"
-    gateway: "192.168.40.1"
-    dns: ["192.168.40.1"]
-    targets: [esxi, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: ""
+  # ── DMZ ───────────────────────────────────────────────────────────────────
+  dmz:
+    vlan_id: 9
+    subnet: "192.168.9.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.9.1"
+    dns: ["192.168.9.1"]
+    platforms: [esxi, firewall, switches, unifi, palo]
+    role: dmz
     site: site-a
-    zone: iot
-    scope: platform
-    env: null
-    tenancy: platform
-    description: "IoT / constrained devices"
-    admin: false
+    zone: dmz
+    description: "internet-facing DMZ"
+    pfsense_parent: vmx1
+    pfsense_descr: "V09_DMZ"
+    unifi_name: "V09_DMZ"
+    unifi_site: sa
 
-  # Legacy multi-tenant parking L2 (shared fabric, not one customer).
-  # Prefer named hard-tenant segments (acme_prod / acme_dev) for isolation.
-  tenants:
-    vlan_id: 50
-    network_role: tenants
-    subnet: "192.168.50.0/24"
-    gateway: "192.168.50.1"
-    dns: ["192.168.50.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "default"
+  # ── Per-tenant segments — the `tenancy` token drives the name ────────────
+  tenant_acme:
+    vlan_id: 2
+    subnet: "192.168.2.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.2.1"
+    dns: ["192.168.2.1"]
+    platforms: [esxi, firewall, switches, unifi, palo]
+    tenancy: acme
+    role: tenant
     site: site-a
     zone: tenant
-    scope: platform
-    env: null
-    tenancy: platform
-    description: "legacy multi-tenant parking L2 (prefer hard segments)"
-    admin: false
+    description: "tenant segment — the name comes from the tenancy token"
+    # name_parts overrides the estate default recipe for this segment only.
+    name_parts: [vlan, tenancy]
+    pfsense_parent: vmx1
+    pfsense_descr: "V02_ACME"
+    unifi_name: "V02_ACME"
+    unifi_site: sa
 
-  # insecure: true relaxes the port-group security policy — scratch lab only.
-  lab:
-    vlan_id: 120
-    network_role: lab
-    subnet: "192.168.120.0/24"
-    gateway: "192.168.120.1"
-    dns: ["192.168.120.1"]
-    targets: [esxi, switches]
-    vswitch: "vDS-Lab"
-    insecure: true
-    management_profile: ""
+  tenant_globex:
+    vlan_id: 3
+    subnet: "192.168.3.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.3.1"
+    dns: ["192.168.3.1"]
+    platforms: [esxi, firewall, switches, unifi, palo]
+    tenancy: globex
+    role: tenant
+    site: site-a
+    zone: tenant
+    description: "second tenant segment"
+    name_parts: [vlan, tenancy]
+    pfsense_parent: vmx1
+    pfsense_descr: "V03_GLOBEX"
+    unifi_name: "V03_GLOBEX"
+    unifi_site: sa
+
+  # ── Second-site lab — produces a site-b row in the grouped views ─────────
+  site_b_lab:
+    vlan_id: 100
+    subnet: "192.168.100.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.100.1"
+    dns: ["192.168.100.1"]
+    platforms: [firewall, unifi, palo]
+    role: lab
     site: site-b
     zone: lab
-    scope: platform
-    env: null
-    tenancy: platform
-    description: "scratch / throwaway lab"
-    admin: false
+    description: "remote-site lab — appears under _net.pfsense.vlans['site-b']"
+    name_suffix: sb
+    pfsense_parent: vmx1
+    pfsense_descr: "V100_LAB_SB"
+    unifi_name: "V100_LAB_SB"
+    unifi_site: sb
 
-  # ── Hard-tenant examples (scope: tenant) ─────────────────────────────────
-  # Only for L2 isolation. Soft path: tenancy=acme + network_segment=prod.
-  # Inventory hard path: tenancy=acme, env=prod, network_segment=acme_prod
-  acme_prod:
-    vlan_id: 60
-    network_role: prod
-    subnet: "192.168.60.0/24"
-    gateway: "192.168.60.1"
-    dns: ["192.168.60.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "default"
+  # ── A pinned name — the escape hatch no token set can express ────────────
+  # `--tags names` stars this and _names_pinned lists it, so a pin stays
+  # visible instead of becoming invisible drift.
+  legacy_storage:
+    vlan_id: 50
+    subnet: "192.168.50.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.50.1"
+    dns: ["192.168.50.1"]
+    platforms: [esxi, switches]
+    role: storage
     site: site-a
-    zone: tenant
-    scope: tenant
-    env: prod
-    tenancy: acme
-    description: "acme production hard isolation"
-    admin: false
+    zone: infra
+    description: "pre-existing port group — renaming it on the vDS is not free"
+    name: "VLAN50-LEGACY-STORAGE-DO-NOT-RENAME"
 
-  acme_dev:
-    vlan_id: 61
-    network_role: dev
-    subnet: "192.168.61.0/24"
-    gateway: "192.168.61.1"
-    dns: ["192.168.61.1"]
-    targets: [esxi, firewall, switches]
-    vswitch: "vDS-Lab"
-    insecure: false
-    management_profile: "default"
-    site: site-a
-    zone: tenant
-    scope: tenant
-    env: dev
-    tenancy: acme
-    description: "acme development hard isolation"
-    admin: false
+  # ── Documented but applied nowhere ───────────────────────────────────────
+  future_wan:
+    vlan_id: 120
+    subnet: "192.168.120.0/24"
+    netmask: "255.255.255.0"
+    gateway: "192.168.120.1"
+    dns: ["192.168.120.1"]
+    platforms: [catalog_only]
+    role: wan
+    site: site-b
+    zone: wan
+    description: "planned segment — reaches no device until platforms[] is set"
 
-# ============================================================
-# Generated pools (spec-driven) — the generator lives in networks_derived.yml
-# ============================================================
-# Each pool declares its own shape; the generator emits sets × roles items.
+# ── Generated segments ─────────────────────────────────────────────────────
+# One pool emits instances x roles segments. This is where a catalog earns its
+# keep: 4 instances x 5 roles = 20 segments from ~15 lines, each with a
+# computed VLAN and subnet, none of them typed by hand.
 #
-# VLAN math (set n = 1..sets, per role):
-#   base = vlan_base + (n - 1) * vlan_stride
-#   vlan = base + role_offset
-# vlan_stride defaults to the role count, so an unset stride tight-packs sets
-# back-to-back (the historical behaviour). Set it larger than the role count to
-# leave a numbering gap between sets for later expansion — e.g. stride 10 over
-# 5 roles yields 2000-2004, 2010-2014, 2020-2024, … with 2005-2009 free.
+#   vlan = vlan_base + (n - 1) * vlan_stride + role_offset
 #
-# roles may be EITHER form:
-#   list  — [app, monitor]              role_offset = list position (0,1,2,…)
-#           A list entry may also be a single-key map to attach per-role
-#           metadata inline (flow or block style — both are the same YAML):
-#             roles: [app, monitor, {dmz: {insecure: true}}]
-#             roles:
-#               - app
-#               - monitor
-#               - dmz:
-#                   insecure: true
-#           offset stays the list position unless the map sets offset.
-#   dict  — app: {offset: 0}            role_offset = explicit offset (default
-#           monitor: {offset: 4,          declaration order); the value map is
-#                     insecure: true}     per-role metadata inherited by every
-#                                         generated instance of that role.
-# Per-role keys override the pool-level default for that role only. Overridable:
-#   offset · insecure · promiscuous_mode · forged_transmits · targets · vswitch
-#   · zone · management_profile
+# subnet_base carves the Nth network of that size, stepped by subnet_stride,
+# with the gateway at gateway_offset.
 #
-# NAMING = an ORDERED LIST of var tokens joined by '-'. No format strings, no
-# literals — just the vars you pick, in the order you pick (or the default).
-# Two optional per-pool lists choose which vars appear and in what order:
-#   name_parts (default [vlan, tenant, env, role, nn]) -> display_name
-#   key_parts  (default [prefix, n, role])             -> original_key (lower)
-# name_case (default upper) = upper | lower | keep ('keep' = source casing, may
-# be mixed). The KEY is ALWAYS lowercase (vars are referenced lowercase). e.g.
-#   name_case: lower  -> vlan2200-tenant_x-dev-endpoint-01
-# Tokens (value):
-#   prefix (pool.prefix|key) · pool (key) · tenant · env (pool.env; '' if unset)
-#   role · vlan (label+id, e.g. VLAN2200) · vlan_label (just 'VLAN') · vid (id
-#   only, e.g. 2200) · base · offset · n · nn (2-digit set number)
-# The VLAN label comes from pool.vlan_prefix (default 'VLAN'). Since parts join
-# on '-', pick vlan for glued (VLAN2200) or vlan_label + vid for a separator.
-# Empty tokens are dropped, so env is silently skipped when a pool omits it —
-# no doubled '-'. Reorder / trim to taste, e.g.
-#   name_parts: [vlan, tenant, role]             -> VLAN2200-TENANT_X-ENDPOINT
-#   name_parts: [tenant, env, role, nn]          -> TENANT_X-DEV-ENDPOINT-01
-#   name_parts: [vlan_label, vid, tenant, role]  -> VLAN-2200-TENANT_X-ENDPOINT
-# display_name feeds every projection, so the order flows to ESXi/firewall/
-# switch consumers automatically; _fabric_duplicate_names / _fabric_duplicate_vlans
-# still guard against a parts list too short to stay unique.
-#
-# DESCRIPTION (free-form prose): unlike the NAME, desc_template IS a str.format
-# string — literals + {tokens} are welcome, because a description is prose, not
-# an identifier. Same token names as naming (source casing here; vlan='VLAN'+id,
-# vid=id). A per-role desc_template overrides the pool default; unset -> ''. e.g.
-#   desc_template: "{tenant} {env} {role} (VLAN {vid}, set {nn})"
-#     -> "tenant_x dev endpoint (VLAN 2200, set 01)"
-# Static fabric_underlays entries instead carry a plain per-entry `description`
-# string. Both paths land in the item's `description` field, uniform across
-# static + pool.
-
-fabric_pools:
-  # ── Defaults + KEY control ───────────────────────────────────────────────
-  # Name takes every default (name_parts [vlan, tenant, env, role, nn], UPPER);
-  # env is unset so it drops out -> VLAN2000-ACME-APP-01.
-  # Demonstrates key_parts on the ORIGINAL_KEY only (name untouched; keys are
-  # always lowercase):  key_parts: [tenant, vid, role] -> acme-2000-app
+# platforms: [catalog_only] keeps the demo from queueing 20 port groups onto a
+# real vDS. Set it to [esxi, switches] to actually reconcile them.
+network_segment_pools:
   acme_lab:
-    prefix: acme-dev
-    tenancy: acme
-    zone: pool
+    tenant: acme
+    env: lab
+    site: site-a
+    zone: tenant
     vlan_base: 2000
-    sets: 2
-    roles: [app, monitor]
-    targets: [esxi, switches]
-    vswitch: vDS-Lab
-    key_parts: [tenant, vid, role]
-
-  # ── NAME knobs: VLAN-XX separator + custom label + lower-case + order ─────
-  # vlan_label + vid split the label from the id (VLAN-XX style); vlan_prefix
-  # renames the label; name_case lowercases the whole joined name:
-  #   vlan_prefix: net, name_parts [vlan_label, vid, tenant, role, nn],
-  #   name_case: lower  ->  net-2100-globex-dev-sandbox-01
-  # The tap role shows INLINE per-role metadata in list form — a single-key
-  # map entry ({tap: {promiscuous_mode: true, forged_transmits: true}}) relaxes
-  # just the SPAN knobs for that role while sandbox/mgmt keep the defaults.
-  globex_lab:
-    prefix: lab
-    tenancy: globex
-    zone: pool
-    vlan_base: 2100
-    sets: 2
-    roles:
-      - sandbox
-      - tap:
-          promiscuous_mode: true
-          forged_transmits: true
-      - mgmt
-    targets: [esxi, switches]
-    vswitch: vDS-Lab
-    vlan_prefix: net
-    name_parts: [vlan_label, vid, tenant, role, nn]
+    vlan_stride: 10
+    instances: 4
+    roles: [app, db, web, cache, mgmt]
+    platforms: [catalog_only]
+    key_parts: [pool, instance_nn, role]
+    name_parts: [vlan, tenant, env, instance_nn, role]
+    subnet_base: "10.20.0.0/26"
+    subnet_stride: 1
+    gateway_offset: 1
     name_case: lower
 
-  # ── BEHAVIOUR knobs: stride + dict offsets + env + per-role security ──────
-  # vlan_stride 10 spaces each set's block; dict roles give explicit offsets
-  # (need not be contiguous — endpoint sits at +9, target at +7); env: dev
-  # feeds the DEFAULT tenant-env-role-nn order; the monitor role relaxes just
-  # promiscuous_mode + forged_transmits (a SPAN / sniffer port), no blanket
-  # insecure.  ->  VLAN2209-TENANT_X-DEV-ENDPOINT-01, VLAN2204-…-MONITOR-01, …
-  tenant_x_lab:
-    prefix: tenant-x
-    tenancy: tenant_x
-    env: dev
-    zone: pool
-    vlan_base: 2200
-    vlan_stride: 10
-    sets: 3
-    targets: [esxi, switches]
-    vswitch: vDS-Lab
-    # Dynamic per-network description (str.format, literals allowed). The
-    # monitor role overrides it for the SPAN port.
-    #   endpoint -> "tenant_x dev endpoint net (VLAN 2209, set 01)"
-    #   monitor  -> "tenant_x dev SPAN/sniffer port (VLAN 2204, set 01)"
-    desc_template: "{tenant} {env} {role} net (VLAN {vid}, set {nn})"
-    roles:
-      endpoint: { offset: 9 }
-      sensor: { offset: 1 }
-      management: { offset: 2 }
-      target: { offset: 7 }
-      monitor:
-        offset: 4
-        promiscuous_mode: true
-        forged_transmits: true
-        desc_template: "{tenant} {env} SPAN/sniffer port (VLAN {vid}, set {nn})"
+# ── Fallbacks ──────────────────────────────────────────────────────────────
+# Inventory should pick a segment netmask; these exist so a play that forgets
+# still renders something obvious rather than an undefined-variable error.
+network_underlay_netmask: "255.255.255.0"
+network_netmask: "{{ network_underlay_netmask }}"
 
-# ============================================================
-# Hand-curated custom / static rows (no matrix pattern)
-# ============================================================
+# ── Convenience maps used by inventories to pick "this env's segment" ──────
+network_underlay_env_primaries:
+  mgt: mgt
+  dev: dev
+  prod: prod
 
-# ESXi custom rows — ONLY rows with no matrix pattern: trunk, residential/
-# tenant L2-only, extra cluster planes, PoC sandboxes. Keep this short; do NOT
-# push one-offs into the SSOT matrix. Names/VLANs here stay OUTSIDE the matrix
-# ranges, so the combined list in networks_derived.yml needs no dedupe. This is
-# also the single source for the vCenter custom rows (reshaped there).
-esxi_port_groups_custom:
-  - { name: TRUNK, switch: vDS-Lab, vlan: "0-4094", insecure: false, trunk: true }
-  - { name: VLAN02-RES-A, switch: vDS-Lab, vlan: 2, insecure: false }
-  - { name: VLAN03-RES-B, switch: vDS-Lab, vlan: 3, insecure: false }
-  - { name: VLAN04-RES-C, switch: vDS-Lab, vlan: 4, insecure: false }
-  - { name: VLAN05-SHARED, switch: vDS-Lab, vlan: 5, insecure: false }
-  - { name: VLAN06-TENANT1, switch: vDS-Lab, vlan: 6, insecure: false }
-  - { name: VLAN07-TENANT2, switch: vDS-Lab, vlan: 7, insecure: false }
-  - { name: VLAN08-RES-IOT, switch: vDS-Lab, vlan: 8, insecure: false }
-  - { name: VLAN12-MGT-CLUSTER-WKR, switch: vDS-Lab, vlan: 12, insecure: false }
-  - { name: VLAN13-MGT-CLUSTER-LB, switch: vDS-Lab, vlan: 13, insecure: false }
-  - { name: VLAN22-DEV-CLUSTER-WKR, switch: vDS-Lab, vlan: 22, insecure: false }
-  - { name: VLAN23-DEV-CLUSTER-LB, switch: vDS-Lab, vlan: 23, insecure: false }
-  - { name: VLAN32-PROD-CLUSTER-WKR, switch: vDS-Lab, vlan: 32, insecure: false }
-  - { name: VLAN33-PROD-CLUSTER-LB, switch: vDS-Lab, vlan: 33, insecure: false }
-  - { name: VLAN501-SANDBOX01-INSIDE, switch: vDS-Lab, vlan: 501, insecure: false }
-  - { name: VLAN502-SANDBOX02-INSIDE, switch: vDS-Lab, vlan: 502, insecure: false }
-
-# L2-only VLANs with no underlay entry (residential/tenant + PoC sandboxes).
-# NOT auto-appended — concatenate where a play needs them:
-#   "{{ (_switch_vlans + switch_vlans_static) | unique | sort }}"
-switch_vlans_static: [2, 3, 4, 5, 6, 7, 8, 12, 13, 22, 23, 32, 33, 501, 502]
-
-# ============================================================
-# Non-derivable platform data (kept as-is)
-# ============================================================
-
-# Firewall device metadata + zones (zones are policy anchors, not per-VLAN).
-palo:
-  device_group: "lab"
-  vsys: "vsys1"
-  template: "lab-template"
-  zones:
-    infra: { name: "infra", mode: layer3 }
-    dmz: { name: "dmz", mode: layer3 }
-    mgt: { name: "mgt", mode: layer3 }
-    dev: { name: "dev", mode: layer3 }
-    prod: { name: "prod", mode: layer3 }
-    iot: { name: "iot", mode: layer3 }
-    tenant: { name: "tenant", mode: layer3 }
-    lab: { name: "lab", mode: layer3 }
-    edge: { name: "edge", mode: layer3 }
-
-# Switch trunk ports — hand-curated (physical cabling, not derivable).
-dell:
-  trunks:
-    - name: esxi-01
-      description: "ESXi-01 uplink(s)"
-      interfaces: []
-      mode: trunk
-      native_vlan: 0
-      allowed_vlans: all
-      peer: "192.168.0.11"
-
-    - name: esxi-02
-      description: "ESXi-02 uplink(s)"
-      interfaces: []
-      mode: trunk
-      native_vlan: 0
-      allowed_vlans: all
-      peer: "192.168.0.12"
-
-    - name: edge-trunk
-      description: "Edge firewall VLAN trunk"
-      interfaces: []
-      mode: trunk
-      native_vlan: 0
-      allowed_vlans: all
-      peer: edge-fw
-
-    - name: esxi-poc-sandbox-range
-      description: "Extra allowed range for PoC sandboxes"
-      interfaces: []
-      mode: trunk
-      native_vlan: 0
-      allowed_vlans: "500-599"
-      peer: esxi-all
-
-# ============================================================
-# docker_swarm — encrypted overlay subnets (east-west app plane)
-# ============================================================
-# Isolated from underlay RFC1918 (192.168.x). Mock pool 10.40.0.0/16, /24 per stack.
-
-docker_swarm:
-  default_addr_pool: "10.40.0.0/16"
-  default_addr_pool_subnet_size: 24
-
-  mattermost:
-    subnet: "10.40.10.0/24"
-    netmask: "255.255.255.0"
-    name: "mm_overlay"
-    encrypted: true
-    attachable: true
-
-  splunk:
-    subnet: "10.40.11.0/24"
-    netmask: "255.255.255.0"
-    name: "splunk_overlay"
-    encrypted: true
-    attachable: true
-
-  elk:
-    subnet: "10.40.12.0/24"
-    netmask: "255.255.255.0"
-    name: "elk_overlay"
-    encrypted: true
-    attachable: true
-
-  # next free: 10.40.13.0/24
-
-swarm_overlay_subnets:
-  mattermost: "{{ docker_swarm.mattermost.subnet }}"
-  splunk: "{{ docker_swarm.splunk.subnet }}"
-  elk: "{{ docker_swarm.elk.subnet }}"
+network_underlay_env_clusters:
+  mgt: mgt_cluster
+  dev: dev_cluster
+  prod: prod_cluster

@@ -1,0 +1,84 @@
+---
+# ── Network catalog — ENGINE CONFIGURATION ─────────────────────────────────
+# What the estate-agnostic engine (plugins/filter/network_catalog.py) needs to
+# know about US: which platforms exist, how names are built, what a well-formed
+# segment must carry, what every segment inherits.
+#
+# You touch this file when the RULES change, not when a segment does.
+#
+# Every option below is documented in docs/network-catalog.md
+# Segments live in networks.yml; output shapes in networks_platforms.yml;
+# the contract you read is _networks_derived.yml.
+
+# The platform MEMBERSHIP labels allowed in a segment's platforms[]. Add a
+# label here and it becomes selectable; give it a view in
+# networks_platforms.yml and it becomes a list. (View namespaces like `dell`
+# are free labels and do NOT need to appear here — see the doc's
+# "Membership vs namespace" section.)
+#
+# `catalog_only` is a real label with no view, and it is the supported way to say
+# "generate this segment but apply it nowhere". Reach for it instead of
+# `platforms: []`: an empty list reads as an authoring mistake and the validator
+# rejects it as a missing required field (tested — see
+# test_empty_string_and_empty_list_count_as_missing), so a genuinely
+# apply-nowhere segment has to name that intent rather than omit it.
+network_platforms: [esxi, firewall, switches, unifi, palo, catalog_only]
+
+# Fields every segment inherits unless it sets its own.
+network_segment_defaults:
+  esxi_vswitch: "{{ esxi_vds_name }}"
+  esxi_allow_promiscuous: false
+  esxi_allow_forged_transmits: false
+  esxi_allow_mac_change: false
+  esxi_num_ports: 0
+  esxi_port_binding: ephemeral
+  tenancy: platform
+
+# ── Name recipes ───────────────────────────────────────────────────────────
+# Deliberately platform-NEUTRAL: a name recipe describes a shape, not a vendor.
+# The platform words belong in the views below, which are vendor-specific by
+# definition. Every segment gets one name per recipe.
+#
+#   name        the primary identity (network_primary_name_recipe). vSphere uses it as
+#               the port-group name, but nothing about the recipe says so.
+#   short_name  the same name minus the VLAN part — Dell OS10 wants the label
+#               without VLANnn, and `from:` keeps the two in sync with no regex
+#               and no second parts list.
+#
+# A segment can pin either by declaring a field of that name (`name: FOO`).
+network_primary_name_recipe: name
+
+network_name_recipes:
+  name:
+    parts: [vlan, env, role]
+    case: upper
+    sep: "-"
+    vlan_prefix: "VLAN"
+    # pad 2 renders VLAN0 as VLAN00 and VLAN1 as VLAN01, matching the names
+    # already on the vDS; ids of 3+ digits are unaffected.
+    vlan_pad: 2
+  short_name:
+    from: name
+    drop_tokens: [vlan, vlan_label, vid]
+
+# Fallback description (str.format over the segment's fields) when a segment
+# declares none. Empty = no description.
+network_description_template: ""
+
+# ── Required fields (what a well-formed segment must carry here) ───────────
+# Checked against the segment AS WRITTEN — a field supplied only by
+# network_segment_defaults still counts as missing, so required fields must
+# be declared on every segment itself.
+# L3 fields are required only where a device ROUTES the segment: L2-only
+# isolation VLANs (pool-generated) legitimately have no subnet or gateway.
+# Placement (site/zone) and identity (role) stay mandatory for everything.
+network_required_fields:
+  all: [vlan_id, platforms, site, zone, role]
+  by_platform:
+    firewall: [subnet, netmask, gateway, dns, pfsense_parent, pfsense_descr]
+    palo: [subnet, gateway]
+    unifi: [unifi_name, unifi_site]
+
+# ── Partitions to build (_segments_by.<field> / _cidrs_by.<field>) ─────────
+# `pool` groups every pool-generated segment under its pool name.
+network_partition_fields: [site, zone, role, env, tenancy, pool]
