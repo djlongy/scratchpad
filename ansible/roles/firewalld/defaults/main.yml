@@ -21,9 +21,42 @@ firewalld_service_enabled: true
 # firewalld-managed default unchanged.
 firewalld_default_zone: ""
 
+# Allow ICMP (ping) on the default zone even when it is "drop". Default
+# is on so reachability probes work without opening TCP/UDP. Set false to fully
+# black-hole ICMP on unclassified traffic.
+firewalld_allow_icmp: true
+
 # Reload firewalld after XML changes (set false to defer reload — e.g. during
 # multi-role bootstrap where another role will reload at the end).
 firewalld_reload: true
+
+# ── Safety & validation toggles (fail-secure defaults) ───────────────────────
+# These gate the fail-closed asserts in validate.yml and the lockout guard.
+# Defaults are chosen so an inventory that sets none of them stays safe.
+
+# Allow a restrictive (drop/block) default zone even when NO zone opens an
+# activated SSH path. Default false: the role refuses to lock itself out. Set
+# true ONLY for a genuinely SSH-less host administered out-of-band (dangerous).
+firewalld_allow_no_ssh: false
+
+# Skip the assert that this controller's own IP is covered by an SSH source
+# CIDR. Default false so a restrictive default cannot strand the controller.
+firewalld_skip_controller_check: false
+
+# Arm a transient systemd revert timer around the risky reload window so a bad
+# change rolls the default zone back if SSH cannot be re-proven. Default true —
+# it self-disarms once wait_for_connection succeeds (only arms when a reload
+# will happen and the default zone is/becomes drop/block). See guard_arm.yml.
+firewalld_lockout_guard: true
+
+# Turn NetworkManager interface-binding audit warnings into a hard failure.
+# Default false (advisory); set true to enforce clean NM zone assignment.
+firewalld_strict_interface_audit: false
+
+# Seconds the revert timer waits before firing. Must comfortably exceed the time
+# from arming to the post-switch fresh-connection probe, yet stay short enough to
+# recover a real lockout quickly.
+firewalld_lockout_guard_seconds: 180
 
 # ── Custom service definitions ───────────────────────────────────────────────
 #
@@ -73,11 +106,11 @@ firewalld_services_remove: []
 #     sources: []                        # CIDRs bound at zone-creation time (also see firewalld_source_zone_bindings)
 #     rich_rules: []                     # raw rich-rule strings (firewalld rich language)
 #       # Examples (source-restricted opens — prefer over zone-wide services when only a few clients need access):
-#       # - 'rule family="ipv4" source address="192.168.10.0/24" port port="22" protocol="tcp" accept'
-#       # - 'rule family="ipv4" source address="192.168.50.5" port port="9100" protocol="tcp" accept'
-#       # - 'rule family="ipv4" source address="192.168.10.0/24" service name="https" accept'
+#       # - 'rule family="ipv4" source address="10.10.0.0/24" port port="22" protocol="tcp" accept'
+#       # - 'rule family="ipv4" source address="10.50.0.5" port port="9100" protocol="tcp" accept'
+#       # - 'rule family="ipv4" source address="10.10.0.0/24" service name="https" accept'
 #       # - 'rule protocol value="vrrp" accept'
-#       # - 'rule family="ipv4" source address="192.168.20.0/24" port protocol="tcp" port="5432" accept'
+#       # - 'rule family="ipv4" source address="10.20.0.0/24" port protocol="tcp" port="5432" accept'
 #       # Renders as <rule>...</rule> in zone.xml.j2; same syntax works with ansible.posix.firewalld rich_rule=
 firewalld_zones: []
 
@@ -86,15 +119,16 @@ firewalld_zones: []
 # /etc/firewalld/zones/<name>.xml files.
 firewalld_zones_remove: []
 
-# ── Runtime zone bindings ────────────────────────────────────────────────────
+# ── Zone bindings (baked into permanent zone XML + reconciled at runtime) ───
 #
-# These use the ansible.posix.firewalld module to bind sources/interfaces to
-# zones. Run AFTER zones are rendered + firewalld reloaded.
+# CRITICAL: sources/interfaces are merged into zone XML at template time so a
+# later re-render + --reload cannot wipe them. Runtime ansible.posix.firewalld
+# binds are reconcile-only. One CIDR → one zone only (exclusive).
 
 # Bind source CIDRs to zones (L3 segregation pattern — preferred).
 # Schema:
-#   - { zone: trusted-mgmt, source: 10.0.10.0/24 }
-#   - { zone: dmz-ingress,  source: 10.0.40.0/24 }
+#   - { zone: mgmt, source: 10.10.0.0/24 }
+#   - { zone: app,  source: 10.40.0.0/24 }
 firewalld_source_zone_bindings: []
 
 # Bind physical/virtual interfaces to zones (L2 segregation — use only if you
@@ -105,6 +139,8 @@ firewalld_source_zone_bindings: []
 # eth0 / ens192 / ens160…). Use the fleet-wide derived var instead:
 #   - { zone: internal, interface: "{{ primary_interface }}" }
 # (primary_interface is defined in playbooks/group_vars/all/all.yml.)
+# Do NOT interface-bind the primary NIC to "mgmt" for leaf hosts — use source
+# CIDRs so default=drop stays the unclassified path.
 firewalld_interface_zone_bindings: []
 
 # ── Back-compat: legacy firewall_rules variable ──────────────────────────────

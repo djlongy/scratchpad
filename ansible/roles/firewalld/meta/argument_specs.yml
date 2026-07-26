@@ -27,6 +27,26 @@ argument_specs:
         description: "Reload firewalld after XML changes."
         type: bool
         default: true
+      firewalld_allow_no_ssh:
+        description: "Permit a drop/block default with no ssh-opening activated zone (out-of-band-managed hosts only; dangerous)."
+        type: bool
+        default: false
+      firewalld_skip_controller_check:
+        description: "Skip the pre-flight controller-containment check for a drop/block default."
+        type: bool
+        default: false
+      firewalld_strict_interface_audit:
+        description: "Treat interface-audit warnings (NM-owned binds, unset NM zone) as hard failures."
+        type: bool
+        default: false
+      firewalld_lockout_guard:
+        description: "Arm a transient systemd revert timer around the reload + restrictive default-zone switch."
+        type: bool
+        default: true
+      firewalld_lockout_guard_seconds:
+        description: "Seconds the revert timer waits before restoring the pre-change default zone."
+        type: int
+        default: 180
       firewalld_packages:
         description: "Packages to install."
         type: list

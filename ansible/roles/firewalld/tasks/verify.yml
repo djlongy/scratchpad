@@ -1,0 +1,139 @@
+---
+# Post-apply assertions. Role owns verification; playbooks do not re-prove
+# firewalld. Fail loud if permanent state does not match inventory contract.
+
+- name: Read active zones after apply
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: firewall-cmd --get-active-zones
+  register: _firewalld_active_zones
+  changed_when: false
+  check_mode: false  # read-only; must run under --check so asserts have data
+
+- name: Read default zone after apply
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  register: _firewalld_verify_default
+  changed_when: false
+  check_mode: false  # read-only; must run under --check so asserts have data
+
+- name: Assert default zone matches inventory when set
+  when: firewalld_default_zone | default('') | length > 0
+  ansible.builtin.assert:
+    that:
+      - _firewalld_verify_default.stdout | trim == firewalld_default_zone
+    fail_msg: >-
+      Expected default zone {{ firewalld_default_zone }}, got
+      {{ _firewalld_verify_default.stdout | trim }}
+
+- name: List permanent sources per bound zone
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --zone={{ item }} --list-sources
+  register: _firewalld_zone_sources
+  changed_when: false
+  check_mode: false  # read-only; must run under --check so asserts have data
+  loop: "{{ firewalld_source_zone_bindings | map(attribute='zone') | list | unique }}"
+  loop_control:
+    label: "{{ item }}"
+  when: firewalld_source_zone_bindings | length > 0
+
+- name: Assert each inventory source is permanent on its zone
+  when: firewalld_source_zone_bindings | length > 0
+  vars:
+    _listed: >-
+      {{ (_firewalld_zone_sources.results
+          | selectattr('item', 'equalto', item.zone)
+          | map(attribute='stdout')
+          | first
+          | default('')
+          | trim
+          | split)
+         | list }}
+  ansible.builtin.assert:
+    that:
+      - item.source in _listed
+    fail_msg: >-
+      Source {{ item.source }} missing from permanent zone {{ item.zone }}
+      (have: {{ _listed }}). Zone XML may have been rewritten without sources,
+      or the bind failed.
+  loop: "{{ firewalld_source_zone_bindings }}"
+  loop_control:
+    label: "{{ item.source }} in {{ item.zone }}"
+
+- name: List RUNTIME sources per bound zone
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: >-
+    firewall-cmd --zone={{ item }} --list-sources
+  register: _firewalld_zone_sources_runtime
+  changed_when: false
+  check_mode: false
+  loop: "{{ firewalld_source_zone_bindings | map(attribute='zone') | list | unique }}"
+  loop_control:
+    label: "{{ item }}"
+  when: firewalld_source_zone_bindings | length > 0
+
+- name: Assert each inventory source is live (runtime) on its zone
+  when: firewalld_source_zone_bindings | length > 0
+  vars:
+    _listed_rt: >-
+      {{ (_firewalld_zone_sources_runtime.results
+          | selectattr('item', 'equalto', item.zone)
+          | map(attribute='stdout')
+          | first
+          | default('')
+          | trim
+          | split)
+         | list }}
+  ansible.builtin.assert:
+    that:
+      - item.source in _listed_rt
+    fail_msg: >-
+      Source {{ item.source }} is NOT in the running zone {{ item.zone }}
+      (runtime has: {{ _listed_rt }}). Permanent state may be correct but runtime
+      diverged — reload did not apply, or a later change dropped it.
+  loop: "{{ firewalld_source_zone_bindings }}"
+  loop_control:
+    label: "{{ item.source }} in {{ item.zone }} (runtime)"
+
+- name: List permanent interfaces per bound zone
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --zone={{ item }} --list-interfaces
+  register: _firewalld_zone_ifaces
+  changed_when: false
+  check_mode: false  # read-only; must run under --check so asserts have data
+  loop: "{{ firewalld_interface_zone_bindings | map(attribute='zone') | list | unique }}"
+  loop_control:
+    label: "{{ item }}"
+  when: firewalld_interface_zone_bindings | length > 0
+
+- name: Assert each inventory interface is permanent on its zone
+  when: firewalld_interface_zone_bindings | length > 0
+  vars:
+    _listed: >-
+      {{ (_firewalld_zone_ifaces.results
+          | selectattr('item', 'equalto', item.zone)
+          | map(attribute='stdout')
+          | first
+          | default('')
+          | trim
+          | split)
+         | list }}
+  ansible.builtin.assert:
+    that:
+      - item.interface in _listed
+    fail_msg: >-
+      Interface {{ item.interface }} missing from permanent zone {{ item.zone }}
+      (have: {{ _listed }}).
+  loop: "{{ firewalld_interface_zone_bindings }}"
+  loop_control:
+    label: "{{ item.interface }} in {{ item.zone }}"
+
+- name: Report firewalld verify summary
+  ansible.builtin.debug:
+    msg:
+      - "default(runtime)={{ _firewalld_verify_default.stdout | trim }}"
+      - "active_zones={{ _firewalld_active_zones.stdout_lines | default([]) }}"
+      - "source_bindings={{ firewalld_source_zone_bindings | length }}"
+      - "interface_bindings={{ firewalld_interface_zone_bindings | length }}"
+      - "interface_audit={{ _firewalld_interface_audit | default('(interface_audit phase not run)') }}"

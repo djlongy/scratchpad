@@ -1,0 +1,61 @@
+---
+# Fail-safe revert guard — ARM. A transient systemd timer restores the
+# pre-change default zone and reloads if we cannot prove a fresh SSH connection
+# after the switch. Armed BEFORE the reload flush so it covers the whole risky
+# window. Disarmed in guard_disarm.yml once wait_for_connection succeeds.
+#
+# The revert is a plain --set-default-zone back to the captured value plus a
+# normal --reload; it never restarts the service or drops established state.
+
+- name: Capture the live default zone before the risky window
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  register: _fw_guard_prev_default
+  changed_when: false
+  check_mode: false
+
+- name: Decide whether to arm the lockout guard
+  ansible.builtin.set_fact:
+    # Arm only when a reload will happen AND the default is (or is becoming)
+    # restrictive. Skipped in check mode so a dry run never touches systemd.
+    _firewalld_guard_active: >-
+      {{ (firewalld_lockout_guard | bool)
+         and (firewalld_reload | bool)
+         and (not ansible_check_mode)
+         and (
+               (firewalld_default_zone in ['drop', 'block'])
+               or ((_fw_guard_prev_default.stdout | default('') | trim) in ['drop', 'block'])
+             ) }}
+
+- name: Clear any stale lockout-guard units before arming
+  become: true  # root: systemctl manages the transient guard units
+  ansible.builtin.command: >-
+    systemctl reset-failed firewalld-lockout-guard.timer firewalld-lockout-guard.service
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _firewalld_guard_active | bool
+
+- name: Stop any stale lockout-guard timer before arming
+  become: true  # root: systemctl manages the transient guard units
+  ansible.builtin.command: systemctl stop firewalld-lockout-guard.timer
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _firewalld_guard_active | bool
+
+- name: Arm the transient revert timer
+  become: true  # root: systemd-run creates a transient system timer + service
+  ansible.builtin.command:
+    argv:
+      - systemd-run
+      - --unit=firewalld-lockout-guard
+      # Default AccuracySec is 1min, which lets the revert fire up to ~60s late
+      # (timer coalescing) — pin it so the guard reverts on time.
+      - --timer-property=AccuracySec=1s
+      - "--on-active={{ firewalld_lockout_guard_seconds }}"
+      - /bin/sh
+      - -c
+      - "firewall-cmd --set-default-zone={{ _fw_guard_prev_default.stdout | trim }} && firewall-cmd --reload"
+  changed_when: true
+  when: _firewalld_guard_active | bool

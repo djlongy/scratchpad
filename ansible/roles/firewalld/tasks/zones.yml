@@ -1,4 +1,8 @@
 ---
+# Zone XML is permanent SoT. Template merges firewalld_source_zone_bindings
+# and firewalld_interface_zone_bindings into each zone so a later reload
+# cannot wipe runtime-only permanent binds (SSH lockout under default=drop).
+
 - name: Validate firewalld_zones entries
   ansible.builtin.assert:
     that:
@@ -10,7 +14,7 @@
   loop_control:
     label: "{{ item.name | default('(missing name)') }}"
 
-- name: Render firewalld zone XML files
+- name: Render firewalld zone XML files (atomic sources + interfaces)
   become: true  # root: writes /etc/firewalld/zones/
   ansible.builtin.template:
     src: zone.xml.j2

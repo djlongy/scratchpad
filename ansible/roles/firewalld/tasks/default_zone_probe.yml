@@ -1,0 +1,63 @@
+---
+# Read the RUNNING firewall and set _fw_runtime_ssh_ok: does any currently-active
+# zone allow ssh (service ssh, tcp/22 port, or a matching rich rule)? Included by
+# default_zone.yml before the switch and, after a self-heal reload, again — so
+# the gate reflects live runtime, never inventory intent.
+
+- name: List active zones (runtime)
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --get-active-zones
+  register: _fw_active_raw
+  changed_when: false
+  check_mode: false
+
+# Backslash-free by necessity: in this repo's YAML+Jinja pipeline, escape
+# sequences like \S/\s inside a Jinja expression string arrive LITERAL (a
+# backslash then the letter), so a \S regex matches nothing. Zone-name lines are
+# unindented; detail lines start with two spaces — match "does not start with a
+# space" instead.
+- name: Derive active zone names (runtime)
+  ansible.builtin.set_fact:
+    _fw_active_zone_names: >-
+      {{ _fw_active_raw.stdout_lines | default([]) | select('match', '^[^ ]') | list }}
+
+- name: Read services of each active zone (runtime)
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: "firewall-cmd --zone={{ item }} --list-services"
+  register: _fw_active_services
+  changed_when: false
+  check_mode: false
+  loop: "{{ _fw_active_zone_names | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Read ports of each active zone (runtime)
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: "firewall-cmd --zone={{ item }} --list-ports"
+  register: _fw_active_ports
+  changed_when: false
+  check_mode: false
+  loop: "{{ _fw_active_zone_names | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Read rich rules of each active zone (runtime)
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: "firewall-cmd --zone={{ item }} --list-rich-rules"
+  register: _fw_active_rich
+  changed_when: false
+  check_mode: false
+  loop: "{{ _fw_active_zone_names | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+# Services/ports use whitespace-token equality (map('split')|flatten) rather than
+# a \s-class regex, which would arrive literal here. Rich rules keep substring
+# search — those patterns contain no backslashes.
+- name: Compute whether a live active zone allows ssh
+  ansible.builtin.set_fact:
+    _fw_runtime_ssh_ok: >-
+      {{ ((_fw_active_services.results | default([]) | map(attribute='stdout') | map('split') | flatten | select('equalto', 'ssh') | list | length) > 0)
+         or ((_fw_active_ports.results | default([]) | map(attribute='stdout') | map('split') | flatten | select('equalto', '22/tcp') | list | length) > 0)
+         or ((_fw_active_rich.results | default([]) | map(attribute='stdout') | select('search', 'service name="ssh"') | list | length) > 0)
+         or ((_fw_active_rich.results | default([]) | map(attribute='stdout') | select('search', 'port="22"') | select('search', 'protocol="tcp"') | list | length) > 0) }}

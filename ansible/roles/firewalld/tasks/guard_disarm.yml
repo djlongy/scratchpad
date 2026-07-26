@@ -1,0 +1,29 @@
+---
+# Fail-safe revert guard — DISARM. Force a brand-new SSH connection (an
+# established session survives drop via conntrack and proves nothing), prove it
+# with wait_for_connection, and only THEN cancel the revert timer.
+#
+# meta tasks ignore 'when', so this whole file is included from main.yml only
+# when _firewalld_guard_active is true — the reset/probe run only when armed.
+
+- name: Drop the pooled SSH connection so the probe is a real new handshake
+  ansible.builtin.meta: reset_connection
+
+- name: Prove SSH answers on a fresh connection after the default-zone switch
+  ansible.builtin.wait_for_connection:
+    # Well under the guard delay so a real lockout surfaces here rather than
+    # being masked by the timer's revert.
+    timeout: "{{ [(firewalld_lockout_guard_seconds | int) - 60, 30] | max }}"
+
+- name: Disarm the revert timer (fresh connection proven)
+  become: true  # root: systemctl stops the transient guard timer
+  ansible.builtin.command: systemctl stop firewalld-lockout-guard.timer
+  changed_when: true
+  failed_when: false
+
+- name: Clear the transient revert units so none linger on success
+  become: true  # root: systemctl reset-failed on the transient guard units
+  ansible.builtin.command: >-
+    systemctl reset-failed firewalld-lockout-guard.timer firewalld-lockout-guard.service
+  changed_when: false
+  failed_when: false

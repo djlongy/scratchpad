@@ -1,0 +1,220 @@
+---
+# Interface-binding audit. Runs before the risky window (reload + default-zone
+# switch) so a NIC silently parked in the default zone, or an NM-owned binding
+# that will not survive an NM restart, is surfaced before drop takes effect.
+# Read-only: every command is changed_when:false + check_mode:false.
+
+# Recompute the restrictive-default flag locally so this file holds under
+# tag isolation (--tags interface_audit) where validate.yml did not run.
+- name: Determine restrictive-default flag for the audit
+  ansible.builtin.set_fact:
+    _fw_audit_lockdown: "{{ firewalld_default_zone in ['drop', 'block'] }}"
+    # Physical/relevant interfaces only — drop loopback and container/bridge veth
+    # noise that never carries host management traffic.
+    _fw_audit_ifaces: >-
+      {{ ansible_interfaces | default([])
+         | reject('equalto', 'lo')
+         | reject('match', '^(veth|docker|br-|virbr|cni|flannel|cali|kube|tunl|nodelocaldns|vnet|tap|ip6tnl|sit)')
+         | list }}
+
+- name: Get the runtime zone of each relevant interface
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: "firewall-cmd --get-zone-of-interface={{ item }}"
+  register: _fw_iface_zone
+  changed_when: false
+  check_mode: false
+  failed_when: false  # rc!=0 / "no zone" for an unbound iface is expected
+  loop: "{{ _fw_audit_ifaces }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Build the interface-audit summary
+  ansible.builtin.set_fact:
+    # [{interface, zone}] — empty zone means the NIC falls to the default zone.
+    _firewalld_interface_audit: >-
+      {% set out = [] %}
+      {%- for r in _fw_iface_zone.results -%}
+      {%- set _ = out.append({'interface': r.item, 'zone': (r.stdout | default('') | trim)}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+# ── R3b: the operator's own NIC must be classified out of a drop default ─────
+- name: Determine the interface carrying this SSH session
+  ansible.builtin.set_fact:
+    _fw_ssh_local_ip: >-
+      {{ ((ansible_env | default({})).get('SSH_CONNECTION', '') | string).split()[2]
+         if (((ansible_env | default({})).get('SSH_CONNECTION', '') | string).split() | length >= 3)
+         else '' }}
+
+- name: Resolve the SSH ingress interface (default route, else SSH local IP)
+  ansible.builtin.set_fact:
+    _fw_ssh_iface: >-
+      {% set via_local = [] %}
+      {%- if _fw_ssh_local_ip | length > 0 -%}
+      {%- for i in _fw_audit_ifaces -%}
+      {%- if (ansible_facts[i] | default({})).get('ipv4', {}).get('address', '') == _fw_ssh_local_ip -%}
+      {%- set _ = via_local.append(i) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ (ansible_default_ipv4.interface | default('')) if (ansible_default_ipv4.interface is defined) else (via_local | first | default('')) }}
+
+- name: Resolve the runtime zone of the SSH ingress interface
+  ansible.builtin.set_fact:
+    _fw_ssh_iface_zone: >-
+      {{ (_firewalld_interface_audit
+          | selectattr('interface', 'equalto', _fw_ssh_iface)
+          | map(attribute='zone') | first | default('')) if (_fw_ssh_iface | length > 0) else '' }}
+
+# An empty zone means the NIC inherits the default zone. Fail only when that
+# default is drop/block AND no source binding covers this controller (source
+# classification beats interface, so a covered controller is still safe). The
+# containment fact comes from validate.yml (always-run); it is only absent under
+# a hand-rolled tag/skip that drops validate — then degrade to a loud warn.
+- name: Fail when the SSH ingress NIC falls to a restrictive default with no source cover
+  when:
+    - _fw_audit_lockdown | bool
+    - _fw_ssh_iface | length > 0
+    - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
+    - _firewalld_controller_source_covered is defined
+    - not (_firewalld_controller_source_covered | bool)
+  ansible.builtin.fail:
+    msg: >-
+      The interface carrying this SSH session ({{ _fw_ssh_iface }}) resolves to
+      the default zone '{{ firewalld_default_zone }}' and no source binding
+      covers this controller
+      ({{ _firewalld_controller_ip | default('unknown') }}). The operator's packet
+      path would be dropped. Bind the admin CIDR to an ssh-opening zone, or
+      interface-zone {{ _fw_ssh_iface }} explicitly.
+
+- name: Warn when SSH NIC classification cannot be proven (containment fact absent)
+  when:
+    - _fw_audit_lockdown | bool
+    - _fw_ssh_iface | length > 0
+    - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
+    - _firewalld_controller_source_covered is not defined
+  ansible.builtin.debug:
+    msg: >-
+      WARNING firewalld interface audit: SSH ingress NIC {{ _fw_ssh_iface }}
+      resolves to the default zone '{{ firewalld_default_zone }}', and the
+      controller-containment fact is unavailable (validate.yml did not run — a
+      tag/skip selection dropped it), so source-path coverage cannot be proven
+      here. Run the full role (or validate) to enforce this gate.
+
+# NetworkManager owns interface→zone assignment where it manages the device.
+- name: Check for nmcli (NetworkManager present)
+  ansible.builtin.command: which nmcli
+  register: _fw_nmcli
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: List active NetworkManager connections and devices
+  become: true  # root: reads NM connection state
+  ansible.builtin.command: nmcli -t -f NAME,DEVICE connection show --active
+  register: _fw_nm_active
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  when: _fw_nmcli.rc == 0
+
+- name: Read the firewalld zone of each active NM connection
+  become: true  # root: reads NM connection properties
+  ansible.builtin.command: "nmcli -t -f connection.zone connection show {{ (item.split(':')[0]) | quote }}"
+  register: _fw_nm_zone
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  loop: "{{ _fw_nm_active.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when: _fw_nmcli.rc == 0
+
+- name: Build the NM device→zone map
+  ansible.builtin.set_fact:
+    # [{name, device, zone}] — zone '' or '--' means NM leaves it to the default.
+    _fw_nm_map: >-
+      {% set out = [] %}
+      {%- for r in (_fw_nm_zone.results | default([])) -%}
+      {%- set parts = r.item.split(':') -%}
+      {%- set zval = (r.stdout | default('') | trim | regex_replace('^connection.zone:', '')) -%}
+      {%- set _ = out.append({'name': parts[0], 'device': (parts[1] if parts | length > 1 else ''), 'zone': ('' if zval in ['', '--'] else zval)}) -%}
+      {%- endfor -%}
+      {{ out }}
+  when: _fw_nmcli.rc == 0
+
+- name: Compute NM audit warnings
+  ansible.builtin.set_fact:
+    # Interfaces we zone via zone-XML that NM also manages — NM silently
+    # overrides the XML interface bind and loses it on NM restart.
+    _fw_nm_xml_override: >-
+      {{ _fw_nm_map | default([])
+         | selectattr('device', 'in', firewalld_interface_zone_bindings | map(attribute='interface') | list)
+         | map(attribute='device') | select('string') | list }}
+    # NM-managed interfaces we interface-zone but whose NM connection has no
+    # zone set — the boot race can dump them into the default zone.
+    _fw_nm_unset_zone: >-
+      {{ (_fw_nm_map | default([])
+          | selectattr('device', 'in', firewalld_interface_zone_bindings | map(attribute='interface') | list)
+          | selectattr('zone', 'equalto', '')
+          | map(attribute='device') | select('string') | list)
+         if (firewalld_interface_zone_bindings | length > 0) else [] }}
+  when: _fw_nmcli.rc == 0
+
+- name: Warn on NM-owned interface bindings (loud — zone-XML binds are fragile)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING firewalld interface audit:
+      NM-managed devices bound via zone XML (overridden by NM, lost on NM
+      restart — firewalld#195): {{ _fw_nm_xml_override | default([]) }};
+      NM connections with unset connection.zone on interface-zoned devices
+      (boot race can drop them to the default zone): {{ _fw_nm_unset_zone | default([]) }}.
+      Set the zone on the NM connection (nmcli connection modify <con>
+      connection.zone <zone>) or prefer source-based zoning.
+  when:
+    - _fw_nmcli.rc == 0
+    - (_fw_nm_xml_override | default([]) | length > 0) or (_fw_nm_unset_zone | default([]) | length > 0)
+
+- name: Fail on NM interface-binding warnings under strict audit
+  when:
+    - firewalld_strict_interface_audit | bool
+    - _fw_nmcli.rc == 0
+    - (_fw_nm_xml_override | default([]) | length > 0) or (_fw_nm_unset_zone | default([]) | length > 0)
+  ansible.builtin.fail:
+    msg: >-
+      firewalld_strict_interface_audit is true and NM interface-binding issues
+      were found: xml_overridden={{ _fw_nm_xml_override | default([]) }},
+      unset_zone={{ _fw_nm_unset_zone | default([]) }}. Fix the NM connection
+      zones or switch to source-based zoning.
+
+# ── R3d: zone drifting must be off (leaks around a restrictive default) ───────
+- name: Read /etc/firewalld/firewalld.conf
+  become: true  # root: reads firewalld's main config
+  ansible.builtin.slurp:
+    src: /etc/firewalld/firewalld.conf
+  register: _fw_conf
+  check_mode: false
+  failed_when: false
+
+- name: Assert AllowZoneDrifting is disabled or absent
+  vars:
+    _drifting: >-
+      {{ (_fw_conf.content | default('') | b64decode).splitlines()
+         | map('trim')
+         | select('match', '^AllowZoneDrifting=')
+         | map('regex_replace', '^AllowZoneDrifting=', '')
+         | map('lower') | list }}
+  ansible.builtin.assert:
+    that:
+      - _drifting | reject('equalto', 'no') | list | length == 0
+    fail_msg: >-
+      AllowZoneDrifting is enabled in /etc/firewalld/firewalld.conf
+      (value(s): {{ _drifting }}). Zone drifting leaks unclassified traffic
+      around a drop/block default. Set AllowZoneDrifting=no (EL8 may ship it on).
+
+- name: Report the interface-audit summary
+  ansible.builtin.debug:
+    msg:
+      - "interfaces={{ _firewalld_interface_audit | default([]) }}"
+      - "ssh_ingress_iface={{ _fw_ssh_iface | default('') }} zone={{ _fw_ssh_iface_zone | default('') }}"
+      - "nm_present={{ (_fw_nmcli.rc | default(1)) == 0 }}"

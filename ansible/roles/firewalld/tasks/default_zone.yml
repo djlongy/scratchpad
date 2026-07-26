@@ -1,9 +1,150 @@
 ---
+# Switch the default zone LAST. When the target is drop/block this gate reads
+# LIVE runtime state (not inventory) and refuses the switch unless the running
+# firewall already classifies an ssh path — so it holds even under
+# `--tags default_zone` with every other phase skipped.
+
+- name: Determine whether the target default zone is restrictive
+  ansible.builtin.set_fact:
+    _fw_target_lockdown: "{{ firewalld_default_zone in ['drop', 'block'] }}"
+
+# A deferred reload means the freshly-templated bindings may not be in the
+# running firewall, so a restrictive switch could drop SSH. Refuse outright.
+# Kept first, before any firewall-cmd, so it holds on a host with no firewalld.
+- name: Refuse a restrictive default while reload is deferred
+  when:
+    - _fw_target_lockdown | bool
+    - not (firewalld_reload | bool)
+  ansible.builtin.fail:
+    msg: >-
+      Refusing to set default zone to '{{ firewalld_default_zone }}' with
+      firewalld_reload=false. Deferred reload means the freshly-templated
+      source/interface bindings may not be live yet, so the switch could drop
+      SSH. Re-run with firewalld_reload=true.
+
+- name: Probe the running firewall for a live ssh path
+  ansible.builtin.include_tasks: default_zone_probe.yml
+  when: _fw_target_lockdown | bool
+
+# The firewalld module can leave a binding permanent-only. If runtime shows no
+# ssh path but PERMANENT holds an activated ssh zone, reload once to sync
+# runtime, then re-probe — only then fail closed.
+- name: Compute inventory ssh zones for the self-heal permanent check
+  when:
+    - _fw_target_lockdown | bool
+    - not (_fw_runtime_ssh_ok | default(false) | bool)
+  ansible.builtin.set_fact:
+    _fw_dz_ssh_zones: >-
+      {% set ns = namespace(z=[]) %}
+      {%- set bound = (firewalld_source_zone_bindings | map(attribute='zone') | list) + (firewalld_interface_zone_bindings | map(attribute='zone') | list) -%}
+      {%- for z in firewalld_zones -%}
+      {%- set svc = z.services | default([]) -%}
+      {%- set p22 = (z.ports | default([]) | selectattr('protocol', 'defined') | selectattr('protocol', 'equalto', 'tcp') | map(attribute='port') | map('string') | select('equalto', '22') | list | length) > 0 -%}
+      {%- set rr = z.rich_rules | default([]) -%}
+      {%- set rr_ssh = ((rr | select('search', 'service name="ssh"') | list | length) > 0) or ((rr | select('search', 'port="22"') | select('search', 'protocol="tcp"') | list | length) > 0) -%}
+      {%- if ('ssh' in svc) or p22 or rr_ssh -%}{%- set ns.z = ns.z + [z.name] -%}{%- endif -%}
+      {%- endfor -%}
+      {%- set builtins = ['internal', 'home'] | select('in', bound) | list -%}
+      {{ (ns.z + builtins) | unique | list }}
+
+- name: Read permanent sources of inventory ssh zones (self-heal)
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: "firewall-cmd --permanent --zone={{ item }} --list-sources"
+  register: _fw_perm_ssh_sources
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  loop: "{{ _fw_dz_ssh_zones | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - _fw_target_lockdown | bool
+    - not (_fw_runtime_ssh_ok | default(false) | bool)
+
+- name: Read permanent interfaces of inventory ssh zones (self-heal)
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: "firewall-cmd --permanent --zone={{ item }} --list-interfaces"
+  register: _fw_perm_ssh_ifaces
+  changed_when: false
+  check_mode: false
+  failed_when: false
+  loop: "{{ _fw_dz_ssh_zones | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - _fw_target_lockdown | bool
+    - not (_fw_runtime_ssh_ok | default(false) | bool)
+
+- name: Determine whether permanent holds an activated ssh zone (self-heal)
+  when:
+    - _fw_target_lockdown | bool
+    - not (_fw_runtime_ssh_ok | default(false) | bool)
+  ansible.builtin.set_fact:
+    _fw_perm_ssh_activated: >-
+      {{ ((_fw_perm_ssh_sources.results | default([]) | map(attribute='stdout') | map('trim') | reject('equalto', '') | list | length) > 0)
+         or ((_fw_perm_ssh_ifaces.results | default([]) | map(attribute='stdout') | map('trim') | reject('equalto', '') | list | length) > 0) }}
+
+- name: Self-heal — reload so permanent ssh bindings reach runtime
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: false  # syncs runtime from already-written permanent; not a config change here
+  when:
+    - _fw_target_lockdown | bool
+    - not (_fw_runtime_ssh_ok | default(false) | bool)
+    - _fw_perm_ssh_activated | default(false) | bool
+
+- name: Re-probe the running firewall after the self-heal reload
+  ansible.builtin.include_tasks: default_zone_probe.yml
+  when:
+    - _fw_target_lockdown | bool
+    - not (_fw_runtime_ssh_ok | default(false) | bool)
+    - _fw_perm_ssh_activated | default(false) | bool
+
+# At least one currently-active zone (active == it has a live source or
+# interface) must allow ssh in the RUNNING firewall. Intent alone cannot pass.
+- name: Assert a live active zone allows ssh before the restrictive switch
+  when: _fw_target_lockdown | bool
+  ansible.builtin.assert:
+    that:
+      - _fw_runtime_ssh_ok | default(false) | bool
+    fail_msg: >-
+      Refusing to switch default zone to '{{ firewalld_default_zone }}': no
+      currently-active zone (with a live source or interface binding) allows ssh
+      in the RUNNING firewall. Active zones: {{ _fw_active_zone_names | default([]) }}.
+      The bindings phase must classify the admin path before the default becomes
+      restrictive.
+
+# The revert guard must be armed and pending right before the switch. If the
+# guard was enabled+applicable but its timer is not 'active', it may have fired
+# early and been consumed — switching then would proceed with no net.
+- name: Query the lockout-guard timer state before the switch
+  become: true  # root: systemctl reads the transient guard timer
+  ansible.builtin.command: systemctl is-active firewalld-lockout-guard.timer
+  register: _fw_guard_timer_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _firewalld_guard_active | default(false) | bool
+
+- name: Refuse the switch if the revert guard is not pending
+  when: _firewalld_guard_active | default(false) | bool
+  ansible.builtin.assert:
+    that:
+      - (_fw_guard_timer_state.stdout | default('') | trim) == 'active'
+    fail_msg: >-
+      Refusing to switch default zone to '{{ firewalld_default_zone }}': the
+      lockout revert guard (firewalld-lockout-guard.timer) is not pending
+      (state: {{ _fw_guard_timer_state.stdout | default('missing') | trim }}).
+      It may have fired early and been consumed — without a live net a bad switch
+      would strand the host. Re-run so the guard re-arms immediately before the
+      switch.
+
 - name: Get the current default zone
   become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
   ansible.builtin.command: firewall-cmd --get-default-zone
   register: _firewalld_current_default_zone
   changed_when: false
+  check_mode: false
 
 - name: Set the default zone
   become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus

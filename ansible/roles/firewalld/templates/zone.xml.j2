@@ -1,9 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 {#
   Generic firewalld zone XML template.
-  Schema: see roles/conf_firewall/defaults/main.yml -> firewalld_zones
-  Reference: https://firewalld.org/documentation/man-pages/firewalld.zone.html
+
+  Sources and interfaces are merged from BOTH:
+    - item.sources / item.interfaces on the zone dict
+    - firewalld_source_zone_bindings / firewalld_interface_zone_bindings
+      whose zone matches item.name
+
+  They MUST live in this permanent XML. Runtime-only
+  `firewall-cmd --permanent --add-source` writes into the same file; if we
+  re-template without those elements, the next --reload wipes them and
+  traffic falls to the default zone (drop) — live SSH lockout.
 #}
+{%- set _bind_sources = firewalld_source_zone_bindings
+      | default([])
+      | selectattr('zone', 'defined')
+      | selectattr('zone', 'equalto', item.name)
+      | map(attribute='source')
+      | list -%}
+{%- set _all_sources = (item.sources | default([]) + _bind_sources) | unique | list -%}
+{%- set _bind_ifaces = firewalld_interface_zone_bindings
+      | default([])
+      | selectattr('zone', 'defined')
+      | selectattr('zone', 'equalto', item.name)
+      | map(attribute='interface')
+      | list -%}
+{%- set _all_ifaces = (item.interfaces | default([]) + _bind_ifaces) | unique | list -%}
 <zone{% if item.target | default('default') != 'default' %} target="{{ item.target }}"{% endif %}>
 {% if item.short is defined and item.short | length > 0 %}
   <short>{{ item.short }}</short>
@@ -11,10 +33,10 @@
 {% if item.description is defined and item.description | length > 0 %}
   <description>{{ item.description }}</description>
 {% endif %}
-{% for iface in item.interfaces | default([]) %}
+{% for iface in _all_ifaces %}
   <interface name="{{ iface }}"/>
 {% endfor %}
-{% for src in item.sources | default([]) %}
+{% for src in _all_sources %}
   <source address="{{ src }}"/>
 {% endfor %}
 {% for svc in item.services | default([]) %}

@@ -1,27 +1,44 @@
 ---
-# firewalld — firewalld config via XML templates + runtime bindings.
-# Distribution-agnostic: ansible.builtin.package resolves "firewalld" on both
-# EL (dnf) and Debian (apt) families.
+# firewalld — permanent XML is the single source of truth.
+#
+# Critical invariant: zone XML must include sources/interfaces from
+# firewalld_*_zone_bindings at template time. Runtime-only permanent binds
+# are rewritten into the same zone files; re-templating without those
+# elements + reload wipes them and, with default=drop, locks out SSH.
+#
+# Order:
+#   1. validate inventory contract (exclusive CIDRs, drop+ssh safety)
+#   2. install + service XML + zone XML (atomic sources/ifaces)
+#   3. reload (handlers) — permanent state already complete
+#   4. reconcile runtime bindings (idempotent; belt-and-suspenders)
+#   5. set default zone LAST (drop only after sources exist)
+#   6. verify permanent state matches inventory
 
-- name: Skip firewalld config (firewalld_enabled is false)
+- name: Skip firewalld (firewalld_enabled is false)
   ansible.builtin.debug:
     msg: "firewalld_enabled is false — skipping firewalld"
-  when: not firewalld_enabled
+  when: not (firewalld_enabled | bool)
   tags: [always]
 
 - name: Configure firewalld
-  when: firewalld_enabled
+  when: firewalld_enabled | bool
   block:
 
     # Self-heal network facts so `{{ primary_interface }}` (and any other
     # ansible_default_ipv4 / interface fact this role reads) resolves even under
     # a `gather_facts: false` play or a tag-isolated `--tags firewalld` run.
-    # No-op on a normal facts-on run (the `when` guard). See the CoP idiom:
-    # "Self-Heal Missing Facts with One always-Tagged setup Task".
     - name: Ensure network facts are present (gather_facts:false / tag-isolated runs)
       ansible.builtin.setup:
         gather_subset: ['!all', '!min', 'network']
       when: ansible_default_ipv4 is not defined
+      tags: [always]
+
+    # [always]: the contract is pure inventory logic and standalone-safe, so it
+    # must run even under partial tag selections (e.g. --tags zones,reload or
+    # --tags cleanup) that re-template zone XML or delete zones — otherwise
+    # inventory drift could wipe an SSH source with no gate in the way.
+    - name: Validate firewalld inventory contract
+      ansible.builtin.include_tasks: validate.yml
       tags: [always]
 
     - name: Install firewalld and start the service
@@ -32,7 +49,7 @@
       ansible.builtin.include_tasks: services.yml
       tags: [services, firewalld]
 
-    - name: Render custom zone XML definitions
+    - name: Render custom zone XML definitions (sources/interfaces inlined)
       ansible.builtin.include_tasks: zones.yml
       tags: [zones, firewalld]
 
@@ -43,29 +60,102 @@
           or firewalld_zones_remove | length > 0
       tags: [cleanup, firewalld]
 
-    # Flush handlers HERE so the reload happens before we try to bind
-    # sources/interfaces to zones (firewalld needs to know the zones exist
-    # before the firewalld module can target them).
-    - name: Reload firewalld before applying runtime bindings
+    # Audit interface→zone classification (NICs in the default zone, NM-owned
+    # binds, zone drifting) BEFORE the risky window, so a silent lockout path
+    # fails here rather than after drop takes effect.
+    - name: Audit interface-to-zone bindings
+      ansible.builtin.include_tasks: interface_audit.yml
+      tags: [interface_audit, firewalld]
+
+    # Flush here: zone XML already contains sources/interfaces, so reload
+    # cannot drop the SSH path for default=drop hosts.
+    - name: Reload firewalld before runtime reconcile and default-zone switch
       ansible.builtin.meta: flush_handlers
       tags: [reload, firewalld]
 
+    # Reconcile via the firewalld module. No-op when XML already has the
+    # elements; repairs drift if someone hand-edited permanent state.
+    # Still runs AFTER reload so zones exist as named objects.
+    - name: Reconcile source CIDRs to zones (L3)
+      ansible.builtin.include_tasks: bindings_sources.yml
+      when: firewalld_source_zone_bindings | length > 0
+      tags: [bindings, firewalld]
+
+    - name: Reconcile interfaces to zones (L2 — use sparingly)
+      ansible.builtin.include_tasks: bindings_interfaces.yml
+      when: firewalld_interface_zone_bindings | length > 0
+      tags: [bindings, firewalld]
+
+    # The pre-bindings flush ran BEFORE the module reconcile, so a binding the
+    # firewalld module treats as a permanent/runtime no-op (permanent is already
+    # complete via templated XML) never reaches runtime, and nothing after would
+    # reload. Reload again here so runtime matches the now-complete permanent
+    # state before the live gate reads it.
+    - name: Reload firewalld after runtime binding reconcile
+      become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+      ansible.builtin.command: firewall-cmd --reload
+      changed_when: false  # syncs runtime from already-written permanent; not a config change here
+      when:
+        - firewalld_reload | bool
+        - (firewalld_source_zone_bindings | length > 0) or (firewalld_interface_zone_bindings | length > 0)
+      tags: [bindings, reload, firewalld]
+
+    # Arm the transient revert timer immediately BEFORE the switch (not before
+    # the flush) so a long reload/reconcile cannot burn the whole timer window
+    # and leave the switch unguarded. It restores the pre-change default zone if
+    # a fresh SSH connection cannot be proven after the switch. No-op unless a
+    # reload will happen and the default is/becomes restrictive.
+    - name: Arm the lockout revert guard
+      ansible.builtin.include_tasks: guard_arm.yml
+      tags: [guard, firewalld]
+
+    # Default zone LAST. Switching to drop parks the primary NIC in drop;
+    # safe only once source-activated zones are permanent AND the revert guard
+    # is proven pending (asserted inside default_zone.yml).
     - name: Set the default zone
       ansible.builtin.include_tasks: default_zone.yml
       when: firewalld_default_zone | length > 0
       tags: [default_zone, firewalld]
 
-    - name: Bind source CIDRs to zones (L3 segregation)
-      ansible.builtin.include_tasks: bindings_sources.yml
-      when: firewalld_source_zone_bindings | length > 0
-      tags: [bindings, firewalld]
+    # When no default zone is managed, ICMP must target the firewall's ACTUAL
+    # current default (queried), not a hardcoded 'public' that may not be it.
+    - name: Query the effective default zone for ICMP (no managed default)
+      become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+      ansible.builtin.command: firewall-cmd --get-default-zone
+      register: _firewalld_effective_default
+      changed_when: false
+      check_mode: false
+      when:
+        - firewalld_allow_icmp | bool
+        - firewalld_default_zone | length == 0
+      tags: [default_zone, icmp, firewalld]
 
-    - name: Bind interfaces to zones (L2 segregation — use sparingly)
-      ansible.builtin.include_tasks: bindings_interfaces.yml
-      when: firewalld_interface_zone_bindings | length > 0
-      tags: [bindings, firewalld]
+    # Ping on the default zone (including drop) for reachability probes.
+    # Source-bound service zones should also list icmp in protocols.
+    - name: Allow ICMP (ping) on the default zone
+      become: true  # root: firewalld
+      ansible.posix.firewalld:
+        zone: "{{ firewalld_default_zone if (firewalld_default_zone | length) > 0 else (_firewalld_effective_default.stdout | trim) }}"
+        protocol: icmp
+        permanent: true
+        immediate: true
+        state: enabled
+      when: firewalld_allow_icmp | bool
+      tags: [default_zone, icmp, firewalld]
+
+    # Prove a FRESH SSH connection survives the new default, THEN disarm the
+    # revert timer. Included only when the guard was armed — meta:reset_connection
+    # inside cannot itself be gated by 'when'.
+    - name: Disarm the lockout revert guard (after fresh-connection proof)
+      ansible.builtin.include_tasks: guard_disarm.yml
+      when: _firewalld_guard_active | default(false) | bool
+      tags: [guard, firewalld]
 
     - name: Apply legacy firewall_rules (back-compat)
       ansible.builtin.include_tasks: legacy_rules.yml
       when: firewall_rules | length > 0
       tags: [legacy_rules, firewalld]
+
+    - name: Verify permanent firewalld state matches inventory
+      ansible.builtin.include_tasks: verify.yml
+      tags: [verify, firewalld]

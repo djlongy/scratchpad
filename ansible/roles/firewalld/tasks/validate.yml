@@ -1,0 +1,250 @@
+---
+# Pre-flight contract checks. Fail BEFORE rewriting permanent zone XML so a
+# bad inventory never lands a half-applied drop-default ruleset. Runnable
+# standalone (playbooks/test_firewalld_source_drop.yml calls this file via
+# tasks_from), so every fact it consumes is computed here, not upstream.
+
+- name: Validate firewalld_source_zone_bindings schema
+  ansible.builtin.assert:
+    that:
+      - item.zone is defined
+      - item.zone | length > 0
+      - item.source is defined
+      - item.source | length > 0
+    fail_msg: >-
+      Each firewalld_source_zone_bindings entry needs zone+source.
+      Offending entry: {{ item }}
+    quiet: true
+  loop: "{{ firewalld_source_zone_bindings }}"
+  loop_control:
+    label: "{{ item.source | default('?') }} -> {{ item.zone | default('?') }}"
+
+- name: Validate firewalld_interface_zone_bindings schema
+  ansible.builtin.assert:
+    that:
+      - item.zone is defined
+      - item.zone | length > 0
+      - item.interface is defined
+      - item.interface | length > 0
+    fail_msg: >-
+      Each firewalld_interface_zone_bindings entry needs zone+interface.
+      Offending entry: {{ item }}
+    quiet: true
+  loop: "{{ firewalld_interface_zone_bindings }}"
+  loop_control:
+    label: "{{ item.interface | default('?') }} -> {{ item.zone | default('?') }}"
+
+# firewalld source→zone is exclusive: one CIDR can only belong to one zone.
+# Binding the same CIDR twice (e.g. mgt.subnet → mgmt AND → lgtm) produces
+# undefined permanent state and is the classic dual-bind lockout.
+- name: Assert each source CIDR binds to exactly one zone
+  vars:
+    _zones_for_source: >-
+      {{ firewalld_source_zone_bindings
+         | selectattr('source', 'equalto', item)
+         | map(attribute='zone')
+         | list
+         | unique }}
+  ansible.builtin.assert:
+    that:
+      - _zones_for_source | length == 1
+    fail_msg: >-
+      Source CIDR {{ item }} is bound to multiple zones: {{ _zones_for_source }}.
+      firewalld allows a source in only ONE zone. Put host services needed by
+      that CIDR on that single zone (e.g. mgt.subnet → mgmt with ssh+apps;
+      peers → service zone without ssh).
+  loop: "{{ firewalld_source_zone_bindings | map(attribute='source') | list | unique }}"
+  loop_control:
+    label: "{{ item }}"
+
+# ── Shared safety facts (consumed by the checks below and by later phases) ───
+
+- name: Compute firewalld safety facts (inventory-derived)
+  ansible.builtin.set_fact:
+    # A restrictive default silently drops everything unclassified — the state
+    # every lockout guard in this role keys off.
+    _firewalld_lockdown: "{{ firewalld_default_zone in ['drop', 'block'] }}"
+    # firewalld ships these zones without a firewalld_zones entry; a binding may
+    # legitimately target them.
+    _firewalld_builtin_zones:
+      - block
+      - dmz
+      - drop
+      - external
+      - home
+      - internal
+      - nm-shared
+      - public
+      - trusted
+      - work
+    # This controller's client IP (first field of SSH_CONNECTION). Empty when
+    # the play runs locally or facts carry no SSH_CONNECTION — the controller
+    # containment check then skips cleanly.
+    _firewalld_controller_ip: >-
+      {{ ((ansible_env | default({})).get('SSH_CONNECTION', '') | string).split()[0]
+         if (((ansible_env | default({})).get('SSH_CONNECTION', '') | string) | length > 0)
+         else '' }}
+    # Zones that open ssh — custom zone with service 'ssh', a tcp/22 port, or a
+    # rich rule allowing ssh; PLUS a bound built-in that ships ssh by default
+    # (internal, home). A built-in only counts when a binding targets it.
+    _firewalld_ssh_zones: >-
+      {% set ns = namespace(z=[]) %}
+      {%- set bound = (firewalld_source_zone_bindings | map(attribute='zone') | list) + (firewalld_interface_zone_bindings | map(attribute='zone') | list) -%}
+      {%- for z in firewalld_zones -%}
+      {%- set svc = z.services | default([]) -%}
+      {%- set p22 = (z.ports | default([]) | selectattr('protocol', 'defined') | selectattr('protocol', 'equalto', 'tcp') | map(attribute='port') | map('string') | select('equalto', '22') | list | length) > 0 -%}
+      {%- set rr = z.rich_rules | default([]) -%}
+      {%- set rr_ssh = ((rr | select('search', 'service name="ssh"') | list | length) > 0) or ((rr | select('search', 'port="22"') | select('search', 'protocol="tcp"') | list | length) > 0) -%}
+      {%- if ('ssh' in svc) or p22 or rr_ssh -%}{%- set ns.z = ns.z + [z.name] -%}{%- endif -%}
+      {%- endfor -%}
+      {%- set builtins = ['internal', 'home'] | select('in', bound) | list -%}
+      {{ (ns.z + builtins) | unique | list }}
+    # Zones with any activation path (source bind, interface bind, or inline
+    # sources/interfaces in the zone dict).
+    _firewalld_activated_zones: >-
+      {{ (
+           (firewalld_source_zone_bindings | map(attribute='zone') | list)
+           + (firewalld_interface_zone_bindings | map(attribute='zone') | list)
+           + (firewalld_zones | selectattr('sources', 'defined') | map(attribute='name') | list)
+           + (firewalld_zones | selectattr('interfaces', 'defined') | map(attribute='name') | list)
+         ) | unique | list }}
+
+- name: Compute firewalld ssh-path facts (depend on the sets above)
+  ansible.builtin.set_fact:
+    # ssh-opening zones that actually have an activation — the proven admin path.
+    _firewalld_ssh_activated_zones: >-
+      {{ _firewalld_ssh_zones | select('in', _firewalld_activated_zones) | list }}
+    # Source CIDRs whose zone opens ssh (bindings + inline zone sources).
+    _firewalld_ssh_source_cidrs: >-
+      {{ (
+           (firewalld_source_zone_bindings | selectattr('zone', 'in', _firewalld_ssh_zones) | map(attribute='source') | list)
+           + (firewalld_zones | selectattr('name', 'in', _firewalld_ssh_zones) | selectattr('sources', 'defined') | map(attribute='sources') | flatten | list)
+         ) | unique | list }}
+    # True when an ssh-opening zone is interface-activated — source containment
+    # is then inapplicable and the controller check skips.
+    _firewalld_ssh_zone_iface_activated: >-
+      {{ (
+           (firewalld_interface_zone_bindings | selectattr('zone', 'in', _firewalld_ssh_zones) | list)
+           + (firewalld_zones | selectattr('name', 'in', _firewalld_ssh_zones) | selectattr('interfaces', 'defined') | map(attribute='interfaces') | flatten | list)
+         ) | length > 0 }}
+
+- name: Compute controller containment fact
+  ansible.builtin.set_fact:
+    # True when this controller's IP falls inside a source CIDR bound to an
+    # ssh-opening zone — i.e. the operator's return path survives default=drop.
+    _firewalld_controller_source_covered: >-
+      {{ (_firewalld_controller_ip | length > 0)
+         and (_firewalld_ssh_source_cidrs | length > 0)
+         and (_firewalld_controller_ip is ansible.utils.in_any_network(_firewalld_ssh_source_cidrs)) }}
+
+# set_fact coerces these builders back to lists even with jinja2_native off, so
+# the gates hold. Fail loud if one ever renders as a string — the signal a
+# builder was moved to a context that does not coerce.
+- name: Assert ssh-zone detection produced a list
+  ansible.builtin.assert:
+    that:
+      - _firewalld_ssh_zones is not string
+      - _firewalld_ssh_zones is sequence
+    fail_msg: >-
+      _firewalld_ssh_zones rendered as a string, not a list — the ssh-path gates
+      cannot be trusted. Build it via set_fact (which coerces) or enable
+      jinja2_native.
+
+# The revert timer must leave headroom for the post-switch connection probe
+# (wait_for_connection timeout = seconds-60), or the probe races its own revert.
+- name: Assert the lockout-guard delay leaves room for the connection probe
+  when: firewalld_lockout_guard | bool
+  ansible.builtin.assert:
+    that:
+      - (firewalld_lockout_guard_seconds | int) >= 120
+    fail_msg: >-
+      firewalld_lockout_guard_seconds ({{ firewalld_lockout_guard_seconds }}) is
+      below 120. The post-switch fresh-connection probe needs comfortable
+      headroom under the revert timer, or the probe races its own revert. Use a
+      value >= 120, or disable the guard with firewalld_lockout_guard=false.
+
+# A bind to an undefined, non-built-in zone silently lands nowhere, leaving the
+# CIDR it was meant to classify exposed to the default zone.
+- name: Assert every binding zone exists in firewalld_zones or is a built-in
+  vars:
+    _known_zones: >-
+      {{ (firewalld_zones | map(attribute='name') | list) + _firewalld_builtin_zones }}
+  ansible.builtin.assert:
+    that:
+      - item in _known_zones
+    fail_msg: >-
+      Binding references zone '{{ item }}' which is neither defined in
+      firewalld_zones nor a firewalld built-in
+      ({{ _firewalld_builtin_zones | join(', ') }}). Define the zone or fix the
+      binding.
+  loop: >-
+    {{ ((firewalld_source_zone_bindings | map(attribute='zone') | list)
+        + (firewalld_interface_zone_bindings | map(attribute='zone') | list)) | unique }}
+  loop_control:
+    label: "{{ item }}"
+
+# firewalld_zones_remove must not collide with active config.
+- name: Assert no zone is both defined and removed
+  vars:
+    _both: >-
+      {{ (firewalld_zones | map(attribute='name') | list) | intersect(firewalld_zones_remove) }}
+  ansible.builtin.assert:
+    that:
+      - _both | length == 0
+    fail_msg: >-
+      Zone(s) {{ _both }} appear in both firewalld_zones and
+      firewalld_zones_remove. A zone cannot be created and removed in one run.
+
+- name: Assert firewalld_zones_remove does not target a bound or default zone
+  vars:
+    _protected: >-
+      {{ ((firewalld_source_zone_bindings | map(attribute='zone') | list)
+          + (firewalld_interface_zone_bindings | map(attribute='zone') | list)
+          + ([firewalld_default_zone] if firewalld_default_zone | length > 0 else [])) | unique }}
+    _bad_removes: >-
+      {{ firewalld_zones_remove | select('in', _protected) | list }}
+  ansible.builtin.assert:
+    that:
+      - _bad_removes | length == 0
+    fail_msg: >-
+      firewalld_zones_remove targets zone(s) {{ _bad_removes }} that are still
+      referenced by a binding or are the default zone. Removing them strands the
+      binding or the default. Drop the reference first.
+
+# A restrictive default must keep a usable SSH path. Fail when default is
+# drop/block and no zone both opens ssh AND is activated — including the
+# guaranteed-lockout case where nothing opens ssh at all.
+- name: Assert a drop/block default keeps an activated ssh path
+  when:
+    - _firewalld_lockdown | bool
+    - not (firewalld_allow_no_ssh | bool)
+  ansible.builtin.assert:
+    that:
+      - _firewalld_ssh_activated_zones | length > 0
+    fail_msg: >-
+      firewalld_default_zone is '{{ firewalld_default_zone }}' but no zone both
+      opens ssh (service ssh or tcp/22) AND has an activation (source binding,
+      interface binding, or inline sources/interfaces). This locks out SSH after
+      reload. Bind an admin CIDR to an ssh-opening zone via
+      firewalld_source_zone_bindings, or set firewalld_allow_no_ssh=true only for
+      a genuinely SSH-less host administered out-of-band (dangerous).
+
+# This controller must be inside an ssh source CIDR. Skips when the connection
+# is local/non-SSH (no controller IP) or an ssh zone is interface-activated
+# (source containment does not apply).
+- name: Assert this controller's IP is covered by an ssh source CIDR
+  when:
+    - _firewalld_lockdown | bool
+    - not (firewalld_skip_controller_check | bool)
+    - _firewalld_controller_ip | length > 0
+    - not (_firewalld_ssh_zone_iface_activated | bool)
+  ansible.builtin.assert:
+    that:
+      - _firewalld_controller_source_covered | bool
+    fail_msg: >-
+      Controller client IP {{ _firewalld_controller_ip }} is not inside any
+      source CIDR bound to an ssh-opening zone ({{ _firewalld_ssh_source_cidrs }}).
+      Applying default '{{ firewalld_default_zone }}' would drop THIS session's
+      return path. Add {{ _firewalld_controller_ip }}'s network to an ssh zone
+      binding, or set firewalld_skip_controller_check=true if you administer via
+      a path this check cannot see.
