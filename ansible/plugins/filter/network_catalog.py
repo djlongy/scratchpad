@@ -730,7 +730,9 @@ def _validate_views(cfg: Mapping[str, Any]) -> List[str]:
                 continue
             errs.extend(_validate_one_view(_as_dict(raw), label, namespace, seen, known))
             # `source:` references resolve against the NAMESPACE — never the
-            # spec's platform filter, which may differ (dell vs switches).
+            # spec's platform filter. The two are independent: a namespace
+            # groups views for one consumer, the filter picks which segments
+            # they see, and nothing requires them to share a word.
             seen.append(f"{namespace}.{view_name}")
     return errs
 
