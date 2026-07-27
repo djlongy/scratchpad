@@ -41,7 +41,10 @@ vsphere_vm_datacenter: "Datacenter"
 vsphere_vm_vault_secret: "kv-mgt/data/platform/vsphere/vcenter/runtime"
 vsphere_vm_password_field: "admin_password"
 vsphere_vm_validate_certs: false
-vsphere_vm_esxi_host: "192.168.0.12"          # template host (override)
+# The host holding the template. RFC 5737 documentation address: it is a
+# placeholder by construction and cannot route anywhere, so an estate that
+# forgets to override it fails loudly instead of reaching a stranger's host.
+vsphere_vm_esxi_host: "192.0.2.10"
 vsphere_vm_resource_pool: "Resources"
 vsphere_vm_datastore: "datastore01"
 vsphere_vm_template: "linux-almalinux-9"
