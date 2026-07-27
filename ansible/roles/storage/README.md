@@ -8,12 +8,29 @@ network volumes.
 
 ## TL;DR
 
-**Most common: grow a disk after expanding its backing volume.** `--tags grow` rescans, then runs growpart → pvresize → lvextend → fs grow (auto, non-destructive); provisioning fresh disks is opt-in.
+**Most common: provision fresh data disks, picked by size, formatted `xfs`.**
+Pin each volume to its disk with `by-size:` rather than `auto` — `auto` takes
+the first blank disk in kernel enumeration order, which is not stable across
+reboots, controllers, or clouds.
+
+```yaml
+# group_vars/<group>.yml
+storage_provision: true
+storage_profile: app-node
+storage_profiles:
+  app-node:
+    - {name: opt,  disk: "by-size:50G", vg: vg_opt,  lv: lv_opt,  fstype: xfs, mount: /opt}
+    - {name: data, disk: "by-size:20G", vg: vg_data, lv: lv_data, fstype: xfs, mount: /data}
+```
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=<group> --tags grow       # resize existing
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=<group> --tags provision  # opt-in, fresh disks
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=<group> --tags grow       # resize existing
 ```
+
+Growing is the other half: `--tags grow` rescans, then runs growpart →
+pvresize → lvextend → fs grow. It is automatic and non-destructive, so it
+runs on every no-tags reconcile; provisioning is always opt-in.
 
 ## Requirements
 
@@ -37,7 +54,7 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Req | Variable | Default | Purpose |
 |---|---|---|---|
 | **Required** | `storage_volumes` | `[]` | Declarative volume list (or resolve one from `storage_profiles` via `storage_profile`) — empty means nothing to do |
-| Optional | `storage_profile` / `storage_profiles` | `""` / `{}` | Named preset selection; the estate catalog lives in `playbooks/group_vars/all/storage.yml` |
+| Optional | `storage_profile` / `storage_profiles` | `""` / `{}` | Named preset selection — see [Storage profiles](#storage-profiles); the catalog lives in `playbooks/group_vars/all/storage.yml` |
 | Optional | `storage_manage_packages` | `true` | Install `parted`/`lvm2`/`xfsprogs`/etc. before acting |
 | Optional | `storage_grow` | `true` | Run the automatic, non-destructive grow pass |
 | Optional | `storage_provision` | `false` | Allow opt-in provisioning (create/format) |
@@ -54,6 +71,47 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 | Optional | `storage_net_protected_mounts` | `[/, /boot, /etc, /usr, /var, /home]` | Mount points a **network** volume may never claim |
 | Optional | `storage_default_nfs_fstype` / `storage_default_cifs_fstype` | `nfs4` / `cifs` | `fstype` applied per kind when an entry omits it |
 | Optional | `storage_default_nfs_opts` / `storage_default_cifs_opts` | see `defaults/main.yml` | `opts` applied per kind when an entry omits it (`_netdev` + `nofail` are always appended) |
+
+### Disk selectors
+
+Every local volume resolves its `disk` field to a concrete device during the
+read-only `discover` phase. **Prefer `by-size:`** — it is stable across reboots
+and re-imaging, and it is the only selector that stays correct when a template
+grows a new disk or the controller renumbers.
+
+| Selector | Example | Matches on | Use when |
+|---|---|---|---|
+| `by-size:` | `by-size:50G` | Disk capacity, rounded to GiB | **Default choice.** Disks differ in size — the normal case for a VM built from a template |
+| `by-serial:` | `by-serial:VB1a2b3c4d` | `lsblk` serial | Two blank disks share a size |
+| `by-wwn:` | `by-wwn:0x5000c500a1b2c3d4` | `lsblk` WWN | SAN / multipath, or the serial is not exposed |
+| explicit path | `/dev/sdb`, `/dev/disk/by-id/…` | The path as given | Bare metal with fixed cabling, or you need a `by-id`/`by-path` alias |
+| `auto` | `auto` | First blank non-root disk | Single data disk only — enumeration order is **not stable** |
+
+Omit `disk` entirely on a grow-only LVM volume: once the VG exists the volume
+is located through it, and the selector is not consulted at all.
+
+**`by-size:` accepts both size conventions.** Hypervisors and clouds disagree
+on what a "50G disk" is, so `by-size:50G` matches a disk whose rounded GiB
+equals *either* 50 GiB (binary, 53,687,091,200 B) *or* 50 GB (decimal,
+50,000,000,000 B ≈ 47 GiB). You do not need to know which convention the
+platform used.
+
+**An ambiguous pin is a hard failure, not a coin flip.** If two *blank* disks
+match the pinned size, the role stops and names them rather than risk building
+on the wrong one:
+
+```
+Volume 'data' pins disk by-size:50G but 2 blank disks match (sdb, sdc).
+Disambiguate with by-serial:/by-wwn: or an explicit /dev path.
+```
+
+The check is skipped once the volume's VG exists — adoption never writes to a
+disk, so ambiguity is harmless at that point.
+
+**Sizing the LV is a separate field.** `disk:` chooses the *device*; `size:`
+chooses how much of the VG the *logical volume* takes (`100%FREE` by default).
+`by-size:50G` with `size: 100%FREE` means "find the 50G disk, then give the LV
+all of it".
 
 ### Network volume fields
 
@@ -98,13 +156,124 @@ storage_part_suffix_devices:
   - mynewctrl
 ```
 
+## Storage profiles
+
+A profile is a **named, reusable `storage_volumes` list**. Instead of repeating
+the same disk layout on every host, declare each layout once in a catalog and
+have each host pick one by name. This is the recommended way to drive the role
+once you have more than a couple of hosts.
+
+```yaml
+storage_profiles:          # the catalog — one key per named layout
+  <profile-name>:
+    - {name: …, disk: "by-size:…", …}
+storage_profile: <profile-name>   # the selection — one per host or group
+```
+
+**Resolution order** is `storage_profile` → `storage_volumes` → legacy
+`datavols`. A non-empty `storage_profile` wins outright: `storage_volumes` is
+ignored, not merged. Leave `storage_profile` empty (`""`, the default) to use
+`storage_volumes` verbatim.
+
+### Where the catalog lives
+
+Put the catalog somewhere every host can see it and the selection next to the
+host or group it applies to:
+
+| What | Where | Why |
+|---|---|---|
+| `storage_profiles` (the catalog) | `playbooks/group_vars/all/storage.yml` | Written once, visible everywhere |
+| `storage_profile` (the selection) | `group_vars/<group>.yml` or `host_vars/<host>.yml` | One line per host/group |
+
+### A catalog
+
+```yaml
+# playbooks/group_vars/all/storage.yml
+---
+storage_profiles:
+
+  # Single 50G data disk — the common application node.
+  app-node:
+    - name: opt
+      disk: "by-size:50G"
+      lvm: true
+      vg: vg_opt
+      lv: lv_opt
+      size: "100%FREE"
+      fstype: xfs
+      mount: /opt
+
+  # Two disks, distinguished by size — no serials needed.
+  db-node:
+    - {name: data, disk: "by-size:100G", vg: vg_data, lv: lv_data, size: "100%FREE", fstype: xfs, mount: /var/lib/pgsql}
+    - {name: wal,  disk: "by-size:20G",  vg: vg_wal,  lv: lv_wal,  size: "100%FREE", fstype: xfs, mount: /var/lib/pgsql/wal}
+
+  # Same size twice — by-size alone would be ambiguous, so pin the serials.
+  log-node:
+    - {name: log01, disk: "by-serial:VB1a2b3c4d", vg: vg_log01, lv: lv_log01, fstype: xfs, mount: /var/log/app01}
+    - {name: log02, disk: "by-serial:VB5e6f7a8b", vg: vg_log02, lv: lv_log02, fstype: xfs, mount: /var/log/app02}
+
+  # One disk carved into two LVs, plus an NFS share in the same list.
+  worker:
+    - {name: opt,   disk: "by-size:80G", vg: vg_app, lv: lv_opt,   size: 40G,       fstype: xfs, mount: /opt}
+    - {name: cache, vg: vg_app,          lv: lv_cache, size: "100%FREE",            fstype: xfs, mount: /var/cache/app}
+    - {name: shared, kind: nfs, server: nas1.example.internal, export: /export/shared, mount: /shared}
+```
+
+The second entry of `worker` omits `disk` deliberately: it is a second LV in a
+VG the first entry already created, so it is located through `vg_app` and needs
+no selector.
+
+### Selecting one
+
+```yaml
+# group_vars/app_servers.yml
+storage_profile: app-node
+storage_provision: true        # required — provisioning is opt-in
+
+# host_vars/db01.example.com.yml
+storage_profile: db-node       # this host overrides the group
+```
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=app_servers --tags provision
+```
+
+Override the selection for a one-off run without editing inventory:
+
+```bash
+ansible-playbook … -e storage_profile=db-node --tags provision
+```
+
+### Notes
+
+- **An unknown profile name is a hard failure.** `storage_profiles[storage_profile]`
+  is looked up with no fallback, so a typo fails the play with an undefined-key
+  error rather than silently doing nothing. That is deliberate — a silent no-op
+  on a provisioning run looks identical to success.
+- Every field except `name` is optional; anything omitted falls back to the
+  `storage_default_*` values in `defaults/main.yml` (`lvm: true`,
+  `partition: true`, `fstype: xfs`, `size: 100%FREE`, …). The examples above
+  spell out `fstype: xfs` for clarity even though it is already the default.
+- A profile is a plain list, so network volumes (`kind: nfs` / `kind: cifs`)
+  belong in it too — see `worker` above.
+- Profiles are resolved before validation, so all rules V1–V9 apply to the
+  resolved list exactly as if it had been written into `storage_volumes`.
+
 ## Minimum configuration
 
 ```yaml
 # group_vars/storage_hosts.yml
 ---
-# Required
-storage_volumes: "REPLACE_ME_storage_volumes"
+# Required — a volume list, or a profile name that resolves to one
+storage_provision: true
+storage_volumes:
+  - name: data
+    disk: "by-size:50G"
+    vg: vg_data
+    lv: lv_data
+    fstype: xfs
+    mount: /data
 ```
 ## Usage
 
@@ -117,9 +286,10 @@ storage_volumes: "REPLACE_ME_storage_volumes"
         storage_provision: true
         storage_volumes:
           - name: opt
-            disk: auto
+            disk: "by-size:50G"
             vg: vg_data
             lv: lv_opt
+            fstype: xfs
             mount: /opt
 ```
 
@@ -138,9 +308,10 @@ Network volumes live in the same list:
         storage_manage_cifs: true
         storage_volumes:
           - name: stroom-index          # local — kind defaults to 'local'
-            disk: auto
+            disk: "by-size:200G"
             vg: vg_stroom
             lv: lv_index
+            fstype: xfs
             mount: /stroomdata/stroom-index-p00
 
           - name: stroom-data

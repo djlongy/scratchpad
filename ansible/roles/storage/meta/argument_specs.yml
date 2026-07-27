@@ -56,9 +56,10 @@ argument_specs:
           disk:
             type: str
             description: >-
-              Disk selector — auto, an explicit path (/dev/sdb), or
-              by-size:/by-serial:/by-id:/by-wwn: matchers. Optional for
-              grow-only LVM volumes located via their VG.
+              Disk selector — auto, an explicit path (/dev/sdb or
+              /dev/disk/by-id/<id>), or by-size:/by-serial:/by-wwn: matchers.
+              Prefer by-size:. Optional for grow-only LVM volumes located via
+              their VG.
           lvm:
             type: bool
             description: Build an LVM stack (true) or a plain partition (false).
