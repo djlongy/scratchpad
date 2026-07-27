@@ -132,6 +132,7 @@ result. The underscore is a repo convention, not an Ansible mechanism.
 | Find who owns a VLAN / IP / name | `netshow --tags where` — [runbook](#browsing-and-validating-ops_net_showyml) |
 | Understand why a row/name/list is wrong or missing | [Troubleshooting](#troubleshooting) |
 | Wire a role or host to the catalog | [Consumer wiring](#consumer-wiring) |
+| Filter segments myself (`platforms[]`, one platform, a tenant) | [Selecting segments yourself](#selecting-segments-yourself) |
 | Understand an engine option in depth | [Part 2](#part-2--engine-reference) |
 
 ## Membership vs namespace: the three meanings of "platform"
@@ -480,6 +481,162 @@ switchport trunk allowed vlan {{ 'add ' if not loop.first }}{{ chunk | join(',')
 
 Put the [preflight assert](#preflight-assert) first in any play that consumes
 the catalog.
+
+## Selecting segments yourself
+
+When no view gives you the shape you want, select over `_segments` directly.
+`platforms` is a **list** field, so the usual `selectattr('field', 'eq', x)`
+does not apply — but you rarely need to touch the list at all.
+
+### Four ways to say "the esxi segments"
+
+All four return the same set. Counts are from this repo's demo catalog
+(34 segments, 11 of them on esxi):
+
+| # | Expression | Rows | Use when |
+|---|---|---|---|
+| 1 | `_net.esxi.port_groups` | 15 | **Default.** A [view](#views) — already shaped for the module, and includes `append:` static rows (hence 15, not 11) |
+| 2 | `_segments_by.platform.esxi` | 11 | You want raw segments, not shaped rows. Free — the partition is pre-built |
+| 3 | `_segments \| selectattr('on_esxi')` | 11 | Same, but composing with other `selectattr`s in one chain |
+| 4 | `_segments \| selectattr('platforms', 'contains', 'esxi')` | 11 | Filtering on the raw list, e.g. the label is in a variable |
+
+Every row carries one `on_<platform>` bool per **declared** platform
+([enriched row fields](#enriched-row-fields)), which is why #3 needs no
+`contains` test. Reach for #4 only when the platform label is dynamic:
+
+```yaml
+# the label is not known until runtime
+loop: "{{ _segments | selectattr('platforms', 'contains', target_platform) }}"
+
+# combining: esxi AND tagged AND in site-a
+loop: >-
+  {{ _segments | selectattr('on_esxi') | selectattr('tagged')
+     | selectattr('site', 'eq', 'site-a') | list }}
+
+# the inverse — everything NOT on esxi
+loop: "{{ _segments | rejectattr('on_esxi') | list }}"
+```
+
+`contains` is a Jinja test, so it also works in `rejectattr` and in a `when:`.
+
+### Worked example: an esxi port-group list with a name built from tokens
+
+**Read `row.name`. Do not build the name yourself, and do not read
+`row.names.<recipe>` for something you are going to apply.**
+
+`row.name` is the primary recipe's output *or the pinned value where one is
+pinned* — it is the only name that is safe to push at a device. The primary
+recipe here is `[vlan, env, role]`, which already gives you
+`VLAN10-MGT-SVC` / `VLAN31-PROD-CLUSTER`:
+
+```yaml
+- name: Reconcile vDS port groups
+  community.vmware.vmware_dvs_portgroup:
+    portgroup_name: "{{ item.name }}"          # honours pins
+    vlan_id: "{{ item.vlan_id }}"
+    switch_name: "{{ item.esxi_vswitch }}"
+    num_ports: "{{ item.esxi_num_ports }}"
+    port_binding: "{{ item.esxi_port_binding }}"
+  loop: "{{ _segments | selectattr('on_esxi') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+```
+
+Better still, declare it as a [view](#views) so the rows arrive pre-shaped and
+`_net.esxi.<list>` stays the only thing consumers read.
+
+**To change the token set**, change the recipe — per segment when it is an
+exception, estate-wide when it is the rule:
+
+```yaml
+# one segment only — this is how tenant_acme already gets VLAN02-ACME
+tenant_acme:
+  name_parts: [vlan, tenancy]
+
+# estate-wide — edit network_name_recipes.name.parts in networks_config.yml
+network_name_recipes:
+  name:
+    parts: [vlan, tenancy, env, role]     # renames almost everything: see below
+```
+
+**A second recipe is for reporting, not for applying.** Adding a `portgroup:`
+recipe alongside `name:` gives you `row.names.portgroup`, but
+[`names` holds derived values and never pins](#pinning-a-name). Verified against
+this catalog: with a `[vlan, tenancy, env, role]` recipe added,
+`legacy_storage.names.portgroup` is `VLAN50-PLATFORM-STORAGE` while
+`legacy_storage.name` is the pinned `VLAN50-LEGACY-STORAGE-DO-NOT-RENAME`.
+Applying the former renames a port group that was pinned precisely so it would
+not be renamed. If you want a different shape to be the one you apply, make it
+`network_primary_name_recipe` — then it lands in `row.name` and pins win again.
+
+If you really must build the name inline, join the tokens and drop the empty
+ones — `select` with no test keeps only truthy values:
+
+```yaml
+name: >-
+  {{ ['VLAN' ~ (seg.vlan_id | string),
+      seg.tenancy | default(''), seg.env | default(''), seg.role | default('')]
+     | select | join('-') | upper }}
+```
+
+Five of the eleven esxi segments have no `env`, so the `select` is not
+optional — without it `infra` renders `VLAN0--INFRA`.
+
+#### Three things hand-building gets wrong
+
+Run against the demo catalog — the inline expression above, versus what
+`row.name` gives you:
+
+| Segment | Inline join | `row.name` | |
+|---|---|---|---|
+| `infra` | `VLAN0-PLATFORM-INFRA` | `VLAN00-INFRA` | pad + noise |
+| `dmz` | `VLAN9-PLATFORM-DMZ` | `VLAN09-DMZ` | pad + noise |
+| `mgt` | `VLAN10-PLATFORM-MGT-SVC` | `VLAN10-MGT-SVC` | noise |
+| `legacy_storage` | `VLAN50-PLATFORM-STORAGE` | `VLAN50-LEGACY-STORAGE-DO-NOT-RENAME` | **pin lost** |
+
+1. **`tenancy` is probably not the token you want.**
+   `network_segment_defaults` sets `tenancy: platform`, so *every* segment
+   carries it — 32 of 34 here. Putting it in a name stamps `PLATFORM` on
+   almost everything. Only `tenant_acme` and `tenant_globex` override it, and
+   they already handle their own naming with `name_parts: [vlan, tenancy]`.
+   This one bites recipes too, not just inline joins: it is a property of the
+   token, not of how you assemble it.
+2. **`vlan_pad` is lost.** The recipe pads to two digits to match the names
+   already on the vDS; `'VLAN' ~ vlan_id` gives `VLAN0` and `VLAN9`, which are
+   different port groups. A recipe fixes this; an inline join has to
+   re-implement it.
+3. **Pinned names are lost — this one renames production.** `legacy_storage`
+   pins its name. `row.name` honours the pin; neither an inline join nor
+   `row.names.<recipe>` does. This is the reason to read `row.name` and let
+   the engine assemble it.
+
+### Trap: `tenancy` and `tenant` are different fields
+
+The demo catalog uses both, and they do not line up:
+
+| | Field | Segments carrying it | Values |
+|---|---|---|---|
+| Underlays | `tenancy` | 34 (all — it is a segment default) | `platform` ×32, `acme`, `globex` |
+| Pools | `tenant` | 20 (the `acme_lab` pool) | `acme` |
+
+A pool-generated row carries **both**: `tenant: acme` *and* the inherited
+`tenancy: platform`. So:
+
+```jinja
+{{ _segments | selectattr('tenancy', 'eq', 'acme') | list | length }}   {# -> 1 #}
+
+{# `tenant` exists only on pool rows, so guard with 'defined' first —
+   without it selectattr raises on every underlay segment. #}
+{{ _segments | selectattr('tenant', 'defined')
+             | selectattr('tenant', 'eq', 'acme') | list | length }}    {# -> 20 #}
+```
+
+`network_partition_fields` lists `tenancy` and not `tenant`, so
+`_segments_by.tenancy` is `{platform: 32, acme: 1, globex: 1}` — the twenty
+ACME pool segments are filed under `platform`. If you are selecting a tenant's
+networks, decide which field you mean and check both; `selectattr('tenant', …)`
+also needs a `selectattr('tenant', 'defined')` in front of it, since only pool
+rows have the field.
 
 ### Two traps: recalculation and recursion
 
