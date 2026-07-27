@@ -18,7 +18,7 @@
 # install by ipaserver/ipareplica, but install is one-shot — live drift leaves
 # "Global DNS configuration is empty" and remote clients get REFUSED
 # (recursion requested but not available). Reconcile every converge so
-# unknowns go to the declared upstream (estate: pfSense Unbound / gateway).
+# unknowns go to the declared upstream (typically the site resolver / gateway).
 # action: dnsconfig replaces the full forwarder list (not member-add).
 - name: DNS | Reconcile global DNS forwarders (day-2)
   freeipa.ansible_freeipa.ipadnsconfig:

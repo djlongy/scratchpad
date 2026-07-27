@@ -23,7 +23,7 @@
   register: _fw_iface_zone
   changed_when: false
   check_mode: false
-  failed_when: false  # rc!=0 / "no zone" for an unbound iface is expected
+  failed_when: false  # rc!=0 / "no zone" for an iface with no zone is expected
   loop: "{{ _fw_audit_ifaces }}"
   loop_control:
     label: "{{ item }}"

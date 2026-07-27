@@ -65,7 +65,7 @@ hashicorp_vault_advertise_addr: "{{ ansible_host }}"
 hashicorp_vault_nodes: "{{ ansible_play_hosts_all }}"
 
 # ── Seal / init ──────────────────────────────────────────────────────────
-# Homelab default: single unseal key for playbook-driven unseal. Raise for
+# Lab default: single unseal key for playbook-driven unseal. Raise for
 # a shared-custody unseal ceremony.
 hashicorp_vault_key_shares: 1
 hashicorp_vault_key_threshold: 1

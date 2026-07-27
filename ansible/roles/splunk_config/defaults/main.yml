@@ -88,7 +88,7 @@ splunk_config_keep_raw: false
 # ── Export transport ─────────────────────────────────────────────────────────
 # api       — management REST only (:8089). Work use case: unknown production
 #             config → recreate in a test environment. No Docker, no mounts.
-# container — docker exec/cp (+ host-volume fallback). Homelab Swarm / when you
+# container — docker exec/cp (+ host-volume fallback). Docker Swarm / when you
 #             own the hosts and want on-disk local/ trees.
 # Dedicated playbook for the work path: playbooks/ops_splunk_config_export.yml
 splunk_config_export_transport: container

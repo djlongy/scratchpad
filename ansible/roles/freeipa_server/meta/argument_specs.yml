@@ -183,7 +183,7 @@ argument_specs:
         elements: str
         description: >-
           Upstream DNS forwarders (IPs) for names outside IPA zones. Applied at
-          install AND day-2 via ipadnsconfig (e.g. pfSense Unbound gateway).
+          install AND day-2 via ipadnsconfig (e.g. the gateway's resolver).
           Required for a DNS-enabled install unless no_forwarders.
       freeipa_server_forward_policy:
         type: str

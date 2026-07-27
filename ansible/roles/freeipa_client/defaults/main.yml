@@ -104,7 +104,8 @@ freeipa_client_dns_reverse_zone: ""
 # SSSD dyndns (maps to ipasssd_enable_dns_updates). Default ON: the client self-registers
 # its A record at join (--enable-dns-updates) and SSSD keeps it current on each start/reboot
 # and per dyndns_refresh_interval (daily). Only effective where IPA is AUTHORITATIVE for the
-# zone — with external DNS (e.g. pfSense) it warns and creates nothing, so set false there.
+# zone — with external DNS (e.g. a firewall/gateway resolver) it warns and creates nothing,
+# so set false there.
 # A live in-place re-IP isn't picked up until the next sssd restart/refresh.
 freeipa_client_enable_dns_updates: true
 # Restart SSSD during the run to force an immediate dyndns refresh when the A record has

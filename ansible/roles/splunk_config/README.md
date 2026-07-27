@@ -74,7 +74,7 @@ serve REST.
         splunk_config_stack: work
 ```
 
-### Homelab Swarm (container transport)
+### Docker Swarm (container transport)
 
 ```bash
 ansible-playbook -i inventories/swarm/hosts.yml playbooks/app_splunk.yml --tags export

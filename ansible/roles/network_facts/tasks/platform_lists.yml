@@ -6,7 +6,7 @@
 #
 #   loop: "{{ _net.esxi.vcenter_portgroups }}"     → vmware_dvs_portgroup
 #   loop: "{{ _net.dell.vlans }}"                  → OS10 VLANs
-#   loop: "{{ _net.pfsense.vlans['site-a'] }}"      → pfSense 802.1q VLANs
+#   loop: "{{ _net.unifi.vlans['site-a'] }}"       → UniFi VLANs (grouped by site)
 #
 # Some lists are flat; the ones declaring `group_by` are a dict keyed by that
 # field (usually site), so you index the site before looping.

@@ -183,7 +183,7 @@ freeipa_server_ad_trusts: []
 # installer (upstream rejects them without --setup-dns) — leave them as-is.
 freeipa_server_setup_dns: true
 # Upstream resolvers for names outside IPA-hosted zones. Applied at install AND
-# day-2 (ipadnsconfig). ENV-SPECIFIC: e.g. ["{{ network_gateway }}"] → pfSense Unbound.
+# day-2 (ipadnsconfig). ENV-SPECIFIC: e.g. ["{{ network_gateway }}"] → the gateway's resolver.
 freeipa_server_forwarders: []
 freeipa_server_forward_policy: "only"    # only | first
 freeipa_server_no_forwarders: false
