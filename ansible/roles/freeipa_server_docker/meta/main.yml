@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: freeipa_server_docker
-  author: longy
+  author: lab
   description: >-
     Run a FreeIPA server as a container (official quay.io/freeipa/freeipa-server image)
     on a Docker/Podman host, with a persistent /data volume. Thin lifecycle sibling of

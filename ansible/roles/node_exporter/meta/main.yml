@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: node_exporter
-  author: longy
+  author: lab
   description: >-
     Install Prometheus node_exporter as a systemd service — download the pinned
     binary, create the service user, and manage the unit + listen address.

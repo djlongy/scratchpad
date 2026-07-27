@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: docker_swarm
-  author: longy
+  author: lab
   description: >-
     Provision a Docker Swarm cluster end-to-end: install Docker CE,
     configure firewall for overlay traffic, initialise the cluster on a

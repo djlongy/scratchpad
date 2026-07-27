@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: stroom_agent
-  author: longy
+  author: lab
   description: >-
     Generic, defaults-driven log forwarder that ships local log files to a
     Stroom datafeed HTTP endpoint via curl + a systemd timer.  Supports

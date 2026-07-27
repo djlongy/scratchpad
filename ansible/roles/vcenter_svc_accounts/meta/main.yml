@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: vcenter_svc_accounts
-  author: djlongy
+  author: lab
   description: >-
     Provision least-privilege vCenter SSO service accounts + scoped custom
     Roles (RBAC), so automation never runs as administrator@vsphere.local.

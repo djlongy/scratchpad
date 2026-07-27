@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: facts
-  author: djlongy
+  author: lab
   description: >-
     Troubleshooting helper — gather all facts, display a curated facts_known
     dict next to the variables you pass in (facts_passed), then optionally pause

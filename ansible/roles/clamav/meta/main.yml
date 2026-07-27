@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: clamav
-  author: longy
+  author: lab
   description: >-
     Install and configure ClamAV antivirus on Linux hosts — freshclam signature
     updates, optional resident clamd daemon, and optional systemd-scheduled scan.

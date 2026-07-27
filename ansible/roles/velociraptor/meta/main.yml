@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: velociraptor
-  author: longy
+  author: lab
   description: >-
     Install the Velociraptor DFIR endpoint client as a systemd service on
     Linux hosts.  Generic, defaults-driven engine — the operator supplies

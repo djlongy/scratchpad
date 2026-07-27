@@ -1,7 +1,7 @@
 ---
 galaxy_info:
   role_name: splunk_forwarder
-  author: longy
+  author: lab
   description: >-
     Install the Splunk Universal Forwarder on Linux hosts as a defaults-driven,
     env-agnostic engine.  Handles package installation from a .tgz tarball,
