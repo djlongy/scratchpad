@@ -9,9 +9,13 @@ RFC1918 names only — no site, vendor lock-in, or personal topology.
 
 Copy this file into a repo. Rename SSOT fields to match the local matrix.
 
-**Companion example vars (optional):** `networks.yml` in the same directory if present.
+**Standalone by design.** Everything here is plain ansible-core plus the two
+optional collections noted per trick. No filter plugin, no generator, no
+derived-vars layer — the SSOT dict and Jinja are the whole mechanism. If a
+repo does have one of those, its own README documents it; nothing on this
+sheet assumes it exists.
 
-T0–T15 stay lean (pattern only). Long line-by-line Jinja walks live in
+T0–T17 stay lean (pattern only). Long line-by-line Jinja walks live in
 **[Appendix A](#appendix-a--annotated-t4-enrich-loop)** at the end.
 
 ---
@@ -30,6 +34,7 @@ that is what your role will `loop:`.
   list of dicts          ──────────►  T3 map attr   ─► list of scalars
   list of dicts          ──────────►  T6/T7 reshape ─► list of renamed dicts
   dynamic list + hand    ──────────►  T10 a + b     ─► one combined list
+  row field is a LIST    ──────────►  T17 contains  ─► rows whose list has X
 ```
 
 ---
@@ -135,9 +140,9 @@ fabric_underlays          ← dict (map)
 
 ## Version & ansible.cfg quirks
 
-Patterns in this sheet work on **ansible-core 2.14–2.18+**. Work often runs
-**2.16**; this repo currently runs **2.18**. The *syntax* is the same; the
-**type of a templated value** can differ, mostly because of one setting.
+Patterns in this sheet work on **ansible-core 2.14–2.21+**. Sites commonly run
+**2.16** or **2.18**. The *syntax* is the same; the **type of a templated
+value** can differ, mostly because of one setting.
 
 ### First thing at a new site
 
@@ -163,12 +168,13 @@ ansible-config dump | grep -E 'JINJA2_NATIVE|DEFAULT_JINJA|COLLECTIONS_PATH|HOST
 jinja2_native = True    # or False
 ```
 
-| | `jinja2_native = False` (Ansible default through 2.16 era) | `jinja2_native = True` (this repo) |
+| | `jinja2_native = False` (Ansible default through 2.16 era) | `jinja2_native = True` (assumed by this sheet) |
 |---|---|---|
 | What it does | Template results stay **strings** unless you cast | Template results are parsed into **native Python types** (list, dict, int, bool, …) |
 | `{{ [1, 2] }}` in a var | Often a string that *looks* like a list (older cores) | Real `list` |
 | `{{ true }}` / `{{ 1 + 1 }}` | `"True"` / `"2"` strings more often | `True` / `2` |
 | `selectattr('tagged')` on bools | May need `\| bool` if flags came through as strings | Bools usually real — bare `selectattr('tagged')` works after T4 |
+| `selectattr('platforms', 'contains', x)` | Works (Ansible test, not Jinja — see T17) | Works |
 | `\| join(',')` on `[2, 3, 10]` **in group_vars** | Usually string `"2,3,10"` | **Re-parsed as tuple** `(2, 3, 10)` — classic footgun |
 | Same `join(',')` **in a task** template | string | string (safe) |
 | Loops over derived lists | Sometimes need `\| from_json` / `\| list` | Lists loop cleanly if you built real lists |
@@ -181,9 +187,10 @@ jinja2_native = True    # or False
 | 2.17–2.18 | Still **False** by default; many modern repos set **True** |
 | 2.19+ | Moving toward native-by-default in upstream messaging — **measure, don't assume** |
 
-This repo (`ansible/ansible.cfg`):
+What this sheet assumes (set it explicitly wherever you land):
 
 ```ini
+# ansible.cfg
 [defaults]
 jinja2_native = True
 ```
@@ -254,10 +261,10 @@ ansible-config dump --only-changed
 
 ### ansible-core 2.16 vs 2.18 — practical deltas
 
-| Topic | 2.16 (typical work) | 2.18 (this repo) | What to do |
+| Topic | 2.16 | 2.18+ | What to do |
 |---|---|---|---|
-| Jinja filter set for T0–T15 | Same (`dict2items`, `selectattr`, `map`, `combine`, `to_json`) | Same | No syntax fork |
-| `jinja2_native` default | Usually **False** | Still usually False; **we set True** | Always set explicitly in cfg or document |
+| Jinja filter set for T0–T17 | Same (`dict2items`, `selectattr`, `map`, `combine`, `to_json`) | Same | No syntax fork |
+| `jinja2_native` default | Usually **False** | Still usually False; most matrix repos set **True** | Always set explicitly in cfg or document |
 | List-in-var typing | More often need `to_json`/`from_json` | Cleaner with native on | Keep the bridge in shared snippets |
 | `items2dict` | Available | Available | T9 OK on both |
 | `community.general.counter` | Needs collection installed | Same | Pin collection in `requirements.yml` |
@@ -364,6 +371,7 @@ callback_result_format = yaml
 | Optional keys missing | Filled display names | **T14** |
 | Flat list with `role:` | All svc CIDRs | **T15** |
 | Dict of dicts | Loop/display sorted by nested field (e.g. vlan_id) | **T16** |
+| Row field is a **list** (`platforms: [a, b]`) | Only rows whose list contains `a`, named from columns | **T17** |
 
 ---
 
@@ -1232,6 +1240,160 @@ reviewing SSOT before a change.
 
 ---
 
+## T17 — filter on a LIST field, then build a name from columns
+
+**Recognise:** a row's field is a **list**, not a scalar — `platforms: [esxi,
+firewall, switch]` — and you want every row whose list contains one value.
+Then you want the output name built from other columns rather than typed out.
+
+`selectattr('platforms', 'equalto', 'esxi')` **never matches**: it compares the
+whole list to a string. You need a containment test.
+
+### BEFORE
+```yaml
+fabric_underlays:
+  mgt:
+    vlan_id: 10
+    platforms: [esxi, firewall, switch]
+    tenant: core
+    env: mgt
+    role: svc
+  prod:
+    vlan_id: 30
+    platforms: [esxi, firewall]
+    tenant: core
+    env: prod
+    role: svc
+  infra:
+    vlan_id: 0
+    platforms: [esxi]
+    tenant: core
+    role: infra                       # no env
+  wifi_guest:
+    vlan_id: 100
+    platforms: [switch, firewall]     # not on esxi
+    tenant: acme
+    env: lab
+    role: app
+```
+
+### Jinja — four ways, same result
+
+```yaml
+# A. contains test — the direct one
+fabric_esxi: >-
+  {{ fabric_underlay_items | from_json
+     | selectattr('platforms', 'contains', 'esxi') | list }}
+
+# B. jmespath — when you are already using T6
+fabric_esxi: >-
+  {{ fabric_underlay_items | from_json
+     | json_query('[?contains(platforms, `esxi`)]') }}
+
+# C. core-only — precompute one bool per platform in the T4 enrich (below),
+#    then filter with a plain selectattr.
+fabric_esxi: >-
+  {{ fabric_underlay_items | from_json | selectattr('on_esxi') | list }}
+
+# D. the inverse — everything NOT on esxi
+fabric_not_esxi: >-
+  {{ fabric_underlay_items | from_json
+     | rejectattr('platforms', 'contains', 'esxi') | list }}
+```
+
+Form **C**'s enrich — the extra keys go in the same `append({…})` as T4:
+
+```yaml
+fabric_underlay_items: |
+  {% set items = [] %}
+  {% for key, net in fabric_underlays.items() %}
+  {%   set _ = items.append({
+         'key': key,
+         'vlan_id': net.vlan_id | int,
+         'platforms': net.platforms | default([]),
+         'on_esxi':     'esxi'     in (net.platforms | default([])),
+         'on_firewall': 'firewall' in (net.platforms | default([])),
+         'on_switch':   'switch'   in (net.platforms | default([]))
+       }) %}
+  {% endfor %}
+  {{ items | to_json }}
+```
+
+All four return `[mgt, prod, infra]`; D returns `[wifi_guest]`.
+
+> **`contains` is an Ansible test, not a Jinja one.** It comes from
+> `ansible.builtin`, so it works in any playbook on 2.14–2.21+, but a bare
+> Jinja environment (or a non-Ansible renderer) fails with
+> `No test named 'contains'`. Verified on Jinja 3.1.6. Form **C** is the one
+> that needs nothing but ansible-core, and it is cheaper when you filter the
+> same membership repeatedly — the `in` runs once per row at enrich time
+> instead of once per row per filter.
+
+### Building the name from columns
+
+```yaml
+hypervisor_port_groups: >-
+  {{ fabric_underlay_items | from_json
+     | selectattr('platforms', 'contains', 'esxi')
+     | map('community.general.json_query',
+           '{name: pg_name, vlan_id: vlan_id}')
+     | list }}
+```
+
+…where `pg_name` was assembled once in the T4 enrich, so every consumer gets
+the same string:
+
+```yaml
+fabric_underlay_items: |
+  {% set items = [] %}
+  {% for key, net in fabric_underlays.items() %}
+  {%   set _ = items.append({
+         'key': key,
+         'vlan_id': net.vlan_id | int,
+         'platforms': net.platforms | default([]),
+         'pg_name': (['VLAN' ~ ('%02d' | format(net.vlan_id | int)),
+                      net.tenant | default(''),
+                      net.env    | default(''),
+                      net.role   | default('')]
+                     | select | join('-') | upper)
+       }) %}
+  {% endfor %}
+  {{ items | to_json }}
+```
+
+### AFTER
+```yaml
+- { name: "VLAN10-CORE-MGT-SVC",  vlan_id: 10 }
+- { name: "VLAN30-CORE-PROD-SVC", vlan_id: 30 }
+- { name: "VLAN00-CORE-INFRA",    vlan_id: 0 }
+# wifi_guest gone — not on esxi
+```
+
+```text
+BEFORE:  rows with platforms: [ … ] and scattered name columns
+AFTER:   [{name, vlan_id}, …]   only the matching rows, one built name each
+```
+
+### Two things the join gets wrong without `select` and `format`
+
+| Row | `| select | '%02d' | format` | plain `join('-')` |
+|---|---|---|---|
+| `mgt` (has every token) | `VLAN10-CORE-MGT-SVC` | `VLAN10-CORE-MGT-SVC` |
+| `infra` (vlan 0, **no `env`**) | `VLAN00-CORE-INFRA` | `VLAN0-CORE--INFRA` |
+
+1. **`| select` drops the empty tokens.** Without it a missing `env` leaves an
+   empty string in the list and `join('-')` renders `--`. Bare `select` with no
+   test keeps only truthy values, which is exactly the filter you want here.
+2. **`'%02d' | format(…)` restores the zero padding.** `'VLAN' ~ vlan_id` gives
+   `VLAN0`, not `VLAN00` — a different port group on the switch. Match whatever
+   width the existing names use.
+
+**Build the name once, in the enrich.** If two consumers each join the tokens
+themselves they will disagree the first time someone adds a token — and a
+renamed port group is a re-created port group.
+
+---
+
 ## End-to-end: work hand-list → dynamic + custom
 
 ### BEFORE (typical work — fully hand-curated)
@@ -1270,7 +1432,8 @@ Role still: `loop: "{{ hypervisor_port_groups }}"` — only the source of the li
 | Trick | Needs |
 |---|---|
 | T0–T5, T8–T12, T14–T16 | ansible-core only |
-| T6 `json_query` | `pip: jmespath` |
+| T17 forms A / C / D | ansible-core only (`contains` is an **Ansible** test, not Jinja) |
+| T6, T17 form B `json_query` | `pip: jmespath` |
 | T7 / T13 | `collections: community.general` |
 | optional `ipaddr` | `pip: netaddr` + `collections: ansible.utils` |
 
@@ -1329,16 +1492,18 @@ On **2.16 with native off**, keep `to_json`/`from_json` even if it feels redunda
 ## Quick debug
 
 ```bash
-cd ansible/
-export ANSIBLE_VAULT_PASSWORD=$(cat /path/to/vault-password)
-source source /path/to/ansible-venv/bin/activate
+# What did one host actually resolve to?
+ansible-inventory -i <inventory> --host <host> | jq '.network_fw_site_a_vlans'
 
-ansible-inventory -i inventories/lab/hosts.yml --host fw-site-a-01 \
-  | jq '.network_fw_site_a_vlans'
-
+# Render one derived var without running a play — point -e at the file
+# holding the matrix.
 ansible localhost -m debug \
-  -e @playbooks/group_vars/all/networks.yml \
+  -e @<path/to/matrix-vars.yml> \
   -a 'var=network_switch_vlans'
+
+# Compare typing across cores without editing anyone's ansible.cfg
+ANSIBLE_JINJA2_NATIVE=False ansible localhost -m debug \
+  -e @<path/to/matrix-vars.yml> -a 'var=network_switch_vlans'
 ```
 
 If you get a JSON **string** instead of a list, you forgot `| from_json` on a T4/T8
@@ -1348,7 +1513,7 @@ intermediate (or you're reading the private `_*_json` var).
 
 ## Appendix A — annotated T4 enrich loop
 
-Deep dive for the multi-line Jinja in **T4**. The main T0–T15 section stays
+Deep dive for the multi-line Jinja in **T4**. The main T0–T17 section stays
 BEFORE/AFTER only; this is the line-by-line when you need it.
 
 ### Comment rules
@@ -1442,7 +1607,7 @@ fabric_underlay_items: |
 | `tagged` | `vlan_id > 0` | Filter flag for 802.1Q rows |
 | `has_fw` | `fw_parent is defined` | Filter flag for FW VLAN/SVI rows |
 
-### Full-estate enrich (this repo)
+### Full-estate enrich
 
 A fuller estate matrix may also set `wifi_*`, `switch_name`, `virt` /
 `on_switch` / `edgefw`, `admin`, etc. Same structure as above — more keys in the
@@ -1452,6 +1617,6 @@ A fuller estate matrix may also set `wifi_*`, `switch_name`, `virt` /
 
 ## Appendix B — more annotated examples (placeholder)
 
-Add further deep dives here when a multi-line pattern is hard to read in T0–T15
+Add further deep dives here when a multi-line pattern is hard to read in T0–T17
 (e.g. T8 interface build, T13 counter chain). Keep the main tricks lean:
 **BEFORE → Jinja → AFTER** only.
