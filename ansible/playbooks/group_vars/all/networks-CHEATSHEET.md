@@ -1242,11 +1242,11 @@ reviewing SSOT before a change.
 
 ## T17 — filter on a LIST field, then build a name from columns
 
-**Recognise:** a row's field is a **list**, not a scalar — `platforms: [esxi,
+**Recognise:** a row's field is a **list**, not a scalar — `platforms: [hypervisor,
 firewall, switch]` — and you want every row whose list contains one value.
 Then you want the output name built from other columns rather than typed out.
 
-`selectattr('platforms', 'equalto', 'esxi')` **never matches**: it compares the
+`selectattr('platforms', 'equalto', 'hypervisor')` **never matches**: it compares the
 whole list to a string. You need a containment test.
 
 ### BEFORE
@@ -1254,24 +1254,24 @@ whole list to a string. You need a containment test.
 fabric_underlays:
   mgt:
     vlan_id: 10
-    platforms: [esxi, firewall, switch]
+    platforms: [hypervisor, firewall, switch]
     tenant: core
     env: mgt
     role: svc
   prod:
     vlan_id: 30
-    platforms: [esxi, firewall]
+    platforms: [hypervisor, firewall]
     tenant: core
     env: prod
     role: svc
   infra:
     vlan_id: 0
-    platforms: [esxi]
+    platforms: [hypervisor]
     tenant: core
     role: infra                       # no env
   wifi_guest:
     vlan_id: 100
-    platforms: [switch, firewall]     # not on esxi
+    platforms: [switch, firewall]     # not on hypervisor
     tenant: acme
     env: lab
     role: app
@@ -1281,24 +1281,24 @@ fabric_underlays:
 
 ```yaml
 # A. contains test — the direct one
-fabric_esxi: >-
+fabric_hypervisor: >-
   {{ fabric_underlay_items | from_json
-     | selectattr('platforms', 'contains', 'esxi') | list }}
+     | selectattr('platforms', 'contains', 'hypervisor') | list }}
 
 # B. jmespath — when you are already using T6
-fabric_esxi: >-
+fabric_hypervisor: >-
   {{ fabric_underlay_items | from_json
-     | json_query('[?contains(platforms, `esxi`)]') }}
+     | json_query('[?contains(platforms, `hypervisor`)]') }}
 
 # C. core-only — precompute one bool per platform in the T4 enrich (below),
 #    then filter with a plain selectattr.
-fabric_esxi: >-
-  {{ fabric_underlay_items | from_json | selectattr('on_esxi') | list }}
+fabric_hypervisor: >-
+  {{ fabric_underlay_items | from_json | selectattr('on_hypervisor') | list }}
 
-# D. the inverse — everything NOT on esxi
-fabric_not_esxi: >-
+# D. the inverse — everything NOT on hypervisor
+fabric_not_hypervisor: >-
   {{ fabric_underlay_items | from_json
-     | rejectattr('platforms', 'contains', 'esxi') | list }}
+     | rejectattr('platforms', 'contains', 'hypervisor') | list }}
 ```
 
 Form **C**'s enrich — the extra keys go in the same `append({…})` as T4:
@@ -1311,9 +1311,9 @@ fabric_underlay_items: |
          'key': key,
          'vlan_id': net.vlan_id | int,
          'platforms': net.platforms | default([]),
-         'on_esxi':     'esxi'     in (net.platforms | default([])),
-         'on_firewall': 'firewall' in (net.platforms | default([])),
-         'on_switch':   'switch'   in (net.platforms | default([]))
+         'on_hypervisor': 'hypervisor' in (net.platforms | default([])),
+         'on_firewall':   'firewall'   in (net.platforms | default([])),
+         'on_switch':     'switch'     in (net.platforms | default([]))
        }) %}
   {% endfor %}
   {{ items | to_json }}
@@ -1334,7 +1334,7 @@ All four return `[mgt, prod, infra]`; D returns `[wifi_guest]`.
 ```yaml
 hypervisor_port_groups: >-
   {{ fabric_underlay_items | from_json
-     | selectattr('platforms', 'contains', 'esxi')
+     | selectattr('platforms', 'contains', 'hypervisor')
      | map('community.general.json_query',
            '{name: pg_name, vlan_id: vlan_id}')
      | list }}
@@ -1366,7 +1366,7 @@ fabric_underlay_items: |
 - { name: "VLAN10-CORE-MGT-SVC",  vlan_id: 10 }
 - { name: "VLAN30-CORE-PROD-SVC", vlan_id: 30 }
 - { name: "VLAN00-CORE-INFRA",    vlan_id: 0 }
-# wifi_guest gone — not on esxi
+# wifi_guest gone — not on hypervisor
 ```
 
 ```text
