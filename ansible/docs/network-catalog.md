@@ -517,9 +517,14 @@ loop: >-
 loop: "{{ _segments | rejectattr('on_hypervisor') | list }}"
 ```
 
-`contains` is a Jinja test, so it also works in `rejectattr` and in a `when:`.
+`contains` is an **Ansible** test, not a Jinja one — it comes from
+`ansible.builtin`, so it works in `rejectattr` and in a `when:` in any playbook
+(2.14–2.21+), but a bare Jinja environment fails with
+`No test named 'contains'` (verified on Jinja 3.1.6). If anything renders these
+templates outside Ansible, use the precomputed `on_<platform>` bool (#3)
+instead — it needs nothing but ansible-core.
 
-### Worked example: an hypervisor port-group list with a name built from tokens
+### Worked example: a hypervisor port-group list with a name built from tokens
 
 **Read `row.name`. Do not build the name yourself, and do not read
 `row.names.<recipe>` for something you are going to apply.**
