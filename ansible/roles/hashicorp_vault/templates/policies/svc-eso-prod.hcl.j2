@@ -1,0 +1,53 @@
+# svc-eso-prod — External Secrets Operator read policy
+# WHO:     ESO via Kubernetes auth (external-secrets ServiceAccount in external-secrets ns)
+# TTL:     1h token, renewable, max 24h
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only, scoped to kv-prod platform/app/common paths.
+
+# kv-prod — platform and app runtime secrets (no deploy/ or ops/ scope)
+path "kv-prod/data/platform/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/platform/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-prod/data/apps/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/apps/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-prod/data/common/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/common/*" {
+  capabilities = ["read", "list"]
+}
+
+# kv-mgmt — single mgt-plane secret prod cert-manager legitimately needs:
+# Cloudflare API token for the ACME DNS-01 solver. Cloudflare is an mgt-plane
+# service (canonical secret lives in kv-mgmt), so this one path is granted
+# explicitly rather than opening kv-mgmt broadly.
+path "kv-mgmt/data/platform/cloudflare/runtime" {
+  capabilities = ["read"]
+}
+path "kv-mgmt/metadata/platform/cloudflare/runtime" {
+  capabilities = ["read"]
+}
+
+# UI / CLI preflight
+path "sys/internal/ui/mounts/kv/*" {
+  capabilities = ["read"]
+}
+path "sys/internal/ui/mounts" {
+  capabilities = ["read"]
+}
+
+# Token self-management
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

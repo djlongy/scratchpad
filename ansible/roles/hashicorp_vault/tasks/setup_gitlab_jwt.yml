@@ -1,0 +1,73 @@
+---
+# tasks/setup_gitlab_jwt.yml — Configure JWT auth for GitLab CI pipelines
+# Allows CI jobs to exchange their GitLab-issued JWT for a Vault token.
+
+- name: Configure GitLab CI JWT authentication for Vault
+  become: false
+  block:
+    - name: Check enabled Vault auth methods
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth
+      register: _jwt_auth_methods
+      delegate_to: localhost
+      run_once: true
+
+    - name: Enable JWT auth method
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth/jwt
+        data:
+          type: jwt
+          description: "GitLab CI JWT authentication"
+      when: "'jwt/' not in _jwt_auth_methods.data.data.keys()"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Read existing JWT backend config
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: auth/jwt/config
+      register: _jwt_config
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Configure JWT backend for GitLab
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: auth/jwt/config
+        data:
+          oidc_discovery_url: "{{ vault_gitlab_base_url }}"
+          bound_issuer: "{{ vault_gitlab_base_url }}"
+      when:
+        - vault_gitlab_base_url | length > 0
+        - >-
+          _jwt_config.data is not defined
+          or (_jwt_config.data.data.bound_issuer | default('')) != vault_gitlab_base_url
+          or vault_gitlab_jwt_force_reconfigure | bool
+      delegate_to: localhost
+      run_once: true
+
+    - name: Configure JWT roles for GitLab CI
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/jwt/role/{{ item.name }}"
+        data:
+          role_type: jwt
+          user_claim: "{{ item.user_claim | default('user_login') }}"
+          bound_claims: "{{ item.bound_claims }}"
+          bound_audiences: "{{ item.bound_audiences | default([vault_addr]) }}"
+          policies: "{{ item.policies }}"
+          token_ttl: "{{ item.token_ttl | default('1h') }}"
+          token_max_ttl: "{{ item.token_max_ttl | default('4h') }}"
+      loop: "{{ vault_gitlab_jwt_roles }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: localhost
+      run_once: true

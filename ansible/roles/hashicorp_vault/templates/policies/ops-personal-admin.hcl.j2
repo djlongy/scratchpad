@@ -1,0 +1,26 @@
+# ops-personal-admin — full CRUD on kv-personal/ (long's personal secrets)
+# WHO:     long — attached via the vault-personal-admin identity group
+#          (applies to both userpass and GitLab OIDC logins for the shared entity)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: full create/read/update/delete/list on kv-personal DATA and METADATA.
+# The metadata rule MUST include create+update so custom_metadata provenance
+# stamps (vault kv metadata patch/put) succeed — without them the more-specific
+# metadata rule silently overrides the ops-admin wildcard and stamps 403.
+
+# Full KV v2 access — personal mount (data + metadata via wildcard)
+path "kv-personal/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Explicit data-plane grant (documents intent; subset of the wildcard)
+path "kv-personal/data/*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
+# Metadata plane — full CRUD+list+patch so provenance custom_metadata can be written.
+# `vault kv metadata patch` issues an HTTP PATCH → REQUIRES the `patch` capability;
+# create+update cover `vault kv metadata put`. Without `patch`, stamps 403.
+path "kv-personal/metadata/*" {
+  capabilities = ["create", "read", "update", "patch", "delete", "list"]
+}

@@ -1,0 +1,59 @@
+---
+# tasks/ops_superadmin_auth.yml
+# Break-glass escalation: authenticate as ops-superadmin and expose vault_superadmin_token.
+#
+# Prerequisites:
+#   vault_superadmin_password  — ansible-vault encrypted in the vault group's
+#                                group_vars, e.g.
+#                                ansible/inventories/vault/group_vars/vault/vault.yml
+#                                Run: ansible-vault edit <that file>
+#                                Add: vault_superadmin_password: <your-strong-password>
+#   vault_superadmin_username  — set in vars/main.yml (default: svc-superadmin)
+#
+# After including this file, use {{ vault_superadmin_token }} for subsequent Vault API calls.
+#
+# IMPORTANT: Every escalation must be recorded in your operations log with:
+#   - Date/time
+#   - What operation triggered the escalation
+#   - What was fixed
+#   - Whether the underlying permission was corrected so escalation isn't needed next time
+
+- name: Validate ops-superadmin credentials are configured
+  ansible.builtin.assert:
+    that:
+      - vault_superadmin_password is defined
+      - vault_superadmin_password | default('') != ''
+      - vault_superadmin_password | default('') != 'changeme-please'
+    fail_msg: >-
+      vault_superadmin_password is not set or is still the placeholder value.
+      Add it to the vault group's ansible-vault encrypted group_vars, e.g.:
+        ansible-vault edit ansible/inventories/vault/group_vars/vault/vault.yml
+      Then add the line: vault_superadmin_password: <your-strong-password>
+  delegate_to: localhost
+  run_once: true
+
+- name: Authenticate as ops-superadmin (break-glass escalation)
+  become: false  # localhost/API — controller-side Vault login, no host privilege
+  community.hashi_vault.vault_login:
+    url: "{{ vault_addr }}"
+    auth_method: userpass
+    username: "{{ vault_superadmin_username | default('svc-superadmin') }}"
+    password: "{{ vault_superadmin_password }}"
+  register: vault_superadmin_login
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Set ops-superadmin token fact (session-scoped, 1h TTL)
+  ansible.builtin.set_fact:
+    vault_superadmin_token: "{{ vault_superadmin_login.login.auth.client_token }}"
+  run_once: true
+  no_log: true
+
+- name: Confirm ops-superadmin escalation is active
+  ansible.builtin.debug:
+    msg: >-
+      ops-superadmin token obtained (1h TTL, non-renewable).
+      Proceeding with break-glass operation.
+      REMINDER: Record this escalation in your operations log when done.
+  run_once: true

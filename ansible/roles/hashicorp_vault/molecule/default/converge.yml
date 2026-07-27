@@ -1,0 +1,208 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # --- Mock variables (no real Vault or inventory groups) ---
+    vault_host_data_dir: "/opt/vault"
+    vault_keys_dir: "/opt/vault/keys"
+    vault_config_dir: "/opt/vault/keys"
+    vault_api_port: 8200
+    vault_cluster_port: 8201
+    vault_domain: "vault.molecule.test"
+    vault_backup_dir: "/opt/backups/vault"
+    vault_backup_script_path: "/usr/local/bin/vault-backup.sh"
+    vault_backup_retention_days: 7
+    vault_addr: "https://vault.molecule.test:8200"
+
+  tasks:
+    # --- Vault system user and group ---
+    - name: Create vault group
+      ansible.builtin.group:
+        name: vault
+        system: true
+        state: present
+
+    - name: Create vault user
+      ansible.builtin.user:
+        name: vault
+        group: vault
+        system: true
+        shell: /sbin/nologin
+        home: "{{ vault_host_data_dir }}"
+        create_home: false
+
+    # --- Directory creation (from configure.yml) ---
+    - name: Create Vault config directory
+      ansible.builtin.file:
+        path: /etc/vault.d
+        state: directory
+        mode: "0755"
+
+    - name: Create Vault certs directory
+      ansible.builtin.file:
+        path: /etc/vault.d/certs
+        state: directory
+        mode: "0750"
+        owner: vault
+        group: vault
+
+    - name: Create Vault data directory
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}"
+        state: directory
+        mode: "0755"
+        owner: vault
+        group: vault
+
+    - name: Create directory for storing Vault keys and tokens
+      ansible.builtin.file:
+        path: "{{ vault_keys_dir }}"
+        state: directory
+        mode: "0700"
+        owner: root
+        group: vault
+
+    - name: Check Vault log file
+      ansible.builtin.stat:
+        path: "/var/log/vault.log"
+      register: _vault_log
+
+    - name: Create Vault log file
+      ansible.builtin.file:
+        path: "/var/log/vault.log"
+        state: touch
+        mode: "0755"
+        owner: vault
+        group: vault
+      when: not _vault_log.stat.exists
+
+    # --- Config file rendering (from configure.yml) ---
+    # Render a mock vault.hcl since the real template requires inventory groups
+    - name: Deploy mock Vault HCL config
+      ansible.builtin.copy:
+        dest: /etc/vault.d/config.hcl
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          storage "raft" {
+            path    = "{{ vault_host_data_dir }}"
+            node_id = "{{ ansible_hostname }}"
+          }
+
+          listener "tcp" {
+            address                  = "0.0.0.0:{{ vault_api_port }}"
+            cluster_address          = "0.0.0.0:{{ vault_cluster_port }}"
+            tls_cert_file            = "/etc/vault.d/certs/vault.crt"
+            tls_key_file             = "/etc/vault.d/certs/vault.key"
+            tls_client_ca_file       = "/etc/vault.d/certs/ca.crt"
+            tls_disable_client_certs = "true"
+          }
+
+          api_addr     = "https://{{ ansible_hostname }}:{{ vault_api_port }}"
+          cluster_addr = "https://{{ ansible_hostname }}:{{ vault_cluster_port }}"
+
+          ui            = true
+          disable_mlock = true
+
+          telemetry {
+            prometheus_retention_time = "24h"
+          }
+
+          log_level  = "info"
+          log_format = "json"
+
+    # --- Systemd unit file (from service.yml) ---
+    - name: Configure Vault systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vault.service
+        content: |
+          [Unit]
+          Description=Vault server
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=vault
+          Group=vault
+          ExecStart=/usr/bin/vault server -config=/etc/vault.d/config.hcl
+          ExecReload=/bin/kill --signal HUP $MAINPID
+          LimitNOFILE=65536
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: "0644"
+
+    # --- Backup infrastructure (from backup.yml) ---
+    - name: Create Vault backup directory
+      ansible.builtin.file:
+        path: "{{ vault_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Check Vault backup log file
+      ansible.builtin.stat:
+        path: /var/log/vault-backup.log
+      register: _vault_backup_log
+
+    - name: Create Vault backup log file
+      ansible.builtin.file:
+        path: /var/log/vault-backup.log
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+      when: not _vault_backup_log.stat.exists
+
+    - name: Deploy mock Vault backup script
+      ansible.builtin.copy:
+        dest: "{{ vault_backup_script_path }}"
+        owner: root
+        group: root
+        mode: "0700"
+        content: |
+          #!/usr/bin/env bash
+          # Mock backup script for Molecule testing
+          BACKUP_DIR="{{ vault_backup_dir }}"
+          RETENTION_DAYS="{{ vault_backup_retention_days }}"
+          echo "$(date) - Vault backup placeholder" >> /var/log/vault-backup.log
+
+    - name: Deploy mock systemd service for Vault backup
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vault-backup.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Vault Raft Snapshot Backup
+
+          [Service]
+          Type=oneshot
+          ExecStart={{ vault_backup_script_path }}
+
+    - name: Deploy mock systemd timer for Vault backup
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/vault-backup.timer
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Vault Raft Snapshot Backup Timer
+
+          [Timer]
+          OnCalendar=daily
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target

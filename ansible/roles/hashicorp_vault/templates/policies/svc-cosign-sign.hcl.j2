@@ -1,0 +1,40 @@
+# svc-cosign-sign — Image signing via Vault Transit (Cosign)
+# WHO:     GitLab CI pipelines (via JWT auth or AppRole)
+# TTL:     Inherited from auth method (typically 1h for CI)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: Sign container images using Transit key, read public key for verification.
+# Cosign uses `hashivault://cosign` URI — private key never leaves Vault.
+#
+# Path note: Vault Transit's signing API for ECDSA keys is
+# `transit/sign/<key>/<hash_algorithm>` (e.g. `transit/sign/cosign/sha2-256`).
+# The bare `transit/sign/cosign` form is also accepted but Cosign always
+# appends the hash suffix. We grant both via a glob so the policy never
+# silently breaks when Cosign or Vault refines the URL.
+
+# Sign operations — Cosign calls Transit to sign image digests.
+path "transit/sign/cosign" {
+  capabilities = ["create", "update"]
+}
+path "transit/sign/cosign/*" {
+  capabilities = ["create", "update"]
+}
+
+# Verify operations — Cosign can verify signatures locally
+path "transit/verify/cosign" {
+  capabilities = ["create", "update"]
+}
+path "transit/verify/cosign/*" {
+  capabilities = ["create", "update"]
+}
+
+# Read public key — needed by `cosign public-key --key hashivault://cosign`
+# and for exporting to Kyverno verification policies
+path "transit/keys/cosign" {
+  capabilities = ["read"]
+}
+
+# Read the exported public key in PEM format for Kyverno
+path "kv-mgmt/data/platform/cosign/runtime" {
+  capabilities = ["read"]
+}

@@ -1,415 +1,390 @@
 ---
+# Public contract for defaults/main.yml only. Cluster/port/policy constants
+# live in vars/main.yml and are not role inputs.
 argument_specs:
   main:
-    short_description: Auto-scaling containerized HashiCorp Vault on a persistent disk.
+    short_description: >-
+      Install and configure HashiCorp Vault (package or Docker) as a Raft HA
+      cluster with policies, auth methods, audit, Transit, auto-unseal, and backups.
     description:
-      - Deploys Vault as a Docker container with all state on a persistent
-        second disk. The topology auto-scales from the play's host count.
+      - >-
+        Installs Vault (RPM package or Docker image plus host CLI), opens
+        firewall ports, issues TLS via certbot, initialises the Raft cluster,
+        and applies post-setup (policies, userpass, AppRole, optional LDAP /
+        GitLab OIDC / GitLab CI JWT, audit, Transit/cosign, auto-unseal, backup).
+      - >-
+        Environment-specific values (domain, HA nodes, cert SANs, LDAP URL,
+        GitLab base URL) come from inventory — nothing in defaults hardcodes a
+        live estate FQDN as a required constant.
     options:
-      hashicorp_vault_image:
+      # ── Install backend ────────────────────────────────────────────────
+      vault_install_method:
         type: str
-        description: Vault container image reference.
+        default: package
+        description: >-
+          Server install backend. `package` uses the HashiCorp RPM; `docker`
+          runs the server in Docker but still installs a host Vault CLI for
+          backup and operational scripts.
+        choices:
+          - package
+          - docker
+
+      vault_docker_image:
+        type: str
         default: "hashicorp/vault:1.19"
-      hashicorp_vault_name:
+        description: Container image when vault_install_method is docker.
+
+      vault_container_name:
         type: str
-        description: Container and compose service name.
-        default: "vault"
-      hashicorp_vault_data_mount:
+        default: vault
+        description: Docker container name when install method is docker.
+
+      vault_container_restart_policy:
         type: str
-        description: >-
-          Mount point of the persistent second disk. Must be a real mountpoint
-          (guarded by preflight); all Vault state lives under it.
-        default: "/opt/vault"
-      hashicorp_vault_require_mounted:
-        type: bool
-        description: Fail preflight unless data_mount is a dedicated mountpoint.
-        default: true
-      hashicorp_vault_api_port:
-        type: int
-        description: Vault API / listener port.
-        default: 8200
-      hashicorp_vault_cluster_port:
-        type: int
-        description: Vault Raft cluster port.
-        default: 8201
-      hashicorp_vault_advertise_addr:
-        type: str
-        description: >-
-          Address peers and clients use to reach this node. Defaults to the
-          node IP (ansible_host); set to an FQDN where DNS resolves.
-        default: "{{ ansible_host }}"
-      hashicorp_vault_nodes:
+        default: unless-stopped
+        description: Docker restart policy for the Vault container.
+
+      vault_container_extra_args:
         type: list
         elements: str
-        description: >-
-          Cluster members. Defaults to the play's hosts (ansible_play_hosts_all)
-          so 1 host yields standalone Raft and N hosts yield Raft HA. Pin to
-          decouple the cluster from --limit.
-      hashicorp_vault_key_shares:
-        type: int
-        description: Number of unseal key shares generated at init.
-        default: 1
-      hashicorp_vault_key_threshold:
-        type: int
-        description: Unseal key shares required to unseal.
-        default: 1
-      hashicorp_vault_auto_unseal:
-        type: bool
-        description: >-
-          Install a systemd unit that unseals Vault on boot (self-healing after a
-          reboot). Places the unseal key on every node; false leaves nodes sealed
-          after a reboot until `--tags unseal`.
-        default: false
-      hashicorp_vault_autounseal_keys_file:
-        type: str
-        description: Host path the auto-unseal keys are written to (when enabled).
-        default: "{{ hashicorp_vault_keys_dir }}/unseal_keys"
-      hashicorp_vault_autounseal_script_path:
-        type: str
-        description: Host path the auto-unseal boot script is installed to.
-        default: "/usr/local/bin/vault-container-unseal.sh"
-      hashicorp_vault_manage_policies:
-        type: bool
-        description: Ensure kv-<tenant>-<env> mounts + write the multi-tenant/extra ACL policies.
-        default: false
-      hashicorp_vault_kv_mount_prefix:
-        type: str
-        description: KV mount name prefix; a tenant's mount is <prefix>-<tenant>-<env>.
-        default: "kv"
-      hashicorp_vault_tenants:
-        type: list
-        elements: dict
-        description: >-
-          {tenant, env} pairs (tenant + env MUST be hyphen-free; tenant optional ->
-          kv-<env>). Each gets its own mount <prefix>-<tenant>-<env> + a policy
-          "<tenant>-<env>" (whole mount) + an LDAP group mapping. Add wide:true to
-          also write a tenant-scoped policy "<tenant>" granting kv-<tenant>-* (all
-          envs) for a tenant admin.
         default: []
-      hashicorp_vault_policies:
-        type: list
-        elements: dict
-        description: Extra non-tenant policies ({policy_name, template} under templates/policies/; bundled all-kv.hcl.j2 = kv-*).
-        default: []
-      hashicorp_vault_admin_kv_mounts:
-        type: list
-        elements: str
-        description: KV mounts the bundled admin.hcl.j2 policy grants full CRUD on.
-        default: []
-      hashicorp_vault_ldap_enabled:
-        type: bool
-        description: Enable + configure the LDAP auth method and group mappings.
-        default: false
-      hashicorp_vault_ldap_url:
+        description: Extra docker run/compose args for the Vault container.
+
+      vault_cli_arch:
         type: str
-        description: LDAP server URL (e.g. ldaps://host).
+        default: amd64
+        description: Architecture suffix for the host Vault CLI zip (linux_<arch>).
+
+      vault_cli_install_dir:
+        type: str
+        default: /opt/vault-cli
+        description: Host path for the extracted Vault CLI binary (container mode).
+
+      vault_cli_zip_url:
+        type: str
+        default: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_{{ vault_cli_arch }}.zip"
+        description: >-
+          Download URL for the host Vault CLI zip. vault_version comes from
+          vars/main.yml.
+
+      # ── Cluster identity (inventory) ───────────────────────────────────
+      vault_ha_nodes:
+        type: list
+        elements: raw
+        required: true
+        default: []
+        description: >-
+          Raft HA cluster node definitions for the environment. Required —
+          set in group_vars per estate. Empty list is not a runnable cluster.
+
+      vault_domain:
+        type: str
+        required: true
         default: ""
-      hashicorp_vault_ldap_binddn:
+        description: >-
+          Cluster service FQDN (e.g. vault.mgmt.example.com). Drives vault_addr,
+          TLS SAN construction, and OIDC redirect URIs.
+
+      vault_addr:
         type: str
+        default: "https://{{ vault_domain }}:8200"
+        description: Base HTTPS URL for the Vault API/UI used by API modules.
+
+      # ── TLS / certbot ──────────────────────────────────────────────────
+      vault_cert_domains:
+        type: list
+        elements: str
+        required: true
+        default: []
+        description: >-
+          Names on the TLS certificate. First entry is the Let's Encrypt
+          lineage name under /etc/letsencrypt/live/<first>/.
+
+      vault_cert_email:
+        type: str
+        required: true
+        default: ""
+        description: ACME registration email for certbot.
+
+      # ── Extra mounts ───────────────────────────────────────────────────
+      vault_additional_kv_mounts:
+        type: list
+        elements: str
+        default: []
+        description: Extra KV v2 mount paths beyond the role's standard set.
+
+      # ── LDAP auth ──────────────────────────────────────────────────────
+      vault_ldap_auth_enabled:
+        type: bool
+        default: false
+        description: Enable and configure the LDAP auth method (e.g. FreeIPA).
+
+      vault_ldap_url:
+        type: str
+        default: ""
+        description: LDAP(S) server URL when vault_ldap_auth_enabled is true.
+
+      vault_ldap_binddn:
+        type: str
+        default: ""
         description: Bind DN used to search the directory.
-        default: ""
-      hashicorp_vault_ldap_bindpass:
+
+      vault_ldap_bindpass_vault_path:
         type: str
-        description: Bind password (declared-var-first; else _bindpass_vault_path).
         default: ""
-      hashicorp_vault_ldap_bindpass_vault_path:
+        description: >-
+          HashiCorp Vault KV path for the LDAP bind password (must exist before
+          LDAP setup when enabled).
+
+      vault_ldap_bindpass_vault_field:
         type: str
-        description: HC-Vault fallback for the bind password ("mount/data/path:field").
+        default: bindpass
+        description: Field name of the bind password secret.
+
+      vault_ldap_userdn:
+        type: str
         default: ""
-      hashicorp_vault_ldap_userdn:
-        type: str
         description: Base DN for user search.
-        default: ""
-      hashicorp_vault_ldap_groupdn:
+
+      vault_ldap_userattr:
         type: str
+        default: uid
+        description: LDAP attribute that maps to the Vault username.
+
+      vault_ldap_groupdn:
+        type: str
+        default: ""
         description: Base DN for group search.
-        default: ""
-      hashicorp_vault_ldap_group_pattern:
+
+      vault_ldap_groupattr:
         type: str
-        description: LDAP group name pattern for a tenant ({tenant}/{env} placeholders).
-        default: "vault-{tenant}-{env}"
-      hashicorp_vault_ldap_extra_groups:
-        type: list
-        elements: dict
-        description: Non-tenant LDAP group->policy mappings ({ldap_group, policies}) -> auth/ldap/groups/<ldap_group>.
-        default: []
-      hashicorp_vault_ldap_users:
-        type: list
-        elements: dict
-        description: >-
-          Per-user LDAP authorisations ({ldap_username, policies}) written to
-          auth/ldap/users/<name> — direct, independent of group resolution.
-        default: []
-      hashicorp_vault_identity_groups:
-        type: list
-        elements: dict
-        description: >-
-          Vault Identity groups (cross-auth-method RBAC). external:
-          {identity_group_name, type: external, ldap_group, policies} maps an LDAP
-          group via a group-alias. internal:
-          {identity_group_name, type: internal, policies, member_group_names} has
-          explicit membership and can NEST child groups. Empty = phase skipped.
-        default: []
-      hashicorp_vault_ldap_insecure_tls:
-        type: bool
-        description: Skip LDAPS cert verification (self-signed directory CA).
-        default: true
-      hashicorp_vault_userpass_accounts:
-        type: list
-        elements: dict
-        description: >-
-          Human operator accounts ({username, password, policies}) upserted into
-          userpass. Empty = phase skipped. Keep passwords in a vaulted inventory.
-        default: []
-      hashicorp_vault_approles:
-        type: list
-        elements: dict
-        description: >-
-          Automation AppRoles ({role_name, policies, token_ttl, token_max_ttl,
-          secret_id_ttl}) upserted into approle. Empty = phase skipped. Roles are
-          created only; role_id/secret_id retrieval is out of band.
-        default: []
-      hashicorp_vault_gitlab_base_url:
+        default: cn
+        description: LDAP attribute used as the group name.
+
+      vault_ldap_groupfilter:
         type: str
+        default: "(&(objectClass=groupOfNames)(member={{.UserDN}}))"
         description: >-
-          GitLab base URL used as JWT issuer / OIDC discovery for the jwt auth
-          method (CI pipelines only). Human SSO is LDAP/FreeIPA, not GitLab OIDC.
-        default: ""
-      hashicorp_vault_gitlab_jwt_enabled:
+          LDAP group filter template (Vault Go template placeholders). Stored
+          with Ansible unsafe markers in defaults so Jinja does not expand
+          Vault's {{.UserDN}}.
+
+      vault_ldap_starttls:
         type: bool
-        description: Enable + configure the jwt auth method for GitLab CI pipelines.
         default: false
-      hashicorp_vault_gitlab_jwt_default_audience:
-        type: str
-        description: Default bound audience for JWT roles that omit bound_audiences (empty = none).
-        default: ""
-      hashicorp_vault_gitlab_jwt_roles:
-        type: list
-        elements: dict
-        description: >-
-          GitLab CI JWT roles ({name, bound_claims, policies, user_claim,
-          bound_audiences, token_ttl, token_max_ttl}). Empty = phase writes no roles.
-        default: []
-      hashicorp_vault_transit_enabled:
+        description: Issue StartTLS on the LDAP connection.
+
+      vault_ldap_insecure_tls:
         type: bool
-        description: Enable the Transit secrets engine and create the configured keys.
         default: false
-      hashicorp_vault_transit_mount:
+        description: Skip LDAP TLS certificate verification.
+
+      vault_ldap_tls_min_version:
         type: str
-        description: Mount path for the Transit secrets engine.
-        default: "transit"
-      hashicorp_vault_transit_keys:
-        type: list
-        elements: dict
-        description: >-
-          Transit keys, create-if-missing ({name, type, exportable,
-          allow_plaintext_backup, deletion_allowed, export_public_key: {mount, path}}).
-          export_public_key publishes the public half to KV (full PUT). Empty = phase skipped.
-        default: []
-      hashicorp_vault_pki_enabled:
+        default: tls12
+        description: Minimum TLS version for LDAPS/StartTLS.
+
+      vault_ldap_tls_max_version:
+        type: str
+        default: tls12
+        description: Maximum TLS version for LDAPS/StartTLS.
+
+      vault_ldap_certificate:
+        type: str
+        default: ""
+        description: Optional PEM CA certificate for LDAP TLS verification.
+
+      vault_ldap_case_sensitive_names:
         type: bool
-        description: >-
-          Enable the PKI secrets engine (mount if absent, tune max_lease_ttl on
-          drift, upsert hashicorp_vault_pki_roles). Does not mint or import an
-          intermediate issuer — use roles/vault_pki for that lifecycle.
-        default: true
-      hashicorp_vault_pki_mount:
-        type: str
-        description: Mount path for the PKI secrets engine.
-        default: "pki"
-      hashicorp_vault_pki_mount_description:
-        type: str
-        description: Description applied only when enabling an absent mount.
-        default: "PKI secrets engine"
-      hashicorp_vault_pki_max_lease_ttl_hours:
+        default: false
+        description: Treat LDAP usernames/group names as case-sensitive.
+
+      vault_ldap_request_timeout:
         type: int
-        description: Mount-wide max_lease_ttl in hours (tuned on drift only).
-        default: 87600
-      hashicorp_vault_pki_roles:
+        default: 90
+        description: LDAP request timeout in seconds.
+
+      vault_ldap_groups:
         type: list
         elements: dict
-        description: >-
-          PKI issuing roles ({name, config}) full-replace written to
-          <mount>/roles/<name>. config is passed as vault-write fields
-          (lists comma-joined). Empty = mount/tune only.
         default: []
-      hashicorp_vault_pki_issuer_import:
-        type: bool
         description: >-
-          Import an escrowed, pre-signed issuing CA into the pki/ mount (import
-          issuing cert+key and root cert, set the default issuer, optional AIA/CRL
-          URLs, self-verify by fingerprint). Runs after the pki phase. Off = no-op.
+          LDAP group → policy mappings. Each entry:
+          {name, policies: [..]} written to auth/ldap/groups/<name>.
+
+      # ── GitLab OIDC (Vault UI SSO) ──────────────────────────────────────
+      vault_gitlab_oidc_enabled:
+        type: bool
         default: false
-      hashicorp_vault_pki_issuer_cert:
-        type: str
-        description: >-
-          Issuing CA PEM certificate (from the Ansible-Vault-encrypted escrow).
-          Required when hashicorp_vault_pki_issuer_import is true.
-        default: ""
-      hashicorp_vault_pki_issuer_key:
-        type: str
-        description: >-
-          Issuing CA PEM private key (unencrypted; passed to Vault only over stdin,
-          never argv). Required when hashicorp_vault_pki_issuer_import is true.
-        default: ""
-      hashicorp_vault_pki_root_cert:
-        type: str
-        description: >-
-          Public root CA PEM certificate, imported cert-only so the mount can build
-          the full ca_chain. Required when hashicorp_vault_pki_issuer_import is true.
-        default: ""
-      hashicorp_vault_pki_urls:
-        type: dict
-        description: >-
-          Optional AIA/CRL URL config written to <mount>/config/urls (drift only):
-          {issuing_certificates, crl_distribution_points, ocsp_servers} as lists.
-          Only the keys present are compared/written. Empty = URLs left unmanaged.
-        default: {}
-      hashicorp_vault_audit_enabled:
+        description: Enable GitLab OIDC SSO for human Vault UI login.
+
+      vault_gitlab_oidc_force_reconfigure:
         type: bool
-        description: Enable the file audit device (writes under /vault/logs, persisted).
         default: false
-      hashicorp_vault_audit_path:
-        type: str
-        description: In-container path for the file audit device.
-        default: "{{ hashicorp_vault_container_logs_dir }}/vault_audit.log"
-      hashicorp_vault_tls_enabled:
+        description: Rewrite OIDC mount config/role even when already present.
+
+      vault_gitlab_oauth_manage_app:
         type: bool
-        description: Serve the Vault API over TLS.
         default: true
-      hashicorp_vault_tls_generate:
-        type: bool
         description: >-
-          Self-sign a CA + multi-SAN server certificate on the controller. When
-          false, supply hashicorp_vault_tls_ca_cert / _server_cert / _server_key.
-        default: true
-      hashicorp_vault_tls_local_dir:
+          Auto-create/update the GitLab OAuth application via GitLab admin API
+          when OIDC is enabled.
+
+      vault_gitlab_base_url:
         type: str
-        description: Controller-side directory persisting the generated CA/cert.
-      hashicorp_vault_tls_ca_cert:
-        type: str
-        description: Controller path to a CA cert (when tls_generate=false).
         default: ""
-      hashicorp_vault_tls_server_cert:
+        description: GitLab base URL (issuer/discovery root) when OIDC or JWT is used.
+
+      vault_gitlab_oidc_mount_path:
         type: str
-        description: Controller path to a server cert (when tls_generate=false).
-        default: ""
-      hashicorp_vault_tls_server_key:
+        default: oidc
+        description: Auth mount path for the OIDC method.
+
+      vault_gitlab_oidc_discovery_url:
         type: str
-        description: Controller path to a server key (when tls_generate=false).
-        default: ""
-      hashicorp_vault_tls_onhost:
-        type: bool
-        description: >-
-          Use cert/key/CA already present ON THE NODE (certmonger/ipa-getcert)
-          instead of generating or copying from the controller. Overrides _generate.
-        default: false
-      hashicorp_vault_tls_onhost_cert:
+        default: "{{ vault_gitlab_base_url }}"
+        description: OIDC discovery URL (defaults to vault_gitlab_base_url).
+
+      vault_gitlab_oauth_app_name:
         type: str
-        description: On-node path to the certmonger-issued server cert (tls_onhost=true).
-        default: ""
-      hashicorp_vault_tls_onhost_key:
-        type: str
-        description: On-node path to the certmonger-issued server key (tls_onhost=true).
-        default: ""
-      hashicorp_vault_tls_onhost_ca:
-        type: str
-        description: On-node path to the CA chain, e.g. /etc/ipa/ca.crt (tls_onhost=true).
-        default: ""
-      hashicorp_vault_selinux_relabel:
-        type: bool
-        description: Add :Z to bind mounts so the container works under SELinux enforcing.
-        default: true
-      hashicorp_vault_tls_extra_sans:
+        default: "Vault OIDC"
+        description: Display name of the GitLab OAuth application.
+
+      vault_gitlab_oauth_scopes:
         type: list
         elements: str
+        default:
+          - openid
+          - profile
+          - email
+        description: Scopes requested when managing the GitLab OAuth app.
+
+      vault_gitlab_oauth_confidential:
+        type: bool
+        default: true
+        description: Mark the GitLab OAuth application as confidential.
+
+      vault_gitlab_oauth_require_redirect_match:
+        type: bool
+        default: true
+        description: Require exact redirect URI match on the GitLab OAuth app.
+
+      vault_gitlab_oauth_renew_secret_when_missing:
+        type: bool
+        default: true
+        description: Renew/store client secret when it is missing from Vault KV.
+
+      vault_gitlab_root_api_token_secret_path:
+        type: str
+        default: ""
+        description: Vault KV path to the GitLab admin API token for OAuth app management.
+
+      vault_gitlab_oidc_app_id_secret_kv_path:
+        type: str
+        default: ""
+        description: Vault KV path where the OAuth application ID is stored.
+
+      vault_gitlab_oidc_client_secret_kv_path:
+        type: str
+        default: ""
+        description: Vault KV path where the OAuth client secret is stored.
+
+      vault_gitlab_oidc_client_id:
+        type: str
+        default: ""
+        description: OIDC client ID (inventory/vaulted). Required when OIDC is enabled.
+
+      vault_gitlab_oidc_client_secret:
+        type: str
+        default: ""
+        description: OIDC client secret (inventory/vaulted). Required when OIDC is enabled.
+
+      vault_gitlab_oidc_role_name:
+        type: str
+        default: gitlab
+        description: Vault OIDC role name.
+
+      vault_gitlab_oidc_default_role:
+        type: str
+        default: "{{ vault_gitlab_oidc_role_name }}"
+        description: Default OIDC role on the auth mount.
+
+      vault_gitlab_oidc_user_claim:
+        type: str
+        default: sub
+        description: JWT claim used as the Vault username.
+
+      vault_gitlab_oidc_groups_claim:
+        type: str
+        default: groups_direct
+        description: JWT claim listing group memberships.
+
+      vault_gitlab_oidc_scopes:
+        type: list
+        elements: str
+        default:
+          - openid
+          - profile
+          - email
+        description: Scopes requested by the Vault OIDC role.
+
+      vault_gitlab_oidc_policies:
+        type: list
+        elements: str
+        default:
+          - ops-admin
+        description: Policies attached to successful OIDC logins.
+
+      vault_gitlab_oidc_bound_claims:
+        type: dict
+        default: {}
+        description: Bound claims map for the OIDC role (empty = no bound claims).
+
+      vault_gitlab_oidc_bound_claims_type:
+        type: str
+        default: string
+        description: Bound claims match type (Vault string|glob).
+
+      vault_gitlab_oidc_ttl:
+        type: str
+        default: 1h
+        description: Token TTL for OIDC logins.
+
+      vault_gitlab_oidc_max_ttl:
+        type: str
+        default: 8h
+        description: Max token TTL for OIDC logins.
+
+      vault_gitlab_oidc_allowed_redirect_uris:
+        type: list
+        elements: str
+        default:
+          - "https://{{ vault_domain }}/ui/vault/auth/{{ vault_gitlab_oidc_mount_path }}/oidc/callback"
+          - "https://{{ vault_domain }}:{{ vault_api_port }}/ui/vault/auth/{{ vault_gitlab_oidc_mount_path }}/oidc/callback"
+          - "http://localhost:8250/oidc/callback"
+        description: Allowed OIDC redirect URIs for UI and CLI callback flows.
+
+      vault_gitlab_oauth_redirect_uris:
+        type: list
+        elements: str
+        default: "{{ vault_gitlab_oidc_allowed_redirect_uris }}"
+        description: Redirect URIs written to the GitLab OAuth application.
+
+      # ── GitLab CI JWT ──────────────────────────────────────────────────
+      vault_gitlab_jwt_enabled:
+        type: bool
+        default: false
+        description: Enable GitLab CI JWT auth for pipeline Vault access.
+
+      vault_gitlab_jwt_force_reconfigure:
+        type: bool
+        default: false
+        description: Rewrite JWT auth config/roles even when already present.
+
+      vault_gitlab_jwt_roles:
+        type: list
+        elements: dict
         description: >-
-          Extra SAN entries (e.g. "DNS:vault.dev.example.com", "IP:10.0.20.55").
-          Node IPs and short hostnames are added automatically.
-        default: []
-      hashicorp_vault_domain:
-        type: str
-        description: When set, "<host>.<domain>" is added to cert SANs per node.
-        default: ""
-      hashicorp_vault_ui:
-        type: bool
-        description: Enable the Vault web UI.
-        default: true
-      hashicorp_vault_disable_mlock:
-        type: bool
-        description: Disable mlock (typical for containers).
-        default: true
-      hashicorp_vault_manage_firewall:
-        type: bool
-        description: Open the API + cluster ports via firewalld when present.
-        default: true
-      hashicorp_vault_backup_enabled:
-        type: bool
-        description: Install a systemd timer that takes scheduled Raft snapshots (leader-only).
-        default: true
-      hashicorp_vault_backup_dir:
-        type: str
-        description: Host path snapshots are written to (a local path or an NFS mountpoint).
-        default: "{{ hashicorp_vault_data_mount }}/backups"
-      hashicorp_vault_backup_schedule:
-        type: str
-        description: systemd OnCalendar expression for the backup timer.
-        default: "*-*-* 02:00:00"
-      hashicorp_vault_backup_retention_days:
-        type: int
-        description: Delete snapshots older than this many days.
-        default: 7
-      hashicorp_vault_backup_nfs_server:
-        type: str
-        description: NFS server for the backup target; set with _export to mount it at the backup dir.
-        default: ""
-      hashicorp_vault_backup_nfs_export:
-        type: str
-        description: NFS export path for the backup target.
-        default: ""
-      hashicorp_vault_backup_nfs_opts:
-        type: str
-        description: Mount options for the NFS backup share.
-        default: "rw,hard,nfsvers=4.1,_netdev,nofail"
-      hashicorp_vault_restore_snapshot:
-        type: str
-        description: >-
-          Snapshot to restore with --tags restore. "latest"/empty = newest
-          across all nodes; else an absolute .snap path (on the leader).
-        default: "latest"
-      hashicorp_vault_backup_policy_name:
-        type: str
-        description: Vault policy name for the scoped backup token (snapshot read-only).
-        default: "vault-backup"
-      hashicorp_vault_backup_token_period:
-        type: str
-        description: Period (TTL) of the periodic backup token; the script renews it each run.
-        default: "768h"
-      hashicorp_vault_backup_token_file:
-        type: str
-        description: Host path the scoped backup token is written to on each node.
-        default: "{{ hashicorp_vault_keys_dir }}/backup_token"
-      hashicorp_vault_backup_script_path:
-        type: str
-        description: Host path the backup script is installed to.
-        default: "/usr/local/bin/vault-container-backup.sh"
-      hashicorp_vault_tls_cn:
-        type: str
-        description: Common name on the self-signed server certificate.
-        default: "vault"
-      hashicorp_vault_tls_validity_days:
-        type: int
-        description: Validity (days) of the generated CA + server certificate.
-        default: 3650
-      hashicorp_vault_log_level:
-        type: str
-        description: Vault server log level.
-        default: "info"
-      hashicorp_vault_log_format:
-        type: str
-        description: Vault server log format (json/standard).
-        default: "json"
-      hashicorp_vault_telemetry_enabled:
-        type: bool
-        description: Emit the Prometheus telemetry stanza in vault.hcl.
-        default: true
+          JWT roles written under auth/jwt. Defaults cover gitlab-ci,
+          gitlab-ci-terraform, and per-env gitlab-ci-{mgt,dev,prod} with
+          bound claims and policies. Override in inventory to reshape CI access.

@@ -1,0 +1,47 @@
+---
+# tasks/configure.yml — Vault HCL config, TLS certificate issuance, and renewal timers
+
+# --- Vault HCL Configuration ---
+- name: Deploy Vault HCL configuration
+  tags: [config]
+  block:
+    - name: Deploy Vault HCL config
+      become: true  # root: writes /etc/vault.d/config.hcl
+      ansible.builtin.template:
+        src: vault.hcl.j2
+        dest: /etc/vault.d/config.hcl
+        owner: root
+        group: root
+        mode: "0644"
+
+# --- TLS Certificate Issuance + Auto-Renewal (delegated to certbot) ---
+# certbot installs certbot RPM (no Docker), fetches the Cloudflare API
+# token from Vault, issues the cert via DNS-01, mirrors the LE files to
+# /etc/vault.d/certs/ with vault:vault ownership, and installs a renewal
+# hook that fires `systemctl reload vault` (zero-downtime SIGHUP) on
+# every successful renewal. The daily cron handles ongoing renewals.
+#
+# Override per-cluster cert config in host_vars (vault_cert_domains,
+# vault_cert_email). Defaults in defaults/main.yml.
+- name: Provision Vault TLS cert + renewal
+  ansible.builtin.include_role:
+    name: certbot
+  vars:
+    certbot_domains: "{{ vault_cert_domains }}"
+    certbot_email: "{{ vault_cert_email }}"
+    certbot_deploy_hook: "systemctl reload vault"
+    certbot_cert_install:
+      - { src: fullchain, dest: /etc/vault.d/certs/vault.crt, owner: vault, group: vault, mode: "0644" }
+      - { src: privkey, dest: /etc/vault.d/certs/vault.key, owner: vault, group: vault, mode: "0600" }
+      - { src: chain, dest: /etc/vault.d/certs/ca.crt, owner: vault, group: vault, mode: "0644" }
+  tags: [config, tls]
+
+# Reload Vault once on initial cert issuance so the first apply picks
+# up the cert immediately (subsequent renewals are handled by the
+# deploy-hook script installed by certbot).
+- name: Reload Vault to pick up new certificate (zero-downtime SIGHUP)
+  become: true  # root: manages the vault systemd unit
+  ansible.builtin.systemd:
+    name: vault
+    state: reloaded
+  tags: [config, tls]

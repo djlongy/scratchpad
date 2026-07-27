@@ -1,0 +1,25 @@
+# svc-ci-deploy-gitlab-prod — GitLab CI deploy pipeline policy
+# WHO:     GitLab CI runner (via JWT/AppRole for deploy jobs only)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: deploy-scoped secrets only (registry tokens, deploy keys).
+#        Runtime creds are intentionally excluded — CI must not touch app secrets.
+
+# GitLab deploy secrets only (registry tokens, deploy keys, etc.)
+path "kv-prod/data/apps/gitlab/deploy/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/apps/gitlab/deploy/*" {
+  capabilities = ["read", "list"]
+}
+
+# Token self-management
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}

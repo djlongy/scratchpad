@@ -1,0 +1,25 @@
+# svc-cert-manager-prod — cert-manager on k3s-prod read policy
+# WHO:     cert-manager ServiceAccount (via K8s auth or AppRole)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only, scoped to its own runtime path on k3s-prod.
+#        Grants access to Cloudflare API token for DNS-01 ACME challenges.
+
+# cert-manager runtime secrets on k3s-prod cluster
+path "kv-prod/data/platform/k3s-prod/cert-manager/runtime/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/platform/k3s-prod/cert-manager/runtime/*" {
+  capabilities = ["read", "list"]
+}
+
+# Token self-management
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}

@@ -1,0 +1,26 @@
+# svc-ci-prod — GitLab CI policy scoped to PROD environment only
+# WHO:     GitLab CI JWT auth (runners tagged 'prod')
+# TTL:     30m token, max 2h
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only access to kv-prod secrets only. Tokens stolen from a
+# compromised PROD runner cannot read kv-mgmt or kv-dev secrets.
+
+# PROD KV mount — read-only
+path "kv-prod/data/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/*" {
+  capabilities = ["read", "list"]
+}
+
+# Child token creation (required by community.hashi_vault lookups and Terraform provider)
+path "auth/token/create" {
+  capabilities = ["update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

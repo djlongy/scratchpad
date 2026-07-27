@@ -1,40 +1,21 @@
 ---
-# Restart reloads the bind-mounted vault.hcl. Compose-file changes (image,
-# ports, volumes) are applied by `docker compose up -d` in deploy.yml.
-#
-# throttle: 1 makes this a ROLLING restart. Handlers flush for every notified
-# host at once, so without it a config change would restart all N Raft nodes
-# simultaneously — and because a restart SEALS Vault (auto-unseal is off by
-# default), the entire cluster would be sealed at the same instant, losing
-# quorum and the API until the unseal phase catches up. One node at a time keeps
-# the remaining nodes serving and preserves quorum on a 3+ node cluster.
-#
-# NOTE: a restarted node comes back SEALED unless hashicorp_vault_auto_unseal is
-# true. Follow a restart with `--tags unseal` (or enable auto-unseal) — throttle
-# bounds the blast radius, it does not remove the unseal step.
-#
-# Certificate renewals must NOT come through here: the certmonger post-save hook
-# SIGHUPs Vault instead, reloading the listener cert in place with no seal.
-- name: Restart vault container
-  become: true  # root: docker CLI needs the root-owned docker socket
-  ansible.builtin.command:
-    cmd: "docker compose restart"
-    chdir: "{{ hashicorp_vault_data_mount }}"
-  changed_when: true
-  throttle: 1
+# handlers/main.yml for hashicorp_vault role
 
 - name: Reload systemd
   become: true  # root: systemd daemon-reload
-  ansible.builtin.systemd_service:
+  ansible.builtin.systemd:
     daemon_reload: true
 
-# fapolicyd caches its trust db in memory, so a freshly trusted file is not
-# executable until the daemon picks it up. `--update` notifies the running
-# daemon to refresh the database in place; the unit reports CanReload=no and a
-# restart would briefly drop enforcement on a security-critical service, so
-# prefer the notify over `systemctl restart`.
-- name: Update the fapolicyd trust database
-  become: true  # root: notifies the fapolicyd daemon
-  ansible.builtin.command:
-    cmd: fapolicyd-cli --update
-  changed_when: true
+- name: Reload Vault
+  become: true  # root: manages the vault systemd unit
+  ansible.builtin.systemd:
+    name: vault
+    state: reloaded
+
+- name: Restart unseal-vault service
+  become: true  # root: manages the unseal-vault systemd unit
+  ansible.builtin.systemd:
+    name: unseal-vault.service
+    state: restarted
+    daemon_reload: true
+  failed_when: false # Don't fail if service hasn't run yet

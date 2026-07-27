@@ -1,0 +1,55 @@
+# svc-automation — Terraform and Ansible service account policy
+# WHO:     svc-terraform, svc-ansible (AppRole)
+# TTL:     svc-terraform: 8h/24h max | svc-ansible: 4h/12h max
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only KV + child token creation for ephemeral Terraform resources.
+
+# Read-only KV access — legacy kv mount
+path "kv/data/*" {
+  capabilities = ["read", "list"]
+}
+path "kv/metadata/*" {
+  capabilities = ["read", "list"]
+}
+
+# Read-only KV access — env-scoped mounts
+path "kv-mgmt/data/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-mgmt/metadata/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-prod/data/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-prod/metadata/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-dev/data/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-dev/metadata/*" {
+  capabilities = ["read", "list"]
+}
+
+path "sys/internal/ui/mounts/kv/*" {
+  capabilities = ["read"]
+}
+path "sys/internal/ui/mounts" {
+  capabilities = ["read"]
+}
+
+# Child token creation (required for ephemeral Terraform resources)
+path "auth/token/create" {
+  capabilities = ["create", "update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}

@@ -1,11 +1,11 @@
-{{ ansible_managed | comment }}
 [Unit]
-Description=hashicorp_vault_container — scheduled Raft snapshot backup
+Description=Vault Raft snapshot backup (4-hourly, RPO=4h)
 Documentation=https://developer.hashicorp.com/vault/docs/commands/operator/raft
 
 [Timer]
-OnCalendar={{ hashicorp_vault_backup_schedule }}
-# Catch up if the host was off at the scheduled time.
+# Run every 4 hours — snapshots complete in seconds, only leader runs
+OnCalendar=*-*-* 00/4:00:00
+# Run on next opportunity if system was off during scheduled time
 Persistent=true
 
 [Install]

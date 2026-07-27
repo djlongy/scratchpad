@@ -1,0 +1,34 @@
+# ops-platform-prod — Platform operations policy
+# WHO:     Platform operators (human or automation managing infra layer)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: full CRUD on kv-prod/platform/* (cluster configs, DNS, PKI, LB).
+#        Read-only on kv-prod/common/* (shared CA certs, LDAP bind).
+#        No access to kv-prod/apps/* — blast radius scoped to platform layer.
+
+# Platform subtree — full CRUD
+path "kv-prod/data/platform/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-prod/metadata/platform/*" {
+  capabilities = ["read", "list", "delete"]
+}
+
+# Common subtree — read-only (shared infra like CA certs)
+path "kv-prod/data/common/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/common/*" {
+  capabilities = ["read", "list"]
+}
+
+# Token self-management
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}

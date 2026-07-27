@@ -1,0 +1,289 @@
+---
+# tasks/cluster_init.yml - Vault initialisation, unseal, Raft join, and leader detection
+
+# --- Initialize Vault, Extract Keys, Save (Run Once on Leader) ---
+- name: Initialize Vault and Capture Keys (Run Once on Leader)
+  run_once: true
+  delegate_to: "{{ vault_leader_node }}"
+  block:
+    - name: Check if Vault is already initialized (file check)
+      become: true  # root: stats the root:vault 0700 keys dir
+      ansible.builtin.stat:
+        path: "{{ vault_host_data_dir }}/keys/vault_init.json"
+      register: vault_init_file_stat
+      tags: always
+
+    - name: Initialize Vault on leader node if needed
+      become: false  # API — vault CLI is an HTTPS API client, no host privilege
+      ansible.builtin.shell:
+        cmd: >
+          vault operator init -format=json -key-shares=1 -key-threshold=1
+          -address="https://{{ inventory_hostname }}:{{ vault_api_port }}" -tls-skip-verify
+        chdir: "{{ vault_config_dir | default('/etc/vault.d') }}"
+      register: vault_init_result
+      when: not vault_init_file_stat.stat.exists
+      changed_when: vault_init_result.rc == 0
+
+    - name: Set init facts if initialization occurred just now
+      ansible.builtin.set_fact:
+        vault_init_output: "{{ vault_init_result.stdout | from_json }}"
+        cacheable: true
+      when: vault_init_result.changed
+      no_log: true
+
+    - name: Slurp init facts from file if already initialized
+      become: true  # root: reads the root:vault init material
+      ansible.builtin.slurp:
+        src: "{{ vault_host_data_dir + '/keys/vault_init.json' }}"
+      register: vault_init_file
+      when: vault_init_file_stat.stat.exists
+      tags: always
+      no_log: true
+
+    - name: Set init facts from file if already initialized
+      ansible.builtin.set_fact:
+        vault_init_output: "{{ vault_init_file['content'] | b64decode | from_json }}"
+        cacheable: true
+      when: vault_init_file_stat.stat.exists
+      tags: always
+      no_log: true
+
+    - name: Extract and cache leader unseal key and root token
+      ansible.builtin.set_fact:
+        vault_unseal_key: "{{ vault_init_output.unseal_keys_b64[0] }}"
+        vault_root_token: "{{ vault_init_output.root_token }}"
+        cacheable: true
+      tags: always
+      no_log: true
+
+    - name: Save Vault initialization JSON on leader
+      become: true  # root: writes the root:vault init material to the keys dir
+      ansible.builtin.copy:
+        content: "{{ vault_init_result.stdout }}"
+        dest: "{{ vault_host_data_dir }}/keys/vault_init.json"
+        owner: root
+        group: vault
+        mode: "0600"
+      when: vault_init_result.changed
+      no_log: true
+
+    - name: Save unseal key to file on leader
+      become: true  # root: writes the root:vault unseal key to the keys dir
+      ansible.builtin.copy:
+        content: "{{ vault_unseal_key }}"
+        dest: "{{ vault_host_data_dir }}/keys/unseal_key.txt"
+        owner: root
+        group: vault
+        mode: "0400"
+      when: vault_init_result.changed
+      no_log: true
+
+    - name: Save root token to file on leader
+      become: true  # root: writes the root:vault root token to the keys dir
+      ansible.builtin.copy:
+        content: "{{ vault_root_token }}"
+        dest: "{{ vault_host_data_dir }}/keys/root_token.txt"
+        owner: root
+        group: vault
+        mode: "0400"
+      when: vault_init_result.changed
+      no_log: true
+
+# --- Distribute unseal key to all nodes (required for auto-unseal) ---
+- name: Distribute unseal key to all Vault nodes
+  become: true  # root: writes the root:vault unseal key to each node's keys dir
+  ansible.builtin.copy:
+    content: "{{ hostvars[vault_leader_node].vault_unseal_key }}"
+    dest: "{{ vault_host_data_dir }}/keys/unseal_key.txt"
+    owner: root
+    group: vault
+    mode: "0400"
+  when: inventory_hostname != vault_leader_node
+  no_log: true
+  tags: [cluster_init]
+
+# --- Unseal Leader Node ---
+- name: Unseal Leader Node
+  become: false  # API — vault CLI is an HTTPS API client, no host privilege
+  when: inventory_hostname == vault_leader_node
+  ansible.builtin.shell:
+    cmd: >
+      vault operator unseal -address="https://{{ inventory_hostname }}:{{ vault_api_port }}" -tls-skip-verify
+      {{ vault_unseal_key }}
+  register: _unseal_leader
+  until: >
+    _unseal_leader.stdout is search('Sealed\s+false') or
+    _unseal_leader.stderr is search('Vault is already unsealed')
+  retries: 5
+  delay: 3
+  changed_when: "'Sealed                  false' in _unseal_leader.stdout"
+  no_log: true
+
+# --- Join Followers (initial) ---
+- name: Join followers to Raft cluster
+  become: false  # API — vault CLI is an HTTPS API client, no host privilege
+  ansible.builtin.shell:
+    cmd: >
+      vault operator raft join -address="https://{{ vault_leader_node }}:{{ vault_api_port }}" -tls-skip-verify
+  register: _join
+  retries: 10
+  delay: 10
+  when: inventory_hostname != vault_leader_node
+  failed_when:
+    - "_join.rc != 0"
+    - "'node is already a peer' not in _join.stderr"
+    - "'node is already voter' not in _join.stderr"
+    - "'Error joining cluster: Post' not in _join.stderr"
+    - "'connection refused' not in _join.stderr"
+  changed_when: "'Success! node joined the cluster' in _join.stdout"
+
+- name: Pause after join attempts
+  ansible.builtin.pause:
+    seconds: 4
+  when: inventory_hostname != vault_leader_node
+
+# --- Unseal All Nodes ---
+- name: Unseal All Vault Nodes
+  become: false  # API — vault CLI is an HTTPS API client, no host privilege
+  ansible.builtin.shell:
+    cmd: >
+      vault operator unseal -address="https://{{ inventory_hostname }}:{{ vault_api_port }}" -tls-skip-verify
+      {{ hostvars[vault_leader_node].vault_unseal_key }}
+  register: _unseal_node
+  until: >
+    _unseal_node.stdout is search('Sealed\s+false') or
+    _unseal_node.stderr is search('Vault is already unsealed')
+  retries: 10
+  delay: 3
+  changed_when: "_unseal_node.stdout is search('Sealed\\s+false')"
+  failed_when:
+    - "_unseal_node.stdout is not search('Sealed\\s+false')"
+    - "_unseal_node.stderr is not search('Vault is already unsealed')"
+  tags: always
+  no_log: true
+
+# --- Join Followers (post-unseal) ---
+- name: Join followers to Raft cluster (post-unseal)
+  become: false  # API — vault CLI is an HTTPS API client, no host privilege
+  when: inventory_hostname != vault_leader_node
+  ansible.builtin.shell:
+    cmd: >
+      vault operator raft join -address="https://{{ vault_leader_node }}:{{ vault_api_port }}" -tls-skip-verify
+  register: _join
+  retries: 5
+  delay: 5
+  failed_when:
+    - "_join.rc != 0"
+    - "'node is already a peer' not in _join.stderr"
+    - "'node is already voter' not in _join.stderr"
+    - "'Error joining cluster: Post' not in _join.stderr"
+  changed_when: "'Success! node joined the cluster' in _join.stdout"
+
+# --- Dynamically Detect Actual Raft Leader (Post-Unseal) ---
+- name: Query Raft peer set from discovery node (retry until Vault responds)
+  become: false  # API — vault CLI is an HTTPS API client, no host privilege
+  ansible.builtin.command:
+    cmd: >
+      vault operator raft list-peers -format=json
+      -address="https://{{ groups['vault'][0] }}:{{ vault_api_port }}"
+      -tls-skip-verify
+  run_once: true
+  delegate_to: "{{ groups['vault'][0] }}"
+  changed_when: false
+  failed_when: false
+  register: raft_peers_query
+  retries: 15
+  delay: 3
+  until: raft_peers_query.rc == 0 and raft_peers_query.stdout != ''
+
+- name: Extract leader from Raft peers data
+  ansible.builtin.set_fact:
+    raft_leader_node_id: "{{ (raft_peers_query.stdout | from_json).data.config.servers | selectattr('leader', 'equalto', true) | map(attribute='node_id') | first
+      | default('') }}"
+  when: raft_peers_query.rc == 0 and raft_peers_query.stdout != ''
+  delegate_facts: true
+  run_once: true
+
+- name: Gather all detected leaders across nodes
+  ansible.builtin.set_fact:
+    detected_raft_leader: "{{ ansible_play_hosts | map('extract', hostvars) | selectattr('raft_leader_node_id', 'defined') | selectattr('raft_leader_node_id', '!=',
+      '') | map(attribute='raft_leader_node_id') | first | default(groups['vault'][0]) }}"
+  run_once: true
+  delegate_to: localhost
+  delegate_facts: true
+
+- name: Verify at least one node successfully queried Raft peers
+  ansible.builtin.assert:
+    that:
+      - hostvars['localhost'].detected_raft_leader is defined
+      - hostvars['localhost'].detected_raft_leader != ''
+    fail_msg: |
+      Failed to detect Raft leader - no nodes successfully returned peer information.
+      This may indicate the cluster is not yet ready or there's a configuration issue.
+      Check Vault logs and cluster status.
+    success_msg: "Successfully detected Raft leader: {{ hostvars['localhost'].detected_raft_leader }}"
+  run_once: true
+
+- name: Update vault_leader_node to actual Raft leader
+  ansible.builtin.set_fact:
+    vault_leader_node: "{{ hostvars['localhost'].detected_raft_leader }}"
+
+- name: Display detected Raft leader details
+  ansible.builtin.debug:
+    msg: |
+      ===== Raft Leader Detection Results =====
+      Detected Leader: {{ vault_leader_node }}
+
+      Query Results by Node:
+      {% for host in ansible_play_hosts %}
+      - {{ host }}: {{ 'SUCCESS (rc={{ hostvars[host].raft_peers_query.rc }}, attempts={{ hostvars[host].raft_peers_query.attempts }})' if hostvars[host].raft_peers_query.rc == 0 else 'FAILED after ' ~ hostvars[host].raft_peers_query.attempts ~ ' attempts (expected for non-leader nodes)' }}
+      {% endfor %}
+      ==========================================
+  run_once: true
+
+# --- Leader Verification ---
+- name: Verify Raft peers (run from leader)
+  when: inventory_hostname == vault_leader_node
+  block:
+    - name: Login to Vault leader before checking peers
+      become: false  # API — vault CLI is an HTTPS API client, no host privilege
+      ansible.builtin.shell:
+        cmd: >
+          vault login -address="https://{{ inventory_hostname }}:{{ vault_api_port }}" -tls-skip-verify
+          {{ hostvars[vault_leader_node].vault_root_token }}
+      register: _login_leader
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: List Raft peers
+      become: false  # API — vault CLI is an HTTPS API client, no host privilege
+      ansible.builtin.shell:
+        cmd: >
+          vault operator raft list-peers -format=json
+          -address="https://{{ inventory_hostname }}:{{ vault_api_port }}" -tls-skip-verify
+      register: raft_peers
+      changed_when: false
+      failed_when: false
+
+    - name: Display Raft peers
+      ansible.builtin.debug:
+        msg: |
+          Login status: {{ 'Success' if _login_leader.rc == 0 else 'Failed (' ~ _login_leader.rc ~ ')' }}
+          Raft peers list status: {{ 'Success' if raft_peers.rc == 0 else 'Failed (' ~ raft_peers.rc ~ ')' }}
+          {% if raft_peers.rc == 0 %}
+          Raft Peers:
+          {{ raft_peers.stdout | from_json | to_nice_json }}
+          {% else %}
+          Error listing peers: {{ raft_peers.stderr | default('Unknown error') }}
+          {% endif %}
+
+    - name: Warn if verification failed
+      ansible.builtin.debug:
+        msg: "WARNING: Vault verification failed. Check that Vault is properly initialized and unsealed."
+      when: _login_leader.rc != 0 or raft_peers.rc != 0
+
+- name: Display Leader Node
+  ansible.builtin.debug:
+    msg: "I am the leader {{ inventory_hostname }}"
+  when: raft_leader_node_id is defined and inventory_hostname == raft_leader_node_id

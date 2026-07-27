@@ -1,0 +1,27 @@
+# svc-rundeck-prod — Rundeck prod-project AppRole
+# WHO:     svc-rundeck-prod (AppRole)
+# WHERE:   prod Rundeck project
+# TTL:     8h / 24h max
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only KV access to kv-prod/* only. Write narrow on
+# kv-prod/apps/+/runtime. NO access to kv-mgmt or kv-dev. Env isolation
+# enforced at the Vault policy layer.
+
+# Read-only KV access — prod mount only
+path "kv-prod/data/*"        { capabilities = ["read", "list"] }
+path "kv-prod/metadata/*"    { capabilities = ["read", "list"] }
+
+# Write on prod apps/*/runtime — for token caches, refreshable creds, etc.
+path "kv-prod/data/apps/+/runtime"    { capabilities = ["create", "update", "patch", "read"] }
+
+# Token self-management
+path "auth/token/create" {
+  capabilities = ["create", "update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

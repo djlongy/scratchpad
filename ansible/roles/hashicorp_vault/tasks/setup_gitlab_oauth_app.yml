@@ -1,0 +1,175 @@
+---
+- name: Ensure GitLab OAuth app for Vault OIDC exists
+  delegate_to: localhost
+  run_once: true
+  become: false
+  block:
+    - name: Read GitLab root API token from HashiVault
+      ansible.builtin.set_fact:
+        vault_gitlab_root_api_token: >-
+          {{
+            lookup(
+              'community.hashi_vault.hashi_vault',
+              'secret=' + vault_gitlab_root_api_token_secret_path + ':root_api_token url=' + vault_addr,
+              errors='ignore'
+            ) | default('', true)
+          }}
+      no_log: true
+
+    - name: Assert GitLab API token is available
+      ansible.builtin.assert:
+        that:
+          - vault_gitlab_root_api_token | length > 0
+        fail_msg: >-
+          Missing GitLab admin API token in HashiVault at {{ vault_gitlab_root_api_token_secret_path }}.
+
+    - name: List instance OAuth applications in GitLab
+      ansible.builtin.uri:
+        url: "{{ vault_gitlab_base_url }}/api/v4/applications"
+        method: GET
+        headers:
+          PRIVATE-TOKEN: "{{ vault_gitlab_root_api_token }}"
+        status_code: 200
+        return_content: true
+      register: gitlab_oauth_apps
+      no_log: true
+
+    - name: Select matching GitLab OAuth application
+      ansible.builtin.set_fact:
+        vault_gitlab_oauth_existing_app: >-
+          {{
+            (
+              gitlab_oauth_apps.json
+              | selectattr('application_name', 'equalto', vault_gitlab_oauth_app_name)
+              | list
+              | first
+            ) | default({})
+          }}
+      no_log: true
+
+    - name: Build redirect URI payload for GitLab OAuth app
+      ansible.builtin.set_fact:
+        vault_gitlab_oauth_redirect_uri_payload: "{{ vault_gitlab_oauth_redirect_uris | join('\n') }}"
+
+    - name: Create GitLab OAuth application for Vault
+      ansible.builtin.uri:
+        url: "{{ vault_gitlab_base_url }}/api/v4/applications"
+        method: POST
+        headers:
+          PRIVATE-TOKEN: "{{ vault_gitlab_root_api_token }}"
+        body_format: form-urlencoded
+        body:
+          name: "{{ vault_gitlab_oauth_app_name }}"
+          redirect_uri: "{{ vault_gitlab_oauth_redirect_uri_payload }}"
+          scopes: "{{ vault_gitlab_oauth_scopes | join(' ') }}"
+          confidential: "{{ 'true' if vault_gitlab_oauth_confidential else 'false' }}"
+        status_code: 200
+        return_content: true
+      register: vault_gitlab_oauth_create
+      no_log: true
+      when: vault_gitlab_oauth_existing_app == {}
+
+    - name: Parse existing GitLab app callback URIs
+      ansible.builtin.set_fact:
+        vault_gitlab_oauth_existing_redirect_uris: >-
+          {{
+            vault_gitlab_oauth_existing_app.callback_url
+            | default('')
+            | regex_replace('[\r\n]+', ' ')
+            | split(' ')
+            | reject('equalto', '')
+            | list
+          }}
+      when: vault_gitlab_oauth_existing_app != {}
+
+    - name: Assert existing GitLab app has expected redirect URIs
+      ansible.builtin.assert:
+        that:
+          - vault_gitlab_oauth_redirect_uris | difference(vault_gitlab_oauth_existing_redirect_uris) | length == 0
+        fail_msg: >-
+          Existing GitLab app '{{ vault_gitlab_oauth_app_name }}' is missing required redirect URI(s):
+          {{ vault_gitlab_oauth_redirect_uris | difference(vault_gitlab_oauth_existing_redirect_uris) | join(', ') }}.
+          Update the GitLab app or delete it and rerun this playbook.
+      when:
+        - vault_gitlab_oauth_existing_app != {}
+        - vault_gitlab_oauth_require_redirect_match | bool
+
+    - name: Resolve OAuth client_id and client_secret
+      ansible.builtin.set_fact:
+        vault_gitlab_oidc_client_id_resolved: >-
+          {{
+            (
+              vault_gitlab_oauth_create.json.application_id
+              if (vault_gitlab_oauth_create is defined and vault_gitlab_oauth_create.json is defined)
+              else vault_gitlab_oauth_existing_app.application_id
+            )
+          }}
+        vault_gitlab_oidc_client_secret_resolved: >-
+          {{
+            (
+              vault_gitlab_oauth_create.json.secret
+              if (vault_gitlab_oauth_create is defined and vault_gitlab_oauth_create.json is defined)
+              else lookup(
+                'community.hashi_vault.hashi_vault',
+                'secret=kv/data/' + vault_gitlab_oidc_client_secret_kv_path + ':oidc_secret url=' + vault_addr,
+                errors='ignore'
+              ) | default('', true)
+            )
+          }}
+      no_log: true
+
+    - name: Renew GitLab app secret when missing from HashiVault
+      ansible.builtin.uri:
+        url: "{{ vault_gitlab_base_url }}/api/v4/applications/{{ vault_gitlab_oauth_existing_app.id }}/renew-secret"
+        method: POST
+        headers:
+          PRIVATE-TOKEN: "{{ vault_gitlab_root_api_token }}"
+        status_code: 200
+        return_content: true
+      register: vault_gitlab_oauth_renew_secret
+      no_log: true
+      when:
+        - vault_gitlab_oauth_existing_app != {}
+        - vault_gitlab_oidc_client_secret_resolved | length == 0
+        - vault_gitlab_oauth_renew_secret_when_missing | bool
+
+    - name: Set renewed client secret fact
+      ansible.builtin.set_fact:
+        vault_gitlab_oidc_client_secret_resolved: "{{ vault_gitlab_oauth_renew_secret.json.secret }}"
+      no_log: true
+      when:
+        - vault_gitlab_oauth_renew_secret is defined
+        - vault_gitlab_oauth_renew_secret.json is defined
+        - vault_gitlab_oauth_renew_secret.json.secret is defined
+
+    - name: Assert OAuth client credentials are resolved
+      ansible.builtin.assert:
+        that:
+          - vault_gitlab_oidc_client_id_resolved | length > 0
+          - vault_gitlab_oidc_client_secret_resolved | length > 0
+        fail_msg: >-
+          Could not resolve GitLab OAuth client credentials for '{{ vault_gitlab_oauth_app_name }}'.
+
+    - name: Persist Vault OIDC client_id in HashiVault
+      ansible.builtin.shell: >
+        vault kv patch -mount=kv {{ vault_gitlab_oidc_app_id_secret_kv_path }}
+        oidc_app_id="{{ vault_gitlab_oidc_client_id_resolved }}"
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
+      no_log: true
+
+    - name: Persist Vault OIDC client_secret in HashiVault
+      ansible.builtin.shell: >
+        vault kv patch -mount=kv {{ vault_gitlab_oidc_client_secret_kv_path }}
+        oidc_secret="{{ vault_gitlab_oidc_client_secret_resolved }}"
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
+      no_log: true
+
+    - name: Set OIDC client facts for downstream Vault config
+      ansible.builtin.set_fact:
+        vault_gitlab_oidc_client_id: "{{ vault_gitlab_oidc_client_id_resolved }}"
+        vault_gitlab_oidc_client_secret: "{{ vault_gitlab_oidc_client_secret_resolved }}"
+      no_log: true

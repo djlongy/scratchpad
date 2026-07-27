@@ -1,0 +1,29 @@
+# svc-terraform-ci — GitLab CI Terraform pipeline policy
+# WHO:     GitLab CI AppRole (used in .gitlab-ci.yml Terraform jobs)
+# TTL:     1h token, max 4h
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: minimum viable reads for Terraform workspace secrets only.
+# To add a new CI secret: add the specific path here and re-run hashicorp_vault --tags policies.
+
+# Scoped reads — only secrets consumed by Terraform workspaces
+path "kv-mgmt/data/platform/cloudflare/runtime" {
+  capabilities = ["read"]
+}
+path "kv-mgmt/data/platform/vsphere/terraform-svc/runtime" {
+  capabilities = ["read"]
+}
+path "kv-mgmt/data/apps/gitlab/runtime" {
+  capabilities = ["read"]
+}
+
+# Child token creation (required by Vault Terraform provider)
+path "auth/token/create" {
+  capabilities = ["update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

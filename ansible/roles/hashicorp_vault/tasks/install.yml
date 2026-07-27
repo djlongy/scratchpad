@@ -1,0 +1,285 @@
+---
+# tasks/install.yml — Firewall, packages, Docker, Vault RPM, directories, and systemd service
+
+- name: Validate Vault install method
+  ansible.builtin.assert:
+    that:
+      - vault_install_method in ['package', 'container']
+    fail_msg: "vault_install_method must be 'package' or 'container'"
+  tags: [install]
+
+# --- Firewall ---
+- name: Open firewall ports for Vault
+  become: true  # root: firewalld service + rules
+  tags: [install, firewall]
+  block:
+    - name: Ensure firewalld is running and enabled
+      ansible.builtin.service:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Open Vault ports in firewalld
+      ansible.posix.firewalld:
+        port: "{{ list_item }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+        zone: public
+      loop:
+        - "{{ vault_api_port }}"
+        - "{{ vault_cluster_port }}"
+      loop_control:
+        loop_var: list_item
+        label: "{{ list_item }}"
+      register: vault_ports
+
+    - name: Reload firewalld only if ports changed # noqa: no-handler
+      ansible.builtin.command: firewall-cmd --reload
+      when: vault_ports.changed
+      changed_when: false
+
+# --- Packages and Docker ---
+- name: Install prerequisites and Docker
+  become: true  # root: package/pip install, docker service, vault user/group
+  tags: [install]
+  block:
+    - name: Ensure python3-pip is installed
+      ansible.builtin.dnf:
+        name:
+          - python3-pip
+          - unzip
+        state: present
+
+    - name: Ensure pip packages (cryptography, docker, docker-compose) are installed
+      ansible.builtin.pip:
+        name:
+          - "cryptography>=1.2.3"
+          - "docker>=5.0.0"
+          - docker-compose
+        executable: pip3
+
+    - name: Install supporting RPM packages
+      ansible.builtin.dnf:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+        state: present
+
+    - name: Add Docker CE repository
+      ansible.builtin.yum_repository:
+        name: docker-ce
+        description: Docker CE Stable
+        baseurl: "https://download.docker.com/linux/centos/$releasever/$basearch/stable"
+        gpgcheck: true
+        gpgkey: "https://download.docker.com/linux/centos/gpg"
+        enabled: true
+
+    - name: Install Docker CE
+      ansible.builtin.dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: Enable and start Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ensure vault group exists
+      ansible.builtin.group:
+        name: vault
+        system: true
+        state: present
+
+    - name: Ensure vault user exists
+      ansible.builtin.user:
+        name: vault
+        group: vault
+        system: true
+        shell: /sbin/nologin
+        home: "{{ vault_host_data_dir }}"
+        create_home: false
+
+# Vault user no longer needs docker group — certbot is now an RPM
+# managed by certbot (see tasks/configure.yml).
+
+# --- Vault RPM ---
+- name: Install Vault from HashiCorp repository
+  tags: [install]
+  when: vault_install_method == 'package'
+  block:
+    - name: Add HashiCorp Yum repository
+      become: true  # root: writes a yum repo definition
+      ansible.builtin.yum_repository:
+        name: hashicorp
+        description: "HashiCorp Stable - $basearch"
+        baseurl: "https://rpm.releases.hashicorp.com/RHEL/$releasever/$basearch/stable"
+        gpgcheck: true
+        gpgkey: "https://rpm.releases.hashicorp.com/gpg"
+        enabled: true
+
+    - name: Get installed Vault version # noqa: command-instead-of-module
+      ansible.builtin.command: rpm -q --qf "%{VERSION}" vault
+      register: _vault_rpm_version
+      changed_when: false
+      failed_when: false
+
+    - name: Install or upgrade Vault to {{ vault_version }}
+      become: true  # root: package install
+      ansible.builtin.dnf:
+        name: "vault-{{ vault_version }}"
+        state: present
+        allow_downgrade: true
+      when: _vault_rpm_version.rc != 0 or _vault_rpm_version.stdout != vault_version
+
+    - name: Ensure libcap is installed (provides setcap)
+      become: true  # root: package install
+      ansible.builtin.dnf:
+        name: libcap
+        state: present
+
+    - name: Grant cap_net_bind_service to /usr/bin/vault
+      become: true  # root: setcap sets file capabilities on the vault binary
+      ansible.builtin.command: setcap cap_net_bind_service=+ep /usr/bin/vault
+      register: _setcap_result
+      changed_when: _setcap_result.rc == 0
+      failed_when: _setcap_result.rc != 0
+
+# --- Vault container image and CLI ---
+- name: Prepare Vault container install
+  tags: [install]
+  when: vault_install_method == 'container'
+  block:
+    - name: Check installed Vault CLI version
+      ansible.builtin.command: /usr/local/bin/vault version
+      register: _vault_cli_version
+      changed_when: false
+      failed_when: false
+
+    - name: Create Vault CLI version directory
+      become: true  # root: creates a root-owned dir under the CLI install dir
+      ansible.builtin.file:
+        path: "{{ vault_cli_install_dir }}/{{ vault_version }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download and extract Vault CLI binary
+      become: true  # root: extracts into a root-owned install dir
+      ansible.builtin.unarchive:
+        src: "{{ vault_cli_zip_url }}"
+        dest: "{{ vault_cli_install_dir }}/{{ vault_version }}"
+        remote_src: true
+        creates: "{{ vault_cli_install_dir }}/{{ vault_version }}/vault"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install Vault CLI binary
+      become: true  # root: installs the binary into /usr/local/bin
+      ansible.builtin.copy:
+        src: "{{ vault_cli_install_dir }}/{{ vault_version }}/vault"
+        dest: /usr/local/bin/vault
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: _vault_cli_version.rc != 0 or ('Vault v' ~ vault_version) not in _vault_cli_version.stdout
+
+    - name: Pull Vault container image
+      become: true  # root: docker CLI needs the root-owned docker socket
+      ansible.builtin.command: "docker pull {{ vault_docker_image }}"
+      register: _vault_container_pull
+      changed_when: false
+
+    - name: Get vault user uid
+      ansible.builtin.command: id -u vault
+      register: _vault_user_uid
+      changed_when: false
+
+    - name: Get vault group gid
+      ansible.builtin.command: getent group vault
+      register: _vault_group_entry
+      changed_when: false
+
+    - name: Set Vault container user mapping
+      ansible.builtin.set_fact:
+        vault_container_user: "{{ _vault_user_uid.stdout }}:{{ _vault_group_entry.stdout.split(':')[2] }}"
+
+# --- Directories ---
+- name: Create Vault directories
+  become: true  # root: creates root/vault-owned dirs under /etc, /var, data dir
+  tags: [install, config]
+  block:
+    - name: Create Vault config directory
+      ansible.builtin.file:
+        path: /etc/vault.d
+        state: directory
+        mode: "0755"
+
+    - name: Remove default RPM vault.hcl (conflicts with our config.hcl)
+      ansible.builtin.file:
+        path: /etc/vault.d/vault.hcl
+        state: absent
+
+    - name: Create Vault log file
+      ansible.builtin.file:
+        path: "/var/log/vault.log"
+        state: touch
+        mode: "0755"
+        owner: vault
+        group: vault
+
+    - name: Create Vault data directory
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}"
+        state: directory
+        mode: "0755"
+        owner: vault
+        group: vault
+
+    - name: Create directory for storing Vault keys and tokens
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}/keys"
+        state: directory
+        mode: "0700"
+        owner: root
+        group: vault
+
+# --- Systemd service ---
+- name: Configure Vault systemd service and start
+  tags: [install, service]
+  block:
+    - name: Deploy Vault systemd service unit
+      become: true  # root: writes /etc/systemd/system
+      ansible.builtin.template:
+        src: vault.service.j2
+        dest: /etc/systemd/system/vault.service
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Reload systemd daemon
+      become: true  # root: systemd daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Enable and start Vault service
+      become: true  # root: manages the vault systemd unit
+      ansible.builtin.systemd:
+        name: vault
+        state: restarted
+        enabled: true
+
+    - name: Wait for Vault API (HTTPS) to come up
+      ansible.builtin.wait_for:
+        host: "127.0.0.1"
+        port: "{{ vault_api_port }}"
+        delay: 5
+        timeout: 120

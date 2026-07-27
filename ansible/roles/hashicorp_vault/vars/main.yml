@@ -1,16 +1,196 @@
 ---
-# hashicorp_vault_container — non-overridable constants.
+# roles/vault/vars/main.yml
+# Vault HA cluster node definitions and common settings
+# Vault version to install (RPM from HashiCorp repo)
+vault_version: "1.19.3"
 
-base_task_name: "hashicorp_vault_container"
+# Backup settings
+vault_backup_dir: "/opt/backups/vault"
+vault_backup_script_path: "/usr/local/bin/vault-backup.sh"
+vault_backup_retention_days: 7
 
-# Fixed in-container paths (the official hashicorp/vault image layout).
-hashicorp_vault_container_config_dir: "/vault/config"
-hashicorp_vault_container_data_dir: "/vault/data"
-hashicorp_vault_container_certs_dir: "/vault/certs"
-hashicorp_vault_container_logs_dir: "/vault/logs"
+# Host path (mounted at /opt) for persistent Vault data
+vault_host_data_dir: "/opt/vault"
+vault_config_dir: "/opt/vault/keys"
+vault_keys_dir: "{{ vault_host_data_dir }}/keys"
 
-# uid:gid of the `vault` user inside the official image. The container runs
-# AS this user (see docker-compose template) so bind-mount permissions on
-# the host data directory line up.
-hashicorp_vault_uid: "100"
-hashicorp_vault_gid: "1000"
+# Vault API port (client requests & UI)
+vault_api_port: 8200
+
+# Vault cluster port (Raft communication)
+vault_cluster_port: 8201
+
+# Note: vault_leader_node is dynamically detected at runtime by querying the Raft cluster
+# It will fall back to groups['vault'][0] for initial setup when no leader exists
+vault_secrets_base_path: secret
+vault_secrets_prefix: "^vault_"
+automation_policy_name: "svc-automation"
+vault_credentials_output_dir: "{{ role_path }}/../../vault-credentials"
+
+# ops-superadmin break-glass username (password in ansible-vault encrypted group_vars/vault.yml)
+vault_superadmin_username: "svc-superadmin"
+
+# ACL policies — each name must have a matching template in templates/policies/<name>.hcl.j2
+# Add new policies here and create the corresponding template to scale out.
+# See docs/final/vault-iam.md for the full permission register.
+vault_policies:
+  - name: ops-superadmin
+    description: "Break-glass near-root — fix auth/policy/permission/path issues only. 1h non-renewable TTL."
+  - name: ops-admin
+    description: "Human operators — full KV CRUD + K8s/ESO auth management. 24h TTL."
+  - name: ops-personal-admin
+    description: "long's personal mount — full CRUD on kv-personal data + metadata (provenance stamps). Attached via vault-personal-admin identity group."
+  - name: svc-automation
+    description: "Terraform/Ansible AppRole — read-only KV + child token creation. 8h/4h TTL."
+  - name: svc-eso-prod
+    description: "ExternalSecrets Operator (prod) — read kv-prod via Kubernetes auth. 1h renewable TTL."
+  - name: svc-eso-dev
+    description: "ExternalSecrets Operator (dev) — read kv-dev via Kubernetes auth. 1h renewable TTL."
+  - name: svc-ansible-ci
+    description: "GitLab CI Ansible deploy — read-only all KV secrets + child token creation. 1h TTL."
+  - name: svc-terraform-ci
+    description: "GitLab CI Terraform — scoped reads for cloudflare/vsphere/gitlab secrets. 1h TTL."
+  - name: svc-rundeck
+    description: "Rundeck orchestrator (LEGACY cross-env) — superseded by svc-rundeck-{mgt,dev,prod}. Keep until E2E migration complete."
+  - name: svc-rundeck-mgt
+    description: "Rundeck mgt-project AppRole — read kv-mgmt only + write kv-mgmt/apps/+/runtime. Env-scoped. 8h TTL."
+  - name: svc-rundeck-dev
+    description: "Rundeck dev-project AppRole — read kv-dev only + write kv-dev/apps/+/runtime. Env-scoped. 8h TTL."
+  - name: svc-rundeck-prod
+    description: "Rundeck prod-project AppRole — read kv-prod only + write kv-prod/apps/+/runtime. Env-scoped. 8h TTL."
+  - name: svc-rundeck-keystore
+    description: "Rundeck Key Storage backend — full CRUD on kv-mgmt/rundeck-keystore/* via the HashiCorp Vault Storage Backend plugin. 8h TTL."
+  # Per-workload granular policies (scalable KV structure — kv-prod/kv-dev)
+  - name: ops-platform-prod
+    description: "Platform ops — full CRUD on kv-prod/platform/*, read-only kv-prod/common/*. No app access."
+  - name: svc-gitlab-prod
+    description: "GitLab app — read kv-prod/apps/gitlab/runtime/* and integrations/*. No deploy/ access."
+  - name: svc-cert-manager-prod
+    description: "cert-manager on k3s-prod — read-only kv-prod/platform/k3s-prod/cert-manager/runtime/*."
+  - name: svc-ci-deploy-gitlab-prod
+    description: "GitLab CI runner — read kv-prod/apps/gitlab/deploy/* only. Runtime creds excluded."
+  - name: svc-ci-mgt
+    description: "GitLab CI (MGT runners) — read-only kv-mgmt + child token creation. 30m TTL."
+  - name: svc-ci-dev
+    description: "GitLab CI (DEV runners) — read-only kv-dev + child token creation. 30m TTL."
+  - name: svc-ci-prod
+    description: "GitLab CI (PROD runners) — read-only kv-prod + child token creation. 30m TTL."
+  - name: svc-cosign-sign
+    description: "CI image signing — Transit sign/verify + read cosign public key. Bound to CI auth."
+  - name: svc-jenkins
+    description: "Jenkins CD platform — metadata read across all KV mounts for secret-rotation audit + self-token mgmt. Data reads granted per-path as needed."
+
+# Service accounts for automation (AppRole)
+automation_service_accounts:
+  - username: "svc-terraform"
+    purpose: "terraform-infrastructure"
+    policies: ["svc-automation"]
+    token_ttl: "16h"
+    token_max_ttl: "48h"
+    secret_id_ttl: "7776000" # 90 days
+  - username: "svc-ansible"
+    purpose: "ansible-configuration"
+    policies: ["svc-automation"]
+    token_ttl: "8h"
+    token_max_ttl: "24h"
+    secret_id_ttl: "7776000" # 90 days
+  - username: "svc-agent"
+    purpose: "automation-agent-login-helper"
+    policies: ["ops-admin"]
+    token_ttl: "12h"
+    token_max_ttl: "168h"
+    secret_id_ttl: "0" # non-expiring — see comment above
+  - username: "svc-rundeck"
+    purpose: "rundeck-orchestrator-legacy"
+    policies: ["svc-rundeck"]
+    token_ttl: "8h"
+    token_max_ttl: "24h"
+    secret_id_ttl: "7776000" # 90 days
+  # Per-project Rundeck AppRoles — each scoped to one env's KV mount.
+  # Mounted into the Rundeck container at /home/rundeck/.ssh/vault-<env>-role-id
+  # and selected by run-ansible-job.sh based on the job's project name.
+  - username: "svc-rundeck-mgt"
+    purpose: "rundeck-mgt-project"
+    policies: ["svc-rundeck-mgt"]
+    token_ttl: "8h"
+    token_max_ttl: "24h"
+    secret_id_ttl: "7776000" # 90 days
+  - username: "svc-rundeck-dev"
+    purpose: "rundeck-dev-project"
+    policies: ["svc-rundeck-dev"]
+    token_ttl: "8h"
+    token_max_ttl: "24h"
+    secret_id_ttl: "7776000" # 90 days
+  - username: "svc-rundeck-prod"
+    purpose: "rundeck-prod-project"
+    policies: ["svc-rundeck-prod"]
+    token_ttl: "8h"
+    token_max_ttl: "24h"
+    secret_id_ttl: "7776000" # 90 days
+  # Rundeck Key Storage backend — separate AppRole because its secret_id
+  # is long-lived (1 year), unlike the per-env Rundeck AppRoles which
+  # rotate on every deploy. Rotating this one requires a Rundeck restart
+  # since the plugin reads role_id/secret_id from rundeck-config at startup.
+  - username: "svc-rundeck-keystore"
+    purpose: "rundeck-key-storage-backend"
+    policies: ["svc-rundeck-keystore"]
+    token_ttl: "8h"
+    token_max_ttl: "24h"
+    secret_id_ttl: "31536000" # 365 days — see comment above
+  # Jenkins CD AppRole — short token TTL (CD jobs are minutes-long);
+  # secret_id 365d because rotating it requires re-applying the
+  # post_setup task that pushes the new id into kv-prod/apps/jenkins/
+  # runtime and bouncing JCasC to pick up the updated credential.
+  - username: "svc-jenkins"
+    purpose: "jenkins-cd-platform"
+    policies: ["svc-jenkins"]
+    token_ttl: "2h"
+    token_max_ttl: "8h"
+    secret_id_ttl: "31536000" # 365 days
+    # When the post_setup task generates a new secret_id, push role_id +
+    # secret_id into this KV path so jenkins can fetch them at deploy
+    # time and expose as JCasC string credentials. Without this, the
+    # creds only exist in the operator's local credentials_output_dir.
+    vault_publish_path: "kv-prod/apps/jenkins/runtime"
+
+# Human users for userpass authentication
+# Passwords sourced from ansible-vault encrypted group_vars/vault.yml (never hardcode here)
+# See docs/final/vault-iam.md for full IAM register
+vault_human_users:
+  - username: "long"
+    password: "{{ vault_human_user_password | default('changeme-please') }}"
+    policies: ["ops-admin"]
+    token_ttl: "168h"
+    token_max_ttl: "720h"
+    token_no_default_policy: false
+  - username: "svc-superadmin"
+    password: "{{ vault_superadmin_password | default('changeme-please') }}"
+    policies: ["ops-superadmin"]
+    token_ttl: "1h"
+    token_max_ttl: "4h"
+    token_no_default_policy: true
+    # Break-glass account — use ONLY when ops-admin token cannot fix a permission issue.
+    # Credentials stored in ansible-vault encrypted group_vars/vault.yml.
+    # Every use must be recorded in your operations log.
+
+# Legacy policies and AppRoles to remove on next run (superseded by new naming standard)
+vault_legacy_policies_to_remove:
+  - admin
+  - admin-policy
+  - automation-users
+  - eso-read
+  - lab-admin
+  - platform-provisioner-admin
+  - terraform-ci
+  # Renamed to follow the ops-/svc- prefix convention
+  - platform-operator-prod
+  - gitlab-prod
+  - cert-manager-prod
+  - ci-deploy-gitlab-prod
+
+vault_legacy_approles_to_remove:
+  - svc_terraform
+  - svc_ansible
+
+vault_legacy_userpass_to_remove:
+  - platform-admin

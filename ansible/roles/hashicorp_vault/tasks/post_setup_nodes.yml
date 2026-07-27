@@ -1,0 +1,153 @@
+---
+# tasks/post_setup_nodes.yml — Per-node tasks: auto-unseal and Raft snapshot backup
+# These run on ALL Vault nodes (not run_once).
+
+# --- Auto-Unseal ---
+- name: Configure auto-unseal on boot
+  become: true  # root: writes /usr/local/bin + /etc/systemd/system, manages the unit
+  tags: [post_setup, auto_unseal]
+  block:
+    - name: Remove legacy unseal script (renamed from underscore to kebab-case)
+      ansible.builtin.file:
+        path: /usr/local/bin/unseal_vault.sh
+        state: absent
+
+    - name: Deploy Vault auto-unseal script
+      ansible.builtin.template:
+        src: unseal-vault.sh.j2
+        dest: /usr/local/bin/unseal-vault.sh
+        owner: root
+        group: root
+        mode: "0750"
+      notify: Restart unseal-vault service
+
+    - name: Deploy unseal-vault systemd service
+      ansible.builtin.template:
+        src: unseal-vault.service.j2
+        dest: /etc/systemd/system/unseal-vault.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart unseal-vault service
+
+    - name: Ensure systemd is reloaded if service file changed
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable unseal-vault service
+      ansible.builtin.systemd:
+        name: unseal-vault.service
+        enabled: true
+        daemon_reload: true
+
+    - name: Display auto-unseal configuration status
+      ansible.builtin.debug:
+        msg: |
+          Auto-unseal configured on {{ inventory_hostname }}:
+          - Script: /usr/local/bin/unseal-vault.sh
+          - Service: unseal-vault.service (enabled)
+          - Unseal key: {{ vault_host_data_dir }}/keys/unseal_key.txt
+
+# --- Directory permissions for borg-ui backup (ansible user in vault group) ---
+- name: Set vault data directory permissions for ansible group read access
+  become: true  # root: chowns/chmods vault-owned data subdirs
+  tags: [post_setup, backup, config]
+  block:
+    - name: Set vault/tls group-readable
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}/tls"
+        state: directory
+        owner: vault
+        group: vault
+        mode: "0750"
+
+    - name: Set vault/keys group-readable
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}/keys"
+        state: directory
+        owner: root
+        group: vault
+        mode: "0750"
+
+    - name: Set vault/raft group-readable
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}/raft"
+        state: directory
+        owner: vault
+        group: vault
+        mode: "0750"
+
+    - name: Set vault.db group-readable
+      ansible.builtin.file:
+        path: "{{ vault_host_data_dir }}/vault.db"
+        state: file
+        owner: vault
+        group: vault
+        mode: "0640"
+      failed_when: false
+
+# --- Raft Snapshot Backup ---
+- name: Configure Vault Raft snapshot backup
+  become: true  # root: writes backup script/units under /etc + /var, manages the timer
+  tags: [post_setup, backup]
+  block:
+    - name: Create Vault backup directory
+      ansible.builtin.file:
+        path: "{{ vault_backup_dir }}"
+        state: directory
+        owner: root
+        group: ansible
+        mode: "2750"
+
+    - name: Create Vault backup log file
+      ansible.builtin.file:
+        path: /var/log/vault-backup.log
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Deploy Vault backup script
+      ansible.builtin.template:
+        src: templates/vault-backup.sh.j2
+        dest: "{{ vault_backup_script_path }}"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy systemd service for Vault backup
+      ansible.builtin.template:
+        src: templates/vault-backup.service.j2
+        dest: /etc/systemd/system/vault-backup.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Deploy systemd timer for Vault backup
+      ansible.builtin.template:
+        src: templates/vault-backup.timer.j2
+        dest: /etc/systemd/system/vault-backup.timer
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Deploy logrotate config for Vault backup log
+      ansible.builtin.template:
+        src: templates/logrotate-vault-backup.j2
+        dest: /etc/logrotate.d/vault-backup
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Flush handlers to reload systemd if needed
+      meta: flush_handlers
+
+    - name: Enable and start Vault backup timer
+      ansible.builtin.systemd:
+        name: vault-backup.timer
+        state: started
+        enabled: true
+        daemon_reload: true

@@ -1,49 +1,58 @@
 ---
-# Audit — enable the file audit device (OPTIONAL). Idempotent. Audit devices are
-# cluster-wide in Raft, so this runs once from the first node. The device writes
-# INSIDE the container to hashicorp_vault_audit_path (under /vault/logs, which is
-# bind-mounted to hashicorp_vault_logs_dir on the persistent disk), so the audit
-# trail survives container rebuilds.
+# tasks/audit.yml — Enable Vault file audit device
+# Idempotent: checks if already enabled before attempting to enable.
+# Run on the leader node only (audit devices are cluster-wide in Raft).
 
-- name: "Audit | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_audit_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
+- name: Create Vault audit log directory
+  become: true  # root: creates the vault-owned audit log dir
+  ansible.builtin.file:
+    path: "{{ vault_audit_log_dir | default('/opt/vault/audit') }}"
+    state: directory
+    owner: vault
+    group: vault
+    mode: "0750"
 
-- name: "Audit | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_audit_token: "{{ _hashicorp_vault_audit_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
-
-- name: "Audit | List enabled audit devices"
-  become: true  # root: docker exec needs the root-owned docker socket
+- name: Check if file audit device is already enabled
   ansible.builtin.command:
-    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault audit list -format=json"
+    cmd: >
+      vault audit list -format=json
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_audit_token }}"
-  register: _hashicorp_vault_audit_list
+    VAULT_ADDR: "https://{{ vault_domain }}:{{ vault_api_port }}"
+    VAULT_TOKEN: "{{ lookup('file', vault_token_file) }}"
+  register: _vault_audit_list
   changed_when: false
   failed_when: false
-  no_log: true
-  run_once: true
-  delegate_to: "{{ hashicorp_vault_first_node }}"
+  delegate_to: localhost
+  become: false
 
-- name: "Audit | Enable the file audit device"
-  become: true  # root: docker exec needs the root-owned docker socket
+- name: Enable file audit device
   ansible.builtin.command:
-    cmd: >-
-      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
-      vault audit enable file file_path={{ hashicorp_vault_audit_path }}
+    cmd: >
+      vault audit enable file
+      file_path={{ vault_audit_log_dir | default('/opt/vault/audit') }}/vault-audit.log
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_audit_token }}"
-  when: >-
-    _hashicorp_vault_audit_list.rc != 0
-    or 'file/' not in (_hashicorp_vault_audit_list.stdout | default('{}') | from_json).keys()
-  changed_when: true
-  run_once: true
-  delegate_to: "{{ hashicorp_vault_first_node }}"
+    VAULT_ADDR: "https://{{ vault_domain }}:{{ vault_api_port }}"
+    VAULT_TOKEN: "{{ lookup('file', vault_token_file) }}"
+  delegate_to: localhost
+  become: false
+  when: >
+    _vault_audit_list.rc != 0 or
+    'file/' not in (_vault_audit_list.stdout | default(''))
+
+- name: Deploy audit log rotation config
+  become: true  # root: writes /etc/logrotate.d
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/vault-audit
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {{ vault_audit_log_dir | default('/opt/vault/audit') }}/vault-audit.log {
+          daily
+          rotate 14
+          compress
+          delaycompress
+          missingok
+          notifempty
+          copytruncate
+      }

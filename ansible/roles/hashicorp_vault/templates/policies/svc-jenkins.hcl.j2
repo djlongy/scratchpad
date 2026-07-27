@@ -1,0 +1,49 @@
+# svc-jenkins — Jenkins automation AppRole
+# WHO:     svc-jenkins (AppRole)
+# WHERE:   jenkins-01 (Jenkins CD platform) — pipeline jobs that
+#          need Vault at runtime (secret rotation audit, IaC scans of
+#          repos with Vault-backed state, ad-hoc data reads)
+# TTL:     2h / 8h max — short-lived; CD jobs are typically minutes-long
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: METADATA read across every env KV mount (so the secret-rotation
+# audit can enumerate paths + last-update times); NO data read by
+# default. Per-job data reads should grant narrow paths here (this
+# template is the source of truth — extend it as new jobs need it).
+#
+# Self-token management for child tokens scoped down for specific
+# operations (e.g. issue a 5-min ephemeral token for a single secret
+# read inside a build).
+#
+# Audit notes: every action by this AppRole is logged with role_name=
+# svc-jenkins; cross-reference with Jenkins build IDs via the
+# x-vault-request-id header echoed back in response trailers.
+
+# ── Metadata: list + read across all three env KV mounts ────────────────
+# Lets the secret-rotation audit walk paths and check last-modified
+# timestamps WITHOUT touching the underlying secret values.
+path "kv-mgmt/metadata/*"    { capabilities = ["read", "list"] }
+path "kv-mgmt/metadata"      { capabilities = ["list"] }
+path "kv-prod/metadata/*"   { capabilities = ["read", "list"] }
+path "kv-prod/metadata"     { capabilities = ["list"] }
+path "kv-dev/metadata/*"    { capabilities = ["read", "list"] }
+path "kv-dev/metadata"      { capabilities = ["list"] }
+
+# Discover available mounts (so the audit can find any new KV stores
+# without hard-coding the list above).
+path "sys/mounts" { capabilities = ["read"] }
+
+# Token self-management — child tokens for narrow per-job operations.
+path "auth/token/create" {
+  capabilities = ["create", "update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+
+# NOTE: data reads are intentionally absent here. If a Jenkins pipeline
+# needs to read a specific secret value, add a narrow `path "kv-<env>/
+# data/<exact-path>"` grant below — never wildcard data reads.

@@ -1,0 +1,240 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    vault_host_data_dir: "/opt/vault"
+    vault_keys_dir: "/opt/vault/keys"
+    vault_backup_dir: "/opt/backups/vault"
+    vault_backup_script_path: "/usr/local/bin/vault-backup.sh"
+
+  tasks:
+    # --- Vault user and group ---
+    - name: Check vault group exists
+      ansible.builtin.getent:
+        database: group
+        key: vault
+      register: vault_group
+
+    - name: Assert vault group is present
+      ansible.builtin.assert:
+        that:
+          - vault_group is not failed
+        fail_msg: "vault group does not exist"
+
+    - name: Check vault user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: vault
+      register: vault_user
+
+    - name: Assert vault user is present
+      ansible.builtin.assert:
+        that:
+          - vault_user is not failed
+        fail_msg: "vault user does not exist"
+
+    # --- Directory structure ---
+    - name: Check Vault config directory
+      ansible.builtin.stat:
+        path: /etc/vault.d
+      register: config_dir
+
+    - name: Assert Vault config directory exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - config_dir.stat.exists
+          - config_dir.stat.isdir
+          - config_dir.stat.mode == '0755'
+        fail_msg: "Vault config directory /etc/vault.d missing or wrong permissions (got {{ config_dir.stat.mode | default('N/A') }})"
+
+    - name: Check Vault certs directory
+      ansible.builtin.stat:
+        path: /etc/vault.d/certs
+      register: certs_dir
+
+    - name: Assert Vault certs directory exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - certs_dir.stat.exists
+          - certs_dir.stat.isdir
+          - certs_dir.stat.mode == '0750'
+          - certs_dir.stat.pw_name == 'vault'
+          - certs_dir.stat.gr_name == 'vault'
+        fail_msg: "Vault certs directory /etc/vault.d/certs missing or wrong permissions"
+
+    - name: Check Vault data directory
+      ansible.builtin.stat:
+        path: "{{ vault_host_data_dir }}"
+      register: data_dir
+
+    - name: Assert Vault data directory exists with correct ownership
+      ansible.builtin.assert:
+        that:
+          - data_dir.stat.exists
+          - data_dir.stat.isdir
+          - data_dir.stat.mode == '0755'
+          - data_dir.stat.pw_name == 'vault'
+          - data_dir.stat.gr_name == 'vault'
+        fail_msg: "Vault data directory {{ vault_host_data_dir }} missing or wrong permissions"
+
+    - name: Check Vault keys directory
+      ansible.builtin.stat:
+        path: "{{ vault_keys_dir }}"
+      register: keys_dir
+
+    - name: Assert Vault keys directory exists with restricted permissions
+      ansible.builtin.assert:
+        that:
+          - keys_dir.stat.exists
+          - keys_dir.stat.isdir
+          - keys_dir.stat.mode == '0700'
+          - keys_dir.stat.pw_name == 'root'
+          - keys_dir.stat.gr_name == 'vault'
+        fail_msg: "Vault keys directory {{ vault_keys_dir }} missing or wrong permissions (got mode={{ keys_dir.stat.mode | default('N/A') }}, owner={{ keys_dir.stat.pw_name
+          | default('N/A') }})"
+
+    # --- Config file ---
+    - name: Check vault.hcl config file
+      ansible.builtin.stat:
+        path: /etc/vault.d/config.hcl
+      register: vault_hcl
+
+    - name: Assert vault.hcl exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - vault_hcl.stat.exists
+          - vault_hcl.stat.mode == '0644'
+          - vault_hcl.stat.pw_name == 'root'
+          - vault_hcl.stat.gr_name == 'root'
+        fail_msg: "vault.hcl missing or wrong permissions"
+
+    - name: Read vault.hcl content
+      ansible.builtin.slurp:
+        src: /etc/vault.d/config.hcl
+      register: vault_hcl_content
+
+    - name: Assert vault.hcl contains expected configuration blocks
+      ansible.builtin.assert:
+        that:
+          - "'storage \"raft\"' in vault_hcl_content.content | b64decode"
+          - "'listener \"tcp\"' in vault_hcl_content.content | b64decode"
+          - "'api_addr' in vault_hcl_content.content | b64decode"
+          - "'cluster_addr' in vault_hcl_content.content | b64decode"
+          - "'ui' in vault_hcl_content.content | b64decode"
+          - "'disable_mlock' in vault_hcl_content.content | b64decode"
+          - "'telemetry' in vault_hcl_content.content | b64decode"
+          - "'log_level' in vault_hcl_content.content | b64decode"
+          - "'log_format' in vault_hcl_content.content | b64decode"
+          - "'tls_cert_file' in vault_hcl_content.content | b64decode"
+          - "'tls_key_file' in vault_hcl_content.content | b64decode"
+        fail_msg: "vault.hcl is missing expected configuration blocks"
+
+    # --- Systemd unit file ---
+    - name: Check Vault systemd service file
+      ansible.builtin.stat:
+        path: /etc/systemd/system/vault.service
+      register: vault_service
+
+    - name: Assert Vault systemd service file exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - vault_service.stat.exists
+          - vault_service.stat.mode == '0644'
+          - vault_service.stat.pw_name == 'root'
+        fail_msg: "Vault systemd service file missing or wrong permissions"
+
+    - name: Read Vault systemd service content
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/vault.service
+      register: vault_service_content
+
+    - name: Assert Vault systemd service has correct content
+      ansible.builtin.assert:
+        that:
+          - "'ExecStart=/usr/bin/vault server -config=/etc/vault.d/config.hcl' in vault_service_content.content | b64decode"
+          - "'User=vault' in vault_service_content.content | b64decode"
+          - "'Group=vault' in vault_service_content.content | b64decode"
+          - "'LimitNOFILE=65536' in vault_service_content.content | b64decode"
+          - "'Restart=on-failure' in vault_service_content.content | b64decode"
+        fail_msg: "Vault systemd service file has unexpected content"
+
+    # --- Log file ---
+    - name: Check Vault log file
+      ansible.builtin.stat:
+        path: /var/log/vault.log
+      register: vault_log
+
+    - name: Assert Vault log file exists with correct ownership
+      ansible.builtin.assert:
+        that:
+          - vault_log.stat.exists
+          - vault_log.stat.pw_name == 'vault'
+          - vault_log.stat.gr_name == 'vault'
+        fail_msg: "Vault log file missing or wrong ownership"
+
+    # --- Backup infrastructure ---
+    - name: Check Vault backup directory
+      ansible.builtin.stat:
+        path: "{{ vault_backup_dir }}"
+      register: backup_dir
+
+    - name: Assert Vault backup directory exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - backup_dir.stat.exists
+          - backup_dir.stat.isdir
+          - backup_dir.stat.mode == '0755'
+          - backup_dir.stat.pw_name == 'root'
+        fail_msg: "Vault backup directory {{ vault_backup_dir }} missing or wrong permissions"
+
+    - name: Check Vault backup script
+      ansible.builtin.stat:
+        path: "{{ vault_backup_script_path }}"
+      register: backup_script
+
+    - name: Assert Vault backup script exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - backup_script.stat.exists
+          - backup_script.stat.mode == '0700'
+          - backup_script.stat.pw_name == 'root'
+        fail_msg: "Vault backup script missing or wrong permissions (got mode={{ backup_script.stat.mode | default('N/A') }})"
+
+    - name: Check Vault backup log file
+      ansible.builtin.stat:
+        path: /var/log/vault-backup.log
+      register: backup_log
+
+    - name: Assert Vault backup log file exists
+      ansible.builtin.assert:
+        that:
+          - backup_log.stat.exists
+          - backup_log.stat.mode == '0644'
+        fail_msg: "Vault backup log file missing or wrong permissions"
+
+    - name: Check Vault backup systemd service
+      ansible.builtin.stat:
+        path: /etc/systemd/system/vault-backup.service
+      register: backup_service
+
+    - name: Assert Vault backup systemd service exists
+      ansible.builtin.assert:
+        that:
+          - backup_service.stat.exists
+          - backup_service.stat.mode == '0644'
+        fail_msg: "Vault backup systemd service file missing"
+
+    - name: Check Vault backup systemd timer
+      ansible.builtin.stat:
+        path: /etc/systemd/system/vault-backup.timer
+      register: backup_timer
+
+    - name: Assert Vault backup systemd timer exists
+      ansible.builtin.assert:
+        that:
+          - backup_timer.stat.exists
+          - backup_timer.stat.mode == '0644'
+        fail_msg: "Vault backup systemd timer file missing"

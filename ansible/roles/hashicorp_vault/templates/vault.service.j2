@@ -1,0 +1,34 @@
+[Unit]
+Description=Vault server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+{% if vault_install_method | default('package') == 'container' %}
+ExecStartPre=-/usr/bin/docker rm -f {{ vault_container_name | default('vault') }}
+ExecStart=/usr/bin/docker run --name {{ vault_container_name | default('vault') }} \
+  --network host \
+  --restart {{ vault_container_restart_policy | default('unless-stopped') }} \
+  --user {{ vault_container_user | default('vault') }} \
+  -v /etc/vault.d:/etc/vault.d:ro \
+  -v {{ vault_host_data_dir }}:{{ vault_host_data_dir }} \
+  -v /var/log:/var/log \
+{% for arg in vault_container_extra_args | default([]) %}
+  {{ arg }} \
+{% endfor %}
+  {{ vault_docker_image }} server -config=/etc/vault.d/config.hcl
+ExecStop=/usr/bin/docker stop {{ vault_container_name | default('vault') }}
+ExecReload=/usr/bin/docker kill --signal=HUP {{ vault_container_name | default('vault') }}
+{% else %}
+User=vault
+Group=vault
+ExecStart=/usr/bin/vault server -config=/etc/vault.d/config.hcl
+ExecStartPost=+/usr/local/bin/unseal-vault.sh
+ExecReload=/bin/kill --signal HUP $MAINPID
+{% endif %}
+LimitNOFILE=65536
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

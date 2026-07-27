@@ -1,0 +1,33 @@
+# svc-gitlab-prod — GitLab application runtime policy
+# WHO:     GitLab app process (via AppRole or K8s auth)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read runtime secrets + 3rd-party integration credentials.
+#        No access to deploy/ — that scope belongs to svc-ci-deploy-gitlab-prod.
+
+# Runtime secrets — DB passwords, secret key base, SMTP, etc.
+path "kv-prod/data/apps/gitlab/runtime/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/apps/gitlab/runtime/*" {
+  capabilities = ["read", "list"]
+}
+
+# Integration secrets — Slack webhooks, Jira API tokens, etc.
+path "kv-prod/data/apps/gitlab/integrations/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/apps/gitlab/integrations/*" {
+  capabilities = ["read", "list"]
+}
+
+# Token self-management
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}

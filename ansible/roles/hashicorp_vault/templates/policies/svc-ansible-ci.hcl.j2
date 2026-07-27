@@ -1,0 +1,39 @@
+# svc-ansible-ci — GitLab CI Ansible deploy pipeline policy
+# WHO:     GitLab CI JWT auth (used in .gitlab-ci.yml Ansible deploy jobs)
+# TTL:     1h token, max 4h
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only access to all KV secrets for Ansible playbook runs.
+# This is intentionally broader than svc-terraform-ci because site.yml
+# touches many roles that each read different secrets.
+
+# Env-scoped mounts — read-only across all envs (Ansible site.yml touches all)
+path "kv-mgmt/data/*" {
+  capabilities = ["read"]
+}
+path "kv-mgmt/metadata/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-prod/data/*" {
+  capabilities = ["read"]
+}
+path "kv-prod/metadata/*" {
+  capabilities = ["read", "list"]
+}
+path "kv-dev/data/*" {
+  capabilities = ["read"]
+}
+path "kv-dev/metadata/*" {
+  capabilities = ["read", "list"]
+}
+
+# Child token creation (required by community.hashi_vault lookups)
+path "auth/token/create" {
+  capabilities = ["update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

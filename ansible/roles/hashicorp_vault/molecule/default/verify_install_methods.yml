@@ -1,0 +1,60 @@
+---
+- name: Verify Vault install method service templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    _service_output_dir: /tmp/sw_vault_install_methods
+    vault_host_data_dir: /opt/vault
+    vault_api_port: 8200
+    vault_cluster_port: 8201
+    vault_docker_image: hashicorp/vault:1.19
+    vault_container_name: vault
+    vault_container_restart_policy: unless-stopped
+    vault_container_extra_args: []
+    vault_container_user: 1000:1000
+
+  tasks:
+    - name: Create temporary output directory
+      ansible.builtin.file:
+        path: "{{ _service_output_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Render Vault service template for each install method
+      ansible.builtin.template:
+        src: "{{ playbook_dir | dirname | dirname }}/templates/vault.service.j2"
+        dest: "{{ _service_output_dir }}/vault-{{ item }}.service"
+        mode: "0644"
+      vars:
+        vault_install_method: "{{ item }}"
+      loop:
+        - package
+        - container
+
+    - name: Read rendered package service
+      ansible.builtin.slurp:
+        src: "{{ _service_output_dir }}/vault-package.service"
+      register: _package_service
+
+    - name: Read rendered container service
+      ansible.builtin.slurp:
+        src: "{{ _service_output_dir }}/vault-container.service"
+      register: _container_service
+
+    - name: Assert package service runs host Vault binary
+      ansible.builtin.assert:
+        that:
+          - "'ExecStart=/usr/bin/vault server -config=/etc/vault.d/config.hcl' in (_package_service.content | b64decode)"
+          - "'ExecStartPre=-/usr/bin/docker rm -f vault' not in (_package_service.content | b64decode)"
+
+    - name: Assert container service runs Vault container with host path mounts
+      ansible.builtin.assert:
+        that:
+          - "'ExecStart=/usr/bin/docker run --name vault' in (_container_service.content | b64decode)"
+          - "'hashicorp/vault:1.19 server -config=/etc/vault.d/config.hcl' in (_container_service.content | b64decode)"
+          - "'-v /etc/vault.d:/etc/vault.d:ro' in (_container_service.content | b64decode)"
+          - "'-v /opt/vault:/opt/vault' in (_container_service.content | b64decode)"
+          - "'-v /var/log:/var/log' in (_container_service.content | b64decode)"
+          - "'User=vault' not in (_container_service.content | b64decode)"

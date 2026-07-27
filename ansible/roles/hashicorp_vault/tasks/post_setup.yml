@@ -1,0 +1,548 @@
+---
+# tasks/post_setup.yml — Policies, auth methods, users, and legacy cleanup
+# Run once from leader after cluster_init completes.
+
+# --- ACL Policies ---
+- name: Apply Vault ACL policies
+  tags: [post_setup, policies]
+  block:
+    - name: Apply Vault ACL policies (primary token)
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "sys/policies/acl/{{ policy_item.name }}"
+        data:
+          policy: "{{ lookup('template', 'policies/' + policy_item.name + '.hcl.j2') }}"
+      loop: "{{ vault_policies }}"
+      loop_control:
+        loop_var: policy_item
+        label: "{{ policy_item.name }} — {{ policy_item.description }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: vault_policy_primary_result
+      failed_when: false
+
+    - name: Detect policies that failed to apply
+      ansible.builtin.set_fact:
+        vault_policies_failed_names: >-
+          {{ vault_policy_primary_result.results
+             | selectattr('exception', 'defined') | map(attribute='item.name') | list }}
+        vault_need_escalation: >-
+          {{ vault_policy_primary_result.results
+             | selectattr('exception', 'defined') | list | length > 0 }}
+      run_once: true
+
+    - name: Escalate to ops-superadmin and re-apply all policies
+      when: vault_need_escalation | bool
+      delegate_to: localhost
+      run_once: true
+
+      # --- Userpass Authentication ---
+      block:
+        - name: Alert — permission denied or connection failure, escalating to ops-superadmin
+          ansible.builtin.debug:
+            msg: |
+              ESCALATION TRIGGERED: Policy apply failed with current token.
+              Failed policies: {{ vault_policies_failed_names | join(', ') }}
+              Authenticating as ops-superadmin to proceed.
+              ACTION REQUIRED: Record this escalation in your operations log when done.
+          run_once: true
+
+        - name: Authenticate as ops-superadmin
+          ansible.builtin.include_tasks: ops_superadmin_auth.yml
+
+        - name: Re-apply all ACL policies with ops-superadmin token
+          community.hashi_vault.vault_write:
+            url: "{{ vault_addr }}"
+            token: "{{ vault_superadmin_token }}"
+            path: "sys/policies/acl/{{ policy_item.name }}"
+            data:
+              policy: "{{ lookup('template', 'policies/' + policy_item.name + '.hcl.j2') }}"
+          loop: "{{ vault_policies }}"
+          loop_control:
+            loop_var: policy_item
+            label: "{{ policy_item.name }} (via ops-superadmin) — {{ policy_item.description }}"
+          delegate_to: localhost
+          run_once: true
+          become: false
+- name: Configure userpass authentication for human users
+  tags: [post_setup, users]
+  become: false
+  when: vault_human_users is defined and vault_human_users | length > 0
+  block:
+    - name: Check if userpass auth method is enabled
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth
+      register: auth_methods_userpass_check
+      delegate_to: localhost
+      run_once: true
+
+    - name: Enable userpass auth method
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth/userpass
+        data:
+          type: userpass
+          description: "Username and password authentication for human users"
+      when: "'userpass/' not in auth_methods_userpass_check.data.data.keys()"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check if user exists
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/userpass/users/{{ vault_user.username }}"
+      loop: "{{ vault_human_users }}"
+      loop_control:
+        loop_var: vault_user
+        label: "{{ vault_user.username }}"
+      register: existing_users
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Create userpass user
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/userpass/users/{{ vault_user.username }}"
+        data:
+          password: "{{ vault_user.password }}"
+          policies: "{{ vault_user.policies | join(',') }}"
+          token_ttl: "{{ vault_user.token_ttl | default('24h') }}"
+          token_max_ttl: "{{ vault_user.token_max_ttl | default('72h') }}"
+          token_no_default_policy: "{{ vault_user.token_no_default_policy | default(false) }}"
+      loop: "{{ vault_human_users }}"
+      loop_control:
+        loop_var: vault_user
+        label: "{{ vault_user.username }}"
+        index_var: user_index
+      when: existing_users.results[user_index].data is not defined
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Update userpass user policies and TTLs (idempotent for existing users)
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/userpass/users/{{ vault_user.username }}"
+        data:
+          policies: "{{ vault_user.policies | join(',') }}"
+          token_ttl: "{{ vault_user.token_ttl | default('24h') }}"
+          token_max_ttl: "{{ vault_user.token_max_ttl | default('72h') }}"
+          token_no_default_policy: "{{ vault_user.token_no_default_policy | default(false) }}"
+      loop: "{{ vault_human_users }}"
+      loop_control:
+        loop_var: vault_user
+        label: "{{ vault_user.username }}"
+        index_var: user_index
+      when: existing_users.results[user_index].data is defined
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Display user info
+      ansible.builtin.debug:
+        msg: |
+          User created: {{ vault_user.username }}
+          Login at: {{ vault_addr }}/ui
+          Auth method: Username / Password
+          Policies: {{ vault_user.policies | join(', ') }}
+      loop: "{{ vault_human_users }}"
+      loop_control:
+        loop_var: vault_user
+        label: "{{ vault_user.username }}"
+      run_once: true
+
+# --- LDAP Authentication ---
+- name: Configure LDAP authentication
+  ansible.builtin.include_tasks:
+    file: setup_ldap_auth.yml
+    apply:
+      tags: [post_setup, ldap]
+      become: false
+  when: vault_ldap_auth_enabled | bool
+  tags: [post_setup, ldap]
+
+# --- GitLab OAuth App ---
+- name: Ensure GitLab OAuth app exists for Vault OIDC
+  ansible.builtin.include_tasks: setup_gitlab_oauth_app.yml
+  when:
+    - vault_gitlab_oidc_enabled | bool
+    - vault_gitlab_oauth_manage_app | bool
+  tags: [post_setup, gitlab_sso]
+
+# --- GitLab OIDC SSO ---
+- name: Configure GitLab SSO for Vault UI
+  ansible.builtin.include_tasks: setup_gitlab_sso.yml
+  when: vault_gitlab_oidc_enabled | bool
+  tags: [post_setup, gitlab_sso]
+
+# --- GitLab CI JWT ---
+- name: Configure GitLab CI JWT auth for pipelines
+  ansible.builtin.include_tasks: setup_gitlab_jwt.yml
+  when: vault_gitlab_jwt_enabled | bool
+  tags: [post_setup, gitlab_jwt]
+
+# --- AppRole and Secrets Engines ---
+- name: Configure AppRole authentication and secrets engines
+  tags: [post_setup, approle]
+  become: false
+  block:
+    - name: Check if AppRole auth method is enabled
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth
+      register: auth_methods_check
+      delegate_to: localhost
+      run_once: true
+
+    - name: Enable AppRole auth method
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth/approle
+        data:
+          type: approle
+          description: "AppRole authentication for automation users"
+      when: "'approle/' not in auth_methods_check.data.data.keys()"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check if KV v2 secrets engine is enabled
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/mounts
+      register: secrets_engines_check
+      delegate_to: localhost
+      run_once: true
+
+    - name: Enable KV v2 secrets engine
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/mounts/kv
+        data:
+          type: kv
+          options:
+            version: "2"
+          description: "KV v2 secrets engine for application secrets"
+      when: "'kv/' not in secrets_engines_check.data.data.keys()"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Enable additional KV v2 mounts for siloed services
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "sys/mounts/{{ item.mount }}"
+        data:
+          type: kv
+          options:
+            version: "2"
+          description: "{{ item.description }}"
+      loop: "{{ vault_additional_kv_mounts | default([]) }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      when: "(item.mount + '/') not in secrets_engines_check.data.data.keys()"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check if AppRole exists for user
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/approle/role/{{ automation_user.username }}"
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+      register: existing_approles
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    # Always upsert — vault_write to auth/approle/role/<name> is idempotent
+    # AND keeps the live AppRole policy/TTL bindings in sync with vars/main.yml.
+    # The previous `when: existing_approles.results[user_index].data is not defined`
+    # guard meant policy changes for existing AppRoles were silently skipped.
+    - name: Create or update AppRole for automation user
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/approle/role/{{ automation_user.username }}"
+        data:
+          token_policies: "{{ automation_user.policies | default([automation_policy_name]) }}"
+          token_ttl: "{{ automation_user.token_ttl | default('8h') }}"
+          token_max_ttl: "{{ automation_user.token_max_ttl | default('24h') }}"
+          bind_secret_id: true
+          secret_id_ttl: "{{ automation_user.secret_id_ttl | default('0') }}"
+          token_num_uses: 0
+          secret_id_num_uses: 0
+          token_type: "service"
+          token_metadata:
+            user: "{{ automation_user.username }}"
+            purpose: "{{ automation_user.purpose | default('automation') }}"
+            created_by: "ansible"
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Get role_id for automation user
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/approle/role/{{ automation_user.username }}/role-id"
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+      register: role_id_results
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check if credentials directory exists
+      ansible.builtin.stat:
+        path: "{{ vault_credentials_output_dir }}"
+      register: vault_creds_dir_stat
+      delegate_to: localhost
+      run_once: true
+      when:
+        - vault_credentials_output_dir is defined
+
+    - name: Set fact to generate secret IDs on first run
+      ansible.builtin.set_fact:
+        should_generate_secret_ids: "{{ vault_generate_new_secret_ids | default(not vault_creds_dir_stat.stat.exists) }}"
+      run_once: true
+      when:
+        - vault_credentials_output_dir is defined
+
+    - name: Create credentials directory
+      ansible.builtin.file:
+        path: "{{ vault_credentials_output_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      run_once: true
+      when:
+        - vault_credentials_output_dir is defined
+
+    - name: Generate secret_id for automation user (first run or forced)
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/approle/role/{{ automation_user.username }}/secret-id"
+        data:
+          metadata: "created_by=ansible,created_at={{ ansible_date_time.iso8601 }}"
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+      register: secret_id_results
+      when: should_generate_secret_ids | default(false)
+      delegate_to: localhost
+      run_once: true
+      # The response body IS the credential — without this a -v run or a task
+      # failure prints the secret_id into the job log.
+      no_log: true
+
+    - name: Save user credentials to secure files
+      ansible.builtin.copy:
+        content: |
+          # Vault AppRole Credentials for {{ automation_user.username }}
+          # Generated: {{ ansible_date_time.iso8601 }}
+          # Vault: {{ vault_addr }}
+
+          export VAULT_ADDR="{{ vault_addr }}"
+          export VAULT_ROLE_ID="{{ role_id_results.results[ansible_loop.index0].data.data.role_id }}"
+          {% if secret_id_results.results is defined and secret_id_results.results[ansible_loop.index0].data is defined %}
+          export VAULT_SECRET_ID="{{ secret_id_results.results[ansible_loop.index0].data.data.secret_id }}"
+          {% else %}
+          # export VAULT_SECRET_ID="<generate-new-secret-id>"
+          # Run with vault_generate_new_secret_ids=true to generate new secret IDs
+          {% endif %}
+
+          # Get token (expires in {{ automation_user.token_ttl | default('8h') }}):
+          # export VAULT_TOKEN=$(vault write -field=token auth/approle/login role_id="$VAULT_ROLE_ID" secret_id="$VAULT_SECRET_ID")
+
+          # For Terraform:
+          # export TF_VAR_vault_role_id="$VAULT_ROLE_ID"
+          # export TF_VAR_vault_secret_id="$VAULT_SECRET_ID"
+        dest: "{{ vault_credentials_output_dir }}/{{ automation_user.username }}-vault-creds.sh"
+        mode: "0600"
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+        extended: true
+      delegate_to: localhost
+      run_once: true
+      when:
+        - vault_credentials_output_dir is defined
+      # `content` carries the secret_id, so it reaches the module args and
+      # would be rendered by --diff or by a failure message. 0600 protects the
+      # file at rest; this protects it in transit to the log.
+      no_log: true
+
+    - name: Display credentials info
+      ansible.builtin.debug:
+        msg: |
+          AppRole exists for: {{ automation_user.username }}
+
+          {% if vault_generate_new_secret_ids | default(false) %}
+          New credentials saved to: {{ vault_credentials_output_dir }}/{{ automation_user.username }}-vault-creds.sh
+          {% else %}
+          No new secret_id generated. Set vault_generate_new_secret_ids=true to create new credentials.
+          {% endif %}
+
+          Role ID: {{ role_id_results.results[ansible_loop.index0].data.data.role_id }}
+          Token TTL: {{ automation_user.token_ttl | default('8h') }}
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+        extended: true
+
+    # Optional: publish role_id + secret_id into a KV path so a consumer
+    # (Jenkins JCasC, Rundeck config, etc.) can fetch them like any other
+    # secret. Only fires when:
+    #   1. The AppRole entry sets `vault_publish_path: kv-<env>/apps/<app>/runtime`
+    #   2. AND a new secret_id was generated this run (otherwise we'd be
+    #      pushing a stale/undefined value).
+    # The fields written are role_id and secret_id (vault kv patch — does
+    # not wipe other fields at the path). To rotate: set
+    # vault_generate_new_secret_ids=true and re-run; the consumer role
+    # picks up the new pair on its next apply.
+    - name: Publish role_id + secret_id into a KV path (for consumer roles)
+      ansible.builtin.command:
+        cmd: >-
+          vault kv patch
+          -mount={{ (automation_user.vault_publish_path | split('/'))[0] }}
+          {{ automation_user.vault_publish_path | split('/', 1) | last }}
+          vault_role_id={{ role_id_results.results[ansible_loop.index0].data.data.role_id }}
+          vault_secret_id={{ secret_id_results.results[ansible_loop.index0].data.data.secret_id }}
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
+      loop: "{{ automation_service_accounts }}"
+      loop_control:
+        loop_var: automation_user
+        label: "{{ automation_user.username }}"
+        extended: true
+      when:
+        - automation_user.vault_publish_path is defined
+        - automation_user.vault_publish_path | length > 0
+        - should_generate_secret_ids | default(false)
+        - secret_id_results.results is defined
+        - secret_id_results.results[ansible_loop.index0].data is defined
+      delegate_to: localhost
+      become: false
+      no_log: true
+      changed_when: true
+      run_once: true
+
+# --- ESO Kubernetes Auth Role ---
+- name: Update ESO Kubernetes auth role
+  tags: [post_setup, eso]
+  block:
+    - name: Check if Kubernetes auth method is mounted
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/auth/kubernetes"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ vault_root_token }}"
+        status_code: [200, 400, 403, 404]
+      register: _k8s_auth_check
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Update ESO Kubernetes auth role (prod — svc-eso-prod policy)
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/kubernetes-prod/role/eso-prod"
+        data:
+          bound_service_account_names: ["external-secrets"]
+          # Prod ESO runs in the 'external-secrets' namespace (dev runs in
+          # 'system-external-secrets'); a dedicated prod var keeps the two
+          # clusters decoupled. Wrong default here 403s every prod ES.
+          bound_service_account_namespaces: ["{{ vault_eso_prod_k8s_namespace | default('external-secrets') }}"]
+          token_policies: ["svc-eso-prod"]
+          token_ttl: "1h"
+          token_max_ttl: "24h"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: _k8s_auth_check.status == 200
+
+    - name: Update ESO Kubernetes auth role (dev — svc-eso-dev policy)
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/kubernetes/role/eso-dev"
+        data:
+          bound_service_account_names: ["external-secrets"]
+          bound_service_account_namespaces: ["{{ vault_eso_k8s_namespace | default('system-external-secrets') }}"]
+          token_policies: ["svc-eso-dev"]
+          token_ttl: "1h"
+          token_max_ttl: "24h"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: _k8s_auth_check.status == 200
+
+# --- Legacy Cleanup ---
+- name: Remove legacy Vault entities
+  tags: [post_setup, legacy_cleanup]
+  block:
+    - name: Remove legacy Vault ACL policies
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/sys/policies/acl/{{ item }}"
+        method: DELETE
+        headers:
+          X-Vault-Token: "{{ vault_root_token }}"
+        status_code: [200, 204, 404]
+        validate_certs: true
+      loop: "{{ vault_legacy_policies_to_remove | default([]) }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Remove legacy AppRole entries
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/role/{{ item }}"
+        method: DELETE
+        headers:
+          X-Vault-Token: "{{ vault_root_token }}"
+        status_code: [200, 204, 404]
+        validate_certs: true
+      loop: "{{ vault_legacy_approles_to_remove | default([]) }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Remove legacy userpass accounts
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/userpass/users/{{ item }}"
+        method: DELETE
+        headers:
+          X-Vault-Token: "{{ vault_root_token }}"
+        status_code: [200, 204, 404]
+        validate_certs: true
+      loop: "{{ vault_legacy_userpass_to_remove | default([]) }}"
+      delegate_to: localhost
+      become: false
+      run_once: true

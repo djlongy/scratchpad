@@ -1,0 +1,83 @@
+---
+# tasks/setup_ldap_auth.yml — Enable + configure LDAP auth method against
+# the inventory-defined directory (e.g. FreeIPA).
+#
+# Group→policy mapping is driven by vault_ldap_groups so it's reusable
+# for other environments without code edits.
+
+- name: Read LDAP bind password from Vault
+  community.hashi_vault.vault_read:
+    url: "{{ vault_addr }}"
+    token: "{{ vault_root_token }}"
+    path: "{{ vault_ldap_bindpass_vault_path }}"
+  register: _ldap_bindpass_lookup
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Set LDAP bind password fact
+  ansible.builtin.set_fact:
+    _ldap_bindpass: "{{ _ldap_bindpass_lookup.data.data.data[vault_ldap_bindpass_vault_field] }}"
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Check if LDAP auth method is enabled
+  community.hashi_vault.vault_read:
+    url: "{{ vault_addr }}"
+    token: "{{ vault_root_token }}"
+    path: sys/auth
+  register: _ldap_auth_check
+  delegate_to: localhost
+  run_once: true
+
+- name: Enable LDAP auth method
+  community.hashi_vault.vault_write:
+    url: "{{ vault_addr }}"
+    token: "{{ vault_root_token }}"
+    path: sys/auth/ldap
+    data:
+      type: ldap
+      description: "LDAP authentication against {{ vault_ldap_url }}"
+  when: "'ldap/' not in _ldap_auth_check.data.data.keys()"
+  delegate_to: localhost
+  run_once: true
+
+- name: Configure LDAP auth method
+  community.hashi_vault.vault_write:
+    url: "{{ vault_addr }}"
+    token: "{{ vault_root_token }}"
+    path: auth/ldap/config
+    data:
+      url: "{{ vault_ldap_url }}"
+      binddn: "{{ vault_ldap_binddn }}"
+      bindpass: "{{ _ldap_bindpass }}"
+      userdn: "{{ vault_ldap_userdn }}"
+      userattr: "{{ vault_ldap_userattr }}"
+      groupdn: "{{ vault_ldap_groupdn }}"
+      groupattr: "{{ vault_ldap_groupattr }}"
+      groupfilter: "{{ vault_ldap_groupfilter }}"
+      starttls: "{{ vault_ldap_starttls }}"
+      insecure_tls: "{{ vault_ldap_insecure_tls }}"
+      tls_min_version: "{{ vault_ldap_tls_min_version }}"
+      tls_max_version: "{{ vault_ldap_tls_max_version }}"
+      certificate: "{{ vault_ldap_certificate }}"
+      case_sensitive_names: "{{ vault_ldap_case_sensitive_names }}"
+      deny_null_bind: true
+      request_timeout: "{{ vault_ldap_request_timeout }}"
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Map LDAP groups to Vault policies
+  community.hashi_vault.vault_write:
+    url: "{{ vault_addr }}"
+    token: "{{ vault_root_token }}"
+    path: "auth/ldap/groups/{{ item.name }}"
+    data:
+      policies: "{{ item.policies | join(',') }}"
+  loop: "{{ vault_ldap_groups | default([]) }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.policies | join(',') }}"
+  delegate_to: localhost
+  run_once: true

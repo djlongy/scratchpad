@@ -1,62 +1,105 @@
 #!/bin/bash
-{{ ansible_managed | comment }}
-# hashicorp_vault_container — Raft snapshot backup.
-# Runs on every node via a systemd timer, but ONLY the active Raft leader
-# actually takes the snapshot (is_self), so exactly one snapshot is produced
-# per schedule. The snapshot is taken inside the container and copied out to the
-# (possibly NFS) backup dir on the host. Auth is a SCOPED periodic token (read on
-# sys/storage/raft/snapshot), passed via the process ENV — never on argv.
+# Vault Raft snapshot backup script
+# Managed by Ansible - do not edit manually
+#
+# Uses AppRole auth (svc-backup) instead of root token.
+# Credentials are deployed to /opt/vault/keys/backup_role_id and backup_secret_id
+# by the hashicorp_vault Ansible role.
+
 set -euo pipefail
 
-CONTAINER="{{ hashicorp_vault_name }}"
-BACKUP_DIR="{{ hashicorp_vault_backup_dir }}"
-RETENTION_DAYS="{{ hashicorp_vault_backup_retention_days }}"
-TOKEN_FILE="{{ hashicorp_vault_backup_token_file }}"
-LOG_FILE="/var/log/vault-container-backup.log"
-TS="$(date +%Y%m%d-%H%M%S)"
-SNAP_HOST="${BACKUP_DIR}/vault-snapshot-${TS}.snap"
-SNAP_CTR="/tmp/vault-snapshot-${TS}.snap"
+# Use loopback for local-only backup operations — avoids TLS SAN mismatch
+# when host FQDN doesn't match the wildcard cert (*.mgmt.example.com)
+VAULT_ADDR="https://127.0.0.1:{{ vault_api_port }}"
+VAULT_SKIP_VERIFY=true
+BACKUP_DIR="{{ vault_backup_dir }}"
+RETENTION_DAYS="{{ vault_backup_retention_days }}"
+CREDS_DIR="{{ vault_host_data_dir }}/keys"
+ROLE_ID_FILE="${CREDS_DIR}/backup_role_id"
+SECRET_ID_FILE="${CREDS_DIR}/backup_secret_id"
+LOG_FILE="/var/log/vault-backup.log"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+SNAPSHOT_FILE="${BACKUP_DIR}/vault-snapshot-${TIMESTAMP}.snap"
+PROM_DIR="/var/lib/node_exporter/textfile_collector"
+BACKUP_SUCCESS=0
+IS_LEADER=0
 
-log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"; }
+export VAULT_ADDR VAULT_SKIP_VERIFY
 
-# Classify this node. Vault unreachable or SEALED is a real fault (non-zero so
-# systemd surfaces it); an unsealed STANDBY is a clean skip (only the leader
-# snapshots). is_self is true only on the active node.
-STATUS_JSON="$(docker exec "${CONTAINER}" vault status -format=json 2>/dev/null || true)"
-if [ -z "${STATUS_JSON}" ]; then
-    log "ERROR: Vault unreachable on this node"; exit 1
-fi
-if [ "$(echo "${STATUS_JSON}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("sealed"))' 2>/dev/null)" = "True" ]; then
-    log "ERROR: Vault is sealed on this node"; exit 1
-fi
-if [ "$(echo "${STATUS_JSON}" | python3 -c 'import sys,json; print(1 if json.load(sys.stdin).get("is_self") else 0)' 2>/dev/null)" != "1" ]; then
-    log "not the active leader — skipping"; exit 0
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "${LOG_FILE}"
+}
+
+write_metrics() {
+    # Only write metrics on the active leader node
+    if [ "${IS_LEADER}" -eq 0 ]; then
+        return
+    fi
+    mkdir -p "${PROM_DIR}"
+    local timestamp_line=""
+    if [ "${BACKUP_SUCCESS}" -eq 1 ]; then
+        timestamp_line="vault_backup_last_success_timestamp_seconds $(date +%s)"
+    fi
+    cat > "${PROM_DIR}/vault_backup.prom.$$" <<PROM
+# HELP vault_backup_success Whether the last backup succeeded (1=success, 0=failure)
+# TYPE vault_backup_success gauge
+vault_backup_success ${BACKUP_SUCCESS}
+# HELP vault_backup_last_success_timestamp_seconds Unix timestamp of last successful backup
+# TYPE vault_backup_last_success_timestamp_seconds gauge
+${timestamp_line}
+PROM
+    mv "${PROM_DIR}/vault_backup.prom.$$" "${PROM_DIR}/vault_backup.prom"
+}
+
+trap write_metrics EXIT
+
+error_exit() {
+    log "ERROR: $1"
+    exit 1
+}
+
+# Authenticate via AppRole (no root token needed)
+if [ ! -f "${ROLE_ID_FILE}" ] || [ ! -f "${SECRET_ID_FILE}" ]; then
+    log "AppRole credentials not found in ${CREDS_DIR}, skipping backup"
+    exit 0
 fi
 
-if [ ! -r "${TOKEN_FILE}" ]; then
-    log "ERROR: no backup token at ${TOKEN_FILE} (re-run the role's backup phase)"; exit 1
-fi
+ROLE_ID=$(cat "${ROLE_ID_FILE}")
+SECRET_ID=$(cat "${SECRET_ID_FILE}")
+
 export VAULT_TOKEN
-VAULT_TOKEN="$(cat "${TOKEN_FILE}")"
+VAULT_TOKEN=$(vault write -format=json auth/approle/login \
+    role_id="${ROLE_ID}" secret_id="${SECRET_ID}" 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['auth']['client_token'])" 2>/dev/null) \
+    || error_exit "AppRole login failed"
 
-# Keep the periodic token alive (best-effort; the backup phase re-mints if it dies).
-docker exec -e VAULT_TOKEN "${CONTAINER}" vault token renew >/dev/null 2>&1 \
-    || log "WARN: backup token renew failed"
-
-log "taking Raft snapshot -> ${SNAP_HOST}"
-docker exec -e VAULT_TOKEN "${CONTAINER}" vault operator raft snapshot save "${SNAP_CTR}"
-docker cp "${CONTAINER}:${SNAP_CTR}" "${SNAP_HOST}"
-docker exec "${CONTAINER}" rm -f "${SNAP_CTR}" || true
-chmod 0640 "${SNAP_HOST}"
-if [ ! -s "${SNAP_HOST}" ]; then
-    log "ERROR: snapshot file is empty"; exit 1
+# Only run on the active leader — vault status returns 0 for any unsealed node,
+# so we must check the is_self field from the JSON output to detect the leader.
+if ! vault status -format=json 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('is_self') else 1)" 2>/dev/null; then
+    log "Node is not the active leader, skipping backup"
+    exit 0
 fi
-log "snapshot saved ($(du -h "${SNAP_HOST}" | cut -f1))"
 
-# Prune snapshots older than the retention window.
-PRUNED="$(find "${BACKUP_DIR}" -maxdepth 1 -name 'vault-snapshot-*.snap' \
-          -mtime "+${RETENTION_DAYS}" -print -delete | wc -l | tr -d ' ')"
+IS_LEADER=1
+log "Starting Vault snapshot backup"
+
+mkdir -p "${BACKUP_DIR}"
+
+vault operator raft snapshot save "${SNAPSHOT_FILE}" \
+    || error_exit "Snapshot save failed"
+
+chmod 0640 "${SNAPSHOT_FILE}"
+
+SNAP_SIZE=$(du -sh "${SNAPSHOT_FILE}" | cut -f1)
+log "Snapshot saved: ${SNAPSHOT_FILE} (${SNAP_SIZE})"
+
+# Prune snapshots beyond retention window
+PRUNED=$(find "${BACKUP_DIR}" -name "vault-snapshot-*.snap" -mtime "+${RETENTION_DAYS}" -print -delete | wc -l)
 if [ "${PRUNED}" -gt 0 ]; then
-    log "pruned ${PRUNED} snapshot(s) older than ${RETENTION_DAYS} day(s)"
+    log "Pruned ${PRUNED} snapshot(s) older than ${RETENTION_DAYS} days"
 fi
-log "backup complete"
+
+BACKUP_SUCCESS=1
+log "Backup complete"
+exit 0

@@ -1,47 +1,101 @@
-{{ ansible_managed | comment }}
-# vault.hcl — hashicorp_vault_container
-# Topology: {{ 'Raft HA across ' ~ hashicorp_vault_node_count ~ ' nodes' if hashicorp_vault_is_ha | bool else 'standalone (single server)' }}
+# vault.hcl.j2
+#############################
+# Vault Configuration (HCL)
+# Rendered from vault.hcl.j2 template
+#############################
 
+# ---------------------------
+# Raft storage backend
+# - path: where raft data lives on disk
+# - node_id: must be unique per node
+# - retry_join: tells new nodes how to find an existing leader
+# ---------------------------
 storage "raft" {
-  path    = "{{ hashicorp_vault_container_data_dir }}"
-  node_id = "{{ inventory_hostname }}"
-{% if hashicorp_vault_is_ha | bool %}
-{% for node in hashicorp_vault_nodes %}
+  path    = "{{ vault_host_data_dir }}"
+  node_id = "{{ vault_node_id | default(ansible_fqdn) }}"
+
+  # First peer — IP avoids DNS dependency; tls_servername matches wildcard cert (*.{{ vault_cert_domain }})
+  # No leader_ca_cert_file: system trust store (includes ISRG Root X1) used for LE cert validation
   retry_join {
-    leader_api_addr     = "{{ hashicorp_vault_scheme }}://{{ hostvars[node].hashicorp_vault_advertise_addr | default(hostvars[node].ansible_host) }}:{{ hashicorp_vault_api_port }}"
-{% if hashicorp_vault_tls_enabled | bool %}
-    leader_ca_cert_file = "{{ hashicorp_vault_container_certs_dir }}/ca.crt"
-{% endif %}
+    leader_api_addr       = "https://{{ hostvars[groups['vault'][0]]['ansible_host'] }}:{{ vault_api_port }}"
+    leader_tls_servername = "{{ vault_domain }}"
   }
-{% endfor %}
-{% endif %}
+
+  # Second peer
+  {% if groups['vault'] | length > 1 %}
+  retry_join {
+    leader_api_addr       = "https://{{ hostvars[groups['vault'][1]]['ansible_host'] }}:{{ vault_api_port }}"
+    leader_tls_servername = "{{ vault_domain }}"
+  }
+  {% endif %}
+
+  # Third peer
+  {% if groups['vault'] | length > 2 %}
+  retry_join {
+    leader_api_addr       = "https://{{ hostvars[groups['vault'][2]]['ansible_host'] }}:{{ vault_api_port }}"
+    leader_tls_servername = "{{ vault_domain }}"
+  }
+  {% endif %}
 }
 
+# ---------------------------
+# Listener
+# - address: client/API port (443 here)
+# - cluster_address: internal raft port (8201 here)
+# - tls_*: certs for HTTPS
+# - tls_disable_client_certs=true means Vault will not require client TLS cert auth
+# ---------------------------
 listener "tcp" {
-  address         = "0.0.0.0:{{ hashicorp_vault_api_port }}"
-  cluster_address = "0.0.0.0:{{ hashicorp_vault_cluster_port }}"
-{% if hashicorp_vault_tls_enabled | bool %}
-  tls_cert_file            = "{{ hashicorp_vault_container_certs_dir }}/vault.crt"
-  tls_key_file             = "{{ hashicorp_vault_container_certs_dir }}/vault.key"
-  tls_client_ca_file       = "{{ hashicorp_vault_container_certs_dir }}/ca.crt"
+  address                  = "0.0.0.0:{{ vault_api_port }}"
+  cluster_address          = "0.0.0.0:{{ vault_cluster_port }}"
+  tls_cert_file            = "/etc/vault.d/certs/vault.crt"
+  tls_key_file             = "/etc/vault.d/certs/vault.key"
+  tls_client_ca_file       = "/etc/vault.d/certs/ca.crt"
   tls_disable_client_certs = "true"
-{% else %}
-  tls_disable = "true"
-{% endif %}
 }
 
-api_addr     = "{{ hashicorp_vault_scheme }}://{{ hashicorp_vault_advertise_addr }}:{{ hashicorp_vault_api_port }}"
-cluster_addr = "{{ hashicorp_vault_scheme }}://{{ hashicorp_vault_advertise_addr }}:{{ hashicorp_vault_cluster_port }}"
+# ---------------------------
+# Advertised addresses
+# - api_addr: what clients/CLI should hit on THIS node
+# - cluster_addr: what other Vault nodes should use to talk raft to THIS node
+# Must match the two ports above
+# ---------------------------
+api_addr     = "https://{{ ansible_fqdn }}:{{ vault_api_port }}"
+cluster_addr = "https://{{ ansible_fqdn }}:{{ vault_cluster_port }}"
 
-ui            = {{ hashicorp_vault_ui | bool | lower }}
-disable_mlock = {{ hashicorp_vault_disable_mlock | bool | lower }}
-{% if hashicorp_vault_telemetry_enabled | bool %}
+# ---------------------------
+# UI and runtime opts
+# ---------------------------
+ui            = true
+disable_mlock = true
 
+# ---------------------------
+# Telemetry for Prometheus scraping
+# ---------------------------
 telemetry {
   prometheus_retention_time = "24h"
-  disable_hostname          = true
 }
-{% endif %}
 
-log_level  = "{{ hashicorp_vault_log_level }}"
-log_format = "{{ hashicorp_vault_log_format }}"
+# ---------------------------
+# Logging controls
+# - log_level: "trace","debug","info","warn","err"
+# - log_format: "standard","json"
+# Vault writes logs to stdout/stderr. systemd/journald handles rotation.
+# ---------------------------
+log_level  = "info"
+log_format = "json"
+
+# ---------------------------
+# Audit logging
+# - File-based audit device for compliance and forensic analysis
+# - Logs every authenticated API request and response
+# - Sensitive values are HMAC'd (not plaintext)
+# - Directory must exist and be writable by the vault user
+# - Enabling the audit device is done via CLI/API after Vault starts
+#   (see tasks/audit.yml)
+# ---------------------------
+{% if vault_audit_enabled | default(true) %}
+# Audit log path — Vault CLI enables the device at runtime;
+# this comment documents the intended path for the file audit backend.
+# Runtime enable: vault audit enable file file_path={{ vault_audit_log_path | default('/opt/vault/audit/vault-audit.log') }}
+{% endif %}

@@ -1,0 +1,125 @@
+# ops-superadmin — break-glass policy (near-root)
+# PURPOSE: Fix auth/policy/permission/path issues ONLY when ops-admin is insufficient.
+# WHO:     svc-superadmin userpass account (credentials in ansible-vault group_vars)
+# TTL:     1h token, max 4h, non-renewable — short-lived by design
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# ESCALATION: This policy is used automatically by the policy-apply block in
+# tasks/post_setup.yml when the primary token lacks permission.
+# Record every use in your operations log.
+
+# Full auth method management (enable, disable, configure any backend)
+path "sys/auth" {
+  capabilities = ["read", "list"]
+}
+path "sys/auth/*" {
+  capabilities = ["create", "read", "update", "delete", "sudo", "list"]
+}
+
+# Full policy management
+path "sys/policies/acl" {
+  capabilities = ["read", "list"]
+}
+path "sys/policies/acl/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Full secrets engine management
+path "sys/mounts" {
+  capabilities = ["read", "list"]
+}
+path "sys/mounts/*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+
+# Identity (entities, groups, aliases)
+path "identity/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Full KV access — all mounts (fix broken secret paths, bootstrap new env mounts)
+path "kv/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-mgmt/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-prod/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-dev/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Token management (create + manage token roles)
+path "auth/token/create" {
+  capabilities = ["create", "update", "sudo"]
+}
+path "auth/token/roles/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}
+
+# Manage all auth backends
+path "auth/approle/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/kubernetes/config" {
+  capabilities = ["create", "read", "update", "sudo"]
+}
+path "auth/kubernetes/role/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/kubernetes-mgt/config" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+path "auth/kubernetes-mgt/role/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/userpass/users/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/oidc/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/jwt/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "identity/oidc/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# PKI
+path "pki/*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+path "pki_int/*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+
+# Audit devices — read-only (audit trail must never be tampered)
+path "sys/audit" {
+  capabilities = ["read", "list"]
+}
+path "sys/audit/*" {
+  capabilities = ["read", "list"]
+}
+
+# UI / CLI preflight
+path "sys/internal/ui/mounts" {
+  capabilities = ["read"]
+}
+path "sys/internal/ui/mounts/*" {
+  capabilities = ["read"]
+}
+path "sys/internal/ui/resultant-acl" {
+  capabilities = ["read"]
+}

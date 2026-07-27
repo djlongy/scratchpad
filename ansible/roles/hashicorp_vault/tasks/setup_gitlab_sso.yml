@@ -1,0 +1,110 @@
+---
+- name: Configure GitLab OIDC authentication for Vault
+  become: false
+  block:
+    - name: Validate required GitLab OIDC variables
+      ansible.builtin.assert:
+        that:
+          - vault_gitlab_oidc_client_id | length > 0
+          - vault_gitlab_oidc_client_secret | length > 0
+        fail_msg: >-
+          GitLab OIDC is enabled, but vault_gitlab_oidc_client_id or
+          vault_gitlab_oidc_client_secret is empty.
+
+    - name: Check enabled Vault auth methods
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/auth
+      register: vault_auth_methods
+      delegate_to: localhost
+      run_once: true
+
+    - name: Enable OIDC auth method
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "sys/auth/{{ vault_gitlab_oidc_mount_path }}"
+        data:
+          type: oidc
+          description: "GitLab OIDC SSO"
+      when: "(vault_gitlab_oidc_mount_path ~ '/') not in vault_auth_methods.data.data.keys()"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Read existing OIDC backend config
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/{{ vault_gitlab_oidc_mount_path }}/config"
+      register: vault_oidc_config
+      failed_when: false
+      no_log: true
+      delegate_to: localhost
+      run_once: true
+
+    - name: Configure OIDC backend
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/{{ vault_gitlab_oidc_mount_path }}/config"
+        data:
+          oidc_discovery_url: "{{ vault_gitlab_oidc_discovery_url }}"
+          oidc_client_id: "{{ vault_gitlab_oidc_client_id }}"
+          oidc_client_secret: "{{ vault_gitlab_oidc_client_secret }}"
+          default_role: "{{ vault_gitlab_oidc_default_role }}"
+      when: vault_oidc_config.data is not defined or vault_gitlab_oidc_force_reconfigure | bool
+      no_log: true
+      delegate_to: localhost
+      run_once: true
+
+    - name: Read existing GitLab OIDC role
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/{{ vault_gitlab_oidc_mount_path }}/role/{{ vault_gitlab_oidc_role_name }}"
+      register: vault_oidc_role
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Normalize existing GitLab OIDC role
+      ansible.builtin.set_fact:
+        vault_oidc_role_existing: "{{ vault_oidc_role.data.data | default({}) }}"
+      run_once: true
+
+    - name: Configure GitLab OIDC role
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: "auth/{{ vault_gitlab_oidc_mount_path }}/role/{{ vault_gitlab_oidc_role_name }}"
+        data:
+          role_type: oidc
+          user_claim: "{{ vault_gitlab_oidc_user_claim }}"
+          groups_claim: "{{ vault_gitlab_oidc_groups_claim }}"
+          allowed_redirect_uris: "{{ vault_gitlab_oidc_allowed_redirect_uris }}"
+          oidc_scopes: "{{ vault_gitlab_oidc_scopes }}"
+          policies: "{{ vault_gitlab_oidc_policies }}"
+          ttl: "{{ vault_gitlab_oidc_ttl }}"
+          max_ttl: "{{ vault_gitlab_oidc_max_ttl }}"
+          bound_claims_type: "{{ vault_gitlab_oidc_bound_claims_type }}"
+          bound_claims: "{{ vault_gitlab_oidc_bound_claims if vault_gitlab_oidc_bound_claims | length > 0 else omit }}"
+      when:
+        - vault_oidc_role.data is not defined or (vault_oidc_role_existing.user_claim | default('')) != vault_gitlab_oidc_user_claim or (vault_oidc_role_existing.groups_claim
+          | default('')) != vault_gitlab_oidc_groups_claim or (vault_oidc_role_existing.allowed_redirect_uris | default([]) | sort) != (vault_gitlab_oidc_allowed_redirect_uris
+          | sort) or (vault_oidc_role_existing.oidc_scopes | default([]) | sort) != (vault_gitlab_oidc_scopes | sort) or (vault_oidc_role_existing.policies | default([])
+          | sort) != (vault_gitlab_oidc_policies | sort) or (vault_oidc_role_existing.bound_claims_type | default('string')) != vault_gitlab_oidc_bound_claims_type
+          or (vault_oidc_role_existing.bound_claims | default({})) != (vault_gitlab_oidc_bound_claims | default({})) or (vault_oidc_role_existing.ttl | default(''))
+          != vault_gitlab_oidc_ttl or (vault_oidc_role_existing.max_ttl | default('')) != vault_gitlab_oidc_max_ttl
+      delegate_to: localhost
+      run_once: true
+
+    - name: Display GitLab SSO login details
+      ansible.builtin.debug:
+        msg: |
+          GitLab SSO configured for Vault.
+          Vault URL: {{ vault_addr }}/ui
+          Auth method: OIDC ({{ vault_gitlab_oidc_mount_path }})
+          Role: {{ vault_gitlab_oidc_role_name }}
+          Issuer: {{ vault_gitlab_oidc_discovery_url }}
+      run_once: true

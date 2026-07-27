@@ -1,0 +1,29 @@
+# svc-rundeck-mgt — Rundeck mgt-project AppRole
+# WHO:     svc-rundeck-mgt (AppRole)
+# WHERE:   management Rundeck project (jobs run by rundeck-01)
+# TTL:     8h / 24h max
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only KV access to kv-mgmt/* only. Write narrow on
+# kv-mgmt/apps/+/runtime so mgt-project plays can cache state back into
+# Vault (NPM JWT, refreshable creds, etc.). NO access to kv-dev or kv-prod
+# — env isolation is enforced at the Vault policy layer, not just at
+# Rundeck ACL. A compromised mgt webhook cannot pivot to prod secrets.
+
+# Read-only KV access — mgt mount only
+path "kv-mgmt/data/*"        { capabilities = ["read", "list"] }
+path "kv-mgmt/metadata/*"    { capabilities = ["read", "list"] }
+
+# Write on mgt apps/*/runtime — for token caches, refreshable creds, etc.
+path "kv-mgmt/data/apps/+/runtime"    { capabilities = ["create", "update", "patch", "read"] }
+
+# Token self-management — child token creation for ephemeral lookups
+path "auth/token/create" {
+  capabilities = ["create", "update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

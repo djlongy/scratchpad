@@ -1,0 +1,26 @@
+# svc-ci-dev — GitLab CI policy scoped to DEV environment only
+# WHO:     GitLab CI JWT auth (runners tagged 'dev')
+# TTL:     30m token, max 2h
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only access to kv-dev secrets only. Tokens stolen from a
+# compromised DEV runner cannot read kv-mgmt or kv-prod secrets.
+
+# DEV KV mount — read-only
+path "kv-dev/data/*" {
+  capabilities = ["read"]
+}
+path "kv-dev/metadata/*" {
+  capabilities = ["read", "list"]
+}
+
+# Child token creation (required by community.hashi_vault lookups and Terraform provider)
+path "auth/token/create" {
+  capabilities = ["update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

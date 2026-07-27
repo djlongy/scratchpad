@@ -1,0 +1,128 @@
+---
+# tasks/setup_transit_cosign.yml — Vault Transit secrets engine + Cosign signing key
+# Enables Transit, creates an ECDSA-P256 signing key, exports the public key
+# to KV for Kyverno policy consumption.
+#
+# Usage:
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/<playbook>.yml --tags transit
+#
+# After running, CI pipelines sign images with:
+#   cosign sign --key hashivault://cosign $IMAGE_DIGEST
+#
+# Kyverno reads the public key from:
+#   kv-mgmt/platform/cosign/runtime:public_key
+
+- name: Configure Vault Transit engine for Cosign image signing
+  tags: [transit, cosign]
+  become: false
+  block:
+    - name: Check if Transit secrets engine is enabled
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/mounts
+      register: _transit_mounts_check
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Enable Transit secrets engine
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: sys/mounts/transit
+        data:
+          type: transit
+          description: "Transit encryption and signing engine for Cosign image signatures"
+      when: "'transit/' not in _transit_mounts_check.data.data.keys()"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Check if cosign signing key exists
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: transit/keys/cosign
+      register: _cosign_key_check
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Create cosign ECDSA-P256 signing key
+      community.hashi_vault.vault_write:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: transit/keys/cosign
+        data:
+          type: ecdsa-p256
+          exportable: false
+          allow_plaintext_backup: false
+          deletion_allowed: false
+      when: _cosign_key_check.data is not defined
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Read cosign key metadata (for public key extraction)
+      community.hashi_vault.vault_read:
+        url: "{{ vault_addr }}"
+        token: "{{ vault_root_token }}"
+        path: transit/keys/cosign
+      register: _cosign_key_data
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Extract latest public key version
+      ansible.builtin.set_fact:
+        _cosign_latest_version: "{{ _cosign_key_data.data.data.latest_version }}"
+        _cosign_public_key_b64: >-
+          {{ _cosign_key_data.data.data['keys'][_cosign_key_data.data.data.latest_version | string]['public_key'] }}
+      run_once: true
+
+    - name: Store public key in Vault KV for Kyverno consumption
+      ansible.builtin.command:
+        cmd: >
+          vault kv put -mount=kv-mgmt platform/cosign/runtime
+          public_key={{ _cosign_public_key_b64 | quote }}
+          key_type=ecdsa-p256
+          key_version={{ _cosign_latest_version }}
+          transit_path=transit/keys/cosign
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_root_token }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: true
+
+    - name: Display Cosign signing configuration
+      ansible.builtin.debug:
+        msg: |
+          === Vault Transit Cosign Signing Key ===
+
+          Transit engine:   transit/
+          Key name:          cosign
+          Key type:          ECDSA P-256
+          Key version:       {{ _cosign_latest_version }}
+          Exportable:        false (key never leaves Vault)
+
+          Public key stored: kv-mgmt/platform/cosign/runtime:public_key
+
+          === CI Pipeline Usage ===
+          # Sign an image (CI needs svc-cosign-sign policy):
+          export VAULT_ADDR={{ vault_addr }}
+          cosign sign --key hashivault://cosign $IMAGE_DIGEST
+
+          # Verify a signature (anyone with public key):
+          cosign verify --key hashivault://cosign $IMAGE_DIGEST
+
+          # Export public key for offline verification:
+          cosign public-key --key hashivault://cosign > cosign.pub
+
+          === Kyverno Integration ===
+          Public key path: kv-mgmt/platform/cosign/runtime:public_key
+          Use this in Kyverno ClusterPolicy verifyImages attestors.
+      run_once: true

@@ -1,0 +1,37 @@
+# svc-rundeck — Rundeck orchestrator service account
+# WHO:     svc-rundeck (AppRole)
+# TTL:     8h / 24h max
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: full read on all KV mounts + write on apps/*/runtime paths so jobs
+# can run conf_npm, sw_*  roles, and similar that cache state back into Vault
+# (e.g. NPM JWT cache at kv-prod/apps/npm/runtime). Mirrors svc-automation
+# for reads; adds narrow write on the runtime cache surface.
+
+# Read-only KV access — all environment mounts (matches svc-automation)
+path "kv/data/*"            { capabilities = ["read", "list"] }
+path "kv/metadata/*"        { capabilities = ["read", "list"] }
+path "kv-mgmt/data/*"        { capabilities = ["read", "list"] }
+path "kv-mgmt/metadata/*"    { capabilities = ["read", "list"] }
+path "kv-prod/data/*"       { capabilities = ["read", "list"] }
+path "kv-prod/metadata/*"   { capabilities = ["read", "list"] }
+path "kv-dev/data/*"        { capabilities = ["read", "list"] }
+path "kv-dev/metadata/*"    { capabilities = ["read", "list"] }
+
+# Write on apps/*/runtime — for token caches, refreshable creds, etc.
+# Roles that update Vault state during deploys (npm, authentik, etc.)
+# need this surface; runtime is per-app and operationally rotatable.
+path "kv-mgmt/data/apps/+/runtime"    { capabilities = ["create", "update", "patch", "read"] }
+path "kv-prod/data/apps/+/runtime"   { capabilities = ["create", "update", "patch", "read"] }
+path "kv-dev/data/apps/+/runtime"    { capabilities = ["create", "update", "patch", "read"] }
+
+# Token self-management — child token creation for ephemeral lookups
+path "auth/token/create" {
+  capabilities = ["create", "update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}

@@ -1,0 +1,124 @@
+# ops-admin — full operator policy
+# WHO:     Human operators (long via userpass + GitLab OIDC)
+# TTL:     72h token, max 720h (30 days)
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: full KV CRUD on all mounts, full sys/auth/policy/identity management,
+# full PKI and AppRole management. Equivalent to ops-superadmin in scope
+# but with a longer TTL suitable for day-to-day work.
+
+# Full KV v2 access — legacy kv mount
+path "kv/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Full KV v2 access — env-scoped mounts
+path "kv-mgmt/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-prod/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-dev/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "kv-personal/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# UI — mount visibility for all KV mounts
+path "sys/internal/ui/mounts" {
+  capabilities = ["read"]
+}
+path "sys/internal/ui/mounts/*" {
+  capabilities = ["read"]
+}
+
+# Full sys visibility and management
+path "sys/auth" {
+  capabilities = ["read", "list"]
+}
+path "sys/auth/*" {
+  capabilities = ["create", "read", "update", "delete", "sudo", "list"]
+}
+path "sys/policies/acl" {
+  capabilities = ["read", "list"]
+}
+path "sys/policies/acl/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "sys/mounts" {
+  capabilities = ["read", "list"]
+}
+path "sys/mounts/*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+
+# Identity — entities, groups, aliases
+path "identity/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# Auth backends — full management
+path "auth/approle/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/kubernetes/*" {
+  capabilities = ["create", "read", "update", "delete", "sudo", "list"]
+}
+path "auth/kubernetes-prod/*" {
+  capabilities = ["create", "read", "update", "delete", "sudo", "list"]
+}
+path "auth/kubernetes-mgt/*" {
+  capabilities = ["create", "read", "update", "delete", "sudo", "list"]
+}
+path "auth/jwt/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/oidc/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/userpass/users/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "identity/oidc/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+# PKI — full management
+path "pki/*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+path "pki_int/*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+
+# Token management
+path "auth/token/create" {
+  capabilities = ["create", "update", "sudo"]
+}
+path "auth/token/roles/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
+path "auth/token/revoke-self" {
+  capabilities = ["update"]
+}
+
+# Audit devices — read-only (audit trail must never be tampered)
+path "sys/audit" {
+  capabilities = ["read", "list"]
+}
+path "sys/audit/*" {
+  capabilities = ["read", "list"]
+}
+
+# UI
+path "sys/internal/ui/resultant-acl" {
+  capabilities = ["read"]
+}

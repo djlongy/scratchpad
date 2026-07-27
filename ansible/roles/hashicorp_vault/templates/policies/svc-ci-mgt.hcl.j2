@@ -1,0 +1,26 @@
+# svc-ci-mgt — GitLab CI policy scoped to MGT environment only
+# WHO:     GitLab CI JWT auth (runners tagged 'mgt')
+# TTL:     30m token, max 2h
+# Managed by: ansible/roles/hashicorp_vault — DO NOT edit manually.
+#
+# Scope: read-only access to kv-mgmt secrets only. Tokens stolen from a
+# compromised MGT runner cannot read kv-prod or kv-dev secrets.
+
+# MGT KV mount — read-only
+path "kv-mgmt/data/*" {
+  capabilities = ["read"]
+}
+path "kv-mgmt/metadata/*" {
+  capabilities = ["read", "list"]
+}
+
+# Child token creation (required by community.hashi_vault lookups and Terraform provider)
+path "auth/token/create" {
+  capabilities = ["update"]
+}
+path "auth/token/lookup-self" {
+  capabilities = ["read"]
+}
+path "auth/token/renew-self" {
+  capabilities = ["update"]
+}
