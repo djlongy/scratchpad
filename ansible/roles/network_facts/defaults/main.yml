@@ -30,11 +30,11 @@ network_facts_show: []
 
 # A platform label from network_platforms, or a view namespace from
 # network_platform_lists. Narrows the per-platform recipes.
-#   -e network_facts_platform=esxi
+#   -e network_facts_platform=hypervisor
 network_facts_platform: ""
 
 # A list name inside that platform. Needs network_facts_platform set too.
-#   -e network_facts_platform=esxi -e network_facts_list=port_groups
+#   -e network_facts_platform=hypervisor -e network_facts_list=port_groups
 network_facts_list: ""
 
 # One site out of a per-site list. Empty picks the first site the list has,
@@ -56,7 +56,7 @@ network_facts_value: ""
 # A path to write the selection to, instead of only printing it. What gets
 # written is whatever `network_facts_platform` (+ `network_facts_list`)
 # selects, so the file is the exact input a module would loop over.
-#   -e network_facts_platform=esxi -e network_facts_list=vcenter_portgroups \
+#   -e network_facts_platform=hypervisor -e network_facts_list=hv_mgr_portgroups \
 #   -e network_facts_save=/tmp/portgroups.yml
 network_facts_save: ""
 

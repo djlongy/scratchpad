@@ -49,13 +49,13 @@ Narrow it to one recipe group, then narrow that with a knob:
 
     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags vlans
     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags vlans \
-      -e network_facts_platform=esxi
+      -e network_facts_platform=hypervisor
 
 Take a list away with you:
 
     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml \
-      -e network_facts_platform=esxi \
-      -e network_facts_list=vcenter_portgroups \
+      -e network_facts_platform=hypervisor \
+      -e network_facts_list=hv_mgr_portgroups \
       -e network_facts_save=/tmp/portgroups.yml
 
 ## How it is laid out
@@ -116,7 +116,7 @@ and it shows up automatically.
 
 ## Out of scope
 
-- Configures no device — it never talks to a switch, firewall, or vCenter.
+- Configures no device — it never talks to a switch, firewall, or the hypervisor manager.
 - Does not edit the catalog. Segments are added in
   `playbooks/group_vars/all/networks.yml`.
 - Does not format tables, search, or pre-flight a new VLAN. That is

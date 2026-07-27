@@ -12,7 +12,7 @@
 
 # The platform MEMBERSHIP labels allowed in a segment's platforms[]. Add a
 # label here and it becomes selectable; give it a view in
-# networks_platforms.yml and it becomes a list. (View namespaces like `dell`
+# networks_platforms.yml and it becomes a list. (View namespaces like `switches`
 # are free labels and do NOT need to appear here — see the doc's
 # "Membership vs namespace" section.)
 #
@@ -22,16 +22,16 @@
 # rejects it as a missing required field (tested — see
 # test_empty_string_and_empty_list_count_as_missing), so a genuinely
 # apply-nowhere segment has to name that intent rather than omit it.
-network_platforms: [esxi, firewall, switches, unifi, palo, catalog_only]
+network_platforms: [hypervisor, firewall, switches, wifi, edge, catalog_only]
 
 # Fields every segment inherits unless it sets its own.
 network_segment_defaults:
-  esxi_vswitch: "{{ esxi_vds_name }}"
-  esxi_allow_promiscuous: false
-  esxi_allow_forged_transmits: false
-  esxi_allow_mac_change: false
-  esxi_num_ports: 0
-  esxi_port_binding: ephemeral
+  hv_vswitch: "{{ hv_switch_name }}"
+  hv_allow_promiscuous: false
+  hv_allow_forged_transmits: false
+  hv_allow_mac_change: false
+  hv_num_ports: 0
+  hv_port_binding: ephemeral
   tenancy: platform
 
 # ── Name recipes ───────────────────────────────────────────────────────────
@@ -39,9 +39,9 @@ network_segment_defaults:
 # The platform words belong in the views below, which are vendor-specific by
 # definition. Every segment gets one name per recipe.
 #
-#   name        the primary identity (network_primary_name_recipe). vSphere uses it as
+#   name        the primary identity (network_primary_name_recipe). hypervisor uses it as
 #               the port-group name, but nothing about the recipe says so.
-#   short_name  the same name minus the VLAN part — Dell OS10 wants the label
+#   short_name  the same name minus the VLAN part — the switch fabric wants the label
 #               without VLANnn, and `from:` keeps the two in sync with no regex
 #               and no second parts list.
 #
@@ -55,7 +55,7 @@ network_name_recipes:
     sep: "-"
     vlan_prefix: "VLAN"
     # pad 2 renders VLAN0 as VLAN00 and VLAN1 as VLAN01, matching the names
-    # already on the vDS; ids of 3+ digits are unaffected.
+    # already on the distributed switch; ids of 3+ digits are unaffected.
     vlan_pad: 2
   short_name:
     from: name
@@ -75,9 +75,9 @@ network_description_template: ""
 network_required_fields:
   all: [vlan_id, platforms, site, zone, role]
   by_platform:
-    firewall: [subnet, netmask, gateway, dns, pfsense_parent, pfsense_descr]
-    palo: [subnet, gateway]
-    unifi: [unifi_name, unifi_site]
+    firewall: [subnet, netmask, gateway, dns, fw_parent, fw_descr]
+    edge: [subnet, gateway]
+    wifi: [wifi_net_name, wifi_site]
 
 # ── Partitions to build (_segments_by.<field> / _cidrs_by.<field>) ─────────
 # `pool` groups every pool-generated segment under its pool name.

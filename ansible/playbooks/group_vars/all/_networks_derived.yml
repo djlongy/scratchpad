@@ -13,42 +13,42 @@
 #
 #   _net.<platform>.<list>       ← THE ONE YOU WANT, 99% of the time
 #
-#     _net.esxi.port_groups          vSphere port groups (matrix + custom)
-#     _net.esxi.vcenter_portgroups   the same, shaped for vmware_dvs_portgroup
-#     _net.dell.vlans                Dell OS10 VLANs
-#     _net.palo.interfaces           Palo L3 subinterfaces
-#     _net.palo.zones                Palo zones
-#     _net.pfsense.vlans.<site>      pfSense 802.1q VLANs, per site
-#     _net.pfsense.interfaces.<site> pfSense SVIs, per site
-#     _net.unifi.vlans.<site>        UniFi vlan-only networks, per site
+#     _net.hypervisor.port_groups          hypervisor port groups (matrix + custom)
+#     _net.hypervisor.hv_mgr_portgroups   the same, shaped for a portgroup module
+#     _net.switches.vlans                the switch fabric VLANs
+#     _net.edge.interfaces           edge L3 subinterfaces
+#     _net.edge.zones                edge zones
+#     _net.firewall.vlans.<site>      the firewall 802.1q VLANs, per site
+#     _net.firewall.interfaces.<site> the firewall SVIs, per site
+#     _net.wifi.vlans.<site>        the wifi controller vlan-only networks, per site
 #
 #   Browse them without reading YAML:
 #     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags views
-#     …--tags platform -e p=esxi        one platform, everything it gets
-#     …--tags view -e view=dell.vlans   one list, every row
+#     …--tags platform -e p=hypervisor        one platform, everything it gets
+#     …--tags view -e view=switches.vlans   one list, every row
 #
 #   Want the task that pulls one, to copy into your own role?
 #     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags platform_lists
 #   Every fact below has a three-line recipe in roles/network_facts/tasks/.
 #
 #   Wire one into a host:
-#     pfsense_network_vlans: "{{ _net.pfsense.vlans.site-a }}"
-#     vcenter_config.portgroups: "{{ _net.esxi.vcenter_portgroups }}"
+#     fw_network_vlans: "{{ _net.firewall.vlans.site-a }}"
+#     hv_mgr_config.portgroups: "{{ _net.hypervisor.hv_mgr_portgroups }}"
 #
 #   Already have a hand-maintained list? Concatenate — same shape, one loop:
-#     loop: "{{ my_existing_rows + _net.esxi.port_groups }}"
+#     loop: "{{ my_existing_rows + _net.hypervisor.port_groups }}"
 #   (or declare `append:` on the view and get one list for free)
 #
 # ══════════════════════ EVERYTHING ELSE ══════════════════════
 #   _segments        every segment as a flat row (your fields + built names,
 #                    platforms, tagged, prefixlen, gateway_cidr, on_<platform>)
 #   _segments_by.<field>.<v>  partition by any field: _segments_by.role.svc,
-#                    _segments_by.platform.esxi
+#                    _segments_by.platform.hypervisor
 #   _cidrs_by.<f>.<v>  the same, as subnet lists — firewall rule fodder
 #   _vlan_ids_by_platform  platform → sorted unique tagged VLAN ids
 #   _vlan_ranges_by_platform  the same ids compressed to range strings
 #                    (['10','2000-2004',…]) — chunk into switch trunk lines:
-#                    {% for c in _vlan_ranges_by_platform.esxi | batch(6) %}
+#                    {% for c in _vlan_ranges_by_platform.hypervisor | batch(6) %}
 #                    switchport trunk allowed vlan {{ 'add ' if not loop.first }}{{ c | join(',') }}
 #   _operator_cidrs  subnets flagged operator_source (bastion/proxy allow-lists)
 #   _segment_by_key / _vlan_by_key / _name_by_key / _subnet_by_key /

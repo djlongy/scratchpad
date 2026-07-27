@@ -2,8 +2,8 @@
 
 Documentation for the **`network_catalog` Jinja filter**
 (`plugins/filter/network_catalog.py`). It turns **one dictionary of network
-segments** into every per-platform list your modules loop over — ESXi port
-groups, Dell VLANs, Palo subinterfaces, pfSense SVIs, whatever you declare.
+segments** into every per-platform list your modules loop over — hypervisor host port
+groups, the switch fabric VLANs, edge subinterfaces, the firewall SVIs, whatever you declare.
 
 The document has two halves for two audiences:
 
@@ -23,8 +23,8 @@ The document has two halves for two audiences:
 ## What problem this solves
 
 Before the catalog, every platform kept its own hand-maintained list of the
-same networks: a vDS port-group list, a Dell VLAN list, a pfSense VLAN list, a
-UniFi list. Adding one VLAN meant editing five files with five vocabularies,
+same networks: a distributed switch port-group list, the switch fabric VLAN list, the firewall VLAN list, a
+the wifi controller list. Adding one VLAN meant editing five files with five vocabularies,
 and they drifted.
 
 Now there is **one dictionary of segments** — the single source of truth
@@ -38,18 +38,18 @@ A complete, tiny example — two segments in, one platform list out:
 
 ```yaml
 network_underlays:                    # the single source of truth (input)
-  web:  {vlan_id: 1101, subnet: "10.11.1.0/24", platforms: [nsx], purpose: web}
-  data: {vlan_id: 1102, subnet: "10.11.2.0/24", platforms: [nsx], purpose: data}
+  web:  {vlan_id: 1101, subnet: "10.11.1.0/24", platforms: [alpha], purpose: web}
+  data: {vlan_id: 1102, subnet: "10.11.2.0/24", platforms: [alpha], purpose: data}
 
 network_platform_lists:               # a view (output shape)
-  nsx:
+  alpha:
     segments:
-      platform: nsx
+      platform: alpha
       fields: {display_name: name, vlan_ids: vlan_id}
 ```
 
 ```yaml
-_net.nsx.segments:                    # what a consumer reads
+_net.alpha.segments:                    # what a consumer reads
   - {display_name: seg1101_web,  vlan_ids: 1101}
   - {display_name: seg1102_data, vlan_ids: 1102}
 ```
@@ -91,7 +91,7 @@ machine-owned: derived by the engine, never edited by hand.
 |---|---|---|
 | `networks.yml` | **Day to day** — adding or changing a network segment | Output shapes, engine rules |
 | `networks_config.yml` | The **rules** change: allowed platforms, name recipes, required fields, defaults, partitions | Adding an ordinary segment |
-| `networks_platforms.yml` | A **module's row shape** changes, a static `*_extra` row is needed, or device metadata (Dell trunks, Palo device config) changes | Declaring ordinary segments |
+| `networks_platforms.yml` | A **module's row shape** changes, a static `*_extra` row is needed, or device metadata (the switch fabric trunks, edge device config) changes | Declaring ordinary segments |
 | `_networks_derived.yml` | Effectively never — it is the stable contract you **read** (`_net.*` and friends) | Estate-specific values |
 | `plugins/filter/network_catalog.py` | Reusable engine behaviour changes (rare; unit-tested) | Anything estate-specific — a missing knob belongs in config, not the engine |
 | `playbooks/ops_net_facts.yml` | Extending the read-only browser | Applying configuration — it changes nothing |
@@ -140,10 +140,10 @@ result. The underscore is a repo convention, not an Ansible mechanism.
 The single most common confusion in this system. The word "platform" appears in
 three distinct roles:
 
-1. **The allow-list** — `network_platforms: [esxi, firewall, switches, unifi, palo]`
+1. **The allow-list** — `network_platforms: [hypervisor, firewall, switches, wifi, edge]`
    in `networks_config.yml`. The only labels a segment may use. Anything else
    is a [validation error](#what-errors-catches).
-2. **Segment membership** — `platforms: [esxi, firewall, …]` on a segment:
+2. **Segment membership** — `platforms: [hypervisor, firewall, …]` on a segment:
    *which systems this network applies to*. Views filter on it; it also drives
    the `on_<platform>` booleans and the always-built `platform`
    [partition](#partition-and-lookup-semantics).
@@ -151,12 +151,12 @@ three distinct roles:
    which becomes `_net.<namespace>`. This is a **free label**. It does not
    have to be (and sometimes is not) a member of the allow-list.
 
-They only *look* like the same thing because `esxi`, `palo` and `unifi` happen
-to use the same word for both. `dell` and `pfsense` do not:
+They only *look* like the same thing because `hypervisor`, `edge` and `wifi` happen
+to use the same word for both. `switches` and `firewall` do not:
 
 ```yaml
 network_platform_lists:
-  dell:                     # NAMESPACE  -> read as _net.dell.vlans
+  switches:                     # NAMESPACE  -> read as _net.switches.vlans
     vlans:
       platform: switches    # MEMBERSHIP -> selects segments listing 'switches'
       fields: {id: vlan_id, name: short_name, key: key, site: site}
@@ -164,20 +164,20 @@ network_platform_lists:
 
 | `_net` namespace | Filters on membership | Lists |
 |---|---|---|
-| `esxi` | `esxi` | `port_groups`, `vcenter_portgroups` |
-| `dell` | `switches` | `vlans` |
-| `palo` | `palo` | `interfaces`, `zones` |
-| `pfsense` | `firewall` | `vlans.<site>`, `interfaces.<site>` |
-| `unifi` | `unifi` | `vlans.<site>` |
+| `hypervisor` | `hypervisor` | `port_groups`, `hv_mgr_portgroups` |
+| `switches` | `switches` | `vlans` |
+| `edge` | `edge` | `interfaces`, `zones` |
+| `firewall` | `firewall` | `vlans.<site>`, `interfaces.<site>` |
+| `wifi` | `wifi` | `vlans.<site>` |
 
 Consequences:
 
-- A segment declares `platforms: [switches]`, **never** `platforms: [dell]` —
-  `dell` is not in the allow-list and would be a validation error.
+- A segment declares `platforms: [switches]`, **never** `platforms: [switches]` —
+  `switches` is not in the allow-list and would be a validation error.
 - Validation checks a view's `platform:` filter against the allow-list; the
   namespace key is deliberately **not** checked — it is yours to name.
 - A bare `source:` reference resolves within the **namespace**
-  (`source: port_groups` under `esxi` means `esxi.port_groups`), not within
+  (`source: port_groups` under `hypervisor` means `hypervisor.port_groups`), not within
   the membership label.
 
 ## Variable name map
@@ -226,13 +226,13 @@ policy* (`networks_config.yml`) requires much more. A segment here must carry:
 | Scope | Required fields (empty counts as missing) |
 |---|---|
 | **Every segment** | `vlan_id`, `platforms`, `site`, `zone`, `role` |
-| **When on `firewall`** | `subnet`, `netmask`, `gateway`, `dns`, `pfsense_parent`, `pfsense_descr` |
-| **When on `palo`** | `subnet`, `gateway` |
-| **When on `unifi`** | `unifi_name`, `unifi_site` |
+| **When on `firewall`** | `subnet`, `netmask`, `gateway`, `dns`, `fw_parent`, `fw_descr` |
+| **When on `edge`** | `subnet`, `gateway` |
+| **When on `wifi`** | `wifi_net_name`, `wifi_site` |
 
 L3 fields are required only where a device **routes** the segment — an
 L2-only isolation VLAN (e.g. a [pool](#pools)-generated tenant segment on
-`esxi`/`switches` only) legitimately has no subnet or gateway, and the
+`hypervisor`/`switches` only) legitimately has no subnet or gateway, and the
 policy no longer forces one.
 
 > **Defaults do not satisfy required fields.** The check runs on the segment
@@ -247,15 +247,15 @@ Anatomy of a segment, grouped by what consumes each field:
 | **Fabric** | `vlan_id`, `subnet`, `netmask`, `gateway`, `dns` | Engine (`tagged`, `prefixlen`, `gateway_cidr`) + views + VM provisioning |
 | **Membership** | `platforms` | View filters, `on_<platform>`, platform partition |
 | **Identity (name tokens)** | `env`, `role`, `tenancy`, `site`, `zone`, `instance` | [Name recipes](#name-recipes), [partitions](#partition-and-lookup-semantics), grouped views |
-| **Platform extras** | `pfsense_parent`, `pfsense_descr`, `pfsense_priority`, `unifi_name`, `unifi_site`, `esxi_num_ports`, `esxi_port_binding`, `esxi_allow_promiscuous`, `esxi_allow_forged_transmits`, `esxi_allow_mac_change`, `esxi_vswitch` | The matching platform's views (pass-through — the engine never reads them) |
+| **Platform extras** | `fw_parent`, `fw_descr`, `fw_priority`, `wifi_net_name`, `wifi_site`, `hv_num_ports`, `hv_port_binding`, `hv_allow_promiscuous`, `hv_allow_forged_transmits`, `hv_allow_mac_change`, `hv_vswitch` | The matching platform's views (pass-through — the engine never reads them) |
 | **Naming overrides** | `name_parts`, `name_case`, `name_sep`, `name_prefix`, `name_suffix`, `vlan_prefix`, `vlan_pad`, `names:`, a recipe-named field | [Recipe resolution](#how-one-recipe-is-resolved-for-one-segment) / [pinning](#pinning-a-name) |
 | **Ops** | `description`, `operator_source` | `row.description`, `_operator_cidrs` (bastion/proxy allow-lists) |
 
 This estate's naming policy: primary recipe `name` =
 `[vlan, env, role]`, upper-case, `-`, prefix `VLAN`, pad 2 (so VLAN 0 renders
-`VLAN00`, matching the live vDS); `short_name` = the same minus the VLAN part
-(Dell wants the label without `VLANnn`). Defaults stamp `tenancy: platform` and
-the ESXi security/binding knobs (all conservative).
+`VLAN00`, matching the live distributed switch); `short_name` = the same minus the VLAN part
+(the switch fabric wants the label without `VLANnn`). Defaults stamp `tenancy: platform` and
+the hypervisor host security/binding knobs (all conservative).
 
 A copy-paste template with every required field:
 
@@ -267,22 +267,22 @@ network_underlays:
     netmask: "255.255.255.0"
     gateway: "192.168.99.1"
     dns: ["192.168.99.1"]
-    platforms: [esxi, firewall, switches, unifi, palo]
+    platforms: [hypervisor, firewall, switches, wifi, edge]
     env: dev                          # name token + partition
     role: svc                         # name token + partition
-    site: site-a                    # partition + pfSense grouping
-    zone: dev                         # partition + Palo zone
+    site: site-a                    # partition + the firewall grouping
+    zone: dev                         # partition + edge zone
     description: "example service network"
-    pfsense_parent: vmx1              # required by 'firewall'
-    pfsense_descr: "V99_EXAMPLE"      # required by 'firewall'
-    unifi_name: "V99_EXAMPLE"         # required by 'unifi'
-    unifi_site: lid                   # required by 'unifi' + UniFi grouping
+    fw_parent: uplink0              # required by 'firewall'
+    fw_descr: "V99_EXAMPLE"      # required by 'firewall'
+    wifi_net_name: "V99_EXAMPLE"         # required by 'wifi'
+    wifi_site: lid                   # required by 'wifi' + the wifi controller grouping
 ```
 
 What that yields (names from the estate recipes, rows per
 [Platform output map](#platform-output-map)): `name: VLAN99-DEV-SVC`,
-`short_name: DEV-SVC`, a vDS port group, a Dell VLAN, a pfSense VLAN + SVI
-under `.site-a`, a UniFi network under `.sa`, and a Palo subinterface
+`short_name: DEV-SVC`, a distributed switch port group, the switch fabric VLAN, the firewall VLAN + SVI
+under `.site-a`, the wifi controller network under `.sa`, and a edge subinterface
 `ethernet1/1.99` in zone `z-dev`.
 
 Related variables that are **not** part of the engine:
@@ -301,14 +301,14 @@ Every list the estate currently derives, and what is special about each:
 
 | Output | Selects (membership) | Row shape for | Special behaviour |
 |---|---|---|---|
-| `_net.esxi.port_groups` | `esxi` | vDS port groups | Appends `esxi_port_groups_extra` (the TRUNK row) |
-| `_net.esxi.vcenter_portgroups` | *(chained from `port_groups`)* | `community.vmware.vmware_dvs_portgroup` | `security:` emitted only when a row relaxes something; `vlan_trunk` left out when empty/false |
-| `_net.dell.vlans` | `switches` | Dell OS10 VLANs | Uses `short_name` (no `VLANnn` in the label) |
-| `_net.palo.interfaces` | `palo`, tagged only | Palo L3 subinterfaces | `consts` inject parent IF + VR; `ip` is the segment **gateway** (the subinterface *is* the gateway) |
-| `_net.palo.zones` | *(chained from `interfaces`)* | Palo zones | `unique_by: name` dedupes to distinct zones |
-| `_net.pfsense.vlans.<site>` | `firewall`, tagged only | pfSense 802.1Q VLANs | `group_by: site` — one firewall consumes one site |
-| `_net.pfsense.interfaces.<site>` | `firewall`, tagged only | pfSense SVIs | `group_by: site` |
-| `_net.unifi.vlans.<site>` | `unifi` | UniFi vlan-only networks | `group_by: unifi_site`; appends `unifi_vlans_extra` (legacy rows driven to `state: absent`) |
+| `_net.hypervisor.port_groups` | `hypervisor` | distributed switch port groups | Appends `hv_port_groups_extra` (the TRUNK row) |
+| `_net.hypervisor.hv_mgr_portgroups` | *(chained from `port_groups`)* | `community.portgroup module.portgroup module` | `security:` emitted only when a row relaxes something; `vlan_trunk` left out when empty/false |
+| `_net.switches.vlans` | `switches` | the switch fabric VLANs | Uses `short_name` (no `VLANnn` in the label) |
+| `_net.edge.interfaces` | `edge`, tagged only | edge L3 subinterfaces | `consts` inject parent IF + VR; `ip` is the segment **gateway** (the subinterface *is* the gateway) |
+| `_net.edge.zones` | *(chained from `interfaces`)* | edge zones | `unique_by: name` dedupes to distinct zones |
+| `_net.firewall.vlans.<site>` | `firewall`, tagged only | the firewall 802.1Q VLANs | `group_by: site` — one firewall consumes one site |
+| `_net.firewall.interfaces.<site>` | `firewall`, tagged only | the firewall SVIs | `group_by: site` |
+| `_net.wifi.vlans.<site>` | `wifi` | the wifi controller vlan-only networks | `group_by: wifi_site`; appends `wifi_vlans_extra` (legacy rows driven to `state: absent`) |
 
 ## Generated vs appended vs static data
 
@@ -317,20 +317,20 @@ Three kinds of platform data, three homes. Decision rules:
 | The row… | Belongs in | Example |
 |---|---|---|
 | Follows the segment matrix pattern | `network_underlays` (a segment) | Any ordinary VLAN |
-| Is an exception, but has the same final module row shape | The view's `append:` list (`*_extra` vars in `networks_platforms.yml`) | The ESXi TRUNK port group; UniFi legacy VLANs driven absent |
-| Describes physical wiring or device-global config | A plain variable outside the views | Dell trunk ports, `palo_parent_interface` |
+| Is an exception, but has the same final module row shape | The view's `append:` list (`*_extra` vars in `networks_platforms.yml`) | The hypervisor host TRUNK port group; the wifi controller legacy VLANs driven absent |
+| Describes physical wiring or device-global config | A plain variable outside the views | the switch fabric trunk ports, `edge_parent_interface` |
 
 Rules for `append:` rows (full semantics: [Views → append](#how-a-result-is-assembled)):
 
 - They use the view's **output keys** (`name`/`switch`/`vlan`), never segment
-  field names (`esxi_vswitch`) — they are added to the *finished* list.
+  field names (`hv_vswitch`) — they are added to the *finished* list.
 - Keep their names/VLANs **outside** the matrix: generated and appended rows
   are never jointly deduplicated.
 - For a grouped view the append must be a **dict** keyed like the groups; an
   append-only key gets its own bucket.
 - Appended rows skip that view's reshaping — but **do** get reshaped by any
   later [chained view](#chained-views-source) (that is how the TRUNK row's
-  `trunk: true` becomes `vlan_trunk` in `vcenter_portgroups`).
+  `trunk: true` becomes `vlan_trunk` in `hv_mgr_portgroups`).
 
 ## Day-to-day workflows
 
@@ -351,9 +351,9 @@ the `netshow` alias below is assumed.
    you expected? (A typo'd token drops silently —
    [why](#validation-and-failure-model).)
 5. **Check the segment**: `netshow --tags where -e key=example`.
-6. **Check each platform's rows**: `netshow --tags view -e view=pfsense.vlans`
+6. **Check each platform's rows**: `netshow --tags view -e view=firewall.vlans`
    etc. — the shape the module will actually loop over.
-7. **Apply** through the owning playbooks (vCenter, Dell, pfSense, UniFi —
+7. **Apply** through the owning playbooks (the hypervisor manager, the switch fabric, the firewall, the wifi controller —
    check-mode first where supported). The catalog itself changes nothing.
 
 ### Workflow: add a platform membership
@@ -361,8 +361,8 @@ the `netshow` alias below is assumed.
 1. Confirm the label in the allow-list (`network_platforms`) and find which
    views filter on it — [Platform output map](#platform-output-map).
 2. Add it to the segment's `platforms: [...]`.
-3. Add that platform's conditional fields (`firewall` → `pfsense_parent` +
-   `pfsense_descr`; `unifi` → `unifi_name` + `unifi_site`) — validation will
+3. Add that platform's conditional fields (`firewall` → `fw_parent` +
+   `fw_descr`; `wifi` → `wifi_net_name` + `wifi_site`) — validation will
    name anything missing.
 4. `netshow --tags validate`, then `--tags view -e view=<ns>.<list>` for each
    list the platform gains.
@@ -428,8 +428,8 @@ Any inventory works — the catalog is estate-wide. The playbook needs the
 | `netshow --tags free` (`-e from=… -e to=…`) | Free VLAN ids and contiguous blocks |
 | `netshow --tags matrix` | Segment × platform grid |
 | `netshow --tags views` | **The index**: every namespace and its lists, with row counts and keys |
-| `netshow --tags platform -e p=esxi` | Everything one namespace gets, full YAML |
-| `netshow --tags view -e view=dell.vlans` | One list, every row, in declared field order |
+| `netshow --tags platform -e p=hypervisor` | Everything one namespace gets, full YAML |
+| `netshow --tags view -e view=switches.vlans` | One list, every row, in declared field order |
 | `netshow --tags find -e term=mgt` | Substring search across key/name/subnet/description/role/zone/site/vlan |
 | `netshow --tags where -e vlan=21` / `-e ip=192.168.21.55` / `-e key=dev_cluster` | Resolve to the owning segment: every field, every recipe's name (pins starred), which views it feeds |
 | `netshow --tags names` | What each recipe produces per segment; pins starred; `_names_pinned` summary |
@@ -445,25 +445,25 @@ Consumers never call the filter — they read the contract vars. Live examples:
 
 ```yaml
 # networks_platforms.yml — device dicts wired to derived lists
-vcenter:
-  vds_name: "{{ esxi_vds_name }}"
-  portgroups: "{{ _net.esxi.vcenter_portgroups }}"
+hv_mgr:
+  vds_name: "{{ hv_switch_name }}"
+  portgroups: "{{ _net.hypervisor.hv_mgr_portgroups }}"
 
-dell_os10_config:
-  vlans: "{{ _net.dell.vlans }}"        # trunks stay hand-curated (physical)
+switch_fabric_config:
+  vlans: "{{ _net.switches.vlans }}"        # trunks stay hand-curated (physical)
 
-palo_alto_config:
-  zones: "{{ _net.palo.zones }}"
+edge_config:
+  zones: "{{ _net.edge.zones }}"
 
 # host_vars/fw-site-a-01.yml — one firewall consumes one site of a grouped view
-pfsense_network_vlans: "{{ _net.pfsense.vlans.site-a }}"
+fw_network_vlans: "{{ _net.firewall.vlans.site-a }}"
 
 # inventory — selecting a primary segment (a choice, not a derivation)
-vsphere_vm_network: "{{ _name_by_key.mgt }}"
-vsphere_vm_gateway: "{{ network_underlays.mgt.gateway }}"
+guest_vm_network:  "{{ _name_by_key.mgt }}"
+guest_vm_gateway:  "{{ network_underlays.mgt.gateway }}"
 
 # keep an existing hand-maintained list, without touching the view
-loop: "{{ my_existing_rows + _net.esxi.port_groups }}"
+loop: "{{ my_existing_rows + _net.hypervisor.port_groups }}"
 ```
 
 Switch trunk lines from `_vlan_ranges_by_platform` — per-platform VLAN ids
@@ -471,8 +471,8 @@ pre-compressed to ranges, chunked into native CLI lines with built-in Jinja
 (`batch` splits a list into groups). No range logic at the consumer:
 
 ```yaml
-# 104 esxi vlans -> ['10','20','30','40','2000-2004','2010-2014',...] ->
-{% for chunk in _vlan_ranges_by_platform.esxi | batch(6) %}
+# 104 hypervisor vlans -> ['10','20','30','40','2000-2004','2010-2014',...] ->
+{% for chunk in _vlan_ranges_by_platform.hypervisor | batch(6) %}
 switchport trunk allowed vlan {{ 'add ' if not loop.first }}{{ chunk | join(',') }}
 {% endfor %}
 # switchport trunk allowed vlan 10,20,30,40,2000-2004,2010-2014
@@ -488,17 +488,17 @@ When no view gives you the shape you want, select over `_segments` directly.
 `platforms` is a **list** field, so the usual `selectattr('field', 'eq', x)`
 does not apply — but you rarely need to touch the list at all.
 
-### Four ways to say "the esxi segments"
+### Four ways to say "the hypervisor segments"
 
 All four return the same set. Counts are from this repo's demo catalog
-(34 segments, 11 of them on esxi):
+(34 segments, 11 of them on hypervisor):
 
 | # | Expression | Rows | Use when |
 |---|---|---|---|
-| 1 | `_net.esxi.port_groups` | 15 | **Default.** A [view](#views) — already shaped for the module, and includes `append:` static rows (hence 15, not 11) |
-| 2 | `_segments_by.platform.esxi` | 11 | You want raw segments, not shaped rows. Free — the partition is pre-built |
-| 3 | `_segments \| selectattr('on_esxi')` | 11 | Same, but composing with other `selectattr`s in one chain |
-| 4 | `_segments \| selectattr('platforms', 'contains', 'esxi')` | 11 | Filtering on the raw list, e.g. the label is in a variable |
+| 1 | `_net.hypervisor.port_groups` | 15 | **Default.** A [view](#views) — already shaped for the module, and includes `append:` static rows (hence 15, not 11) |
+| 2 | `_segments_by.platform.hypervisor` | 11 | You want raw segments, not shaped rows. Free — the partition is pre-built |
+| 3 | `_segments \| selectattr('on_hypervisor')` | 11 | Same, but composing with other `selectattr`s in one chain |
+| 4 | `_segments \| selectattr('platforms', 'contains', 'hypervisor')` | 11 | Filtering on the raw list, e.g. the label is in a variable |
 
 Every row carries one `on_<platform>` bool per **declared** platform
 ([enriched row fields](#enriched-row-fields)), which is why #3 needs no
@@ -508,18 +508,18 @@ Every row carries one `on_<platform>` bool per **declared** platform
 # the label is not known until runtime
 loop: "{{ _segments | selectattr('platforms', 'contains', target_platform) }}"
 
-# combining: esxi AND tagged AND in site-a
+# combining: hypervisor AND tagged AND in site-a
 loop: >-
-  {{ _segments | selectattr('on_esxi') | selectattr('tagged')
+  {{ _segments | selectattr('on_hypervisor') | selectattr('tagged')
      | selectattr('site', 'eq', 'site-a') | list }}
 
-# the inverse — everything NOT on esxi
-loop: "{{ _segments | rejectattr('on_esxi') | list }}"
+# the inverse — everything NOT on hypervisor
+loop: "{{ _segments | rejectattr('on_hypervisor') | list }}"
 ```
 
 `contains` is a Jinja test, so it also works in `rejectattr` and in a `when:`.
 
-### Worked example: an esxi port-group list with a name built from tokens
+### Worked example: an hypervisor port-group list with a name built from tokens
 
 **Read `row.name`. Do not build the name yourself, and do not read
 `row.names.<recipe>` for something you are going to apply.**
@@ -530,20 +530,20 @@ recipe here is `[vlan, env, role]`, which already gives you
 `VLAN10-MGT-SVC` / `VLAN31-PROD-CLUSTER`:
 
 ```yaml
-- name: Reconcile vDS port groups
-  community.vmware.vmware_dvs_portgroup:
+- name: Reconcile distributed switch port groups
+  community.portgroup module.portgroup module:
     portgroup_name: "{{ item.name }}"          # honours pins
     vlan_id: "{{ item.vlan_id }}"
-    switch_name: "{{ item.esxi_vswitch }}"
-    num_ports: "{{ item.esxi_num_ports }}"
-    port_binding: "{{ item.esxi_port_binding }}"
-  loop: "{{ _segments | selectattr('on_esxi') | list }}"
+    switch_name: "{{ item.hv_vswitch }}"
+    num_ports: "{{ item.hv_num_ports }}"
+    port_binding: "{{ item.hv_port_binding }}"
+  loop: "{{ _segments | selectattr('on_hypervisor') | list }}"
   loop_control:
     label: "{{ item.key }}"
 ```
 
 Better still, declare it as a [view](#views) so the rows arrive pre-shaped and
-`_net.esxi.<list>` stays the only thing consumers read.
+`_net.hypervisor.<list>` stays the only thing consumers read.
 
 **To change the token set**, change the recipe — per segment when it is an
 exception, estate-wide when it is the rule:
@@ -579,7 +579,7 @@ name: >-
      | select | join('-') | upper }}
 ```
 
-Five of the eleven esxi segments have no `env`, so the `select` is not
+Five of the eleven hypervisor segments have no `env`, so the `select` is not
 optional — without it `infra` renders `VLAN0--INFRA`.
 
 #### Three things hand-building gets wrong
@@ -602,7 +602,7 @@ Run against the demo catalog — the inline expression above, versus what
    This one bites recipes too, not just inline joins: it is a property of the
    token, not of how you assemble it.
 2. **`vlan_pad` is lost.** The recipe pads to two digits to match the names
-   already on the vDS; `'VLAN' ~ vlan_id` gives `VLAN0` and `VLAN9`, which are
+   already on the distributed switch; `'VLAN' ~ vlan_id` gives `VLAN0` and `VLAN9`, which are
    different port groups. A recipe fixes this; an inline join has to
    re-implement it.
 3. **Pinned names are lost — this one renames production.** `legacy_storage`
@@ -649,8 +649,8 @@ wherever it is consumed. Two consequences:
   `where`-style lookup written as a nested loop over `_net` is the classic way
   to hang a play.
 - A scalar default must not reach *into* a dict that contains derived output.
-  `esxi_vswitch` defaults to the standalone scalar `esxi_vds_name` — if it
-  read `vcenter.vds_name` instead, templating `vcenter` would template its
+  `hv_vswitch` defaults to the standalone scalar `hv_switch_name` — if it
+  read `hv_mgr.switch_name` instead, templating `hv_mgr` would template its
   `portgroups` key, which needs `_net`, which needs the defaults →
   recursive-loop error. Keep any value the derivation itself needs as a
   **plain scalar** beside the dict, and have the dict reference the scalar.
@@ -682,9 +682,9 @@ force them into `network_underlays`:
 
 - **`swarm_overlays.yml`** — Docker Swarm overlay networks (container-side,
   not underlay).
-- **Dell trunk definitions** (`dell_os10_config.trunks`) — physical cabling,
+- **the switch fabric trunk definitions** (`switch_fabric_config.trunks`) — physical cabling,
   hand-curated on purpose.
-- **Palo/vCenter device metadata** (`palo_parent_interface`, `esxi_vds_name`,
+- **edge/the hypervisor manager device metadata** (`edge_parent_interface`, `hv_switch_name`,
   device-group/template names) — device-global config, referenced by views via
   `consts` but not segment data.
 - **Env primary/cluster selections** (`network_underlay_env_primaries`,
@@ -774,7 +774,7 @@ values, never the `{{ … }}` text. Three things follow from that:
 
 - You **can** use `{{ … }}` inside the catalog settings — `defaults`,
   `consts`, `append` and segment fields can all reference other variables
-  (`esxi_vswitch: "{{ esxi_vds_name }}"`). It works as long as the referenced
+  (`hv_vswitch: "{{ hv_switch_name }}"`). It works as long as the referenced
   variable exists wherever the catalog is being read.
 - `append: "{{ some_list }}"` looks like a piece of text in the YAML file,
   but by the time the filter sees it, it is the actual **list** — so the
@@ -966,7 +966,7 @@ network_name_recipes:
 | parts | + knob | result |
 |---|---|---|
 | `[vlan, env, role]` | — | `VLAN10-MGT-SVC` |
-| `[vlan, tenancy]` | `tenancy: jon` | `VLAN02-JON` |
+| `[vlan, tenancy]` | `tenancy: acme` | `VLAN02-ACME` |
 | `[vlan, key]` | — | `VLAN120-KTHW` |
 | `[vlan]` | `name_suffix: cbr` | `VLAN100-CBR` |
 | `[vlan, [role, instance_nn]]` | `instance: 1`, `name_suffix: inside` | `VLAN501-LABPOD01-INSIDE` |
@@ -1069,9 +1069,9 @@ previous view's **output keys**.
   view is a dead end — `source:` on it yields `[]` silently.
 
 ```yaml
-palo:
+edge:
   interfaces:                          # from segments
-    platform: palo
+    platform: edge
     where: {tagged: true}
     fields: {name: "{parent}.{vlan_id}", zone: "z-{zone}"}
   zones:                               # from interfaces' OUTPUT
@@ -1132,7 +1132,7 @@ roles:                                     # list entry as a single-key map
 roles:                                     # dict form: explicit offsets
   app:     {offset: 0}
   db:      {offset: 1}
-  monitor: {offset: 5, platforms: [nsx]}   # offsets need not be contiguous
+  monitor: {offset: 5, platforms: [alpha]}   # offsets need not be contiguous
 ```
 
 Per-role fields **override pool-level ones for that role only**. `offset` is
@@ -1159,7 +1159,7 @@ network_segment_pools:
     instances: 2
     tenancy: acme
     env: dev
-    platforms: [esxi]
+    platforms: [hypervisor]
     roles: [app, db]
     name_parts: [vlan, tenancy, role, instance_nn]   # override, stamped on all
     name_suffix: seg                                 # ditto
@@ -1334,7 +1334,7 @@ Your own fields, plus:
 | `derived_name` | What the primary recipe produced, even when `name` is pinned. |
 | `names` | Every **recipe's** output: `{recipe: name}` — derived values, never pins ([details](#pinning-a-name)). |
 | `platforms` | The membership list, cleaned up to a proper list (never text). |
-| `on_<platform>` | One bool per **declared** platform, so `selectattr('on_esxi')` needs no `contains` test. |
+| `on_<platform>` | One bool per **declared** platform, so `selectattr('on_hypervisor')` needs no `contains` test. |
 | `tagged` | `vlan_id > 0`. |
 | `prefixlen` | From `subnet`, else the `prefixlen` field, else `0`. |
 | `gateway_cidr` | `gateway/prefixlen`, or `""` when either is missing. |
@@ -1479,24 +1479,24 @@ Understanding this explains what can reference what:
 
 ```yaml
 # Minimal: two segments, one platform, one list.
-network_platforms: [nsx]
+network_platforms: [alpha]
 network_primary_name_recipe: name
 network_name_recipes:
   name: {parts: [vlan, purpose], case: lower, sep: "_", vlan_prefix: seg, vlan_pad: 4}
 
 network_underlays:
-  web:  {vlan_id: 1101, subnet: "10.11.1.0/24", platforms: [nsx], purpose: web}
-  data: {vlan_id: 1102, subnet: "10.11.2.0/24", platforms: [nsx], purpose: data}
+  web:  {vlan_id: 1101, subnet: "10.11.1.0/24", platforms: [alpha], purpose: web}
+  data: {vlan_id: 1102, subnet: "10.11.2.0/24", platforms: [alpha], purpose: data}
 
 network_platform_lists:
-  nsx:
+  alpha:
     segments:
-      platform: nsx
+      platform: alpha
       fields: {display_name: name, vlan_ids: vlan_id}
 ```
 
 ```yaml
-# _net.nsx.segments  =>
+# _net.alpha.segments  =>
 - {display_name: seg1101_web,  vlan_ids: 1101}
 - {display_name: seg1102_data, vlan_ids: 1102}
 ```
@@ -1504,41 +1504,41 @@ network_platform_lists:
 ```yaml
 # Brownfield: keep an existing hand-maintained list, gain the generated rows.
 network_platform_lists:
-  nsx:
+  alpha:
     segments:
-      platform: nsx
+      platform: alpha
       fields: {display_name: name, vlan_ids: vlan_id, mtu: mtu}
       append: "{{ my_existing_nsx_rows }}"      # their shape, untouched
 
 # Equivalent at the call site if you would rather not touch the view:
-#   loop: "{{ my_existing_nsx_rows + _net.nsx.segments }}"
+#   loop: "{{ my_existing_nsx_rows + _net.alpha.segments }}"
 ```
 
 ```yaml
 # Grouped output: one firewall consumes one site.
 network_platform_lists:
-  pfsense:                              # namespace — a free label
+  firewall:                              # namespace — a free label
     vlans:
       platform: firewall                # membership filter
       where: {tagged: true}
       group_by: site
       fields:
-        interface: pfsense_parent
+        interface: fw_parent
         vlan_id: vlan_id
-        descr: pfsense_descr
+        descr: fw_descr
 
 # host_vars/fw-site-a-01.yml
-pfsense_network_vlans: "{{ _net.pfsense.vlans.site-a }}"
+fw_network_vlans: "{{ _net.firewall.vlans.site-a }}"
 ```
 
 ```yaml
 # Templates, consts, chaining, and a conditional nested block.
 network_platform_lists:
-  palo:
+  edge:
     interfaces:
-      platform: palo
+      platform: edge
       where: {tagged: true}
-      consts: {parent: "{{ palo_parent_interface }}"}
+      consts: {parent: "{{ edge_parent_interface }}"}
       fields:
         name: "{parent}.{vlan_id}"        # ethernet1/1.21
         tag: vlan_id
@@ -1551,14 +1551,14 @@ network_platform_lists:
         name: zone                        # the OUTPUT key 'zone' (z-mgt)
         mode: {const: layer3}
 
-  esxi:
+  hypervisor:
     port_groups:
-      platform: esxi
+      platform: hypervisor
       fields:
         name: name
         vlan: vlan_id
-        allow_promiscuous: esxi_allow_promiscuous
-    vcenter_portgroups:
+        allow_promiscuous: hv_allow_promiscuous
+    hv_mgr_portgroups:
       source: port_groups                 # appended TRUNK row flows through too
       fields:
         name: name
@@ -1578,12 +1578,12 @@ network_segment_pools:
     vlan_stride: 10
     instances: 2
     tenancy: tenantx
-    platforms: [nsx, aci]
+    platforms: [alpha, beta]
     key_parts: [tenancy, vid, role]
     roles:
       app:     {offset: 0}
       db:      {offset: 1}
-      monitor: {offset: 5, platforms: [nsx]}     # this role skips aci
+      monitor: {offset: 5, platforms: [alpha]}     # this role skips beta
 ```
 
 ```text

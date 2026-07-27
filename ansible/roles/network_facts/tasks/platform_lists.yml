@@ -4,9 +4,9 @@
 # shaped for the module that consumes them. You do not reshape these — you
 # loop over them.
 #
-#   loop: "{{ _net.esxi.vcenter_portgroups }}"     → vmware_dvs_portgroup
-#   loop: "{{ _net.dell.vlans }}"                  → OS10 VLANs
-#   loop: "{{ _net.unifi.vlans['site-a'] }}"       → UniFi VLANs (grouped by site)
+#   loop: "{{ _net.hypervisor.hv_mgr_portgroups }}"     → portgroup module
+#   loop: "{{ _net.switches.vlans }}"                  → switch VLANs
+#   loop: "{{ _net.wifi.vlans['site-a'] }}"       → the wifi controller VLANs (grouped by site)
 #
 # Some lists are flat; the ones declaring `group_by` are a dict keyed by that
 # field (usually site), so you index the site before looping.

@@ -11,7 +11,7 @@
 # VIEWS — one section per platform. This is the index: find your platform,
 # read its lists. Consume them as `_net.<namespace>.<list>`.
 # ═══════════════════════════════════════════════════════════════════════════
-# The OUTER key is the output NAMESPACE (a free label — `dell`); the
+# The OUTER key is the output NAMESPACE (a free label — `switches`); the
 # `platform:` key inside a view is the segment MEMBERSHIP filter
 # (`switches`). They need not match — see the doc's "Membership vs
 # namespace" section.
@@ -31,32 +31,32 @@
 #
 # BROWNFIELD: `append:` bolts an existing hand-maintained list onto the
 # generated rows — their shape, passed through untouched. Equivalent at the
-# call site:  loop: "{{ their_static_list + _net.esxi.port_groups }}"
+# call site:  loop: "{{ their_static_list + _net.hypervisor.port_groups }}"
 
 network_platform_lists:
 
-  # ── vSphere / ESXi ───────────────────────────────────────────────────────
-  esxi:
-    # _net.esxi.port_groups — every esxi-targeted segment + our hand-written
-    # extras (the trunk, legacy vDS rows).
+  # ── Hypervisor ───────────────────────────────────────────────────────
+  hypervisor:
+    # _net.hypervisor.port_groups — every hypervisor-targeted segment + our hand-written
+    # extras (the trunk, legacy distributed switch rows).
     port_groups:
-      platform: esxi
+      platform: hypervisor
       fields:
         name: name
-        switch: esxi_vswitch
+        switch: hv_vswitch
         vlan: vlan_id
-        allow_promiscuous: esxi_allow_promiscuous
-        allow_forged_transmits: esxi_allow_forged_transmits
-        allow_mac_change: esxi_allow_mac_change
-        num_ports: esxi_num_ports
-        port_binding: esxi_port_binding
-      append: "{{ esxi_port_groups_extra }}"
+        allow_promiscuous: hv_allow_promiscuous
+        allow_forged_transmits: hv_allow_forged_transmits
+        allow_mac_change: hv_allow_mac_change
+        num_ports: hv_num_ports
+        port_binding: hv_port_binding
+      append: "{{ hv_port_groups_extra }}"
 
-    # _net.esxi.vcenter_portgroups — the same rows reshaped for
-    # community.vmware.vmware_dvs_portgroup. security is emitted only for a row
+    # _net.hypervisor.hv_mgr_portgroups — the same rows reshaped for
+    # a distributed-switch portgroup module. security is emitted only for a row
     # that relaxes something, so every other port group keeps
     # network_policy.inherited=true.
-    vcenter_portgroups:
+    hv_mgr_portgroups:
       source: port_groups
       fields:
         name: name
@@ -74,9 +74,9 @@ network_platform_lists:
             allow_mac_change: allow_mac_change
       omit_if_falsy: [vlan_trunk]
 
-  # ── Dell OS10 ────────────────────────────────────────────────────────────
-  dell:
-    # _net.dell.vlans
+  # ── the switch fabric ────────────────────────────────────────────────────────────
+  switches:
+    # _net.switches.vlans
     vlans:
       platform: switches
       # Field ORDER here is the display order — `name` first so a dumped list
@@ -88,28 +88,28 @@ network_platform_lists:
         key: key
         site: site
 
-  # ── Palo Alto ────────────────────────────────────────────────────────────
-  palo:
-    # _net.palo.interfaces — ip is the segment gateway, because the
+  # ── the edge firewall ────────────────────────────────────────────────────────────
+  edge:
+    # _net.edge.interfaces — ip is the segment gateway, because the
     # subinterface IS the gateway.
     interfaces:
-      platform: palo
+      platform: edge
       where: {tagged: true}
       consts:
-        parent: "{{ palo_parent_interface }}"
-        vr: "{{ palo_virtual_router }}"
+        parent: "{{ edge_parent_interface }}"
+        vr: "{{ edge_virtual_router }}"
       fields:
         name: "{parent}.{vlan_id}"
         parent: "{parent}"
         tag: vlan_id
         ip: gateway_cidr
-        comment: pfsense_descr
+        comment: fw_descr
         zone: "z-{zone}"
         virtual_router: "{vr}"
         key: key
         site: site
 
-    # _net.palo.zones — the distinct zones the subinterfaces landed on.
+    # _net.edge.zones — the distinct zones the subinterfaces landed on.
     zones:
       source: interfaces
       unique_by: name
@@ -118,43 +118,43 @@ network_platform_lists:
         mode: {const: layer3}
         enable_user_identification: {const: false}
 
-  # ── pfSense ──────────────────────────────────────────────────────────────
-  pfsense:
-    # _net.pfsense.vlans.<site> — one firewall consumes one site:
-    #   pfsense_network_vlans: "{{ _net.pfsense.vlans.site-a }}"
+  # ── the firewall ──────────────────────────────────────────────────────────────
+  firewall:
+    # _net.firewall.vlans.<site> — one firewall consumes one site:
+    #   fw_network_vlans: "{{ _net.firewall.vlans.site-a }}"
     vlans:
       platform: firewall
       where: {tagged: true}
       group_by: site
       fields:
-        interface: pfsense_parent
+        interface: fw_parent
         vlan_id: vlan_id
-        descr: pfsense_descr
-        priority: pfsense_priority
+        descr: fw_descr
+        priority: fw_priority
 
-    # _net.pfsense.interfaces.<site>
+    # _net.firewall.interfaces.<site>
     interfaces:
       platform: firewall
       where: {tagged: true}
       group_by: site
       fields:
-        descr: pfsense_descr
-        interface: "{pfsense_parent}.{vlan_id}"
+        descr: fw_descr
+        interface: "{fw_parent}.{vlan_id}"
         ipv4_address: gateway
         ipv4_prefixlen: prefixlen
 
-  # ── UniFi ────────────────────────────────────────────────────────────────
-  unifi:
-    # _net.unifi.vlans.<site> — the append list carries the legacy rows we drive
+  # ── the wifi controller ────────────────────────────────────────────────────────────────
+  wifi:
+    # _net.wifi.vlans.<site> — the append list carries the legacy rows we drive
     # to state: absent.
     vlans:
-      platform: unifi
-      group_by: unifi_site
+      platform: wifi
+      group_by: wifi_site
       fields:
-        name: unifi_name
+        name: wifi_net_name
         vlan_id: vlan_id
         purpose: {const: vlan-only}
-      append: "{{ unifi_vlans_extra }}"
+      append: "{{ wifi_vlans_extra }}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -167,15 +167,15 @@ network_platform_lists:
 # Keep names/VLANs here OUTSIDE the matrix, so the combined list needs no
 # dedupe. A row that has a matrix pattern belongs in network_underlays instead.
 
-# ── ESXi / vDS rows with no matrix pattern (trunk, legacy vDS leftovers) ───
-# Same shape as the esxi_port_groups view emits.
+# ── hypervisor host / distributed switch rows with no matrix pattern (trunk, legacy distributed switch leftovers) ───
+# Same shape as the hypervisor port_groups view emits.
 # NOTE the field names: an `append:` row is added to the view's OUTPUT, so it
 # uses the view's output keys (name/switch/vlan/allow_*), NOT the segment field
-# names (esxi_vswitch/esxi_allow_*). That is the point — your existing list
+# names (hv_vswitch/hv_allow_*). That is the point — your existing list
 # keeps its own shape.
-esxi_port_groups_extra:
+hv_port_groups_extra:
   - name: TRUNK
-    switch: "{{ esxi_vds_name }}"
+    switch: "{{ hv_switch_name }}"
     vlan: "0-4094"
     trunk: true
     allow_promiscuous: true
@@ -184,7 +184,7 @@ esxi_port_groups_extra:
     num_ports: 1
     port_binding: ephemeral
 
-  # Legacy lab port groups that exist on the vDS but have no matrix pattern.
+  # Legacy lab port groups that exist on the distributed switch but have no matrix pattern.
   # They are declared here for one reason: `--tags reconcile` prunes UNDECLARED
   # in-scope port groups, so dropping them from the list would queue them for
   # deletion. Declaring them keeps them out of the orphan set until someone
@@ -194,13 +194,13 @@ esxi_port_groups_extra:
   # VLAN50-LEGACY-STORAGE-DO-NOT-RENAME is deliberately NOT here: it is a real
   # matrix segment (legacy_storage) carrying a pinned name, so the matrix
   # already emits it. Listing it here too would emit it twice.
-  - {name: VLAN0-POC-LAB-INSIDE, switch: "{{ esxi_vds_name }}", vlan: "0", num_ports: 0, port_binding: ephemeral}
-  - {name: VLAN501-LAB-MGMT, switch: "{{ esxi_vds_name }}", vlan: "501", num_ports: 0, port_binding: ephemeral}
-  - {name: VLAN502-LAB-ACCESS, switch: "{{ esxi_vds_name }}", vlan: "502", num_ports: 0, port_binding: ephemeral}
+  - {name: VLAN0-POC-LAB-INSIDE, switch: "{{ hv_switch_name }}", vlan: "0", num_ports: 0, port_binding: ephemeral}
+  - {name: VLAN501-LAB-MGMT, switch: "{{ hv_switch_name }}", vlan: "501", num_ports: 0, port_binding: ephemeral}
+  - {name: VLAN502-LAB-ACCESS, switch: "{{ hv_switch_name }}", vlan: "502", num_ports: 0, port_binding: ephemeral}
 
-# ── UniFi rows with no matrix pattern, keyed by UniFi site ────────────────
+# ── the wifi controller rows with no matrix pattern, keyed by the wifi controller site ────────────────
 # The legacy VLANs we drive to state: absent.
-unifi_vlans_extra:
+wifi_vlans_extra:
   sa:
     - {name: VLAN40, vlan_id: 40, state: absent}
     - {name: VLAN50, vlan_id: 50, state: absent}
@@ -210,69 +210,69 @@ unifi_vlans_extra:
 # Non-derivable platform data (kept as-is)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ── vCenter device metadata ────────────────────────────────────────────────
+# ── the hypervisor manager device metadata ────────────────────────────────────────────────
 # portgroups is WIRED to the derived list — add segments above, not here.
 #
-# esxi_vds_name is a PLAIN SCALAR on purpose: the derived port-group rows need
-# the switch name, and reading `vcenter.vds_name` from them would make Ansible
-# template the whole `vcenter` dict (including portgroups) to get one key —
+# hv_switch_name is a PLAIN SCALAR on purpose: the derived port-group rows need
+# the switch name, and reading `hv_mgr.switch_name` from them would make Ansible
+# template the whole `hv_mgr` dict (including portgroups) to get one key —
 # a recursive-loop error. Every default switch reference resolves this scalar.
-esxi_vds_name: "vDS-Lab"
+hv_switch_name: "dvswitch-lab"
 
-vcenter:
-  vds_name: "{{ esxi_vds_name }}"
-  portgroups: "{{ _net.esxi.vcenter_portgroups }}"
+hv_mgr:
+  vds_name: "{{ hv_switch_name }}"
+  portgroups: "{{ _net.hypervisor.hv_mgr_portgroups }}"
 
-# ── Palo Alto PoC device metadata ──────────────────────────────────────────
-# Subinterfaces and zones are DERIVED (_net.palo.interfaces / .zones).
-palo_parent_interface: "ethernet1/1"
-palo_virtual_router: "default"
-palo_vsys: "vsys1"
+# ── the edge firewall PoC device metadata ──────────────────────────────────────────
+# Subinterfaces and zones are DERIVED (_net.edge.interfaces / .zones).
+edge_parent_interface: "ethernet1/1"
+edge_virtual_router: "default"
+edge_vsys: "vsys1"
 
-palo_alto_config:
+edge_config:
   device_group: "lab"
-  vsys: "{{ palo_vsys }}"
+  vsys: "{{ edge_vsys }}"
   template: "lab-template"
-  zones: "{{ _net.palo.zones }}"
+  zones: "{{ _net.edge.zones }}"
 
-# ── Dell OS10 ──────────────────────────────────────────────────────────────
-# vlans is DERIVED (_net.dell.vlans). Trunks = physical cabling — not derivable,
+# ── the switch fabric ──────────────────────────────────────────────────────────────
+# vlans is DERIVED (_net.switches.vlans). Trunks = physical cabling — not derivable,
 # so they stay hand-curated on purpose.
-dell_os10_config:
-  vlans: "{{ _net.dell.vlans }}"
+switch_fabric_config:
+  vlans: "{{ _net.switches.vlans }}"
   trunks:
-    - name: esxi-01
-      description: "esxi-01 uplink(s) to vDS-Lab"
+    - name: hypervisor-01
+      description: "hypervisor-01 uplink(s) to dvswitch-lab"
       interfaces: []
       mode: trunk
       native_vlan: 0
       allowed_vlans: all
       peer: "192.168.0.11"
-    - name: esxi-02
-      description: "esxi-02 uplink(s) to vDS-Lab"
+    - name: hypervisor-02
+      description: "hypervisor-02 uplink(s) to dvswitch-lab"
       interfaces: []
       mode: trunk
       native_vlan: 0
       allowed_vlans: all
       peer: "192.168.0.12"
-    - name: esxi-03
-      description: "esxi-03 uplink(s) to vDS-Lab"
+    - name: hypervisor-03
+      description: "hypervisor-03 uplink(s) to dvswitch-lab"
       interfaces: []
       mode: trunk
       native_vlan: 0
       allowed_vlans: all
       peer: "192.168.0.13"
-    - name: pfsense-trunk
-      description: "pfSense VLAN trunk (vmx1)"
+    - name: firewall-trunk
+      description: "the firewall VLAN trunk (uplink0)"
       interfaces: []
       mode: trunk
       native_vlan: 0
       allowed_vlans: all
-      peer: pfsense1
-    - name: esxi-lab-extra-range
-      description: "Extra allowed VLAN range on the ESXi uplinks"
+      peer: firewall-01
+    - name: hypervisor-lab-extra-range
+      description: "Extra allowed VLAN range on the hypervisor host uplinks"
       interfaces: []
       mode: trunk
       native_vlan: 0
       allowed_vlans: "500-599"
-      peer: esxi-all
+      peer: hypervisor-all

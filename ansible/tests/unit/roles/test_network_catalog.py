@@ -27,7 +27,7 @@ _spec.loader.exec_module(nc)
 # fixtures — a fictional estate, nothing like this repo's
 # ──────────────────────────────────────────────────────────────────────────
 BASE_CONFIG = {
-    "platforms": ["nsx", "aci", "fortigate"],
+    "platforms": ["alpha", "beta", "gamma"],
     "name_default": "name",
     "names": {
         "name": {
@@ -41,7 +41,7 @@ BASE_CONFIG = {
     },
     "defaults": {"mtu": 9000},
     "partition_fields": ["bu", "stage"],
-    "required": {"all": ["vlan_id", "platforms"], "by_platform": {"fortigate": ["gw"]}},
+    "required": {"all": ["vlan_id", "platforms"], "by_platform": {"gamma": ["gw"]}},
     "views": {},
 }
 
@@ -51,7 +51,7 @@ SEGMENTS = {
         "subnet": "10.11.1.0/24",
         "gw": "10.11.1.1",
         "gateway": "10.11.1.1",
-        "platforms": ["nsx", "aci", "fortigate"],
+        "platforms": ["alpha", "beta", "gamma"],
         "bu": "retail",
         "stage": "prod",
         "purpose": "web",
@@ -62,7 +62,7 @@ SEGMENTS = {
         "subnet": "10.21.1.0/24",
         "gw": "10.21.1.1",
         "gateway": "10.21.1.1",
-        "platforms": ["nsx"],
+        "platforms": ["alpha"],
         "bu": "retail",
         "stage": "dev",
         "purpose": "db",
@@ -164,8 +164,8 @@ def test_defaults_are_inherited_but_the_segment_wins():
 
 def test_on_target_booleans_come_from_targets():
     row = build()["by_key"]["db_dev"]
-    assert row["on_nsx"] is True
-    assert row["on_aci"] is False
+    assert row["on_alpha"] is True
+    assert row["on_beta"] is False
 
 
 def test_prefixlen_and_gateway_cidr_are_derived_from_subnet():
@@ -196,16 +196,16 @@ def test_description_falls_back_to_the_template():
 # platform views
 # ──────────────────────────────────────────────────────────────────────────
 VIEWS = {
-    "nsx": {
+    "alpha": {
         "segments": {
-            "platform": "nsx",
+            "platform": "alpha",
             "fields": {"display_name": "name", "vlan_ids": "vlan_id", "mtu": "mtu"},
             "append": [{"display_name": "legacy", "vlan_ids": 999, "mtu": 1500}],
         }
     },
-    "aci": {
+    "beta": {
         "epgs": {
-            "platform": "aci",
+            "platform": "beta",
             "consts": {"tenant": "T1"},
             "fields": {
                 "epg": "short",
@@ -215,9 +215,9 @@ VIEWS = {
             },
         }
     },
-    "fortigate": {
+    "gamma": {
         "interfaces": {
-            "platform": "fortigate",
+            "platform": "gamma",
             "where": {"tagged": True},
             "group_by": "stage",
             "fields": {"name": "port1.{vlan_id}", "seq": "index", "ip": "gw"},
@@ -228,8 +228,8 @@ VIEWS = {
 
 def test_view_is_namespaced_by_platform():
     views = build(views=VIEWS)["views"]
-    assert set(views) == {"nsx", "aci", "fortigate"}
-    assert [r["display_name"] for r in views["nsx"]["segments"]][:2] == [
+    assert set(views) == {"alpha", "beta", "gamma"}
+    assert [r["display_name"] for r in views["alpha"]["segments"]][:2] == [
         "seg1101_retail_prod_web",
         "seg2101_retail_dev_db",
     ]
@@ -237,16 +237,16 @@ def test_view_is_namespaced_by_platform():
 
 def test_platform_filters_which_segments_reach_a_view():
     views = build(views=VIEWS)["views"]
-    assert len(views["aci"]["epgs"]) == 1  # only web_prod targets aci
+    assert len(views["beta"]["epgs"]) == 1  # only web_prod targets beta
 
 
 def test_append_bolts_an_existing_hand_written_list_on_untouched():
-    rows = build(views=VIEWS)["views"]["nsx"]["segments"]
+    rows = build(views=VIEWS)["views"]["alpha"]["segments"]
     assert rows[-1] == {"display_name": "legacy", "vlan_ids": 999, "mtu": 1500}
 
 
 def test_field_spec_forms_template_const_and_consts():
-    row = build(views=VIEWS)["views"]["aci"]["epgs"][0]
+    row = build(views=VIEWS)["views"]["beta"]["epgs"][0]
     assert row == {
         "epg": "retail_prod_web",
         "encap": "vlan-1101",
@@ -263,7 +263,7 @@ def test_missing_source_field_is_omitted_rather_than_nulled():
 
 
 def test_group_by_produces_a_dict_and_index_counts_within_the_group():
-    grouped = build(views=VIEWS)["views"]["fortigate"]["interfaces"]
+    grouped = build(views=VIEWS)["views"]["gamma"]["interfaces"]
     assert set(grouped) == {"prod"}
     assert grouped["prod"][0]["seq"] == 1
 
@@ -285,13 +285,13 @@ def test_group_by_append_is_keyed_by_group():
 
 def test_nested_group_is_emitted_only_when_a_watched_field_is_truthy():
     segs = {
-        "relaxed": {"vlan_id": 1, "platforms": ["nsx"], "promisc": True},
-        "strict": {"vlan_id": 2, "platforms": ["nsx"], "promisc": False},
+        "relaxed": {"vlan_id": 1, "platforms": ["alpha"], "promisc": True},
+        "strict": {"vlan_id": 2, "platforms": ["alpha"], "promisc": False},
     }
     views = {
         "p": {
             "v": {
-                "platform": "nsx",
+                "platform": "alpha",
                 "fields": {
                     "id": "vlan_id",
                     "sec": {"emit_when_any": ["promisc"],
@@ -306,8 +306,8 @@ def test_nested_group_is_emitted_only_when_a_watched_field_is_truthy():
 
 
 def test_omit_if_falsy_drops_the_key_entirely():
-    segs = {"a": {"vlan_id": 1, "platforms": ["nsx"], "trunk": False}}
-    views = {"p": {"v": {"platform": "nsx",
+    segs = {"a": {"vlan_id": 1, "platforms": ["alpha"], "trunk": False}}
+    views = {"p": {"v": {"platform": "alpha",
                          "fields": {"id": "vlan_id", "trunk": "trunk"},
                          "omit_if_falsy": ["trunk"]}}}
     assert "trunk" not in build(segs, views=views)["views"]["p"]["v"][0]
@@ -339,11 +339,11 @@ POOL = {
         "vlan_stride": 10,
         "instances": 2,
         "bu": "tenantx",
-        "platforms": ["nsx"],
+        "platforms": ["alpha"],
         "key_parts": ["bu", "vid", "role"],
         "roles": {
             "app": {"offset": 0, "purpose": "app"},
-            "mon": {"offset": 5, "purpose": "mon", "platforms": ["aci"]},
+            "mon": {"offset": 5, "purpose": "mon", "platforms": ["beta"]},
         },
     }
 }
@@ -404,25 +404,25 @@ def test_pool_roles_as_a_list_use_positional_offsets():
 
 
 def test_pool_list_entry_may_be_a_single_key_map_with_per_role_fields():
-    pool = {"p": {"vlan_base": 10, "instances": 1, "platforms": ["nsx"],
-                  "roles": ["a", {"b": {"platforms": ["aci"]}}],
+    pool = {"p": {"vlan_base": 10, "instances": 1, "platforms": ["alpha"],
+                  "roles": ["a", {"b": {"platforms": ["beta"]}}],
                   "key_parts": ["role"]}}
     rows = build({}, pools=pool)["by_key"]
-    assert rows["a"]["platforms"] == ["nsx"]
-    assert rows["b"]["platforms"] == ["aci"]
+    assert rows["a"]["platforms"] == ["alpha"]
+    assert rows["b"]["platforms"] == ["beta"]
 
 
 def test_per_role_fields_override_pool_level_ones():
     rows = build(pools=POOL)["by_key"]
-    assert rows["tenantx-3000-app"]["platforms"] == ["nsx"]
-    assert rows["tenantx-3005-mon"]["platforms"] == ["aci"]
+    assert rows["tenantx-3000-app"]["platforms"] == ["alpha"]
+    assert rows["tenantx-3005-mon"]["platforms"] == ["beta"]
 
 
 def test_generated_segments_flow_through_names_and_views():
     result = build(pools=POOL, views=VIEWS)
     assert result["name_by_key"]["tenantx-3000-app"] == "seg3000_tenantx_app"
-    nsx = [r["display_name"] for r in result["views"]["nsx"]["segments"]]
-    assert "seg3000_tenantx_app" in nsx
+    alpha = [r["display_name"] for r in result["views"]["alpha"]["segments"]]
+    assert "seg3000_tenantx_app" in alpha
 
 
 def test_pool_stamped_identical_subnet_repeats_without_any_duplicate_error():
@@ -525,13 +525,13 @@ def test_partitions_are_keyed_by_field_then_value():
 
 def test_platform_partition_is_always_present_even_without_config():
     result = build(partition_fields=[])
-    assert sorted(result["by"]["platform"]) == ["aci", "fortigate", "nsx"]
+    assert sorted(result["by"]["platform"]) == ["alpha", "beta", "gamma"]
 
 
 def test_cidrs_by_and_vlan_ids_by_platform():
     result = build()
     assert result["cidrs_by"]["stage"]["prod"] == ["10.11.1.0/24"]
-    assert result["vlan_ids_by_platform"]["nsx"] == [1101, 2101]
+    assert result["vlan_ids_by_platform"]["alpha"] == [1101, 2101]
 
 
 def test_operator_cidrs_only_lists_flagged_segments():
@@ -550,24 +550,24 @@ def test_clean_catalog_reports_nothing():
 
 
 def test_unknown_platform_is_named():
-    segs = {"a": {"vlan_id": 1, "platforms": ["nsx", "nxs"]}}
+    segs = {"a": {"vlan_id": 1, "platforms": ["alpha", "nxs"]}}
     assert any("unknown platform 'nxs'" in e for e in build(segs)["errors"])
 
 
 def test_platforms_as_a_string_is_rejected():
-    segs = {"a": {"vlan_id": 1, "platforms": "nsx"}}
+    segs = {"a": {"vlan_id": 1, "platforms": "alpha"}}
     assert any("must be a LIST" in e for e in build(segs)["errors"])
 
 
 def test_missing_vlan_id_is_named_and_does_not_crash():
-    segs = {"a": {"platforms": ["nsx"]}}
+    segs = {"a": {"platforms": ["alpha"]}}
     result = build(segs)
     assert any("vlan_id is required" in e for e in result["errors"])
     assert result["by_key"]["a"]["vlan_id"] == 0  # degraded, not exploded
 
 
 def test_required_fields_are_checked_per_target():
-    segs = {"a": {"vlan_id": 1, "platforms": ["fortigate"]}}  # fortigate requires gw
+    segs = {"a": {"vlan_id": 1, "platforms": ["gamma"]}}  # gamma requires gw
     assert build(segs)["missing"] == ["a: missing or empty gw"]
 
 
@@ -630,7 +630,7 @@ def test_non_dict_underlays_root_is_named_in_errors():
 
 
 def test_non_numeric_vlan_id_degrades_to_zero_and_is_reported():
-    segs = {"a": {"vlan_id": "forty-two", "platforms": ["nsx"]}}
+    segs = {"a": {"vlan_id": "forty-two", "platforms": ["alpha"]}}
     result = build(segs)
     assert result["by_key"]["a"]["vlan_id"] == 0
     assert any("is not a number" in e for e in result["errors"])
@@ -641,7 +641,7 @@ def test_non_numeric_vlan_id_degrades_to_zero_and_is_reported():
 # ──────────────────────────────────────────────────────────────────────────
 def test_namespace_may_differ_from_the_platform_filter():
     """The outer views key is a free output label; only `platform:` filters."""
-    views = {"cisco": {"vlans": {"platform": "nsx", "fields": {"id": "vlan_id"}}}}
+    views = {"cisco": {"vlans": {"platform": "alpha", "fields": {"id": "vlan_id"}}}}
     result = build(views=views)
     assert result["errors"] == []
     assert len(result["views"]["cisco"]["vlans"]) == 2
@@ -652,7 +652,7 @@ def test_source_chaining_validates_against_the_namespace_not_the_filter():
     forward-reference error, and its rows must resolve."""
     views = {
         "cisco": {
-            "vlans": {"platform": "nsx", "fields": {"id": "vlan_id", "z": "stage"}},
+            "vlans": {"platform": "alpha", "fields": {"id": "vlan_id", "z": "stage"}},
             "zones": {"source": "vlans", "unique_by": "z", "fields": {"z": "z"}},
         }
     }
@@ -666,8 +666,8 @@ def test_view_error_labels_use_the_namespace():
     view's platform filter."""
     views = {
         "cisco": {
-            "vlans": {"platform": "nsx", "fields": {"id": "vlan_id"}},
-            "broken": {"platform": "nsx"},  # no fields
+            "vlans": {"platform": "alpha", "fields": {"id": "vlan_id"}},
+            "broken": {"platform": "alpha"},  # no fields
         }
     }
     errors = build(views=views)["errors"]
@@ -698,11 +698,11 @@ def test_garbage_vlan_pad_degrades_to_no_padding():
 
 def test_unique_by_on_unhashable_values_does_not_raise():
     segs = {
-        "a": {"vlan_id": 1, "platforms": ["nsx"], "members": [1, 2]},
-        "b": {"vlan_id": 2, "platforms": ["nsx"], "members": [1, 2]},
-        "c": {"vlan_id": 3, "platforms": ["nsx"], "members": [9]},
+        "a": {"vlan_id": 1, "platforms": ["alpha"], "members": [1, 2]},
+        "b": {"vlan_id": 2, "platforms": ["alpha"], "members": [1, 2]},
+        "c": {"vlan_id": 3, "platforms": ["alpha"], "members": [9]},
     }
-    views = {"p": {"v": {"platform": "nsx", "unique_by": "m",
+    views = {"p": {"v": {"platform": "alpha", "unique_by": "m",
                          "fields": {"m": "members"}}}}
     rows = build(segs, views=views)["views"]["p"]["v"]
     assert [r["m"] for r in rows] == [[1, 2], [9]]
@@ -710,28 +710,28 @@ def test_unique_by_on_unhashable_values_does_not_raise():
 
 def test_vlan_ranges_compress_contiguous_runs_per_platform():
     pool = {"p": {"vlan_base": 2000, "vlan_stride": 10, "instances": 3,
-                  "roles": ["a", "b", "c", "d", "e"], "platforms": ["nsx"],
+                  "roles": ["a", "b", "c", "d", "e"], "platforms": ["alpha"],
                   "key_parts": ["pool", "vid"]}}
     segs = {
-        "one": {"vlan_id": 7, "platforms": ["nsx"]},
-        "two": {"vlan_id": 8, "platforms": ["nsx"]},
+        "one": {"vlan_id": 7, "platforms": ["alpha"]},
+        "two": {"vlan_id": 8, "platforms": ["alpha"]},
     }
     result = build(segs, pools=pool)
-    assert result["vlan_ranges_by_platform"]["nsx"] == [
+    assert result["vlan_ranges_by_platform"]["alpha"] == [
         "7-8", "2000-2004", "2010-2014", "2020-2024",
     ]
 
 
 def test_vlan_ranges_keep_singletons_single():
-    segs = {"a": {"vlan_id": 5, "platforms": ["nsx"]},
-            "b": {"vlan_id": 9, "platforms": ["nsx"]}}
-    assert build(segs)["vlan_ranges_by_platform"]["nsx"] == ["5", "9"]
+    segs = {"a": {"vlan_id": 5, "platforms": ["alpha"]},
+            "b": {"vlan_id": 9, "platforms": ["alpha"]}}
+    assert build(segs)["vlan_ranges_by_platform"]["alpha"] == ["5", "9"]
 
 
 def test_vlan_ranges_cover_tagged_ids_only():
-    segs = {"native": {"vlan_id": 0, "platforms": ["nsx"]},
-            "tagged": {"vlan_id": 1, "platforms": ["nsx"]}}
-    assert build(segs)["vlan_ranges_by_platform"]["nsx"] == ["1"]
+    segs = {"native": {"vlan_id": 0, "platforms": ["alpha"]},
+            "tagged": {"vlan_id": 1, "platforms": ["alpha"]}}
+    assert build(segs)["vlan_ranges_by_platform"]["alpha"] == ["1"]
 
 
 def test_grouped_append_creates_a_bucket_for_an_append_only_group():

@@ -12,7 +12,7 @@ Used once, from group_vars, so consumers see plain data rather than a filter
 call at every site:
 
     __catalog: "{{ network_underlays | network_catalog(config) }}"
-    _net: "{{ __catalog.views }}"     # _net.esxi.port_groups, _net.dell.vlans
+    _net: "{{ __catalog.views }}"     # _net.hypervisor.port_groups, _net.switches.vlans
 
 Config keys (all optional except the segments themselves):
 
