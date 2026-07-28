@@ -17,6 +17,12 @@
 #   deploy    — template vault.hcl + compose, start container, wait healthy
 #   init      — initialize (once), unseal all nodes, form the Raft cluster
 #   verify    — health + Raft peer / seal assertions
+#
+# Phases that notify "Restart vault container" (tls, deploy, and a license change
+# that cannot hot-reload) import seal_guard.yml first. Under a Shamir seal a
+# restart returns every node SEALED, so those tags must be paired with `unseal`
+# in the SAME run — the guard fails the play loudly rather than leaving the
+# cluster sealed. See tasks/seal_guard.yml.
 
 - name: Skip hashicorp_vault_container (hashicorp_vault_container_enabled is false)
   ansible.builtin.debug:

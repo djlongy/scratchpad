@@ -14,6 +14,16 @@
 #
 # Boot-time auto-unseal is separate — see autounseal.yml.
 
+# Handlers otherwise fire at the END of the play, i.e. AFTER this phase — so a
+# combined run like `--tags tls,unseal` would unseal every node and only then
+# bounce the container, leaving the cluster sealed exactly as if unseal had
+# never been selected. Flushing first inverts that into restart-then-unseal, and
+# is what makes "add the unseal phase" a real remedy (see seal_guard.yml).
+# Cheap no-op when nothing is pending; carries this file's [init, unseal] tags,
+# so it never fires on a run that did not select unsealing.
+- name: "Unseal | Apply any pending container restart BEFORE unsealing"
+  ansible.builtin.meta: flush_handlers
+
 # ── Resolve Shamir shares ───────────────────────────────────────────────────
 - name: "Unseal | Prefer declared unseal key list"
   ansible.builtin.set_fact:

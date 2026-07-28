@@ -2,19 +2,25 @@
 # Restart reloads the bind-mounted vault.hcl. Compose-file changes (image,
 # ports, volumes) are applied by `docker compose up -d` in deploy.yml.
 #
-# throttle: 1 makes this a ROLLING restart. Handlers flush for every notified
-# host at once, so without it a config change would restart all N Raft nodes
-# simultaneously — and because a restart SEALS Vault (auto-unseal is off by
-# default), the entire cluster would be sealed at the same instant, losing
-# quorum and the API until the unseal phase catches up. One node at a time keeps
-# the remaining nodes serving and preserves quorum on a 3+ node cluster.
+# throttle: 1 makes this a ROLLING restart so we never bounce every host at
+# once. That is intentional — but under Shamir (auto-unseal off, the default)
+# it does NOT preserve Raft quorum: a restarted node comes back SEALED and a
+# sealed node is not a live voter. On a 3-node cluster, restarting the 2nd node
+# leaves only 1 unsealed voter and the API is gone until unseal.yml catches up.
+# throttle only bounds the blast radius of a simultaneous restart.
 #
-# NOTE: a restarted node comes back SEALED unless hashicorp_vault_auto_unseal is
-# true. Follow a restart with `--tags unseal` (or enable auto-unseal) — throttle
-# bounds the blast radius, it does not remove the unseal step.
+# Every phase that notifies this handler therefore imports seal_guard.yml, which
+# refuses the run when the selected tags would restart a live unsealed Shamir
+# cluster without also selecting the unseal phase. unseal.yml flushes pending
+# handlers before it unseals, so a paired run (e.g. `--tags tls,unseal`) is
+# restart-then-unseal and self-correcting.
 #
-# Certificate renewals must NOT come through here: the certmonger post-save hook
-# SIGHUPs Vault instead, reloading the listener cert in place with no seal.
+# A KMS/transit hashicorp_vault_seal_config makes a rolling restart self-healing
+# and stands the guard down. hashicorp_vault_auto_unseal does NOT: its unit is
+# oneshot + WantedBy=multi-user.target, i.e. host boot only, and a container
+# restart is not a boot. Certificate renewals need not come through here at all:
+# the on-host post-save hook SIGHUPs Vault instead, reloading the listener cert
+# in place with no seal.
 - name: Restart vault container
   become: true  # root: docker CLI needs the root-owned docker socket
   ansible.builtin.command:

@@ -189,3 +189,23 @@
   failed_when: false
   run_once: true
   delegate_to: "{{ _rst_leader }}"
+
+# Raft snapshots are seal-encrypted (not plaintext secrets), but leaving them
+# under /tmp on the controller and leader is still stale-artifact hygiene.
+- name: "Restore | Remove the leader-side staged snapshot (off-leader path)"
+  become: true  # root: staged under /tmp with mode 0600
+  ansible.builtin.file:
+    path: "/tmp/vault-ctr-restore-{{ hashicorp_vault_name }}.snap"
+    state: absent
+  run_once: true
+  delegate_to: "{{ _rst_leader }}"
+  when: _rst_chosen.node != _rst_leader
+
+- name: "Restore | Remove the controller-side staged snapshot"
+  ansible.builtin.file:
+    path: "/tmp/vault-ctr-restore-staged-{{ hashicorp_vault_name }}.snap"
+    state: absent
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: _rst_chosen.node != _rst_leader

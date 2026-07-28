@@ -6,6 +6,22 @@
 # same CA, then distributed to every node's certs dir. Set
 # hashicorp_vault_tls_generate=false to supply your own cert/key/CA instead.
 
+# Distributing controller-sourced certificates notifies "Restart vault
+# container" (5 tasks below). Under Shamir that bounces every node into a SEALED
+# state, and `--tags tls` does not select the unseal phase — so a routine cert
+# rotation would be a cluster outage. Guard FIRST, before any cert material is
+# generated or written, so a run that cannot unseal is a no-op not an outage.
+# The on-host (certmonger) path does not restart at all: its post-save hook
+# SIGHUPs Vault and reloads the listener cert in place, so it is exempt.
+- name: "TLS | Guard — refuse a cert rotation that would seal the cluster"
+  ansible.builtin.import_tasks: seal_guard.yml
+  vars:
+    _hashicorp_vault_seal_guard_phase: tls
+    _hashicorp_vault_seal_guard_restarts: "{{ not (hashicorp_vault_tls_onhost | bool) }}"
+    _hashicorp_vault_seal_guard_remedy: >-
+      (3) rotate the certificate in place instead of restarting — set
+      hashicorp_vault_tls_onhost=true so the on-host renewal hook SIGHUPs Vault.
+
 # ── Derive SAN entries (identical on every host; no run_once needed) ──────
 # ansible_host may be an IP or an FQDN, so partition it: an IPv4 literal OR an IPv6
 # literal (contains a colon) is an IP SAN, everything else is a DNS SAN. An FQDN in

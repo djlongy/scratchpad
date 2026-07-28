@@ -1,6 +1,15 @@
 ---
 # Deploy — render config, bring up the container, wait until the API answers.
 
+# Templating vault.hcl and staging peers.json both notify "Restart vault
+# container". Same exposure as the tls phase: under Shamir a `--tags deploy` run
+# restarts every node into a SEALED state without selecting the unseal phase.
+- name: "Deploy | Guard — refuse a config change that would seal the cluster"
+  ansible.builtin.import_tasks: seal_guard.yml
+  vars:
+    _hashicorp_vault_seal_guard_phase: deploy
+    _hashicorp_vault_seal_guard_restarts: true
+
 - name: "Template the Vault HCL config"
   become: true  # root: writes the root-owned vault.hcl on the data mount
   ansible.builtin.template:

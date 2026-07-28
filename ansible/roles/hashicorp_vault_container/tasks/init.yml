@@ -73,10 +73,12 @@
     - _hashicorp_vault_init is changed
     - not (hashicorp_vault_is_ha | bool)
 
-# init owns root-token persistence so KMS-sealed clusters (which skip the unseal
-# phase) still feed the API phases the root_token.txt every consumer slurps. Runs
-# on EVERY converge — copy content is idempotent, so it also repairs a lost token
-# file. unseal.yml keeps its own writer for the self-contained --tags unseal path.
+# Root-token disk persist is gated on hashicorp_vault_persist_init — matching
+# unseal.yml. Exception: KMS/seal_config clusters skip the unseal phase entirely
+# and still need root_token.txt for the API phases when no declared
+# hashicorp_vault_root_token is supplied. Disk-free custody
+# (persist_init: false + declared root token) must never leave root_token.txt
+# behind on a full converge.
 - name: "Stat the persisted init material (for root-token persistence)"
   become: true  # root: stats the root-only keys dir
   ansible.builtin.stat:
@@ -84,6 +86,10 @@
   register: _hashicorp_vault_init_json_stat
   run_once: true
   delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: >-
+    (hashicorp_vault_persist_init | bool)
+    or ((hashicorp_vault_seal_config | default({}) | length) > 0
+        and (hashicorp_vault_root_token | default('') | string | trim | length) == 0)
 
 - name: "Read the persisted init material for the root token"
   become: true  # root: reads the root-only vault_init.json
@@ -93,7 +99,9 @@
   no_log: true
   run_once: true
   delegate_to: "{{ hashicorp_vault_first_node }}"
-  when: _hashicorp_vault_init_json_stat.stat.exists
+  when:
+    - _hashicorp_vault_init_json_stat is not skipped
+    - _hashicorp_vault_init_json_stat.stat.exists | default(false)
 
 - name: "Persist the root token for the API phases (root_token.txt)"
   become: true  # root: writes the root-only root_token.txt to the keys dir
@@ -106,5 +114,19 @@
   no_log: true
   run_once: true
   delegate_to: "{{ hashicorp_vault_first_node }}"
-  when: _hashicorp_vault_init_json_stat.stat.exists
+  when:
+    - _hashicorp_vault_init_json_stat is not skipped
+    - _hashicorp_vault_init_json_stat.stat.exists | default(false)
+
+- name: "Remove residual root_token.txt when disk-free custody is requested"
+  become: true  # root: removes residual root-only token file
+  ansible.builtin.file:
+    path: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+    state: absent
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when:
+    - not (hashicorp_vault_persist_init | bool)
+    - (hashicorp_vault_seal_config | default({}) | length) == 0
+      or (hashicorp_vault_root_token | default('') | string | trim | length) > 0
 # Unsealing + cluster formation continue in unseal.yml (tag `unseal`).

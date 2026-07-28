@@ -105,7 +105,8 @@ ls -la /opt/vault/keys/
 |---|---|
 | *(none / full)* | Greenfield or full converge |
 | `preflight` | Topology / mount checks only |
-| `deploy` | Config + compose + start |
+| `deploy` | Config + compose + start — **restarts; pair with `unseal`** |
+| `tls` | Certificates — **restarts; pair with `unseal`** (except the on-host path) |
 | `init` | First-time init + join |
 | `unseal` | After reboot/restart (does not re-init) |
 | `verify` | Health + Raft membership |
@@ -194,8 +195,7 @@ hashicorp_vault_license: "{{ vaulted_license_blob }}"
 ```
 
 ```bash
-ansible-playbook ... --tags license,deploy
-ansible-playbook ... --tags unseal   # if restart sealed nodes
+ansible-playbook ... --tags license,deploy,unseal
 ```
 
 Autoload order (HashiCorp): `VAULT_LICENSE` → `VAULT_LICENSE_PATH` → `license_path`.  
@@ -220,9 +220,9 @@ versions as a separate, later step so failures are attributable.
 
 | Action | Steps |
 |---|---|
-| **First enable** | Set the three vars above → `--tags license,deploy` (image swap recreates the container) → `--tags unseal` (recreate seals Shamir nodes) → `--tags verify` (asserts `vault license get` reports an **autoloaded** license + prints expiry). The role validates the blob offline (`vault license inspect` in a throwaway container) *before* installing, so a mangled/expired key fails before anything changes. |
+| **First enable** | Set the three vars above → `--tags license,deploy,unseal` (image swap recreates the container, which seals Shamir nodes, so unseal must be in the SAME run) → `--tags verify` (asserts `vault license get` reports an **autoloaded** license + prints expiry). The role validates the blob offline (`vault license inspect` in a throwaway container) *before* installing, so a mangled/expired key fails before anything changes. |
 | **Renewal** | Replace the blob in the vaulted var (re-escrow) → `--tags license` only. Cluster is up, so the role hot-reloads node-by-node via `sys/config/reload/license` — **no seal, no restart**. Confirm `--tags verify` — the expiry date must move. |
-| **Rollback (pre-traffic)** | Before the Enterprise image served traffic: `hashicorp_vault_license_enabled: false`, restore the Community image pin → `--tags license,deploy` → `--tags unseal`. Both `license_path` and `VAULT_LICENSE_PATH` are gated on that boolean, so deploy drops them and recreates on Community. |
+| **Rollback (pre-traffic)** | Before the Enterprise image served traffic: `hashicorp_vault_license_enabled: false`, restore the Community image pin → `--tags license,deploy,unseal`. Both `license_path` and `VAULT_LICENSE_PATH` are gated on that boolean, so deploy drops them and recreates on Community. |
 | **Rollback (post-traffic)** | HashiCorp does **not** support Enterprise → Community downgrade on the same storage. Snapshot first (`--tags backup_now`); rollback = restore a **pre-Enterprise** snapshot onto the Community image (`--tags restore`), accepting loss of anything written since. |
 
 Every Raft node must load the **same** license (the role installs it on all hosts;
@@ -266,6 +266,24 @@ cat /opt/vault/config/vault.hcl
 - **Expected** when `auto_unseal: false`.
 - **Fix:** `ansible-playbook ... --tags unseal`  
   Or enable `hashicorp_vault_auto_unseal: true` (unseal key on every node).
+
+> `hashicorp_vault_auto_unseal` covers a host **boot** only — its unit is
+> `Type=oneshot` + `WantedBy=multi-user.target`, so a `docker compose restart`
+> (what the role's restart handler does) never triggers it. For a phase that
+> restarts the container, the unseal phase must be in the same run.
+
+### Play aborts: "refusing to run the '<phase>' phase"
+
+- **Cause:** the seal guard (`tasks/seal_guard.yml`). The selected tags include a
+  phase that notifies `Restart vault container` (`tls`, `deploy`, or a `license`
+  change that cannot hot-reload), the cluster is live and unsealed under a Shamir
+  seal, and the run does **not** select the unseal phase. Restarting would seal
+  every node with nothing left in the run to reopen it.
+- **Fix:** add `unseal` to `--tags` (the unseal phase flushes pending restarts
+  first, so the order is restart-then-unseal), or set
+  `hashicorp_vault_tls_onhost: true` (in-place SIGHUP, no restart), or move to a
+  KMS/transit `hashicorp_vault_seal_config` that reopens itself on start.
+- **Not a fix:** `hashicorp_vault_auto_unseal` — see above.
 
 ### Verify fails: ghost / stale Raft peers
 
@@ -322,7 +340,8 @@ cat /opt/vault/config/vault.hcl
 | Event | Command / action |
 |---|---|
 | Reboot | `--tags unseal` (or auto-unseal) |
-| Config tweak | `--tags deploy` then unseal if restarted |
+| Config tweak | `--tags deploy,unseal` (deploy restarts; unseal must ride along) |
+| Cert rotation | `--tags tls,unseal` — or `hashicorp_vault_tls_onhost: true` for an in-place SIGHUP with no restart |
 | Grow 1→3 | Add hosts **after** original first; full playbook |
 | Shrink 3→1 | Drop hosts from inventory → `--tags remove_peers` → decommission |
 | Nightly DR proof | `--tags backup_now` |

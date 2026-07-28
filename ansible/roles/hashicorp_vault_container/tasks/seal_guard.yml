@@ -1,0 +1,96 @@
+---
+# Seal-guard — refuse to bounce a live Shamir cluster in a run that cannot
+# reopen it.
+#
+# Several phases notify the "Restart vault container" handler (certificate
+# distribution, vault.hcl changes). Handlers fire at the END of the play, so a
+# narrow run such as `--tags tls` restarts every node and then simply finishes.
+# Under a Shamir seal — the default, i.e. hashicorp_vault_seal_config empty —
+# each restarted node comes back SEALED and nothing in that run reopens it:
+#
+#   * the unseal phase is tagged [init, unseal], so a `--tags tls` run never
+#     selects it;
+#   * hashicorp_vault_auto_unseal does NOT cover this either. Its unit is
+#     WantedBy=multi-user.target / Type=oneshot + RemainAfterExit=yes, i.e. it
+#     fires once per host BOOT. `docker compose restart` is not a boot.
+#
+# A routine certificate rotation therefore ends with the whole cluster sealed
+# and the API down. This guard turns that silent outage into a loud, actionable
+# failure BEFORE the phase writes anything, so the run is a no-op instead.
+#
+# It fails only when the outage is real: the node must be running an
+# initialised, currently UNSEALED Vault. A first deploy (no container yet) and
+# an already-sealed node have nothing to lose, so they pass.
+#
+# Caller contract (set via `vars:` on the import):
+#   _hashicorp_vault_seal_guard_phase    str  — phase name, for the message
+#   _hashicorp_vault_seal_guard_restarts bool — does this phase notify a restart
+#                                               with the host's current config
+#   _hashicorp_vault_seal_guard_remedy   str  — optional phase-specific remedy
+
+- name: "Seal-guard | Shamir seal + a phase that restarts the container"
+  # any_errors_fatal: one unsealed node is enough to make the run an outage, and
+  # the rolling restart would still hit the other hosts if only the offending
+  # host failed. Abort the whole play instead.
+  any_errors_fatal: true
+  when:
+    - _hashicorp_vault_seal_guard_restarts | bool
+    - hashicorp_vault_seal_config | length == 0
+  block:
+
+    # ansible_run_tags is the literal --tags list ('all' when none was given);
+    # ansible_skip_tags is --skip-tags. The unseal phase carries [init, unseal],
+    # so skipping EITHER of those removes it from the run.
+    - name: "Seal-guard | Decide whether this run also selects the unseal phase"
+      ansible.builtin.set_fact:
+        _hashicorp_vault_unseal_in_run: >-
+          {{ ((ansible_run_tags | intersect(['all', 'init', 'unseal'])) | length > 0)
+             and ((ansible_skip_tags | intersect(['init', 'unseal'])) | length == 0) }}
+
+    # Only probe when the run cannot unseal — an unseal-carrying run is safe by
+    # construction and should not pay for a docker exec on every host.
+    - name: "Seal-guard | Check whether this node is running an unsealed Vault"
+      become: true  # root: docker exec needs the root-owned docker socket
+      ansible.builtin.command:
+        cmd: "docker exec {{ hashicorp_vault_name }} vault status -format=json"
+      register: _hashicorp_vault_seal_guard_status
+      changed_when: false
+      # A missing container / down API is not an error here: it means there is
+      # no unsealed Vault to lose, which the assert below reads as "safe".
+      failed_when: false
+      when: not (_hashicorp_vault_unseal_in_run | bool)
+
+    # default('{}', true) also replaces an EMPTY stdout (skipped probe, or a
+    # docker exec that produced nothing) — plain default() would let '' reach
+    # from_json and raise instead of resolving to "nothing to seal".
+    - name: "Seal-guard | Decide whether this run would leave the node sealed"
+      vars:
+        _hashicorp_vault_seal_guard_state: >-
+          {{ _hashicorp_vault_seal_guard_status.stdout | default('{}', true) | from_json }}
+      ansible.builtin.set_fact:
+        _hashicorp_vault_would_seal: >-
+          {{ (not (_hashicorp_vault_unseal_in_run | bool))
+             and (_hashicorp_vault_seal_guard_state.initialized | default(false) | bool)
+             and (not (_hashicorp_vault_seal_guard_state.sealed | default(true) | bool)) }}
+
+    - name: "Seal-guard | Refuse a restart this run cannot unseal"
+      ansible.builtin.assert:
+        that:
+          - not (_hashicorp_vault_would_seal | bool)
+        quiet: true
+        fail_msg: >-
+          hashicorp_vault_container: refusing to run the
+          '{{ _hashicorp_vault_seal_guard_phase }}' phase. It notifies "Restart vault
+          container", this node is running an INITIALISED and UNSEALED Vault under a
+          Shamir seal (hashicorp_vault_seal_config is empty), and the selected tag set
+          (--tags {{ ansible_run_tags | join(',') }}) does not include the unseal phase.
+          Every node would be restarted and come back SEALED, with nothing left in this
+          run to reopen it — a routine run would take the cluster down. Note
+          hashicorp_vault_auto_unseal does NOT cover this: its systemd unit fires once
+          per host BOOT, never on a container restart. Pick one:
+          (1) add the unseal phase — re-run with
+          `--tags {{ (ansible_run_tags | reject('equalto', 'all') | list + ['unseal']) | unique | join(',') }}`;
+          unseal.yml flushes pending handlers first, so the order is restart-then-unseal.
+          (2) move to a seal that reopens itself on start — set
+          hashicorp_vault_seal_config to a KMS/transit seal stanza.
+          {{ _hashicorp_vault_seal_guard_remedy | default('', true) }}

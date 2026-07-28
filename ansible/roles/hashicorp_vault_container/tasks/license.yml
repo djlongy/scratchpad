@@ -157,11 +157,26 @@
   ansible.builtin.debug:
     msg: >-
       License file changed on {{ inventory_hostname }}; container restart queued
-      (API reload unavailable — unseal after if auto-unseal is off).
+      (API reload unavailable — every restarted node comes back SEALED under a
+      Shamir seal and must be unsealed again in this same run).
   when:
     - _hashicorp_vault_license_install is changed
     - >-
       (_hashicorp_vault_license_running.stdout | default('') | trim != 'true')
       or (_hashicorp_vault_license_reload.rc | default(1) | int != 0)
   changed_when: true
+  register: _hashicorp_vault_license_restart_queued
   notify: Restart vault container
+
+# Guarded HERE rather than at the top of the file: the licensed happy path is a
+# hot reload (POST /sys/config/reload/license) which never restarts, so an
+# up-front guard would block every routine `--tags license` run. By this point we
+# know whether a restart was actually queued. Failing now still prevents the
+# seal: a failed task aborts the play WITHOUT flushing handlers (force_handlers
+# is off), so the queued restart never happens.
+- name: "License | Guard — refuse a queued restart that would seal the cluster"
+  ansible.builtin.import_tasks: seal_guard.yml
+  vars:
+    _hashicorp_vault_seal_guard_phase: license
+    _hashicorp_vault_seal_guard_restarts: >-
+      {{ _hashicorp_vault_license_restart_queued is changed }}

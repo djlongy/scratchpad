@@ -229,16 +229,32 @@
   failed_when: "'Verify return code: 0' not in _hashicorp_vault_chain_ok.stdout"
   when: hashicorp_vault_tls_onhost | bool
 
-# Closes the cross-file convention gap: the inventory's certmonger postsave and
-# this role's script path agree only by naming convention. If they drift, the
-# hook silently stops running and the cert goes stale at the next renewal.
-- name: "Verify | Assert certmonger's post-save hook points at the sync script"
+# Closes the cross-file convention gap when the on-host cert is certmonger-
+# tracked. Let's Encrypt / manual paths (tls_onhost + le-*.pem) are NOT in
+# certmonger's db — requiring getcert list there fails closed on a valid setup.
+# Probe first; only assert the post-save hook when certmonger actually tracks
+# the cert. Fingerprint/chain checks above remain issuer-agnostic.
+- name: "Verify | Probe whether certmonger tracks the on-host cert"
   become: true  # root: certmonger's tracking db
   ansible.builtin.command:
     cmd: "getcert list -f {{ hashicorp_vault_tls_onhost_cert }}"
-  register: _hashicorp_vault_getcert_wiring
+  register: _hashicorp_vault_getcert_probe
   changed_when: false
-  failed_when: >-
-    _hashicorp_vault_getcert_wiring.rc != 0
-    or ('post-save command: ' ~ hashicorp_vault_tls_sync_script) not in _hashicorp_vault_getcert_wiring.stdout
+  failed_when: false
   when: hashicorp_vault_tls_onhost | bool
+
+- name: "Verify | Assert certmonger's post-save hook points at the sync script"
+  become: true  # root: certmonger's tracking db
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('post-save command: ' ~ hashicorp_vault_tls_sync_script)
+        in (_hashicorp_vault_getcert_probe.stdout | default(''))
+    fail_msg: >-
+      certmonger tracks {{ hashicorp_vault_tls_onhost_cert }} but its post-save
+      hook does not point at {{ hashicorp_vault_tls_sync_script }}. Cert renewal
+      will not reload the listener. Fix the getcert tracking request.
+    quiet: true
+  when:
+    - hashicorp_vault_tls_onhost | bool
+    - (_hashicorp_vault_getcert_probe.rc | default(1)) == 0

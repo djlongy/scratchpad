@@ -66,10 +66,45 @@
   ansible.builtin.set_fact:
     # difference([1,2,3] survivors-desired) preserves raft order, so a stale
     # LEADER sorts by its raft position; leader-removal is handled by forwarding.
+    _rmp_raft_ids: >-
+      {{ (_rmp_peers.stdout | from_json).data.config.servers
+         | map(attribute='node_id') | list }}
     _rmp_stale: >-
       {{ (_rmp_peers.stdout | from_json).data.config.servers
          | map(attribute='node_id') | list | difference(hashicorp_vault_nodes) }}
+    _rmp_missing_desired: >-
+      {{ hashicorp_vault_nodes | difference(
+           (_rmp_peers.stdout | from_json).data.config.servers
+           | map(attribute='node_id') | list) }}
   run_once: true
+
+# Refuse a rename/wrong-inventory footgun: if NONE of the desired ids are in
+# Raft, every live peer looks "stale" and remove-peer would empty the cluster.
+# Require the desired set to overlap live peers, and leave a survivor floor.
+- name: "Remove-peers | Refuse eviction that would orphan or empty the cluster"
+  vars:
+    _rmp_survivors: "{{ (_rmp_raft_ids | length) - (_rmp_stale | length) }}"
+    # Quorum of the *desired* set for HA; single-node scale-down needs 1 survivor.
+    _rmp_min_survivors: >-
+      {{ (((hashicorp_vault_nodes | length) // 2) + 1)
+         if ((hashicorp_vault_nodes | length) >= 3)
+         else 1 }}
+  ansible.builtin.assert:
+    that:
+      - (_rmp_missing_desired | length) < (hashicorp_vault_nodes | length)
+        or (_rmp_stale | length) == 0
+      - (_rmp_survivors | int) >= 1
+      - (_rmp_survivors | int) >= (_rmp_min_survivors | int)
+    fail_msg: >-
+      Refusing remove-peers: desired nodes {{ hashicorp_vault_nodes }} do not
+      safely overlap live Raft peers {{ _rmp_raft_ids }}
+      (missing-from-raft={{ _rmp_missing_desired }}, would-evict={{ _rmp_stale }}).
+      After eviction only {{ _rmp_survivors }} peer(s) would remain — need at
+      least {{ _rmp_min_survivors }} still in Raft. Fix inventory / node_id
+      alignment (rename?) before --tags remove_peers.
+    quiet: true
+  run_once: true
+  when: _rmp_stale | length > 0
 
 - name: "Remove-peers | Report the plan"
   ansible.builtin.debug:
