@@ -43,22 +43,134 @@
     quiet: true
 
 # ── Root disk(s) — always excluded from auto-selection / provisioning ────
+# Exit markers on stdout (one line each, then disk paths):
+#   ROOT_KIND=block  — / is on a block device; zero disks afterwards = hard fail
+#   ROOT_KIND=virtual — overlay/tmpfs/container root; no physical disk to exclude
 - name: Identify the physical disk(s) backing /
   become: true  # root: inspects block-device topology
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      src="$(findmnt -n -o SOURCE /)"
-      lsblk -rsno NAME,TYPE "$src" 2>/dev/null | awk '$2=="disk"{print "/dev/"$1}' | sort -u
+      src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+      # Resolve mapper/symlink sources to a path we can test -b.
+      resolved="$src"
+      if [ -n "$src" ] && [ ! -b "$src" ]; then
+        resolved="$(readlink -f "$src" 2>/dev/null || true)"
+      fi
+      if [ -n "$resolved" ] && [ -b "$resolved" ]; then
+        echo "ROOT_KIND=block"
+        lsblk -rsno NAME,TYPE "$resolved" 2>/dev/null \
+          | awk '$2=="disk"{print "/dev/"$1}' | sort -u
+        exit 0
+      fi
+      # Non-block root (Docker overlay, tmpfs, nfs root, …) — nothing to exclude.
+      echo "ROOT_KIND=virtual"
+      echo "ROOT_SOURCE=${src:-unknown}"
+      exit 0
     executable: /bin/bash
   register: _storage_root_raw
   changed_when: false
-  failed_when: false
   check_mode: false
 
-- name: Record root disks
+- name: Record root disks and whether root is block-backed
   ansible.builtin.set_fact:
-    _storage_root_disks: "{{ _storage_root_raw.stdout_lines | map('trim') | list }}"
+    _storage_root_kind: >-
+      {{ (_storage_root_raw.stdout_lines | default([])
+          | select('match', '^ROOT_KIND=') | map('regex_replace', '^ROOT_KIND=', '')
+          | first) | default('block', true) }}
+    _storage_root_disks: >-
+      {{ _storage_root_raw.stdout_lines | default([])
+         | reject('match', '^ROOT_')
+         | map('trim') | select | list }}
+
+# Root protection means one thing: we can NAME the disk(s) carrying /. Three
+# separate guards are derived from that list and nothing else —
+#   * the auto/blank candidate pool          (rejectattr on _storage_root_disks)
+#   * the by-size/serial/wwn disk catalogue  (same rejectattr)
+#   * "refuse to CREATE data volumes in the OS root VG" (_storage_root_vgs)
+# — so on a root we cannot name, _storage_root_disks is [] and ALL THREE
+# degrade to silent no-ops rather than failing. That is fail-OPEN, and it is why
+# an unnameable root cannot simply be waved through.
+#
+# Overlay/tmpfs (containers), ZFS datasets and any other non-block root land here
+# by design: there is no OS block device to exclude. The role stays usable on
+# them, but only for volumes that name their disk explicitly — see the refusal
+# assert below. This is the single flag those paths test; do not re-derive it.
+- name: Record whether root-disk protection is available
+  ansible.builtin.set_fact:
+    _storage_root_protection: "{{ _storage_root_kind == 'block' }}"
+
+# Fail closed only when / is on a block device but we could not name its disk(s).
+# Virtual roots (containers) leave an empty exclude list by design — there is no
+# OS disk to protect, and failing would break loopback/molecule fixtures.
+- name: Assert root-disk discovery identified at least one disk when / is block-backed
+  ansible.builtin.assert:
+    that: _storage_root_disks | length > 0
+    fail_msg: >-
+      / is on a block device but no parent disk could be resolved. Root protection
+      (excluding the OS disk from auto/blank selection and refusing to CREATE
+      data volumes inside the root VG) cannot run without this list.
+      findmnt/lsblk rc={{ _storage_root_raw.rc | default('n/a') }},
+      stdout={{ _storage_root_raw.stdout | default('') | trim | default('(empty)', true) }},
+      stderr={{ _storage_root_raw.stderr | default('') | trim | default('(empty)', true) }}.
+      Fix findmnt/lsblk on the host, then re-run.
+    quiet: true
+  when: _storage_root_kind == 'block'
+
+# Deliberately NOT gated on storage_debug. Three safety guards are inert for the
+# rest of this run and the operator has to know that from a default-verbosity run.
+- name: Warn that root-disk protection is unavailable
+  ansible.builtin.debug:
+    msg: >-
+      WARNING — root protection is DISABLED for this run. / is not block-backed
+      (kind={{ _storage_root_kind }};
+      {{ _storage_root_raw.stdout_lines | default([])
+         | select('match', '^ROOT_SOURCE=') | list | first | default('ROOT_SOURCE=unknown') }}),
+      so no OS disk could be named. Inert for this run: the auto/blank exclude
+      list, the by-size/by-serial/by-wwn catalogue filter, and the refusal to
+      CREATE data volumes inside the OS root volume group. Volumes that name a
+      disk implicitly (auto / by-*) are REFUSED below; give them an explicit
+      /dev path if you are certain it is not the OS disk. Expected on containers
+      (overlayfs) and on ZFS/dataset roots.
+  when: not (_storage_root_protection | bool)
+
+# The destructive paths this disables are the IMPLICIT ones. `auto`/'' takes the
+# first blank disk and by-size/by-serial/by-wwn take the first catalogue match —
+# both pools were filtered by _storage_root_disks, which is empty here, so on a
+# host whose disks are visible (a privileged container sees the host's) either
+# could hand provisioning the OS disk to wipe. An explicit /dev path is the
+# operator naming the device, so it is still allowed; that is the escape hatch.
+#
+# Read-only runs are unaffected: this only fires when provisioning is actually
+# armed (storage_provision + the volume's own provision flag), so discovery,
+# grow and mount keep working on an unnameable root.
+- name: Refuse implicit disk selection while root protection is unavailable
+  ansible.builtin.assert:
+    that: _unprotected_implicit | length == 0
+    fail_msg: >-
+      Volume(s) {{ _unprotected_implicit | join(', ') }} select a disk implicitly
+      (auto / by-size / by-serial / by-wwn) and would be PROVISIONED, but the disk
+      backing / could not be named (kind={{ _storage_root_kind }}), so the OS disk
+      cannot be excluded from the candidate pool. Either give each volume an
+      explicit `disk: /dev/...` path, or set storage_provision: false for this host.
+    quiet: true
+  vars:
+    # Looped rather than chained selectattr because `provision` may arrive as a
+    # YAML string ("yes"/"true") from inventory — selectattr('equalto', true)
+    # would silently skip it and the guard would pass on a volume that DOES
+    # provision. `| bool` is the only reading that matches what provision.yml does.
+    _unprotected_implicit: >-
+      {% set ns = namespace(out=[]) %}
+      {%- for v in (_storage_local_volumes | default([])) -%}
+      {%- if (v.provision | default(true) | bool)
+            and not (v.disk | default('') | string).startswith('/dev/') -%}
+      {%- set ns.out = ns.out + [v.name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  when:
+    - not (_storage_root_protection | bool)
+    - storage_provision | bool
 
 # ── Block-device inventory (JSON, sizes in bytes) ────────────────────────
 - name: Gather block-device inventory
@@ -127,10 +239,23 @@
 # lsblk's FSTYPE comes from the udev/blkid cache and can miss a deep
 # whole-disk signature (e.g. iso9660) that `blkid -p` finds. Probe each
 # candidate directly so `auto` never selects a disk that would later fail the
-# FRESH guard — a disk counts as blank only if blkid -p reports nothing (rc 2).
+# FRESH guard.
+#
+# blkid rc 2 means "nothing found" — both a truly empty disk AND a device that
+# could not be opened. Require a live block node (test -b) and a clean stderr
+# before treating rc 2 as blank; otherwise the disk stays out of the blank pool
+# (disqualified, not handed to auto as empty).
 - name: Probe candidate disks for hidden signatures
   become: true  # root: blkid -p opens the raw device
-  ansible.builtin.command: "blkid -p -o value -s TYPE {{ item }}"
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      if ! test -b "{{ item }}"; then
+        echo "not a block device: {{ item }}" >&2
+        exit 1
+      fi
+      blkid -p -o value -s TYPE "{{ item }}"
+    executable: /bin/bash
   loop: "{{ _storage_blank_candidates }}"
   register: _storage_blank_probe
   changed_when: false
@@ -139,7 +264,17 @@
 
 - name: Keep only genuinely empty disks as blank
   ansible.builtin.set_fact:
-    _storage_blank_disks: "{{ _storage_blank_probe.results | selectattr('rc', 'equalto', 2) | map(attribute='item') | list }}"
+    # rc 2 + empty stderr (trimmed). Any probe noise (permission denied, I/O
+    # error, "not a block device") disqualifies the disk from auto selection.
+    _storage_blank_disks: >-
+      {% set ns = namespace(out=[]) %}
+      {%- for r in (_storage_blank_probe.results | default([])) -%}
+      {%- if (r.rc | default(1)) == 2
+            and ((r.stderr | default('') | trim | length) == 0) -%}
+      {%- set ns.out = ns.out + [r.item] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
 
 # Fold the probe verdicts into the report (a candidate with a deep signature
 # is disqualified here, invisibly to lsblk — name the signature).
@@ -147,9 +282,15 @@
   ansible.builtin.set_fact:
     _storage_disk_report: >-
       {{ _storage_disk_report | default({})
-         | combine({item.item: ('BLANK' if item.rc == 2
-                                else 'hidden signature: ' ~ (item.stdout | trim | default('unknown', true))
-                                     ~ ' (wipefs after manual inspection to reuse)')}) }}
+         | combine({item.item: (
+              'BLANK' if (item.rc == 2 and (item.stderr | default('') | trim | length) == 0)
+              else (
+                'unprobeable: ' ~ (item.stderr | default('') | trim | default('blkid failed', true))
+                if (item.rc != 0 and (item.stderr | default('') | trim | length) > 0)
+                else 'hidden signature: ' ~ (item.stdout | trim | default('unknown', true))
+                     ~ ' (wipefs after manual inspection to reuse)'
+              )
+            )}) }}
   loop: "{{ _storage_blank_probe.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -207,6 +348,34 @@
   ansible.builtin.set_fact:
     _storage_existing_vgs: "{{ _storage_vgs_raw.stdout_lines | map('trim') | select | list }}"
     _storage_existing_lvs: "{{ _storage_lvs_raw.stdout_lines | map('trim') | map('split') | map('join', '/') | list }}"
+
+# Probe each existing LV via /dev/<vg>/<lv> (the form every consumer uses).
+# Do NOT compare against _storage_fs_devices: that list comes from lsblk level-0/1
+# nodes only, and -p names LVs as /dev/mapper/<vg>-<lv> with doubled hyphens —
+# /dev/<vg>/<lv> can never be a member, so an "in _storage_fs_devices" check is
+# permanently false and undoes the complete-stack filter.
+- name: Probe existing LVs for a real filesystem signature
+  become: true  # root: blkid -p opens the LV device
+  ansible.builtin.command: "blkid -p -o value -s TYPE /dev/{{ item }}"
+  loop: "{{ _storage_existing_lvs }}"
+  register: _storage_lv_fs_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _storage_existing_lvs | length > 0
+
+- name: Record which LVs already carry a filesystem
+  ansible.builtin.set_fact:
+    # blkid rc==0 with non-empty TYPE → real FS on /dev/<vg>/<lv>. item is "vg/lv".
+    _storage_lvs_with_fs: >-
+      {% set ns = namespace(out=[]) %}
+      {%- for r in (_storage_lv_fs_probe.results | default([])) -%}
+      {%- if (r.rc | default(1)) == 0
+            and ((r.stdout | default('') | trim | length) > 0) -%}
+      {%- set ns.out = ns.out + [r.item] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
 
 - name: Build physical-volume to volume-group mapping
   ansible.builtin.set_fact:
@@ -301,16 +470,34 @@
     # selectattr('equalto') silently matches nothing.
     _match_serial: "{{ ((_storage_disks | selectattr('serial', 'equalto', (_sel | regex_replace('^by-serial:', '') | string)) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-serial:') else '' }}"
     _match_wwn: "{{ ((_storage_disks | selectattr('wwn', 'equalto', (_sel | regex_replace('^by-wwn:', '') | string)) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-wwn:') else '' }}"
+    # Complete LVM stack = LV present AND blkid sees a real FS on /dev/<vg>/<lv>
+    # (see _storage_lvs_with_fs probe above — not the lsblk partition FS list).
+    _lvm_complete: >-
+      {{ (item.lvm | bool) and (_lv_exists | bool)
+         and ((item.vg ~ '/' ~ item.lv) in (_storage_lvs_with_fs | default([]))) }}
+    # Disk resolution. Complete stacks need no disk. Incomplete LVM stacks
+    # (VG/LV present, no filesystem) keep a non-empty _disk so provision can
+    # finish mkfs without claiming a new blank disk — see provision_one.yml.
+    # Explicit /dev/ also subtracts _consumed — otherwise two volumes naming the
+    # same path both resolve and both enter provisioning. by-* / auto already
+    # use difference(_consumed); keep the same contract here.
+    _match_dev: >-
+      {{ (_sel if _sel not in _consumed else '')
+         if _sel.startswith('/dev/') else '' }}
     _resolved_disk: >-
-      {{ '' if (_vg_exists | bool)
-         else _sel if _sel.startswith('/dev/')
-         else _match_size if _sel.startswith('by-size:')
-         else _match_serial if _sel.startswith('by-serial:')
-         else _match_wwn if _sel.startswith('by-wwn:')
-         else (_free_blank | first | default('')) if (_sel == 'auto' or _sel == '')
-         else '' }}
+      {{ '' if (_lvm_complete | bool)
+         else (
+           (_existing_pv if (_existing_pv | length > 0) else '__incomplete_lvm__')
+           if ((item.lvm | bool) and (_vg_exists | bool) and not (_lvm_complete | bool))
+           else _match_dev if _sel.startswith('/dev/')
+           else _match_size if _sel.startswith('by-size:')
+           else _match_serial if _sel.startswith('by-serial:')
+           else _match_wwn if _sel.startswith('by-wwn:')
+           else (_free_blank | first | default('')) if (_sel == 'auto' or _sel == '')
+           else ''
+         ) }}
     _part_dev: >-
-      {{ '' if (_resolved_disk | length == 0)
+      {{ '' if (_resolved_disk | length == 0 or _resolved_disk == '__incomplete_lvm__')
          else (_resolved_disk ~ 'p' ~ (item.partition_number | string))
               if (_resolved_disk | basename is match('(' ~ _storage_part_suffix_re ~ ')'))
          else (_resolved_disk ~ (item.partition_number | string)) }}
@@ -324,13 +511,52 @@
     # whose name contains '-'. The /dev/<vg>/<lv> symlink LVM creates needs no escaping and
     # is equivalent for every consumer here (mkfs, mount, resize2fs).
     _dm_dev: "{{ ('/dev/' ~ item.vg ~ '/' ~ item.lv) if (item.lvm | bool) else _part_dev }}"
-    _exists: "{{ (_lv_exists | bool) if (item.lvm | bool) else (_part_dev in _storage_fs_devices) }}"
-    _entry: "{{ item | combine({'_disk': _resolved_disk, '_part_dev': _part_dev, '_pv': _pv, '_dm_dev': _dm_dev, '_exists': _exists | bool, '_vg_exists': _vg_exists | bool}) }}"
+    # Complete stack requires a filesystem, not just an LV. An LV without a FS used to
+    # count as _exists, so provision skipped and mount only debug'd — green incomplete.
+    _exists: >-
+      {{ (_lvm_complete | bool)
+         if (item.lvm | bool)
+         else (_part_dev in _storage_fs_devices) }}
+    _entry: >-
+      {{ item | combine({
+           '_disk': _resolved_disk,
+           '_part_dev': _part_dev,
+           '_pv': _pv,
+           '_dm_dev': _dm_dev,
+           '_exists': _exists | bool,
+           '_vg_exists': _vg_exists | bool,
+           '_lv_exists': _lv_exists | bool
+         }) }}
   loop: "{{ _storage_local_volumes }}"
   loop_control:
     label: "{{ item.name }}"
 
 # ── Resilience guards — a volume must never silently dead-end ─────────────
+# Two volumes resolving to the same non-empty disk (explicit /dev/ collision,
+# or a selector bug) must not both enter provision. __incomplete_lvm__ is a
+# sentinel shared by incomplete stacks that need no disk and is excluded.
+- name: Assert no two local volumes resolve to the same disk
+  ansible.builtin.assert:
+    that: (_claimants | length) == 1
+    fail_msg: >-
+      Disk '{{ item }}' is resolved for more than one volume
+      ({{ _claimants | join(', ') }}). Each blank/data disk may back only one
+      volume in a single run. Use distinct disks or distinct selectors.
+    quiet: true
+  vars:
+    _pairs: >-
+      {{ _storage_resolved
+         | selectattr('_disk', 'defined')
+         | rejectattr('_disk', 'equalto', '')
+         | rejectattr('_disk', 'equalto', '__incomplete_lvm__')
+         | list }}
+    _disks: "{{ _pairs | map(attribute='_disk') | list }}"
+    _claimants: >-
+      {{ _pairs | selectattr('_disk', 'equalto', item) | map(attribute='name') | list }}
+  loop: "{{ _disks | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+
 # VGs whose PVs live on a root disk (e.g. 'ol' on /dev/sda3, 'rl', 'vg00').
 - name: Identify volume groups living on the root disk(s)
   ansible.builtin.set_fact:

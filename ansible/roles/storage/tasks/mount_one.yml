@@ -28,17 +28,26 @@
 # the volume asked to be created and the role-level opt-in was never passed — the
 # provision phase is skipped, nothing formats the disk, and the only trace is this
 # message. Name that case explicitly instead of leaving a bare "not formatted".
-- name: "{{ vol.name }} | skip mount (no filesystem yet)"
-  ansible.builtin.debug:
-    msg: >-
-      {{ _m_dev }} has no UUID yet (not formatted) — skipping mount of {{ vol.mount }}.
-      {{ 'This volume declares provision: true but the role-level storage_provision
-      is FALSE, so the provision phase was skipped and nothing created it. Pass
-      storage_provision: true to the role (it is opt-in precisely because it
-      formats disks; creation stays FRESH-guarded and refuses a non-empty disk).'
+- name: "{{ vol.name }} | refuse to skip a declared mount with no filesystem"
+  ansible.builtin.assert:
+    that:
+      - _m_uuid.stdout | trim | length > 0
+    fail_msg: >-
+      {{ _m_dev }} has no UUID (not formatted) — cannot mount {{ vol.mount }}.
+      {{ 'This volume declares provision: true but role-level storage_provision
+      is FALSE, so nothing created the filesystem. Pass storage_provision: true.'
       if (vol.provision | bool and not (storage_provision | bool))
-      else 'Provisioning is enabled, so this is expected before the create pass.' }}
-  when: _m_uuid.stdout | trim | length == 0
+      else (
+        'An LVM LV appears present without a filesystem (partial provision). '
+        'Re-run with storage_provision: true so the incomplete stack can finish mkfs, '
+        'or inspect the host stack manually.'
+        if (vol.lvm | bool and (vol._lv_exists | default(false) | bool))
+        else 'Provisioning is enabled but no filesystem was created — check the provision phase output for this volume.'
+      ) }}
+    quiet: true
+  when:
+    - vol.mount | default('') | length > 0
+    - _m_uuid.stdout | trim | length == 0
 
 - name: "{{ vol.name }} | manage mount + fstab"
   when: _m_uuid.stdout | trim | length > 0
@@ -58,6 +67,19 @@
         fstype: "{{ vol.fstype }}"
         opts: "{{ _m_opts }}"
         state: mounted
+
+    # Pre-mount file: applies owner/mode to the bare directory on the parent
+    # filesystem, which is then hidden under the mount. Re-apply on the live
+    # mount so the first provisioning run actually sets the declared owner on
+    # the volume root (not only on a second converge).
+    - name: "{{ vol.name }} | apply owner/group/mode on the mounted filesystem root"
+      become: true  # root: chowns the mounted volume root
+      ansible.builtin.file:
+        path: "{{ vol.mount }}"
+        state: directory
+        owner: "{{ vol.owner }}"
+        group: "{{ vol.group }}"
+        mode: "{{ vol.mode }}"
 
     - name: "{{ vol.name }} | read fstab entries for {{ vol.mount }}"
       ansible.builtin.shell:

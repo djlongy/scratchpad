@@ -4,17 +4,24 @@
 # Partition device-name prefixes (nvme → nvme0n1p1 vs sda → sda1) live in
 # defaults as storage_part_suffix_devices / _extra so inventory can extend them.
 
-# Filesystem grow commands by fstype. {dev} / {mount} are substituted in
-# grow.yml. xfs grows by mountpoint and is grow-only; ext4 grows by device.
+# Filesystem grow commands by fstype. Substituted in grow_one.yml:
+#   {mount} → vol.mount   (xfs_growfs needs a live mount point)
+#   {dev}   → vol._dm_dev (resize2fs grows by device, works unmounted)
+# Add a key here to support another fstype without forking grow_one.yml.
 storage_fs_grow:
   xfs: "xfs_growfs {mount}"
   ext4: "resize2fs {dev}"
 
-# Output token each grow command prints when it actually changed something,
-# used for changed_when detection.
+# changed_when for grow_one.yml:
+#   - if fstype is in storage_fs_grow_noop_token: changed when that token is ABSENT
+#     (resize2fs prints "Nothing to do!" on a no-op — positive "blocks long"
+#     also appears on some no-op paths, so absence-of-noop is the reliable signal)
+#   - otherwise: changed when storage_fs_grow_changed_token is PRESENT
+#     (xfs_growfs prints "data blocks changed" only when it grew)
+storage_fs_grow_noop_token:
+  ext4: "Nothing to do"
 storage_fs_grow_changed_token:
   xfs: "data blocks changed"
-  ext4: "blocks long"
 
 # Volume kinds. Network kinds bypass the block phases entirely; anything not
 # listed here is rejected by validate.yml (V6) before any phase acts.

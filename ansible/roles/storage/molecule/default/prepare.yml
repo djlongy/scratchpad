@@ -8,6 +8,18 @@
   hosts: all
   become: false
   tasks:
+    # The role self-escalates with become: true (sudo). geerlingguy docker images
+    # often break PAM/"sudo -n" for root after package ops — without this the first
+    # become task fails with "PAM account management error" / "password is required".
+    - name: Ensure passwordless sudo for root (role become path)
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/zz-molecule-root
+        content: "root ALL=(ALL) NOPASSWD: ALL\nDefaults:root !requiretty\n"
+        mode: "0440"
+        owner: root
+        group: root
+        validate: visudo -cf %s
+
     - name: Install LVM + filesystem tooling
       ansible.builtin.package:
         name:
@@ -15,6 +27,7 @@
           - xfsprogs
           - e2fsprogs
           - util-linux
+          - sudo
         state: present
 
     - name: Configure LVM for a udev-less container

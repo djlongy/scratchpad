@@ -348,12 +348,31 @@ field schema is in `meta/argument_specs.yml`.
 ## Behaviour
 
 - Grow is automatic and non-destructive — it only enlarges existing stacks
-  after the underlying disk grew.
+  after the underlying disk grew. **xfs** filesystem grow (`xfs_growfs`) needs
+  a live mount point: if the path is not mounted (e.g. `nofail` boot skip),
+  LV/PV extension still runs and the FS grow is **skipped with a warning**
+  rather than aborting the play before the mount phase. Re-run after mount
+  (or the next converge) finishes the FS grow. **ext4** grows by device and
+  does not need the mount. Commands come from `storage_fs_grow` in role vars.
 - Provision is opt-in (`storage_provision: true` or `--tags provision`)
   **and** FRESH-guarded (`storage_require_fresh`, default `true`): it
   refuses any disk with an existing filesystem or partition signature.
+  FRESH requires a real block device (`test -b`) and a clean blkid probe
+  (rc 2 with empty stderr) — an unreadable path is never treated as empty.
 - The disk backing `/` is discovered at runtime and excluded from `auto`
-  selection and from provisioning.
+  selection and from provisioning. On a **block-backed** root, discovery
+  **fails closed** if no root disk can be identified (an empty list would
+  silently disable root protection). On a root that is not a block device —
+  overlayfs in a container, a ZFS dataset — there is no OS disk to name, so
+  the role **degrades loudly** instead of aborting: see
+  [When the root disk cannot be named](#when-the-root-disk-cannot-be-named).
+- A declared `mount` with no filesystem on the device **fails the play** — it is
+  never skipped with a warning. `provision: false` means "adopt an existing
+  filesystem", not "this volume is optional". See
+  [Declared mounts are promises](#declared-mounts-are-promises-not-preferences)
+  for the failure modes and the blast radius. After a successful mount,
+  `owner` / `group` / `mode` are re-applied on the live filesystem root so the
+  first provision run sets them (not only a second converge).
 - A no-tags run is a full idempotent reconcile
   (`validate → packages → discover → grow → provision → mount → mount_net →
   selinux`); the `discover` phase (read-only device discovery + selector
@@ -361,7 +380,7 @@ field schema is in `meta/argument_specs.yml`.
   depends on its facts.
 - **Validation runs on every invocation, under the `always` tag**, before any
   phase acts — a declaration error surfaces whichever refinement tag was
-  selected. Rules V1–V7 and V9 are pure checks over the declared list; V8
+  selected. Rules V1–V7 and V9–V12 are pure checks over the declared list; V8
   probes the host with `findmnt` and only when network volumes are enabled.
 - **Network volumes bypass the block layer entirely.** The list is split by
   `kind` before any phase runs: `discover` / `grow` / `provision` / `mount` /
@@ -407,6 +426,135 @@ Every rule fails fast with a message naming the offending volume(s).
 | V7 | A network `mount` is an absolute path and not in `storage_net_protected_mounts` |
 | V8 | Runtime shadow check — a network mount point already serving a **different** source is refused rather than clobbered |
 | V9 | A network `mount` is not nested inside another declared `mount` unless `storage_allow_nested_mounts: true` |
+| V10 | A `disk` selector uses a supported form (`auto`, `/dev/...`, `by-size:`, `by-serial:`, `by-wwn:`) with a non-empty payload, and carries no whitespace padding |
+| V11 | No two **local LVM** volumes share a `vg` — this role provisions one VG per volume (1 VG ↔ 1 LV) |
+| V12 | An `nfs`/`cifs` volume does **not** declare `sefcontext` — host-side fcontext/restorecon is local-only |
+
+Also enforced outside the V-table (same fail-fast spirit):
+
+| Check | Where | Rule |
+|---|---|---|
+| Known profile | `main.yml` | `storage_profile` must be a key of `storage_profiles` (no raw Jinja attribute error) |
+| Root disk discovered | `discover.yml` | On a block-backed `/`, at least one disk must be identified — empty list fail-closes rather than disabling root protection |
+| Implicit selection needs root protection | `discover.yml` | When `/` is not block-backed and provisioning is armed, `auto` / `by-*` selectors are refused; an explicit `/dev/...` path is still allowed |
+| Unique resolved disk | `discover.yml` | No two local volumes resolve to the same non-sentinel `_disk` (covers explicit `/dev/` collisions) |
+| FRESH is a real block device | `provision_one.yml` | `test -b` before blkid; blkid stderr is never treated as "empty" |
+
+### Why V11 exists
+
+`discover` computes `_vg_exists` **once**, before `provision` runs. Two volumes
+that both create the *same new* VG therefore both see "VG absent" and both pass
+the provision filter. The second `community.general.lvg` call is given a
+single-PV `pvs:` list, and the pinned collection version has no
+`remove_extra_pvs` toggle — so it `vgreduce`s the first volume's PV straight
+back out of the VG. V11 refuses the declaration instead of relying on
+discovery's frozen state to make the collision unreachable.
+
+## When the root disk cannot be named
+
+Root protection means exactly one thing: the role can **name** the disk(s)
+carrying `/`. Three separate guards are derived from that one list and nothing
+else:
+
+| Guard | How it uses the root-disk list |
+|---|---|
+| `auto` / blank candidate pool | rejects any disk in the list |
+| `by-size:` / `by-serial:` / `by-wwn:` catalogue | same rejection, before matching |
+| Refusal to **create** data volumes in the OS root VG | root VGs are the VGs whose PVs sit on those disks |
+
+If the list is empty, all three become no-ops **and report success** — the
+failure mode is fail-open, not fail-closed. So an unnameable root cannot simply
+be waved through.
+
+`discover` classifies the root as `block` or not by resolving `findmnt -n -o
+SOURCE /` and testing it with `test -b`. Overlayfs (containers), ZFS datasets
+and any other non-block root land in the second class by design — there is no
+OS block device to exclude — and set `_storage_root_protection: false`.
+
+What changes for that run:
+
+- A **warning is printed at default verbosity** (not behind `storage_debug`)
+  naming all three guards as inert.
+- **Implicit disk selection is refused** — `auto`, `''`, `by-size:`,
+  `by-serial:`, `by-wwn:` — for any volume that would be provisioned. Those
+  selectors pick from a pool that could not exclude the OS disk, and a
+  privileged container sees the host's disks, so either could hand
+  provisioning the OS disk to wipe.
+- An explicit `disk: /dev/...` is **still allowed**. That is the operator
+  naming the device, and it is the escape hatch: the role remains usable on
+  container and ZFS-root hosts by pinning each volume's device.
+- **Read-only work is untouched.** The refusal is gated on `storage_provision`,
+  so `discover`, `grow` and `mount` keep working on an unnameable root.
+
+To provision on such a host, either give every volume an explicit `/dev/...`
+path or leave `storage_provision: false` and provision elsewhere.
+
+## Declared mounts are promises, not preferences
+
+A volume with a non-empty `mount` is a statement that **there must be a mounted
+filesystem at that path**. If the device carries no filesystem when the `mount`
+phase reaches it, the role **fails the play** — it does not warn and continue.
+
+The distinction that matters is what `provision` means. It is not "is this
+volume optional"; it selects **who creates the filesystem**:
+
+| | Meaning | No filesystem present means |
+|---|---|---|
+| `provision: true` | the role may create the PV/VG/LV and run `mkfs` | the role-level opt-in (`storage_provision`) was never passed |
+| `provision: false` | **adopt** a filesystem created elsewhere (kickstart, installer, an earlier build) | the adoption target is missing — wrong disk matched, disk swapped, VG not activated |
+
+Both are errors, so both fail. The failure message names which case it is.
+
+### What the failure prevents
+
+`mount_one.yml` creates the mount-point **directory before** it probes for a
+filesystem UUID. Without the assert, the sequence on an unformatted device was:
+`/data` is created on the **root** filesystem → nothing mounts over it → the
+play reports success → the service starts and writes its data to the OS disk.
+That surfaces weeks later as a full root volume, with every run green in
+between.
+
+### Blast radius — verified, not assumed
+
+`tasks/main.yml` wraps every phase in a single `block:` with **no `rescue:`**,
+so this failure aborts the host and skips everything after it. Measured on a
+loop-backed LVM fixture (EL9, one LV with `xfs`, one LV deliberately
+unformatted):
+
+- Volumes **later in the same `storage_volumes` list never mount**, even
+  healthy ones. `mount.yml` expands all `include_tasks` loop iterations before
+  the first failure lands, and a good volume declared after a bad one was
+  confirmed unmounted.
+- `mount_net` (NFS/CIFS) and `selinux` **do not run at all** — phases with
+  nothing to do with the broken local volume.
+- The empty mount-point directory is still left behind on the root filesystem.
+
+**This is order-sensitive.** A bad volume at the end of the list lets the
+earlier ones mount; the same volume first blocks all of them. Do not read a
+partial mount set as meaningful — re-run after fixing.
+
+**Recovery:** pass `storage_provision: true` for a stack that needs creating or
+finishing, or fix the disk selector / attach the right disk for an adopt-only
+volume. Both are named in the failure message.
+
+### How "has a filesystem" is decided for LVM
+
+Filesystem presence on a logical volume is probed with
+`blkid -p -o value -s TYPE /dev/<vg>/<lv>` during `discover`, and the result
+feeds `_exists` and the complete-stack short-circuit.
+
+**Do not replace this with a membership test against `_storage_fs_devices`.**
+That list is built from `lsblk -pbJ` level-0/1 nodes, which name logical volumes
+`/dev/mapper/<vg>-<lv>`; this role addresses them as `/dev/<vg>/<lv>` because
+the device-mapper form doubles literal hyphens (`vg-data/lv-main` →
+`/dev/mapper/vg--data-lv--main`). The two naming conventions never intersect, so
+such a test is **permanently false**: every LVM volume reads as incomplete, the
+complete-stack filter stops working, and `provision` re-enters on every
+converge. Confirmed against live `lsblk` output — LVs appear only as
+`/dev/mapper/...` rows.
+
+The probe also carries `check_mode: false`; without it a `--check` run skips the
+command and every LVM volume reads as unformatted.
 
 ## Pairing with server roles
 

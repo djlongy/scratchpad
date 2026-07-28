@@ -6,7 +6,22 @@
   ansible.builtin.set_fact:
     _p_do_partition: "{{ (not vol.lvm | bool) or (vol.lvm | bool and vol.partition | bool) }}"
 
-# ── FRESH preflight — refuse any disk that is not empty ───────────────────
+# ── FRESH preflight — refuse any NEW disk that is not empty ───────────────
+# Skipped when finishing an incomplete LVM stack (VG already exists): the PV
+# carries LVM2_member and is not "fresh" by definition; we only need mkfs.
+#
+# blkid rc 2 means "nothing found" OR "could not open". Fail closed on a
+# missing/non-block path and on any blkid stderr before treating rc 2 as empty.
+- name: "{{ vol.name }} | assert {{ vol._disk }} is a block device"
+  become: true  # root: stat the raw device
+  ansible.builtin.command:
+    argv: [test, -b, "{{ vol._disk }}"]
+  changed_when: false
+  check_mode: false
+  when:
+    - not (vol._vg_exists | default(false) | bool)
+    - vol._disk != '__incomplete_lvm__'
+
 - name: "{{ vol.name }} | probe {{ vol._disk }} for an existing signature"
   become: true  # root: blkid -p opens the raw device
   ansible.builtin.command: "blkid -p -o value -s TYPE {{ vol._disk }}"
@@ -14,6 +29,9 @@
   changed_when: false
   failed_when: false
   check_mode: false
+  when:
+    - not (vol._vg_exists | default(false) | bool)
+    - vol._disk != '__incomplete_lvm__'
 
 - name: "{{ vol.name }} | count existing partitions on {{ vol._disk }}"
   become: true  # root: inspects the raw device
@@ -23,20 +41,42 @@
   register: _p_parts
   changed_when: false
   check_mode: false
+  when:
+    - not (vol._vg_exists | default(false) | bool)
+    - vol._disk != '__incomplete_lvm__'
 
 - name: "{{ vol.name }} | assert {{ vol._disk }} is fresh"
   ansible.builtin.assert:
     that:
       - _p_sig.rc == 2
+      - (_p_sig.stderr | default('') | trim | length) == 0
       - (_p_parts.stdout | trim | int) == 0
     fail_msg: >-
-      Refusing to provision {{ vol._disk }} on {{ inventory_hostname }} — it is
-      not empty (signature: '{{ _p_sig.stdout | default('') | trim }}',
+      Refusing to provision {{ vol._disk }} on {{ inventory_hostname }} —
+      {% if (_p_sig.stderr | default('') | trim | length) > 0 -%}
+      blkid could not cleanly probe it (rc={{ _p_sig.rc }},
+      stderr='{{ _p_sig.stderr | trim }}'). An unreadable device is never
+      treated as empty.
+      {%- elif _p_sig.rc != 2 -%}
+      it is not empty (signature: '{{ _p_sig.stdout | default('') | trim }}',
       partitions: {{ _p_parts.stdout | trim }}). Set storage_require_fresh:
       false to override only after manual inspection.
-  when: storage_require_fresh | bool
+      {%- else -%}
+      it has {{ _p_parts.stdout | trim }} existing partition(s). Set
+      storage_require_fresh: false to override only after manual inspection.
+      {%- endif %}
+  when:
+    - storage_require_fresh | bool
+    - not (vol._vg_exists | default(false) | bool)
+    - vol._disk != '__incomplete_lvm__'
 
 # ── Build the stack ──────────────────────────────────────────────────────
+# Partition + VG create are NEW-disk only. An existing VG must never be handed
+# to community.general.lvg with a single-PV `pvs:` — this module version has no
+# remove_extra_pvs toggle and will vgreduce every other PV out of the VG.
+# validate.yml refuses two local LVM volumes sharing a vg (same-run double create);
+# discovery also filters complete stacks out of provision. Incomplete stacks
+# (VG/LV present, no FS) skip straight to mkfs below.
 - name: "{{ vol.name }} | partition {{ vol._disk }} (GPT)"
   become: true  # root: writes the partition table
   community.general.parted:
@@ -46,20 +86,20 @@
     label: gpt
     flags: "{{ ['lvm'] if vol.lvm | bool else [] }}"
     part_end: "100%"
-  when: _p_do_partition | bool
+  when:
+    - _p_do_partition | bool
+    - not (vol._vg_exists | default(false) | bool)
+    - vol._disk != '__incomplete_lvm__'
 
 - name: "{{ vol.name }} | create volume group {{ vol.vg }}"
   become: true  # root: LVM vgcreate
   community.general.lvg:
     vg: "{{ vol.vg }}"
     pvs: "{{ vol._pv }}"
-    # NB: this module version has no remove_extra_pvs toggle (checked with ansible-doc against
-    # the pinned community.general) — given a single-PV `pvs:` it vgreduces any OTHER PV out of
-    # an existing VG, with no way to opt out. Safe only because discovery makes it unreachable:
-    # a volume whose VG already exists resolves _disk to '' and provision.yml filters it out
-    # before this task. Do not weaken that filter, and re-check this if the collection is
-    # upgraded (newer versions add remove_extra_pvs, default true — set it false then).
-  when: vol.lvm | bool
+  when:
+    - vol.lvm | bool
+    - not (vol._vg_exists | default(false) | bool)
+    - vol._disk != '__incomplete_lvm__'
 
 - name: "{{ vol.name }} | create logical volume {{ vol.lv }} ({{ vol.size }})"
   become: true  # root: LVM lvcreate
@@ -68,7 +108,9 @@
     lv: "{{ vol.lv }}"
     size: "{{ vol.size }}"
     shrink: false
-  when: vol.lvm | bool
+  when:
+    - vol.lvm | bool
+    - not (vol._lv_exists | default(false) | bool)
 
 - name: "{{ vol.name }} | create {{ vol.fstype }} filesystem"
   become: true  # root: mkfs on the device

@@ -125,18 +125,56 @@
     - vol.lvm | bool
     - "'%' not in vol.size"
 
-- name: "{{ vol.name }} | grow xfs filesystem"
-  become: true  # root: xfs_growfs
-  ansible.builtin.command: "xfs_growfs {{ vol.mount }}"
-  register: _g_xfs
-  changed_when: "'data blocks changed' in (_g_xfs.stdout | default(''))"
+# Filesystem grow. Commands come from storage_fs_grow (vars) so a new fstype
+# can be added without forking this file. xfs_growfs requires a live mount —
+# grow runs before the mount phase, and nofail can leave a volume unmounted
+# after boot, so we probe first and SKIP (never hard-fail) when the path is
+# not mounted. LV/PV extension above still runs; the next converge after the
+# volume is mounted finishes the FS grow (lvextend is then a no-op).
+- name: "{{ vol.name }} | check whether {{ vol.mount }} is mounted (xfs grow needs it)"
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, SOURCE, --mountpoint, "{{ vol.mount }}"]
+  register: _g_mnt
+  changed_when: false
+  failed_when: false
+  check_mode: false
   when:
     - vol.fstype == 'xfs'
-    - vol.mount | length > 0
+    - vol.mount | default('') | length > 0
+    - vol.fstype in storage_fs_grow
 
-- name: "{{ vol.name }} | grow ext4 filesystem"
-  become: true  # root: resize2fs
-  ansible.builtin.command: "resize2fs {{ vol._dm_dev }}"
-  register: _g_ext4
-  changed_when: "'Nothing to do' not in (_g_ext4.stdout + _g_ext4.stderr)"
-  when: vol.fstype == 'ext4'
+- name: "{{ vol.name }} | skip xfs filesystem grow — {{ vol.mount }} is not mounted"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING — volume '{{ vol.name }}' has an xfs filesystem but {{ vol.mount }}
+      is not currently a mount point (findmnt rc={{ _g_mnt.rc | default('n/a') }}).
+      LV/PV extension above still ran if needed; xfs_growfs was skipped so this
+      play does not abort before the mount phase. Re-run the role after the
+      volume is mounted (or rely on the next converge) to finish the FS grow.
+  when:
+    - vol.fstype == 'xfs'
+    - vol.mount | default('') | length > 0
+    - vol.fstype in storage_fs_grow
+    - (_g_mnt.rc | default(1)) != 0
+
+- name: "{{ vol.name }} | grow {{ vol.fstype }} filesystem"
+  become: true  # root: xfs_growfs / resize2fs
+  ansible.builtin.command: >-
+    {{ storage_fs_grow[vol.fstype]
+       | replace('{mount}', vol.mount | default(''))
+       | replace('{dev}', vol._dm_dev | default('')) }}
+  register: _g_fs
+  vars:
+    _g_fs_out: "{{ (_g_fs.stdout | default('')) ~ (_g_fs.stderr | default('')) }}"
+  changed_when: >-
+    (
+      vol.fstype in storage_fs_grow_noop_token
+      and storage_fs_grow_noop_token[vol.fstype] not in _g_fs_out
+    ) or (
+      vol.fstype not in storage_fs_grow_noop_token
+      and (storage_fs_grow_changed_token[vol.fstype] | default('__never__')) in _g_fs_out
+    )
+  when:
+    - vol.fstype in storage_fs_grow
+    # xfs: only when the mount path is live; ext4 (device-based) always
+    - vol.fstype != 'xfs' or ((vol.mount | default('') | length > 0) and (_g_mnt.rc | default(1)) == 0)

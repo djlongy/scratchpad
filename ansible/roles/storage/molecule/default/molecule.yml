@@ -19,6 +19,13 @@ provisioner:
   name: ansible
   env:
     ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/.."
+    # Image has root:!locked shadow; sudo PAM fails ("cannot retrieve authentication
+    # info"). Role tasks use become: true; su works as root→root without PAM shadow.
+    ANSIBLE_BECOME_METHOD: su
+  inventory:
+    host_vars:
+      alma9-storage:
+        ansible_become_method: su
   playbooks:
     prepare: prepare.yml
     converge: converge.yml

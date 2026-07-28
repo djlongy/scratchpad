@@ -25,6 +25,19 @@
   when: storage_enabled | bool
   block:
 
+    # Fail with a validation-style message before Jinja's raw
+    # "dict object has no attribute" dump on a typo'd profile name.
+    - name: Assert storage_profile is a known profile when set
+      ansible.builtin.assert:
+        that: storage_profile in storage_profiles
+        fail_msg: >-
+          storage_profile '{{ storage_profile }}' is not defined in
+          storage_profiles. Known profiles:
+          {{ storage_profiles.keys() | list | join(', ') | default('(none — set storage_volumes instead)', true) }}.
+        quiet: true
+      when: storage_profile | length > 0
+      tags: [storage, always]
+
     - name: Resolve effective volume list
       ansible.builtin.set_fact:
         _storage_input: >-

@@ -1,8 +1,8 @@
 ---
-# storage/tasks/validate.yml — fail-fast declaration checks (V1–V10).
+# storage/tasks/validate.yml — fail-fast declaration checks (V1–V12).
 #
 # Runs on every invocation, before any acting phase, so a bad declaration can
-# never reach discover/provision/mount. V1–V7 and V9 are pure Jinja over the
+# never reach discover/provision/mount. V1–V7, V9–V12 are pure Jinja over the
 # declared list; only V8 touches the host, and only when network volumes are
 # actually enabled.
 #
@@ -147,6 +147,34 @@
   loop_control:
     label: "{{ item.name | default('?') }}"
 
+# V11 — one VG ↔ one local LVM volume. Discovery freezes _vg_exists once before
+# provision, so two volumes both creating a NEW shared VG both pass the filter
+# and the second community.general.lvg(single PV) vgreduces the first PV out.
+# Multi-LV-per-VG is not supported; refuse the declaration here rather than
+# relying on a comment that claimed discovery made it unreachable.
+- name: Assert no two local LVM volumes share a volume group (V11)
+  ansible.builtin.assert:
+    that: (_vgs | select('equalto', item) | list | length) == 1
+    fail_msg: >-
+      Volume group '{{ item }}' is claimed by more than one local LVM volume
+      ({{ _lvm | selectattr('vg', 'equalto', item) | map(attribute='name') | join(', ') }}).
+      This role provisions one VG per volume (one PV). Two creates for the same
+      new VG race discovery's frozen state and the second lvg call with a single
+      pvs: list will vgreduce the first volume's PV out. Give each volume its
+      own vg name (estate convention: 1 VG ↔ 1 LV).
+    quiet: true
+  vars:
+    _lvm: >-
+      {{ _storage_local_volumes | default([])
+         | selectattr('lvm')
+         | selectattr('vg', 'defined')
+         | rejectattr('vg', 'equalto', '')
+         | list }}
+    _vgs: "{{ _lvm | map(attribute='vg') | list }}"
+  loop: "{{ _vgs | unique | list }}"
+  loop_control:
+    label: "{{ item }}"
+
 - name: Assert network mount points are absolute and not OS directories (V7)
   ansible.builtin.assert:
     that:
@@ -165,14 +193,29 @@
 
 - name: Assert no two volumes claim the same mount point (V1)
   ansible.builtin.assert:
-    that: (_mounts | select('equalto', item) | list | length) == 1
+    that: (_claimants | length) == 1
     fail_msg: >-
-      Mount point '{{ item }}' is claimed by volumes
-      {{ _storage_volumes | selectattr('mount', 'equalto', item) | map(attribute='name') | join(', ') }}.
-      Every mount point must be claimed by exactly one volume.
+      Mount point '{{ item }}' is claimed by volumes {{ _claimants | join(', ') }}.
+      Every mount point must be claimed by exactly one volume
+      (/data and /data/ are the same path).
     quiet: true
   vars:
-    _mounts: "{{ _storage_volumes | map(attribute='mount') | map('trim') | reject('equalto', '') | list }}"
+    # Strip trailing slashes (except root) so /data and /data/ collide — matches V9.
+    # Build (name, canon_mount) pairs from volumes that declare a mount so names
+    # never drift relative to a filtered mount list.
+    _pairs: >-
+      {% set ns = namespace(p=[]) %}
+      {%- for v in _storage_volumes -%}
+      {%- set m = v.mount | default('') | trim -%}
+      {%- if m | length > 0 -%}
+      {%- set c = '/' if m == '/' else (m | regex_replace('/+$', '')) -%}
+      {%- set ns.p = ns.p + [{'name': v.name, 'mount': c}] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.p }}
+    _mounts: "{{ _pairs | map(attribute='mount') | list }}"
+    _claimants: >-
+      {{ _pairs | selectattr('mount', 'equalto', item) | map(attribute='name') | list }}
   loop: "{{ _mounts | unique | list }}"
 
 # Pairs (network mount, any declared mount). Nested mounts work in Linux but
@@ -198,6 +241,25 @@
   loop_control:
     label: "{{ item.0 }} under {{ item.1 }}"
   when: not (storage_allow_nested_mounts | bool)
+
+# V12 — sefcontext is a local-filesystem SELinux mapping (semanage fcontext +
+# restorecon). Network mounts are labeled by the remote FS / nfs_t / cifs_t
+# machinery; declaring sefcontext on nfs/cifs was previously normalised then
+# silently ignored (selinux.yml only iterated local resolved volumes). Refuse
+# the declaration so the operator does not believe a label was applied.
+- name: Assert network volumes do not declare sefcontext (V12)
+  ansible.builtin.assert:
+    that: (item.sefcontext | default('') | trim | length) == 0
+    fail_msg: >-
+      Network volume '{{ item.name }}' (kind {{ item.kind }}) declares
+      sefcontext '{{ item.sefcontext }}'. sefcontext is only applied to local
+      block volumes (semanage fcontext + restorecon on the mount path). Drop
+      sefcontext from this entry, or use a local volume if host-side labeling
+      is required.
+    quiet: true
+  loop: "{{ _storage_net_volumes | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # ── V8: runtime shadow check ─────────────────────────────────────────────
 # Declared-list rules cannot see what is ALREADY mounted. Probe reality before
