@@ -24,14 +24,54 @@
   delegate_to: localhost
   become: false
   block:
-    - name: Create | Probe whether this VM already exists
+    # Folder-scoped like identify.yml — bare-name probe can match another tenant's
+    # VM with the same name and take the reconcile path against the wrong object.
+    # Probe errors must NOT read as "absent" (would attempt a create).
+    - name: Create | Probe whether this VM already exists (name + folder)
       community.vmware.vmware_guest_info:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
+        folder: "{{ _vsphere_guest.folder }}"
       register: _vsphere_probe
       failed_when: false
 
-    # Missing instance = not found → staged create; else reconcile (no power cycle).
+    - name: Create | Fail closed if the existence probe neither found nor cleanly missed
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_vsphere_probe.instance is defined)
+            or (
+              ('Unable to find' in (_vsphere_probe.msg | default('')))
+              or ('Unable to gather information' in (_vsphere_probe.msg | default('')))
+              or ('does not exist' in (_vsphere_probe.msg | default('') | lower))
+              or ('not found' in (_vsphere_probe.msg | default('') | lower))
+              or ('could not find' in (_vsphere_probe.msg | default('') | lower))
+            )
+        fail_msg: >-
+          Could not determine whether {{ _vsphere_guest.name }} exists in folder
+          {{ _vsphere_guest.folder }} — vCenter said:
+          {{ _vsphere_probe.msg | default('(no message)') }}.
+          Refusing to treat a probe error as "absent" (that would attempt a create).
+          Check credentials, datacenter, and connectivity, then re-run.
+        quiet: true
+
+    - name: Create | Refuse a probe result that does not match inventory name + folder
+      ansible.builtin.assert:
+        that:
+          - _vsphere_probe.instance.hw_name | default('') == _vsphere_guest.name
+          - >-
+            (_vsphere_probe.instance.hw_folder | default('') | trim('/'))
+            == (_vsphere_guest.folder | trim('/'))
+        fail_msg: >-
+          Existence probe found a VM but it does not match inventory placement —
+          refusing ensure. expected name={{ _vsphere_guest.name }}
+          folder={{ _vsphere_guest.folder }}; found
+          name={{ _vsphere_probe.instance.hw_name | default('') }}
+          folder={{ _vsphere_probe.instance.hw_folder | default('') }}.
+        quiet: true
+      when: _vsphere_probe.instance is defined
+
+    # Missing instance = clean not-found → staged create; else reconcile (no power cycle).
     - name: Create | Mark whether the staged create is needed
       ansible.builtin.set_fact:
         _vsphere_vm_absent: "{{ _vsphere_probe.instance is not defined }}"
@@ -107,8 +147,43 @@
   delegate_to: localhost
   become: false
   block:
+    # Same folder-scoped existence branch as GOSC — without it every re-run
+    # re-clones via deploy_folder_template and fails on name collision.
+    - name: Create | Probe whether this VM already exists — GuestInfo (name + folder)
+      community.vmware.vmware_guest_info:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        folder: "{{ _vsphere_guest.folder }}"
+      register: _vsphere_gi_probe
+      failed_when: false
+
+    - name: Create | Fail closed if the GuestInfo existence probe neither found nor cleanly missed
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_vsphere_gi_probe.instance is defined)
+            or (
+              ('Unable to find' in (_vsphere_gi_probe.msg | default('')))
+              or ('Unable to gather information' in (_vsphere_gi_probe.msg | default('')))
+              or ('does not exist' in (_vsphere_gi_probe.msg | default('') | lower))
+              or ('not found' in (_vsphere_gi_probe.msg | default('') | lower))
+              or ('could not find' in (_vsphere_gi_probe.msg | default('') | lower))
+            )
+        fail_msg: >-
+          Could not determine whether {{ _vsphere_guest.name }} exists in folder
+          {{ _vsphere_guest.folder }} — vCenter said:
+          {{ _vsphere_gi_probe.msg | default('(no message)') }}.
+          Refusing to treat a probe error as "absent".
+        quiet: true
+
+    - name: Create | Mark whether the GuestInfo clone is needed
+      ansible.builtin.set_fact:
+        _vsphere_gi_absent: "{{ _vsphere_gi_probe.instance is not defined }}"
+
     # deploy_folder_template has no customization surface → no GOSC NIC disconnect.
     # Explicit connection args (outside community.vmware module_defaults group).
+    # ── First create only (absent) — power-off clone, inject GuestInfo, power on.
+    # Existing VMs take the reconcile branch below (no power cycle, no re-inject).
     - name: Create | Clone powered-off — GuestInfo
       vmware.vmware.deploy_folder_template:
         hostname: "{{ vsphere_vm_server }}"
@@ -128,8 +203,9 @@
       retries: "{{ vsphere_vm_create_retries }}"
       delay: "{{ vsphere_vm_create_delay }}"
       until: _vsphere_gi_cloned is succeeded
+      when: _vsphere_gi_absent | bool
 
-    - name: Create | Reconfigure hardware/disk — GuestInfo
+    - name: Create | Reconfigure hardware/disk before first power-on — GuestInfo
       community.vmware.vmware_guest:
         datacenter: "{{ vsphere_vm_datacenter }}"
         folder: "{{ _vsphere_guest.folder }}"
@@ -137,8 +213,11 @@
         state: poweredoff
         hardware: "{{ _vsphere_guest.hardware }}"
         disk: "{{ _vsphere_guest.disk }}"
+      when: _vsphere_gi_absent | bool
 
     # vmware_guest advanced_settings is a no-op on reconfigure — use vm_advanced_settings.
+    # First-boot only: re-injecting on every ensure would rewrite cloud-init and
+    # (with the power cycle below) reboot the guest every converge.
     - name: Create | Inject cloud-init GuestInfo extraConfig
       vmware.vmware.vm_advanced_settings:
         hostname: "{{ vsphere_vm_server }}"
@@ -154,8 +233,9 @@
              | combine({'guestinfo.userdata': (_vsphere_guest.guestinfo_userdata | b64encode),
                         'guestinfo.userdata.encoding': 'base64'}
                        if (_vsphere_guest.guestinfo_userdata | length > 0) else {}) }}
+      when: _vsphere_gi_absent | bool
 
-    - name: Create | Set each vNIC portgroup + start-connected (native)
+    - name: Create | Set each vNIC portgroup + start-connected (native) — first boot
       community.vmware.vmware_guest_network:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
@@ -167,12 +247,36 @@
       loop: "{{ _vsphere_guest.networks }}"
       loop_control:
         label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
+      when: _vsphere_gi_absent | bool
 
-    - name: Create | Power on
+    - name: Create | Power on (GuestInfo first boot — only when desired state is poweredon)
       community.vmware.vmware_guest_powerstate:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
         state: powered-on
+      when:
+        - _vsphere_gi_absent | bool
+        - _vsphere_guest.state == 'poweredon'
+
+    # ── Reconcile existing GuestInfo VM (no power cycle, no cloud-init rewrite) ──
+    - name: Create | Reconcile the existing GuestInfo VM ({{ _vsphere_guest.name }})
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        cluster: "{{ vsphere_vm_cluster | default(omit) }}"
+        esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: "{{ _vsphere_guest.state }}"
+        hardware: "{{ _vsphere_guest.hardware }}"
+        disk: "{{ _vsphere_guest.disk }}"
+        networks: "{{ _vsphere_guest.networks }}"
+        wait_for_ip_address: false
+      register: _vsphere_gi_reconciled
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_gi_reconciled is succeeded
+      when: not (_vsphere_gi_absent | bool)
 
 # vmware_guest does not grow disks on reconfigure — vmware_guest_disk does.
 # Maps disk list 1:1 onto controller 0 (unit 7 is the controller — skipped).

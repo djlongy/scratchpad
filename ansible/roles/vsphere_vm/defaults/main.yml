@@ -42,14 +42,28 @@ vsphere_vm_ssh_timeout: 300
 
 # ── NIC reconnect (defense-in-depth after staged GOSC create) ────────────────
 # Staged create keeps NIC connected on first boot. This multi-pass heals VMs
-# left disconnected by older runs / power events. false = skip whole phase.
-# Budget = connect_passes × connect_pass_retries × connect_pass_delay seconds.
+# left disconnected by older runs / power events.
+# vsphere_vm_connect_nics false = skip whole phase. vsphere_vm_wait_for_ip false
+# still heals — it runs exactly one pass and skips the IP poll.
+#
+# WORST-CASE BUDGET — two retry loops nest inside EVERY pass, both count:
+#   NIC gather : (connect_gather_retries + 1) × connect_gather_delay =  30s
+#   IP poll    : (connect_pass_retries   + 1) × connect_pass_delay   =  90s
+#   per pass                                                          = 120s
+#   × connect_passes (3)                                              = 360s (6 min)
+# Only a genuinely slow guest boot/DHCP can spend that. A vCenter lookup that
+# FAILS no longer retries: it aborts the phase on the first pass (~10s).
 vsphere_vm_connect_nics: true
 vsphere_vm_create_retries: 3
 vsphere_vm_create_delay: 15
-vsphere_vm_connect_passes: 8
-vsphere_vm_connect_pass_retries: 10
+vsphere_vm_connect_passes: 3
+vsphere_vm_connect_pass_retries: 8
 vsphere_vm_connect_pass_delay: 10
+# NIC gather inside each pass — its own knobs so the connect budget is entirely
+# expressible in connect_* vars. It used to borrow create_retries/create_delay,
+# which hid 60s per pass from the documented figure and coupled the two phases.
+vsphere_vm_connect_gather_retries: 2
+vsphere_vm_connect_gather_delay: 10
 
 # ── GOSC (default) vs GuestInfo (cloud-init; no NIC disconnect race) ─────────
 # GuestInfo needs a template with VMware datasource + disable_vmware_customization.

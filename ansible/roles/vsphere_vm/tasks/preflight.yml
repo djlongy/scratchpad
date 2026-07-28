@@ -16,6 +16,55 @@
   delegate_to: localhost
   become: false
 
+# Only two states are supported: poweredon (ensure) and absent (destroy when armed).
+- name: Preflight | Assert vsphere_vm_state is a known value
+  ansible.builtin.assert:
+    that:
+      - (vsphere_vm_state | default('poweredon')) in ['poweredon', 'absent']
+    fail_msg: >-
+      vsphere_vm_state must be 'poweredon' or 'absent'
+      (got '{{ vsphere_vm_state | default('') }}'). Other values (e.g. poweredoff)
+      are not supported — the role's plan only branches on absent vs present.
+    quiet: true
+  delegate_to: localhost
+  become: false
+
+# gateway_auto last-octet math only works for /24–/32; refuse shorter masks.
+- name: Preflight | Assert gateway_auto only with a last-octet host mask
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (vsphere_vm_gateway_auto | default(false) | bool)
+        or (vsphere_vm_netmask | default('255.255.255.0') | string).startswith('255.255.255.')
+    fail_msg: >-
+      vsphere_vm_gateway_auto is true but vsphere_vm_netmask
+      '{{ vsphere_vm_netmask | default('') }}' is not a /24–/32 mask. The auto
+      gateway formula only uses the last octet and would produce a wrong
+      gateway on shorter prefixes. Set an explicit vsphere_vm_gateway, or use a
+      255.255.255.x netmask.
+    quiet: true
+  when: (vsphere_vm_state | default('poweredon')) != 'absent'
+  delegate_to: localhost
+  become: false
+
+# A present VM needs at least one portgroup name (single-NIC default or multi-NIC list).
+- name: Preflight | Assert a network / portgroup is declared when ensuring a VM
+  ansible.builtin.assert:
+    that:
+      - >-
+        (vsphere_vm_networks | default([]) | length > 0
+         and (vsphere_vm_networks | map(attribute='name') | select | list | length)
+             == (vsphere_vm_networks | length))
+        or (vsphere_vm_network | default('') | length > 0)
+    fail_msg: >-
+      {{ inventory_hostname }} is being ensured but has no portgroup: set
+      vsphere_vm_network (single NIC) or vsphere_vm_networks[].name (multi-NIC).
+      An empty network string clones a VM with no usable NIC.
+    quiet: true
+  when: (vsphere_vm_state | default('poweredon')) != 'absent'
+  delegate_to: localhost
+  become: false
+
 - name: Preflight | Resolve vCenter password from Vault (fallback when no declared var)
   ansible.builtin.set_fact:
     vsphere_vm_password: >-

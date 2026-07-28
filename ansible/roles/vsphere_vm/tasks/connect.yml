@@ -10,32 +10,48 @@
       password: "{{ vsphere_vm_password }}"
       validate_certs: "{{ vsphere_vm_validate_certs }}"
   block:
+    # Folder-scoped like create.yml / identify.yml. A bare-name lookup HARD-FAILS
+    # when the name repeats across folders ("Multiple virtual machines with same
+    # name"), and failed_when:false hides that as a result with no `instance` key.
     - name: Connect | Pre-check whether this VM already has an IP
       community.vmware.vmware_guest_info:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
+        folder: "{{ _vsphere_guest.folder }}"
       register: _vsphere_ip_precheck
       failed_when: false
       delegate_to: localhost
       become: false
 
     # failed_when:false → missing instance is the error signal (not `is failed`).
-    - name: Connect | Warn that the IP pre-check could not query the VM
-      ansible.builtin.debug:
-        msg: >-
-          vCenter lookup FAILED for {{ _vsphere_guest.name }} — the reconnect
-          passes below cannot see this VM's IP and will burn their whole budget.
-          Check vsphere_vm_datacenter / the VM name / credentials. vCenter said:
+    # Fail closed: every task below resolves this same VM, so a lookup vCenter
+    # cannot answer makes the passes futile. This used to be a debug that stated
+    # the consequence and let the whole reconnect budget burn anyway.
+    - name: Connect | Fail closed when the IP pre-check could not query the VM
+      ansible.builtin.assert:
+        that:
+          - _vsphere_ip_precheck.instance is defined
+        fail_msg: >-
+          vCenter lookup FAILED for {{ _vsphere_guest.name }} in folder
+          {{ _vsphere_guest.folder }} — the reconnect passes below resolve the
+          same VM, so they cannot succeed either. Check vsphere_vm_datacenter,
+          vsphere_vm_folder, the VM name, and credentials. vCenter said:
           {{ _vsphere_ip_precheck.msg | default('(no message)') }}
-      when: _vsphere_ip_precheck.instance is not defined
+        quiet: true
       delegate_to: localhost
       become: false
 
-    - name: Connect | Mark this VM as needing an IP (only when it has none yet)
+    # Pending is derived from OBSERVED state, not from wait_for_ip: a guest
+    # already reporting an IPv4 has a connected NIC, so there is nothing to heal;
+    # no IPv4 means run the heal whichever way wait_for_ip is set.
+    # wait_for_ip governs only how LONG we keep going — the per-pass re-arm task
+    # only re-arms while it is true, so wait_for_ip:false runs exactly one heal
+    # pass. (Gating this on wait_for_ip disabled the heal entirely; negating it
+    # pinned pending true and burned every pass with no completion signal.)
+    - name: Connect | Mark this VM as needing a reconnect pass (no IPv4 observed yet)
       ansible.builtin.set_fact:
         _vsphere_connect_pending: >-
-          {{ (not (vsphere_vm_wait_for_ip | bool))
-             or ((_vsphere_ip_precheck.instance.ipv4 | default('', true)) | length == 0) }}
+          {{ (_vsphere_ip_precheck.instance.ipv4 | default('', true)) | length == 0 }}
       delegate_to: localhost
       become: false
 
@@ -47,16 +63,22 @@
         loop_var: _pass
         label: "pass {{ _pass + 1 }}/{{ vsphere_vm_connect_passes }} ({{ _vsphere_guest.name if _vsphere_connect_pending else 'done' }})"
 
-    - name: Connect | Report if the VM never reported an IP (after all passes)
-      ansible.builtin.debug:
-        msg: >-
+    - name: Connect | Fail closed if the VM never reported an IP (after all passes)
+      ansible.builtin.assert:
+        that:
+          - not (_vsphere_connect_pending | bool)
+        fail_msg: >-
           {{ _vsphere_guest.name }} did not report an IPv4 after
           {{ vsphere_vm_connect_passes }} reconnect passes
-          (~{{ vsphere_vm_connect_passes * vsphere_vm_connect_pass_retries * vsphere_vm_connect_pass_delay }}s).
-          The VM is built; check the NIC portgroup + guest customization (wrong
-          network, or the guest never DHCP/static-bound).
-      when:
-        - vsphere_vm_wait_for_ip | bool
-        - _vsphere_connect_pending | bool
+          (~{{ (vsphere_vm_connect_passes | int)
+               * ((((vsphere_vm_connect_gather_retries | int) + 1) * (vsphere_vm_connect_gather_delay | int))
+                  + (((vsphere_vm_connect_pass_retries | int) + 1) * (vsphere_vm_connect_pass_delay | int))) }}s
+          worst case — NIC gather and IP poll both retry inside every pass).
+          wait_for_ip is true — refusing a green play with no guest address.
+          Check the NIC portgroup + guest customization (wrong network, or the
+          guest never DHCP/static-bound). Set vsphere_vm_wait_for_ip=false only
+          when an IP-less build is intentional.
+        quiet: true
+      when: vsphere_vm_wait_for_ip | bool
       delegate_to: localhost
       become: false

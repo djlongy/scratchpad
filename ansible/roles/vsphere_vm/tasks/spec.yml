@@ -43,11 +43,17 @@
       type: static
       ip: "{{ ansible_host }}"
       netmask: "{{ vsphere_vm_netmask }}"
+    # Last-octet arithmetic is only correct for /24–/32 (host bits entirely in
+    # the 4th octet). Shorter masks need a real network-base calculation — refuse
+    # rather than emit a wrong gateway (e.g. 10.0.1.50/16 → 10.0.1.1).
     _auto_gw: >-
       {{ ((ansible_host.split('.')[:3] | join('.')) ~ '.' ~
           ((ansible_host.split('.')[3] | int)
            - ((ansible_host.split('.')[3] | int) % (256 - (vsphere_vm_netmask.split('.')[3] | int)))
-           + 1)) if (vsphere_vm_gateway_auto | default(false) | bool) else '' }}
+           + 1))
+         if ((vsphere_vm_gateway_auto | default(false) | bool)
+             and (vsphere_vm_netmask | default('255.255.255.0') | string).startswith('255.255.255.'))
+         else '' }}
     _eff_gw: "{{ (vsphere_vm_gateway | default('')) or _auto_gw }}"
     _derived_nic: >-
       {{ _base_nic | combine({'gateway': _eff_gw} if (_eff_gw | length > 0) else {}) }}

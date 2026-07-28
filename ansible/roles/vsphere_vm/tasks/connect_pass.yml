@@ -1,17 +1,20 @@
 ---
-# One reconnect+poll pass. Clears _vsphere_connect_pending when IP appears.
+# One reconnect+poll pass. Re-arms _vsphere_connect_pending only while an IP is
+# still awaited, so wait_for_ip:false heals the NICs in exactly one pass.
 
 - name: Connect | Reconcile NICs ({{ _vsphere_guest.name }})
   when: _vsphere_connect_pending | bool
   block:
+    # folder-scoped: a bare name that repeats across folders hard-fails here too.
     - name: Connect | Gather network adapters
       community.vmware.vmware_guest_network:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
+        folder: "{{ _vsphere_guest.folder }}"
         gather_network_info: true
       register: _vsphere_nics
-      retries: "{{ vsphere_vm_create_retries }}"
-      delay: "{{ vsphere_vm_create_delay }}"
+      retries: "{{ vsphere_vm_connect_gather_retries }}"
+      delay: "{{ vsphere_vm_connect_gather_delay }}"
       until: _vsphere_nics is succeeded
       delegate_to: localhost
       become: false
@@ -20,6 +23,7 @@
       community.vmware.vmware_guest_network:
         datacenter: "{{ vsphere_vm_datacenter }}"
         name: "{{ _vsphere_guest.name }}"
+        folder: "{{ _vsphere_guest.folder }}"
         mac_address: "{{ item.mac_address }}"
         connected: true
         start_connected: true
@@ -43,11 +47,19 @@
   community.vmware.vmware_guest_info:
     datacenter: "{{ vsphere_vm_datacenter }}"
     name: "{{ _vsphere_guest.name }}"
+    folder: "{{ _vsphere_guest.folder }}"
   register: _vsphere_ipwait
   retries: "{{ vsphere_vm_connect_pass_retries }}"
   delay: "{{ vsphere_vm_connect_pass_delay }}"
-  # default('', true) so None ipv4 does not break | length
-  until: (_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0
+  # TWO states, two outcomes. Collapsing them with default('', true) alone is
+  # what burned the whole budget: a FAILED lookup (no `instance` key, hidden by
+  # failed_when:false) read identically to "booting, no IP yet" and retried to
+  # exhaustion on every pass. Missing instance ends the retry loop immediately
+  # so the assert below can fail the play; an empty ipv4 keeps polling.
+  # default('', true) still needed so a None ipv4 does not break | length.
+  until: >-
+    (_vsphere_ipwait.instance is not defined)
+    or ((_vsphere_ipwait.instance.ipv4 | default('', true)) | length > 0)
   failed_when: false
   when:
     - vsphere_vm_wait_for_ip | bool
@@ -55,11 +67,31 @@
   delegate_to: localhost
   become: false
 
-- name: Connect | Clear the pending flag once the VM has an IP
-  ansible.builtin.set_fact:
-    _vsphere_connect_pending: "{{ (_vsphere_ipwait.instance.ipv4 | default('', true)) | length == 0 }}"
+- name: Connect | Fail closed when the IP poll could not query the VM
+  ansible.builtin.assert:
+    that:
+      - _vsphere_ipwait.instance is defined
+    fail_msg: >-
+      vCenter lookup FAILED for {{ _vsphere_guest.name }} in folder
+      {{ _vsphere_guest.folder }} while polling for its IP. Retrying cannot fix
+      a lookup error, so the remaining passes would only burn the budget.
+      Check vsphere_vm_datacenter, vsphere_vm_folder, the VM name, credentials,
+      and that VMware Tools is running in the guest. vCenter said:
+      {{ _vsphere_ipwait.msg | default('(no message)') }}
+    quiet: true
   when:
     - vsphere_vm_wait_for_ip | bool
     - _vsphere_connect_pending | bool
+  delegate_to: localhost
+  become: false
+
+# Re-arm only while an IP is still awaited. wait_for_ip:false → false here, so
+# the heal above ran once and the remaining passes skip.
+- name: Connect | Re-arm pending only while wait_for_ip is set and no IP appeared
+  ansible.builtin.set_fact:
+    _vsphere_connect_pending: >-
+      {{ (vsphere_vm_wait_for_ip | bool)
+         and ((_vsphere_ipwait.instance.ipv4 | default('', true)) | length == 0) }}
+  when: _vsphere_connect_pending | bool
   delegate_to: localhost
   become: false
