@@ -12,7 +12,7 @@ Invoked from roles/vcenter/tasks/tenancy.yml with JSON on stdin:
   "migrate_legacy": true,
   "legacy_tenant": "platform",
   "legacy_folders": ["mgt", "prod", ...],
-  "resource_pool_parents": ["Cluster", "Lidcombe"],
+  "resource_pool_parents": ["Cluster", "Cluster2"],
   "platform_admins": ["IDM\\\\long", ...],
   "tenants": [
     {

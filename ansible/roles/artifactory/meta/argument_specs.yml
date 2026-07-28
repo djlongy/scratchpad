@@ -127,7 +127,7 @@ argument_specs:
       artifactory_bootstrap_vault_mount:
         type: str
         default: ""
-        description: KV v2 mount for the stored token (e.g. kv-mgt).
+        description: KV v2 mount for the stored token (e.g. kv-mgmt).
       artifactory_bootstrap_vault_path:
         type: str
         default: ""
