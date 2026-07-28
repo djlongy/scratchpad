@@ -15,15 +15,43 @@
     # being masked by the timer's revert.
     timeout: "{{ [(firewalld_lockout_guard_seconds | int) - 60, 30] | max }}"
 
+# rc 5 = "Unit not loaded" — the transient timer already fired and vanished, which is a
+# legitimate outcome, not a failure. Anything else IS a failure: `failed_when: false` here
+# used to swallow a timer that refused to stop, and a still-armed guard reverts the default
+# zone minutes later — undoing a GOOD change with no signal in the play output. The
+# verification below is the real assurance; this just stops hiding the error.
 - name: Disarm the revert timer (fresh connection proven)
   become: true  # root: systemctl stops the transient guard timer
   ansible.builtin.command: systemctl stop firewalld-lockout-guard.timer
-  changed_when: true
+  register: _fw_guard_stop
+  changed_when: _fw_guard_stop.rc == 0
+  failed_when: _fw_guard_stop.rc not in [0, 5]
+
+- name: Confirm the revert timer is no longer active
+  become: true  # root: systemctl query on a system unit
+  ansible.builtin.command: systemctl is-active firewalld-lockout-guard.timer
+  register: _fw_guard_active_check
+  changed_when: false
   failed_when: false
+  check_mode: false
+
+# Fail loudly rather than leaving a live timer to revert the default zone later. The
+# operator's window to react is firewalld_lockout_guard_seconds, so this must surface NOW.
+- name: Assert the revert timer is disarmed
+  ansible.builtin.assert:
+    that: (_fw_guard_active_check.stdout | trim) != 'active'
+    fail_msg: >-
+      The lockout revert timer is STILL ACTIVE after disarm
+      (systemctl is-active → '{{ _fw_guard_active_check.stdout | trim }}').
+      It will run `firewall-cmd --set-default-zone={{ _fw_guard_prev_default.stdout | default('?') | trim }}
+      && firewall-cmd --reload` within {{ firewalld_lockout_guard_seconds }}s of arming and
+      silently revert the change this run just made. Stop it by hand:
+      systemctl stop firewalld-lockout-guard.timer
+    quiet: true
 
 - name: Clear the transient revert units so none linger on success
   become: true  # root: systemctl reset-failed on the transient guard units
   ansible.builtin.command: >-
     systemctl reset-failed firewalld-lockout-guard.timer firewalld-lockout-guard.service
   changed_when: false
-  failed_when: false
+  failed_when: false          # units are already gone on the happy path; nothing to report

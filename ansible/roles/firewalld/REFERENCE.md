@@ -121,7 +121,7 @@ source app zone; plane NICs → interface zones via NM `connection.zone`.
   `wait_for_connection`.
 - **Panic mode** drops everything including established sessions — console
   access only, incident response, never convergence.
-- Keep OOB access (vSphere console here) as last resort.
+- Keep OOB access (the hypervisor console here) as last resort.
 
 ## 6. Ansible management
 

@@ -71,12 +71,23 @@
 # classification beats interface, so a covered controller is still safe). The
 # containment fact comes from validate.yml (always-run); it is only absent under
 # a hand-rolled tag/skip that drops validate — then degrade to a loud warn.
+#
+# `_firewalld_controller_source_covered` is false in TWO different situations, and only
+# one of them is a lockout: the controller is genuinely outside every ssh source CIDR,
+# or its IP could not be read at all (empty `_firewalld_controller_ip`) so containment
+# is UNPROVEN. Requiring a known IP here keeps those apart. An unknown IP is the normal
+# case whenever the calling play sets play-level `become: true` — facts are then gathered
+# as root and `ansible_env` carries no SSH_CONNECTION — so conflating the two hard-fails
+# the role on every such play, including on configurations that open ssh to 0.0.0.0/0.
+# validate.yml's sibling assert already gates on a known IP for exactly this reason; the
+# unknown case falls through to the warn below instead of blocking the run.
 - name: Fail when the SSH ingress NIC falls to a restrictive default with no source cover
   when:
     - _fw_audit_lockdown | bool
     - _fw_ssh_iface | length > 0
     - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
     - _firewalld_controller_source_covered is defined
+    - (_firewalld_controller_ip | default('')) | length > 0
     - not (_firewalld_controller_source_covered | bool)
   ansible.builtin.fail:
     msg: >-
@@ -100,6 +111,26 @@
       controller-containment fact is unavailable (validate.yml did not run — a
       tag/skip selection dropped it), so source-path coverage cannot be proven
       here. Run the full role (or validate) to enforce this gate.
+
+# The other unproven case: validate.yml ran, but could not read this controller's IP.
+# Loud rather than fatal — see the fail task above for why. Name the ssh source CIDRs so
+# the operator can eyeball coverage, since that is the check this run could not make.
+- name: Warn when SSH NIC classification cannot be proven (controller IP unknown)
+  when:
+    - _fw_audit_lockdown | bool
+    - _fw_ssh_iface | length > 0
+    - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
+    - _firewalld_controller_source_covered is defined
+    - (_firewalld_controller_ip | default('')) | length == 0
+  ansible.builtin.debug:
+    msg: >-
+      WARNING firewalld interface audit: SSH ingress NIC {{ _fw_ssh_iface }}
+      resolves to the default zone '{{ firewalld_default_zone }}', and this
+      controller's client IP could not be read (no SSH_CONNECTION in the gathered
+      environment — usual when the play gathers facts under become), so source-path
+      coverage is UNPROVEN, not proven absent. The ssh-opening source CIDRs are
+      {{ _firewalld_ssh_source_cidrs | default([]) }} — confirm your admin path falls
+      inside one before trusting this run.
 
 # NetworkManager owns interface→zone assignment where it manages the device.
 - name: Check for nmcli (NetworkManager present)

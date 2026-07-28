@@ -26,33 +26,40 @@
       | map(attribute='interface')
       | list -%}
 {%- set _all_ifaces = (item.interfaces | default([]) + _bind_ifaces) | unique | list -%}
-<zone{% if item.target | default('default') != 'default' %} target="{{ item.target }}"{% endif %}>
+{#
+  Every templated value is XML-escaped with `| e`. Ansible does not autoescape .j2 templates,
+  so an unescaped '&', '<' or '"' — most plausibly in a human-written short/description —
+  produced a zone file firewalld cannot parse. That is the SAME failure chain as the removed
+  rich-rule renderer: unloadable zone, zone does not load, and under a drop default the host
+  strands SSH. Escaping is cheap; the values are all short identifiers or prose.
+#}
+<zone{% if item.target | default('default') != 'default' %} target="{{ item.target | e }}"{% endif %}>
 {% if item.short is defined and item.short | length > 0 %}
-  <short>{{ item.short }}</short>
+  <short>{{ item.short | e }}</short>
 {% endif %}
 {% if item.description is defined and item.description | length > 0 %}
-  <description>{{ item.description }}</description>
+  <description>{{ item.description | e }}</description>
 {% endif %}
 {% for iface in _all_ifaces %}
-  <interface name="{{ iface }}"/>
+  <interface name="{{ iface | e }}"/>
 {% endfor %}
 {% for src in _all_sources %}
-  <source address="{{ src }}"/>
+  <source address="{{ src | e }}"/>
 {% endfor %}
 {% for svc in item.services | default([]) %}
-  <service name="{{ svc }}"/>
+  <service name="{{ svc | e }}"/>
 {% endfor %}
 {% for p in item.ports | default([]) %}
-  <port port="{{ p.port }}" protocol="{{ p.protocol }}"/>
+  <port port="{{ p.port | e }}" protocol="{{ p.protocol | e }}"/>
 {% endfor %}
 {% for proto in item.protocols | default([]) %}
-  <protocol value="{{ proto }}"/>
+  <protocol value="{{ proto | e }}"/>
 {% endfor %}
 {% for sp in item.source_ports | default([]) %}
-  <source-port port="{{ sp.port }}" protocol="{{ sp.protocol }}"/>
+  <source-port port="{{ sp.port | e }}" protocol="{{ sp.protocol | e }}"/>
 {% endfor %}
 {% for icmp in item.icmp_blocks | default([]) %}
-  <icmp-block name="{{ icmp }}"/>
+  <icmp-block name="{{ icmp | e }}"/>
 {% endfor %}
 {% if item.icmp_block_inversion | default(false) %}
   <icmp-block-inversion/>
@@ -63,7 +70,14 @@
 {% if item.forward | default(false) %}
   <forward/>
 {% endif %}
-{% for rule in item.rich_rules | default([]) %}
-  <rule>{{ rule }}</rule>
-{% endfor %}
+{#
+  NO rich-rule rendering here, deliberately. firewalld zone XML represents a rich rule as
+  STRUCTURED child elements:
+      <rule family="ipv4"><source address="10.0.0.0/8"/><service name="ssh"/><accept/></rule>
+  whereas `rich_rules` entries are rich-LANGUAGE strings ("rule family=... service name=ssh
+  accept"). Emitting the string as text content produced <rule>rule family=...</rule>, which
+  firewalld parses as a rule with no elements — the zone then fails to load, and under a
+  drop default that strands SSH. validate.yml rejects a non-empty rich_rules with an
+  actionable message instead of writing a file the firewall cannot read.
+#}
 </zone>

@@ -57,13 +57,116 @@
   loop_control:
     label: "{{ item }}"
 
+# rich_rules cannot be rendered into zone XML from rich-LANGUAGE strings (zone XML wants
+# structured <rule> children — see the note in templates/zone.xml.j2). The template used to
+# emit them as text content, producing a zone file firewalld cannot parse; that zone then
+# fails to load and, under a drop default, strands SSH. Fail here instead — a loud stop
+# before anything is written beats an unloadable zone discovered at the next reload.
+- name: Reject rich_rules — not renderable into zone XML
+  ansible.builtin.assert:
+    # default([], true) — a bare `rich_rules:` key is YAML null, and plain default()
+    # replaces only UNDEFINED, so `| length` on None raises a NoneType error and the
+    # operator loses this whole message.
+    that: (item.rich_rules | default([], true)) | length == 0
+    fail_msg: >-
+      Zone '{{ item.name }}' declares rich_rules, which this role cannot render into
+      permanent zone XML: zone XML represents a rich rule as structured <rule> child
+      elements, not as a rich-language string. Express the intent with this zone's
+      `services:` / `ports:` / `protocols:` / `source_ports:` plus a source binding
+      (firewalld_source_zone_bindings) — a source-bound zone is how this role scopes
+      access by CIDR. If a rule genuinely has no equivalent, apply it out of band with
+      ansible.posix.firewalld (rich_rule:, permanent: true) from a separate task AND
+      exclude this zone from firewalld_zones, since re-templating would wipe it.
+    quiet: true
+  loop: "{{ firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
 # ── Shared safety facts (consumed by the checks below and by later phases) ───
 
-- name: Compute firewalld safety facts (inventory-derived)
+# LIVE default zone. The lockout gates below used to key off the INVENTORY default
+# alone, which silently disarmed them in a real and dangerous case: a host already
+# running default=drop while firewalld_default_zone is "" (the default — "leave the
+# default zone unchanged"). The run would then re-template zone XML and reload with
+# NO ssh-path assert and NO controller-containment assert, because inventory said
+# "not locked down" while the firewall said otherwise.
+#
+# Tolerates firewalld being absent: this file runs (tags: always) BEFORE install.yml,
+# so on a fresh host firewall-cmd may not exist. rc != 0 → treated as no live
+# lockdown, which is correct — an uninstalled/stopped firewalld is dropping nothing.
+#
+# HONEST LIMIT: failed_when: false cannot distinguish "firewalld absent, safe to ignore"
+# from "probe failed for another reason (become denied, D-Bus timeout) and the live state is
+# UNKNOWN". Both land on rc != 0 → no live lockdown → the gates fall back to inventory-only,
+# which is exactly the pre-fix blind spot on a host that may already be running drop. The
+# probe narrows that window; it does not close it. The task below names the unknown case out
+# loud so it is not silent, and check_mode: false keeps --check from manufacturing it.
+- name: Query the live default zone (may not exist yet — pre-install)
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  register: _firewalld_live_default_running
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# firewall-cmd needs the RUNNING daemon, so an installed-but-STOPPED firewalld whose PERMANENT
+# config already carries default=drop reads as "no live lockdown" — the gates stay disarmed,
+# and install.yml then STARTS the service, making drop live moments after the gate that should
+# have vetted it. firewall-offline-cmd reads the permanent config directly and needs no daemon,
+# which is exactly the state to inspect here. Also keeps the warning below from firing on this
+# benign case.
+- name: Query the permanent default zone when the daemon is not answering
+  become: true  # root: firewall-offline-cmd reads /etc/firewalld directly
+  ansible.builtin.command: firewall-offline-cmd --get-default-zone
+  register: _firewalld_offline_default
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: (_firewalld_live_default_running.rc | default(1)) != 0
+
+# One fact for everything downstream: the running answer if the daemon replied, else the
+# permanent one. Whichever it came from, a non-zero rc here means "could not determine".
+- name: Resolve the effective pre-change default zone
+  ansible.builtin.set_fact:
+    _firewalld_live_default: >-
+      {{ _firewalld_live_default_running
+         if ((_firewalld_live_default_running.rc | default(1)) == 0)
+         else (_firewalld_offline_default | default({'rc': 1, 'stdout': ''})) }}
+
+# A missing binary is expected pre-install and silent. Anything else means the live default
+# could not be read, so a host already at drop/block would keep the lockout gates disarmed —
+# say so, because the operator is the only one who can tell which case this is.
+- name: Warn that the live default zone could not be determined
+  ansible.builtin.debug:
+    msg: >-
+      WARNING — could not read the default zone by EITHER route: the daemon
+      (firewall-cmd, rc={{ _firewalld_live_default_running.rc | default('n/a') }}) nor the
+      permanent config (firewall-offline-cmd,
+      rc={{ _firewalld_offline_default.rc | default('n/a') }}:
+      {{ (_firewalld_offline_default.stderr | default('') | trim)
+         | default(_firewalld_offline_default.msg | default('no detail'), true) }}).
+      This is NOT the expected "firewalld not installed yet" case. The lockout gates below
+      therefore fall back to the INVENTORY default only — if this host is already set to
+      default=drop/block, they are disarmed for this run and a bad zone/binding could strand
+      SSH. Confirm by hand (firewall-cmd --get-default-zone, or firewall-offline-cmd
+      --get-default-zone if the service is stopped) before trusting a green run.
+  when:
+    - (_firewalld_live_default.rc | default(0)) != 0
+    - >-
+      'No such file or directory' not in (_firewalld_offline_default.msg | default(''))
+      and 'command not found' not in (_firewalld_offline_default.stderr | default(''))
+
+- name: Compute firewalld safety facts (inventory + live)
   ansible.builtin.set_fact:
     # A restrictive default silently drops everything unclassified — the state
-    # every lockout guard in this role keys off.
-    _firewalld_lockdown: "{{ firewalld_default_zone in ['drop', 'block'] }}"
+    # every lockout guard in this role keys off. True when the default is restrictive
+    # EITHER because inventory is about to set it, OR because the firewall is already
+    # running it. guard_arm.yml already reasons from the live value; this brings the
+    # pre-flight asserts in line with it.
+    _firewalld_lockdown: >-
+      {{ (firewalld_default_zone in ['drop', 'block'])
+         or (((_firewalld_live_default.rc | default(1)) == 0)
+             and ((_firewalld_live_default.stdout | default('') | trim) in ['drop', 'block'])) }}
     # firewalld ships these zones without a firewalld_zones entry; a binding may
     # legitimately target them.
     _firewalld_builtin_zones:
@@ -222,8 +325,15 @@
     that:
       - _firewalld_ssh_activated_zones | length > 0
     fail_msg: >-
-      firewalld_default_zone is '{{ firewalld_default_zone }}' but no zone both
-      opens ssh (service ssh or tcp/22) AND has an activation (source binding,
+      The effective default zone is restrictive
+      ({% if firewalld_default_zone in ['drop', 'block'] %}firewalld_default_zone
+      is '{{ firewalld_default_zone }}'{% elif (_firewalld_live_default_running.rc | default(1)) == 0
+      %}firewalld_default_zone is unset, but this host is ALREADY RUNNING default
+      '{{ _firewalld_live_default.stdout | default('') | trim }}'{% else %}firewalld_default_zone
+      is unset, but this host's PERMANENT config already sets default
+      '{{ _firewalld_live_default.stdout | default('') | trim }}' and firewalld is not
+      running — starting or reloading it makes that live{% endif %}) but no zone
+      both opens ssh (service ssh or tcp/22) AND has an activation (source binding,
       interface binding, or inline sources/interfaces). This locks out SSH after
       reload. Bind an admin CIDR to an ssh-opening zone via
       firewalld_source_zone_bindings, or set firewalld_allow_no_ssh=true only for
@@ -244,7 +354,15 @@
     fail_msg: >-
       Controller client IP {{ _firewalld_controller_ip }} is not inside any
       source CIDR bound to an ssh-opening zone ({{ _firewalld_ssh_source_cidrs }}).
-      Applying default '{{ firewalld_default_zone }}' would drop THIS session's
-      return path. Add {{ _firewalld_controller_ip }}'s network to an ssh zone
+      The restrictive default
+      '{{ firewalld_default_zone if (firewalld_default_zone in ['drop', 'block'])
+      else (_firewalld_live_default.stdout | default('') | trim) }}'
+      would drop THIS session's return path
+      {%- if firewalld_default_zone not in ['drop', 'block'] %} (firewalld_default_zone is
+      unset, so this default comes from the host itself —
+      {% if (_firewalld_live_default_running.rc | default(1)) == 0 %}it is already live, and the
+      reload alone is enough to strand you{% else %}it is in the permanent config with firewalld
+      stopped, so starting or reloading the service is enough to strand you{% endif %}){%- endif %}.
+      Add {{ _firewalld_controller_ip }}'s network to an ssh zone
       binding, or set firewalld_skip_controller_check=true if you administer via
       a path this check cannot see.

@@ -100,7 +100,7 @@ firewalld_zones:
     services: [ssh, harbor]
 
 firewalld_source_zone_bindings:
-  - { zone: trusted-mgmt, source: 10.10.0.0/24 }
+  - { zone: trusted-mgmt, source: 192.168.10.0/24 }
 ```
 
 ```yaml
@@ -131,10 +131,14 @@ meant to be impossible for a well-formed inventory and loudly rejected for a
 dangerous one:
 
 - **Pre-flight (`validate.yml`, runs `[always]`)** — a `drop`/`block` default is
-  refused unless a zone both opens ssh (service `ssh`, tcp/22 port, a rich rule
-  allowing ssh, or a **bound** built-in that ships ssh — `internal`/`home`)
-  **and** has an activation (source bind, interface bind, inline
-  sources/interfaces); every binding must target a real zone;
+  refused unless a zone both opens ssh (service `ssh`, tcp/22 port, or a **bound**
+  built-in that ships ssh — `internal`/`home`) **and** has an activation (source
+  bind, interface bind, inline sources/interfaces). "Restrictive default" now means
+  the inventory value **or** the live one read off the host, so a host already at
+  `drop` with `firewalld_default_zone` unset can no longer slip past these gates.
+  Zone `rich_rules` are rejected outright (they are not renderable into zone XML —
+  see `templates/zone.xml.j2`), so they are no longer an ssh path; every binding
+  must target a real zone;
   `firewalld_zones_remove` may not strand a bound or default zone; and THIS
   controller's client IP (from `SSH_CONNECTION`) must fall inside a source CIDR
   bound to an ssh-opening zone. Because it is tagged `[always]` it runs under any

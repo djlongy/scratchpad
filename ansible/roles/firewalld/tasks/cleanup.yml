@@ -1,4 +1,24 @@
 ---
+# ZONES FIRST, THEN SERVICES — the order is load-bearing.
+#
+# A zone that references a custom service holds a bare `<service name="X"/>`. Removing the
+# SERVICE first leaves that reference dangling, and the reload then hits
+# `ERROR: INVALID_SERVICE: X`. firewalld does not fail the zone — it SELF-REPAIRS it: it
+# rewrites the zone file with the dangling `<service>` stripped, saves the original as
+# `<zone>.xml.old`, and thereby RESURRECTS a zone file this role had just deleted. The play
+# reported both removals as `changed` and the zone came back, still active. Removing the zone
+# first means there is no reference left to dangle. (Live-proven on fwtest-01: zone
+# `fwfeat` + service `p3custom` removed together survived; the zone alone removed cleanly.)
+- name: Remove orphaned firewalld zone XML files
+  become: true  # root: removes files under /etc/firewalld/zones/
+  ansible.builtin.file:
+    path: "/etc/firewalld/zones/{{ item }}.xml"
+    state: absent
+  loop: "{{ firewalld_zones_remove }}"
+  loop_control:
+    label: "{{ item }}"
+  notify: Reload firewalld
+
 - name: Remove orphaned firewalld service XML files
   become: true  # root: removes files under /etc/firewalld/services/
   ansible.builtin.file:
@@ -9,12 +29,31 @@
     label: "{{ item }}"
   notify: Reload firewalld
 
-- name: Remove orphaned firewalld zone XML files
-  become: true  # root: removes files under /etc/firewalld/zones/
-  ansible.builtin.file:
-    path: "/etc/firewalld/zones/{{ item }}.xml"
-    state: absent
-  loop: "{{ firewalld_zones_remove }}"
+# Deleting a file is not proof the object is gone, so confirm the files really are absent.
+# This is deliberately a FILE check, not a `firewall-cmd --get-zones` check: main.yml runs this
+# phase BEFORE the handler flush, so the daemon still serves the old zone here and a live query
+# would fail on every run. The resurrection described above also happens AT reload, i.e. after
+# this point — catching that needs a post-reload check, which is tracked in .agent/PENDING.md
+# rather than bolted on here where it cannot work.
+- name: Confirm removed zone/service XML files are absent on disk
+  become: true  # root: stat under /etc/firewalld/
+  ansible.builtin.stat:
+    path: "{{ item.dir }}/{{ item.name }}.xml"
+  register: _firewalld_cleanup_stat
+  loop: >-
+    {{ (firewalld_zones_remove | map('community.general.dict_kv', 'name')
+        | map('combine', {'dir': '/etc/firewalld/zones'}) | list)
+       + (firewalld_services_remove | map('community.general.dict_kv', 'name')
+          | map('combine', {'dir': '/etc/firewalld/services'}) | list) }}
   loop_control:
-    label: "{{ item }}"
-  notify: Reload firewalld
+    label: "{{ item.dir | basename }}/{{ item.name }}"
+
+- name: Assert the removals landed
+  ansible.builtin.assert:
+    that: (_firewalld_cleanup_stat.results | default([]) | selectattr('stat.exists') | list | length) == 0
+    fail_msg: >-
+      These files survived removal:
+      {{ _firewalld_cleanup_stat.results | default([]) | selectattr('stat.exists')
+         | map(attribute='item') | map(attribute='name') | list }}.
+      Check permissions under /etc/firewalld and whether another process rewrote them.
+    quiet: true

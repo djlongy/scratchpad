@@ -1,0 +1,29 @@
+---
+# Reload after the runtime binding reconcile, then reconnect.
+#
+# The pre-bindings flush ran BEFORE the module reconcile, so a binding the firewalld
+# module treats as a permanent/runtime no-op (permanent is already complete via templated
+# XML) never reaches runtime, and nothing after would reload. Reload here so runtime
+# matches the now-complete permanent state before the live gate reads it.
+#
+# The reconnect is why this lives in its own file. `firewall-cmd --reload` rebuilds the
+# ruleset and flushes connection tracking, killing the ESTABLISHED SSH session Ansible is
+# running over — the host stays healthy and accepts NEW connections immediately, so the
+# play dies later with a misleading "UNREACHABLE: Data could not be sent to remote host"
+# on whatever unrelated task is running when the master is finally declared dead. The
+# reload handler already chains a reset for exactly this reason; this inline reload needs
+# the same treatment.
+#
+# `meta: reset_connection` cannot be gated by `when:` (ansible-core ignores conditionals
+# on it — strategy/__init__.py: "These don't support 'when' conditionals"), so a
+# task-level reset would fire on every converge including no-change runs. Wrapping both
+# tasks in a file that main.yml includes conditionally keeps the reset tied to the reload
+# actually happening — the same pattern main.yml uses for guard_disarm.yml.
+
+- name: Reload firewalld after runtime binding reconcile
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: false  # syncs runtime from already-written permanent; not a config change here
+
+- name: Reconnect after the reload flushed connection tracking
+  ansible.builtin.meta: reset_connection

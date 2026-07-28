@@ -104,14 +104,14 @@ firewalld_services_remove: []
 #     masquerade: false
 #     forward: false                     # intra-zone forwarding (firewalld 0.9+)
 #     sources: []                        # CIDRs bound at zone-creation time (also see firewalld_source_zone_bindings)
-#     rich_rules: []                     # raw rich-rule strings (firewalld rich language)
-#       # Examples (source-restricted opens — prefer over zone-wide services when only a few clients need access):
-#       # - 'rule family="ipv4" source address="10.10.0.0/24" port port="22" protocol="tcp" accept'
-#       # - 'rule family="ipv4" source address="10.50.0.5" port port="9100" protocol="tcp" accept'
-#       # - 'rule family="ipv4" source address="10.10.0.0/24" service name="https" accept'
-#       # - 'rule protocol value="vrrp" accept'
-#       # - 'rule family="ipv4" source address="10.20.0.0/24" port protocol="tcp" port="5432" accept'
-#       # Renders as <rule>...</rule> in zone.xml.j2; same syntax works with ansible.posix.firewalld rich_rule=
+#     # rich_rules is NOT SUPPORTED — validate.yml rejects a non-empty list. Zone XML wants
+#     # structured <rule> child elements, not rich-language strings, so the old renderer
+#     # emitted an unloadable zone file (under a drop default, that strands SSH).
+#     # Scope access by CIDR the way this role intends instead: put the services/ports on a
+#     # zone and bind the source with firewalld_source_zone_bindings. For a rule with no
+#     # equivalent, apply it out of band via ansible.posix.firewalld (rich_rule:,
+#     # permanent: true) and keep that zone OUT of firewalld_zones — re-templating a
+#     # managed zone rewrites the file and would wipe it.
 firewalld_zones: []
 
 # Zones to remove. List of zone short names. Built-in zones (public, trusted,
@@ -127,15 +127,15 @@ firewalld_zones_remove: []
 
 # Bind source CIDRs to zones (L3 segregation pattern — preferred).
 # Schema:
-#   - { zone: mgmt, source: 10.10.0.0/24 }
-#   - { zone: app,  source: 10.40.0.0/24 }
+#   - { zone: mgmt, source: 192.168.10.0/24 }
+#   - { zone: app,  source: 192.168.40.0/24 }
 firewalld_source_zone_bindings: []
 
 # Bind physical/virtual interfaces to zones (L2 segregation — use only if you
 # have a real reason: dedicated storage NIC, PCI passthrough, etc.).
 # Schema:
 #   - { zone: storage, interface: ens224 }
-# For the PRIMARY NIC, do NOT hardcode the name (it varies by distro on ESXi:
+# For the PRIMARY NIC, do NOT hardcode the name (it varies by distro and hypervisor:
 # eth0 / ens192 / ens160…). Use the fleet-wide derived var instead:
 #   - { zone: internal, interface: "{{ primary_interface }}" }
 # (primary_interface is defined in playbooks/group_vars/all/all.yml.)

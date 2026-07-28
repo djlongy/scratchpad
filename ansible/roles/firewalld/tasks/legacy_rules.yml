@@ -9,6 +9,38 @@
 #
 # Each rule is opened in `firewalld_default_zone` (falls back to "public" if unset).
 # New code should prefer firewalld_services + firewalld_zones instead.
+#
+# REFUSED ON A RESTRICTIVE DEFAULT. Opening a port in the DEFAULT zone is only as narrow as
+# that zone: under `drop` the default zone is where every unclassified NIC lands, so a legacy
+# rule becomes a world-facing hole on exactly the hosts meant to be most closed. Proven live
+# on fwtest-01 — a legacy 31000/tcp was reachable from an unclassified source on an
+# unrouted data plane, while a control port on the same host was dropped:
+#     192.0.2.92:31000 -> OPEN               (legacy firewall_rules port)
+#     192.0.2.92:31002 -> BLOCKED/REFUSED    (control)
+# It is also invisible afterwards: `drop` is a built-in, so it is normally absent from
+# firewalld_zones, which means this role never re-templates it, verify.yml never inspects it,
+# and cleanup.yml can never remove it. The rule's `service`/comment field is used only as a
+# loop label and discarded, so nothing on the host records why the port exists.
+#
+# The escape hatch is deliberately not a boolean: express the intent properly by declaring a
+# zone with the ports and binding the sources that should reach them.
+- name: Refuse legacy firewall_rules on a restrictive default zone
+  ansible.builtin.assert:
+    that: not (_firewalld_lockdown | default(false) | bool)
+    fail_msg: >-
+      {{ firewall_rules | length }} legacy firewall_rules are declared while the effective
+      default zone is restrictive
+      ('{{ firewalld_default_zone if (firewalld_default_zone in ['drop', 'block'])
+          else (_firewalld_live_default.stdout | default('') | trim) }}').
+      These rules open ports in the DEFAULT zone — the zone every unclassified interface falls
+      into — so they would be reachable from any source that is not otherwise classified, on
+      the hosts hardened most. They are also unmanaged afterwards: a built-in default zone is
+      not in firewalld_zones, so this role never re-templates it, verify.yml never checks it,
+      and cleanup.yml cannot remove it. Move each rule into a declared zone
+      (firewalld_zones: ports/services) and bind the sources allowed to reach it
+      (firewalld_source_zone_bindings), which is what the rest of this role does.
+    quiet: true
+  when: firewall_rules | length > 0
 
 - name: Open legacy firewall_rules ports in default zone
   become: true  # root: firewalld module reconfigures the firewall

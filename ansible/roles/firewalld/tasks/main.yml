@@ -33,10 +33,13 @@
       when: ansible_default_ipv4 is not defined
       tags: [always]
 
-    # [always]: the contract is pure inventory logic and standalone-safe, so it
-    # must run even under partial tag selections (e.g. --tags zones,reload or
-    # --tags cleanup) that re-template zone XML or delete zones — otherwise
-    # inventory drift could wipe an SSH source with no gate in the way.
+    # [always]: the contract must run even under partial tag selections (e.g.
+    # --tags zones,reload or --tags cleanup) that re-template zone XML or delete
+    # zones — otherwise inventory drift could wipe an SSH source with no gate in
+    # the way. Mostly inventory logic, but NOT host-contact-free: it also probes
+    # the live default zone (root, via firewall-cmd) so the lockout gates cannot
+    # be fooled by a host already running drop while inventory leaves the default
+    # unset. The probe tolerates firewalld being absent, so it stays safe pre-install.
     - name: Validate firewalld inventory contract
       ansible.builtin.include_tasks: validate.yml
       tags: [always]
@@ -86,15 +89,11 @@
       when: firewalld_interface_zone_bindings | length > 0
       tags: [bindings, firewalld]
 
-    # The pre-bindings flush ran BEFORE the module reconcile, so a binding the
-    # firewalld module treats as a permanent/runtime no-op (permanent is already
-    # complete via templated XML) never reaches runtime, and nothing after would
-    # reload. Reload again here so runtime matches the now-complete permanent
-    # state before the live gate reads it.
+    # Reload + reconnect after the runtime binding reconcile. Included (not inlined)
+    # because it ends in meta: reset_connection, which cannot carry a `when:` — see
+    # bindings_reload.yml for why the reconnect is needed at all.
     - name: Reload firewalld after runtime binding reconcile
-      become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
-      ansible.builtin.command: firewall-cmd --reload
-      changed_when: false  # syncs runtime from already-written permanent; not a config change here
+      ansible.builtin.include_tasks: bindings_reload.yml
       when:
         - firewalld_reload | bool
         - (firewalld_source_zone_bindings | length > 0) or (firewalld_interface_zone_bindings | length > 0)
