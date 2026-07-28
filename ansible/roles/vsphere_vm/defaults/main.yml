@@ -1,4 +1,7 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+vsphere_vm_enabled: true
+
 # vsphere_vm defaults — behavioural only. Env values (vCenter, Vault, placement) live in inventory.
 
 # ── vCenter connection ───────────────────────────────────────────────────────

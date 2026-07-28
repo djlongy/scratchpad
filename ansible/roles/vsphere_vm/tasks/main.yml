@@ -3,62 +3,72 @@
 # All vCenter work delegates to localhost. Plan is inventory-only (no vCenter read).
 # Phases: preflight → spec → plan → [redeploy] → create → connect → [handoff] → [destroy]
 
-- name: Run vSphere VM preflight (inputs + credentials)
-  ansible.builtin.import_tasks: preflight.yml
-  tags: [vsphere_vm, preflight, always]   # always: password for create/redeploy/destroy
+- name: Skip vsphere_vm (vsphere_vm_enabled is false)
+  ansible.builtin.debug:
+    msg: "vsphere_vm_enabled is false — skipping vsphere_vm"
+  when: not (vsphere_vm_enabled | bool)
+  tags: [always]
 
-- name: Build this host's guest spec
-  ansible.builtin.import_tasks: spec.yml
-  tags: [vsphere_vm, always]
+- name: Configure vsphere_vm
+  when: vsphere_vm_enabled | bool
+  block:
 
-- name: Compute this host's plan from its declared state
-  ansible.builtin.import_tasks: plan.yml
-  tags: [vsphere_vm, plan, always]
+    - name: Run vSphere VM preflight (inputs + credentials)
+      ansible.builtin.import_tasks: preflight.yml
+      tags: [vsphere_vm, preflight, always]   # always: password for create/redeploy/destroy
 
-# module_defaults anchor defined here; create/destroy alias it.
-- name: Redeploy | Delete this host's VM first so create rebuilds it (opt-in)
-  ansible.builtin.import_tasks: redeploy.yml
-  when:
-    - _vsphere_desired_present | bool
-    - vsphere_vm_force_redeploy | default(false) | bool
-  tags: [vsphere_vm, redeploy]
-  module_defaults: &vcenter_connection
-    group/community.vmware.vmware:
-      hostname: "{{ vsphere_vm_server }}"
-      username: "{{ vsphere_vm_username }}"
-      password: "{{ vsphere_vm_password }}"
-      validate_certs: "{{ vsphere_vm_validate_certs }}"
+    - name: Build this host's guest spec
+      ansible.builtin.import_tasks: spec.yml
+      tags: [vsphere_vm, always]
 
-- name: Ensure this host's VM (idempotent — reconciles if it already exists)
-  ansible.builtin.import_tasks: create.yml
-  when: _vsphere_to_create | bool
-  tags: [vsphere_vm, create, redeploy]
-  module_defaults: *vcenter_connection
+    - name: Compute this host's plan from its declared state
+      ansible.builtin.import_tasks: plan.yml
+      tags: [vsphere_vm, plan, always]
 
-# include_tasks so vsphere_vm_connect_nics:false is one skip (not N). apply: carries tags.
-# module_defaults cannot ride TaskInclude — connection is set inside connect.yml.
-- name: Reconnect and verify this host's VM NICs
-  ansible.builtin.include_tasks:
-    file: connect.yml
-    apply:
+    # module_defaults anchor defined here; create/destroy alias it.
+    - name: Redeploy | Delete this host's VM first so create rebuilds it (opt-in)
+      ansible.builtin.import_tasks: redeploy.yml
+      when:
+        - _vsphere_desired_present | bool
+        - vsphere_vm_force_redeploy | default(false) | bool
+      tags: [vsphere_vm, redeploy]
+      module_defaults: &vcenter_connection
+        group/community.vmware.vmware:
+          hostname: "{{ vsphere_vm_server }}"
+          username: "{{ vsphere_vm_username }}"
+          password: "{{ vsphere_vm_password }}"
+          validate_certs: "{{ vsphere_vm_validate_certs }}"
+
+    - name: Ensure this host's VM (idempotent — reconciles if it already exists)
+      ansible.builtin.import_tasks: create.yml
+      when: _vsphere_to_create | bool
+      tags: [vsphere_vm, create, redeploy]
+      module_defaults: *vcenter_connection
+
+    # include_tasks so vsphere_vm_connect_nics:false is one skip (not N). apply: carries tags.
+    # module_defaults cannot ride TaskInclude — connection is set inside connect.yml.
+    - name: Reconnect and verify this host's VM NICs
+      ansible.builtin.include_tasks:
+        file: connect.yml
+        apply:
+          tags: [vsphere_vm, create, connect, redeploy]
+      when:
+        - _vsphere_desired_present | bool
+        - vsphere_vm_connect_nics | bool
       tags: [vsphere_vm, create, connect, redeploy]
-  when:
-    - _vsphere_desired_present | bool
-    - vsphere_vm_connect_nics | bool
-  tags: [vsphere_vm, create, connect, redeploy]
 
-# Uses the play's guest connection (not localhost). Needs wait_for_ssh + baked SSH key.
-- name: Wait for the new guest over SSH (handoff to on-guest roles)
-  ansible.builtin.import_tasks: handoff.yml
-  when:
-    - _vsphere_desired_present | bool
-    - vsphere_vm_wait_for_ssh | bool
-  tags: [vsphere_vm, create, handoff, redeploy]
+    # Uses the play's guest connection (not localhost). Needs wait_for_ssh + baked SSH key.
+    - name: Wait for the new guest over SSH (handoff to on-guest roles)
+      ansible.builtin.import_tasks: handoff.yml
+      when:
+        - _vsphere_desired_present | bool
+        - vsphere_vm_wait_for_ssh | bool
+      tags: [vsphere_vm, create, handoff, redeploy]
 
-- name: Destroy this host's VM when marked absent (opt-in)
-  ansible.builtin.import_tasks: destroy.yml
-  when:
-    - _vsphere_to_destroy | bool
-    - vsphere_vm_force_destroy | default(false) | bool
-  tags: [vsphere_vm, destroy]
-  module_defaults: *vcenter_connection
+    - name: Destroy this host's VM when marked absent (opt-in)
+      ansible.builtin.import_tasks: destroy.yml
+      when:
+        - _vsphere_to_destroy | bool
+        - vsphere_vm_force_destroy | default(false) | bool
+      tags: [vsphere_vm, destroy]
+      module_defaults: *vcenter_connection
