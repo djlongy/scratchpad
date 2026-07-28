@@ -1,14 +1,17 @@
+---
 # ─────────────────────────────────────────────────────────────────────
-# EXAMPLE — rename to vault.yml and `ansible-vault encrypt` it.
-# Variable names match what the role's tasks reference.
+# EXAMPLE secrets for the vault inventory group.
+# Rename to vault.yml and encrypt:
+#   ansible-vault encrypt inventories/vault/group_vars/vault/vault.yml
+#
+# Variable names match hashicorp_vault_container (not the old vault_* prefix).
 # ─────────────────────────────────────────────────────────────────────
 
-# Userpass break-glass admin password.
-# Used by tasks/auth_userpass.yml to set the password on
-# auth/userpass/users/<vault_userpass_admin_user>. Pick a strong value
-# and keep it out of plaintext anywhere except this encrypted file.
-vault_userpass_admin_password: "REPLACE-ME-with-a-strong-passphrase"
+# FreeIPA bind password for Path A LDAP (required when ldap_enabled: true).
+# Prefer a dedicated service account (uid=svc-vault), not directory admin.
+hashicorp_vault_ldap_bindpass: "REPLACE-ME-with-FreeIPA-bind-password"
 
-# LDAP bind credential for the Vault → FreeIPA bind. Use a service
-# account in production, not the FreeIPA admin.
-vault_ldap_bindpass: "REPLACE-ME-with-FreeIPA-bind-password"
+# Optional break-glass userpass (only if you add hashicorp_vault_userpass_accounts
+# in main.yml). Example add-on:
+#   - {username: alice, password: "{{ vaulted_alice_pw }}", policies: [default, vault-admin]}
+# vaulted_alice_pw: "REPLACE-ME-strong-break-glass-passphrase"

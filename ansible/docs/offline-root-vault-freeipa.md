@@ -257,3 +257,7 @@ Never commit a plaintext escrow.
 
 Next step if you are starting fresh: run Step 1 now — it is two minutes and
 everything else hangs off it.
+
+## Walk-away orchestrator
+
+See [freeipa-e2e.md](freeipa-e2e.md) for the stage-based `scripts/freeipa-e2e.sh` pipeline.

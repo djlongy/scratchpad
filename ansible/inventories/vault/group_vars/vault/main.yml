@@ -1,39 +1,73 @@
 ---
-# Non-secret tunables for the vault_container role. Pair with a
-# vault.yml in the same group_vars dir for credentials (encrypt with
-# `ansible-vault encrypt`).
+# Non-secret inputs for hashicorp_vault_container (alias: hashicorp_vault).
+#
+# Auth contract: roles/hashicorp_vault_container/README.md → "Auth & RBAC map"
+# Copy-paste Path A: roles/hashicorp_vault_container/examples/path-a-ldap-groups.yml
+#
+# Secrets: copy vault.yml.example → vault.yml and encrypt:
+#   ansible-vault encrypt inventories/vault/group_vars/vault/vault.yml
 
-# Image + version
-vault_docker_image: "hashicorp/vault:1.19"
-vault_version: "1.19.5"
+# ── Image / topology ─────────────────────────────────────────────────────
+hashicorp_vault_image: "hashicorp/vault:1.19.5"
+hashicorp_vault_data_mount: /opt/vault
+hashicorp_vault_api_port: 8200
+hashicorp_vault_cluster_port: 8201
+# Optional DNS SANs (node IPs + short names are added automatically)
+hashicorp_vault_domain: "example.com"
+hashicorp_vault_tls_extra_sans:
+  - "DNS:vault.example.com"
 
-# Network
-vault_domain: "vault.example.com"
-vault_api_port: 8200
-vault_cluster_port: 8201
+# Lab Shamir (single share). Raise for shared-custody prod.
+hashicorp_vault_key_shares: 1
+hashicorp_vault_key_threshold: 1
 
-# Storage / data dir on host (ext4 on a dedicated disk recommended)
-vault_host_data_dir: /opt/vault
+# ── Policies (mounts + HCL — inert until auth attaches them) ─────────────
+hashicorp_vault_manage_policies: true
+hashicorp_vault_tenants:
+  - {tenant: acme, env: prod}     # kv-acme-prod   + policy acme-prod
+  - {tenant: acme, env: dev}      # kv-acme-dev    + policy acme-dev
+  - {tenant: globex, env: prod}   # kv-globex-prod + policy globex-prod
 
-# Lab-grade Shamir seal (single key, single share). Bump for prod.
-vault_init_key_shares: 1
-vault_init_key_threshold: 1
+hashicorp_vault_policies:
+  - {policy_name: vault-admin, template: admin.hcl.j2}
 
-# ── LDAP via FreeIPA ────────────────────────────────────────────────
-# Toggle to skip the LDAP setup task entirely.
-vault_ldap_enabled: false
+hashicorp_vault_admin_kv_mounts:
+  - kv-acme-prod
+  - kv-acme-dev
+  - kv-globex-prod
 
-# Bind target. Use ldaps://<ip-or-host> when you have a real cert.
-vault_ldap_url: "ldaps://freeipa.example.com:636"
-vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"
-vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
-vault_ldap_userattr: uid
-vault_ldap_groupattr: cn
-vault_ldap_groupfilter: "(&(objectClass=groupOfNames)(member={{ '{{' }}.UserDN{{ '}}' }}))"
-vault_ldap_binddn: "uid=admin,cn=users,cn=accounts,dc=example,dc=com"
-vault_ldap_insecure_tls: true     # set false once you ship a CA file
+# ── Path A human SSO (FreeIPA LDAP groups) ───────────────────────────────
+# Off until FreeIPA bind + groups are ready.
+# When ready:
+#   1. Create FreeIPA groups: vault-acme-prod, vault-acme-dev, vault-globex-prod, vault-admins
+#   2. Put bind password in vault.yml (see vault.yml.example)
+#   3. Set hashicorp_vault_ldap_enabled: true
+#   4. Run: --tags policies,ldap
+#
+# Policies stick at: auth/ldap/groups/<freeipa-cn>
+# Path A: leave identity_groups empty (grants live on auth/ldap/groups/*).
+hashicorp_vault_ldap_enabled: false
+hashicorp_vault_ldap_url: "ldaps://ipa.example.com"
+hashicorp_vault_ldap_binddn: "uid=svc-vault,cn=users,cn=accounts,dc=example,dc=com"
+# password: hashicorp_vault_ldap_bindpass in vault.yml (encrypted)
+hashicorp_vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"
+hashicorp_vault_ldap_groupdn: "cn=groups,cn=accounts,dc=example,dc=com"
+hashicorp_vault_ldap_userattr: uid
+hashicorp_vault_ldap_groupattr: cn
+# posix (memberUid). For groupOfNames+full DN, use:
+#   "(&(objectClass=groupOfNames)(member={{ '{{.UserDN}}' }}))"
+hashicorp_vault_ldap_groupfilter: "(&(objectClass=posixgroup)(memberUid={{ '{{.Username}}' }}))"
+hashicorp_vault_ldap_insecure_tls: true
+hashicorp_vault_ldap_group_pattern: "vault-{tenant}-{env}"
 
-# FreeIPA group → Vault policies. Users in the LDAP group get the
-# listed policies attached to their token at login.
-vault_ldap_group_policies:
-  admins: [default, ops-admin]
+hashicorp_vault_ldap_extra_groups:
+  - {ldap_group: vault-admins, policies: [default, vault-admin]}
+
+# Path A: no Identity phase
+hashicorp_vault_identity_groups: []
+
+# ── Optional add-ons (off / empty — see examples/add-on-ci-and-automation.yml) ─
+hashicorp_vault_userpass_accounts: []
+hashicorp_vault_approles: []
+hashicorp_vault_gitlab_jwt_enabled: false
+hashicorp_vault_gitlab_jwt_roles: []

@@ -1,0 +1,13 @@
+---
+# Copy to idm-01.yml when you enable freeipa/idm-01 in hosts.yml.
+# FreeIPA install requires OS hostname == freeipa_server_fqdn.
+
+freeipa_server_fqdn: "idm-01.{{ freeipa_server_domain }}"
+
+# Optional hypervisor object name (when it differs from inventory_hostname)
+# vsphere_vm_name: "lab-idm-01"
+# vsphere_vm_hostname: "idm-01"
+
+# Data volume for 389-ds (requires matching second disk in group_vars freeipa)
+# storage_profile: freeipa
+# storage_provision: true

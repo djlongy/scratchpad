@@ -1,0 +1,35 @@
+---
+# freeipa_prep.yml — provision FreeIPA host hardware/OS only (no IPA install).
+#
+# Daisy chain: vsphere_vm → storage → baseline.
+# Install IPA with freeipa_signed_install.yml (or freeipa.yml).
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/freeipa_prep.yml \
+#     --limit idm-01
+#
+# Tags (iterate once the guest exists):
+#   --tags vsphere_vm|storage|baseline
+#
+# Rebuild guest (destructive):
+#   -e vsphere_vm_force_redeploy=true
+#
+# Skip baseline (template already good enough):
+#   --skip-tags baseline
+
+- name: Provision FreeIPA guest (VM + data disk + OS baseline)
+  hosts: freeipa
+  gather_facts: false
+  # No play-level become: each role escalates only where needed.
+  roles:
+    - role: vsphere_vm
+      tags: [vsphere_vm, create]
+      vars:
+        vsphere_vm_wait_for_ssh: true
+
+    - role: storage
+      tags: [storage]
+      vars:
+        storage_provision: true
+
+    - role: baseline
+      tags: [baseline]

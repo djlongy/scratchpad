@@ -1,14 +1,30 @@
 ---
-# group_vars/freeipa/main.yml — IdM inputs (only if you enable freeipa in hosts.yml)
+# group_vars/freeipa/main.yml — IdM inputs (enable freeipa hosts in hosts.yml)
 #
 # freeipa_server_domain is the REALM DNS name — separate from estate `domain`.
 # Example estate domain:  example.com
 # Example FreeIPA zone:   ipa.prod.example.com
+#
+# Minimum for freeipa-e2e.sh / freeipa_signed_install.yml:
+#   freeipa_server_domain, freeipa_server_realm (or derived), freeipa_server_fqdn,
+#   admin+dm passwords (declared or freeipa_server_vault_secret), vault_pki_*,
+#   pki_root_ca_cert (offline escrow).
 
 freeipa_server_domain: "ipa.{{ env }}.{{ domain }}"
-# freeipa_realm: "{{ freeipa_server_domain | upper }}"
+freeipa_server_realm: "{{ freeipa_server_domain | upper }}"
+# freeipa_server_fqdn: set per host in host_vars (must match OS hostname at install)
 
+# Credentials — prefer HashiCorp Vault path; or set freeipa_server_admin_password /
+# freeipa_server_dm_password as ansible-vault encrypted vars.
+# freeipa_server_vault_secret: "kv-{{ env }}/data/platform/freeipa/runtime"
+
+freeipa_server_setup_dns: true
+freeipa_server_forwarders:
+  - "{{ ansible_default_ipv4.gateway | default('1.1.1.1') }}"
+
+# Guest hardware (freeipa_prep.yml)
 vsphere_vm_cpu: 4
 vsphere_vm_memory: 8192
 vsphere_vm_disk:
-  - { size_gb: 60, type: thin }
+  - { size_gb: 40, type: thin }   # OS
+  - { size_gb: 20, type: thin }   # 389-ds data (pair with storage_profile)

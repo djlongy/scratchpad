@@ -1,14 +1,25 @@
 ---
-# End-to-end Vault container deploy. Runs against the `vault` group;
-# the role itself uses run_once / leader-only tasks where appropriate.
+# Deploy containerised Vault HA against the `vault` inventory group.
+#
+# Prerequisites on each host (compose at playbook level — role asserts both):
+#   - Docker engine + compose plugin (docker role or equivalent)
+#   - Persistent disk mounted at hashicorp_vault_data_mount (default /opt/vault)
+#
+# Auth: inventories/vault/group_vars/vault/main.yml is Path A shaped.
+# Read roles/hashicorp_vault_container/README.md → "Auth & RBAC map" before
+# enabling LDAP/Identity/JWT.
 #
 # Usage:
-#   ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-#     --ask-vault-pass
+#   export ANSIBLE_VAULT_PASSWORD=$(cat ~/secrets/vault-password.txt)  # if vault.yml encrypted
+#   ansible-playbook -i inventories/vault/hosts.yml playbooks/vault_cluster.yml
+#
+# Iterate on auth only (after cluster is up):
+#   ... --tags policies,ldap
+#   ... --tags identity          # Path B only
+#   ... --tags gitlab_jwt        # CI only
 
-- name: Deploy 3-node containerised Vault cluster
+- name: Deploy containerised HashiCorp Vault cluster
   hosts: vault
   gather_facts: true
-  become: true
   roles:
-    - role: hashicorp_vault
+    - role: hashicorp_vault_container

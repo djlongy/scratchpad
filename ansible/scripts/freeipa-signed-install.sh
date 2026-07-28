@@ -14,21 +14,22 @@
 #
 #   <host>               inventory host/pattern for the IPA server (passed as --limit)
 #   INVENTORY            inventory path (default: inventories/example/hosts.yml)
+#   PLAYBOOK             signed-install playbook (default: playbooks/freeipa_signed_install.yml)
 #   [extra ansible args] forwarded verbatim to both invocations, e.g.
 #                        -e freeipa_signed_install_pki_dir=/tmp/scratch-pki   (scratch PKI)
 #
 # Both phases stay documented and hand-runnable — this wrapper is only the turnkey
 # convenience over:
-#   ansible-playbook -i <inventory> playbooks/freeipa_signed_install.yml --limit <host> -e freeipa_signed_install_phase=1
-#   ansible-playbook -i <inventory> playbooks/freeipa_signed_install.yml --limit <host> -e freeipa_signed_install_phase=2
+#   ansible-playbook -i <inventory> <playbook> --limit <host> -e freeipa_signed_install_phase=1
+#   ansible-playbook -i <inventory> <playbook> --limit <host> -e freeipa_signed_install_phase=2
 
 set -euo pipefail
 
-PLAYBOOK="playbooks/freeipa_signed_install.yml"
+PLAYBOOK="${PLAYBOOK:-playbooks/freeipa_signed_install.yml}"
 INVENTORY="${INVENTORY:-inventories/example/hosts.yml}"
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 

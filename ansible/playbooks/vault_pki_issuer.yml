@@ -1,0 +1,24 @@
+---
+# vault_pki_issuer.yml — import offline-CA issuing CA into Vault's pki/ mount.
+#
+# Prerequisites (inventory):
+#   hashicorp_vault_pki_enabled: true
+#   hashicorp_vault_pki_issuer_import: true
+#   hashicorp_vault_pki_issuer_cert: "{{ pki_issuing_ca_cert }}"
+#   hashicorp_vault_pki_issuer_key:  "{{ pki_issuing_ca_key }}"
+#   hashicorp_vault_pki_root_cert:   "{{ pki_root_ca_cert }}"
+# (escrow from scripts/offline-ca.sh → encrypted offline_ca.yml)
+#
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/vault_pki_issuer.yml \
+#     --limit vault-01 --tags pki,pki_issuer
+#
+# Host group: vault by default. Override with:
+#   -e vault_pki_issuer_hosts=my_vault_group
+
+- name: Import offline CA issuer into Vault PKI
+  hosts: "{{ vault_pki_issuer_hosts | default('vault') }}"
+  gather_facts: true
+  roles:
+    - role: hashicorp_vault_container
+      # preflight is tagged always inside the role; pki + pki_issuer do the work.
+      tags: [pki, pki_issuer]
