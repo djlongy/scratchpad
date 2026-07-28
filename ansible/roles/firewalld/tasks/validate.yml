@@ -203,13 +203,22 @@
       {%- set builtins = ['internal', 'home'] | select('in', bound) | list -%}
       {{ (ns.z + builtins) | unique | list }}
     # Zones with any activation path (source bind, interface bind, or inline
-    # sources/interfaces in the zone dict).
+    # sources/interfaces in the zone dict). Empty lists do NOT count — a zone
+    # with sources: [] / interfaces: [] (or sources: "{{ admin_cidrs }}" that
+    # rendered empty) has zero classifying traffic and must not pass the
+    # drop/block ssh-path gate as "activated".
     _firewalld_activated_zones: >-
       {{ (
            (firewalld_source_zone_bindings | map(attribute='zone') | list)
            + (firewalld_interface_zone_bindings | map(attribute='zone') | list)
-           + (firewalld_zones | selectattr('sources', 'defined') | map(attribute='name') | list)
-           + (firewalld_zones | selectattr('interfaces', 'defined') | map(attribute='name') | list)
+           + (firewalld_zones
+              | selectattr('sources', 'defined')
+              | selectattr('sources')
+              | map(attribute='name') | list)
+           + (firewalld_zones
+              | selectattr('interfaces', 'defined')
+              | selectattr('interfaces')
+              | map(attribute='name') | list)
          ) | unique | list }}
 
 - name: Compute firewalld ssh-path facts (depend on the sets above)

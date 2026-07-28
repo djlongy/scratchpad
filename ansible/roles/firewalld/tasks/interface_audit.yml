@@ -4,11 +4,62 @@
 # that will not survive an NM restart, is surfaced before drop takes effect.
 # Read-only: every command is changed_when:false + check_mode:false.
 
-# Recompute the restrictive-default flag locally so this file holds under
-# tag isolation (--tags interface_audit) where validate.yml did not run.
+# Restrictive-default flag must match validate.yml: inventory OR live.
+# Inventory-only used to disarm this audit when the host was already at
+# drop/block while firewalld_default_zone was "" ("leave unchanged") —
+# the exact blind spot validate.yml already fixed for the pre-flight gates.
+# Re-probe live/offline so tag isolation (--tags interface_audit) still holds.
+- name: Query the live default zone for the interface audit
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --get-default-zone
+  register: _fw_audit_live_default_running
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _firewalld_live_default is not defined
+
+- name: Query the permanent default zone when the daemon is not answering (audit)
+  become: true  # root: firewall-offline-cmd reads /etc/firewalld directly
+  ansible.builtin.command: firewall-offline-cmd --get-default-zone
+  register: _fw_audit_offline_default
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - _firewalld_live_default is not defined
+    - (_fw_audit_live_default_running.rc | default(1)) != 0
+
+- name: Resolve the effective default zone for the audit
+  ansible.builtin.set_fact:
+    _fw_audit_effective_default: >-
+      {{ _firewalld_live_default
+         if (_firewalld_live_default is defined)
+         else (_fw_audit_live_default_running
+               if ((_fw_audit_live_default_running.rc | default(1)) == 0)
+               else (_fw_audit_offline_default | default({'rc': 1, 'stdout': ''}))) }}
+
 - name: Determine restrictive-default flag for the audit
   ansible.builtin.set_fact:
-    _fw_audit_lockdown: "{{ firewalld_default_zone in ['drop', 'block'] }}"
+    _fw_audit_lockdown: >-
+      {{ (firewalld_default_zone in ['drop', 'block'])
+         or (((_fw_audit_effective_default.rc | default(1)) == 0)
+             and ((_fw_audit_effective_default.stdout | default('') | trim) in ['drop', 'block'])) }}
+    # Restrictive default name(s) for messaging / diagnostics. Inventory
+    # drop|block wins as the post-switch target when set; else live.
+    _fw_audit_restrictive_default: >-
+      {{ firewalld_default_zone
+         if (firewalld_default_zone in ['drop', 'block'])
+         else (
+           (_fw_audit_effective_default.stdout | default('') | trim)
+           if (((_fw_audit_effective_default.rc | default(1)) == 0)
+               and ((_fw_audit_effective_default.stdout | default('') | trim)
+                    in ['drop', 'block']))
+           else ''
+         ) }}
+    _fw_audit_live_default_name: >-
+      {{ (_fw_audit_effective_default.stdout | default('') | trim)
+         if ((_fw_audit_effective_default.rc | default(1)) == 0)
+         else '' }}
     # Physical/relevant interfaces only — drop loopback and container/bridge veth
     # noise that never carries host management traffic.
     _fw_audit_ifaces: >-
@@ -66,11 +117,29 @@
           | selectattr('interface', 'equalto', _fw_ssh_iface)
           | map(attribute='zone') | first | default('')) if (_fw_ssh_iface | length > 0) else '' }}
 
-# An empty zone means the NIC inherits the default zone. Fail only when that
-# default is drop/block AND no source binding covers this controller (source
-# classification beats interface, so a covered controller is still safe). The
-# containment fact comes from validate.yml (always-run); it is only absent under
-# a hand-rolled tag/skip that drops validate — then degrade to a loud warn.
+# Empty zone inherits the current default (and, pre-switch, the inventory
+# drop/block target after default_zone). Explicit zone equals a *restrictive*
+# name only — inventory drop|block and/or live drop|block. Never compare to a
+# non-restrictive inventory value (false fail: inventory=public, live=drop,
+# iface in public matched inventory alone under the old check).
+- name: Classify whether the SSH ingress NIC falls onto a restrictive default
+  ansible.builtin.set_fact:
+    _fw_ssh_falls_to_restrictive_default: >-
+      {{ (_fw_ssh_iface_zone | length == 0)
+         or (
+           (firewalld_default_zone in ['drop', 'block'])
+           and (_fw_ssh_iface_zone == firewalld_default_zone)
+         )
+         or (
+           (_fw_audit_live_default_name in ['drop', 'block'])
+           and (_fw_ssh_iface_zone == _fw_audit_live_default_name)
+         ) }}
+
+# Fail only when lockdown is on, the NIC falls onto that restrictive default,
+# AND no source binding covers this controller (source classification beats
+# interface, so a covered controller is still safe). The containment fact comes
+# from validate.yml (always-run); it is only absent under a hand-rolled tag/skip
+# that drops validate — then degrade to a loud warn.
 #
 # `_firewalld_controller_source_covered` is false in TWO different situations, and only
 # one of them is a lockout: the controller is genuinely outside every ssh source CIDR,
@@ -85,15 +154,17 @@
   when:
     - _fw_audit_lockdown | bool
     - _fw_ssh_iface | length > 0
-    - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
+    - _fw_ssh_falls_to_restrictive_default | bool
     - _firewalld_controller_source_covered is defined
     - (_firewalld_controller_ip | default('')) | length > 0
     - not (_firewalld_controller_source_covered | bool)
   ansible.builtin.fail:
     msg: >-
       The interface carrying this SSH session ({{ _fw_ssh_iface }}) resolves to
-      the default zone '{{ firewalld_default_zone }}' and no source binding
-      covers this controller
+      the restrictive default zone '{{ _fw_audit_restrictive_default }}'
+      (iface zone='{{ _fw_ssh_iface_zone | default('') or '(no zone→inherit)' }}',
+      inventory default='{{ firewalld_default_zone | default('') or '(unset)' }}')
+      and no source binding covers this controller
       ({{ _firewalld_controller_ip | default('unknown') }}). The operator's packet
       path would be dropped. Bind the admin CIDR to an ssh-opening zone, or
       interface-zone {{ _fw_ssh_iface }} explicitly.
@@ -102,15 +173,16 @@
   when:
     - _fw_audit_lockdown | bool
     - _fw_ssh_iface | length > 0
-    - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
+    - _fw_ssh_falls_to_restrictive_default | bool
     - _firewalld_controller_source_covered is not defined
   ansible.builtin.debug:
     msg: >-
       WARNING firewalld interface audit: SSH ingress NIC {{ _fw_ssh_iface }}
-      resolves to the default zone '{{ firewalld_default_zone }}', and the
-      controller-containment fact is unavailable (validate.yml did not run — a
-      tag/skip selection dropped it), so source-path coverage cannot be proven
-      here. Run the full role (or validate) to enforce this gate.
+      resolves to the restrictive default zone
+      '{{ _fw_audit_restrictive_default }}', and the controller-containment fact
+      is unavailable (validate.yml did not run — a tag/skip selection dropped
+      it), so source-path coverage cannot be proven here. Run the full role (or
+      validate) to enforce this gate.
 
 # The other unproven case: validate.yml ran, but could not read this controller's IP.
 # Loud rather than fatal — see the fail task above for why. Name the ssh source CIDRs so
@@ -119,18 +191,19 @@
   when:
     - _fw_audit_lockdown | bool
     - _fw_ssh_iface | length > 0
-    - (_fw_ssh_iface_zone | length == 0) or (_fw_ssh_iface_zone == firewalld_default_zone)
+    - _fw_ssh_falls_to_restrictive_default | bool
     - _firewalld_controller_source_covered is defined
     - (_firewalld_controller_ip | default('')) | length == 0
   ansible.builtin.debug:
     msg: >-
       WARNING firewalld interface audit: SSH ingress NIC {{ _fw_ssh_iface }}
-      resolves to the default zone '{{ firewalld_default_zone }}', and this
-      controller's client IP could not be read (no SSH_CONNECTION in the gathered
-      environment — usual when the play gathers facts under become), so source-path
-      coverage is UNPROVEN, not proven absent. The ssh-opening source CIDRs are
-      {{ _firewalld_ssh_source_cidrs | default([]) }} — confirm your admin path falls
-      inside one before trusting this run.
+      resolves to the restrictive default zone
+      '{{ _fw_audit_restrictive_default }}', and this controller's client IP
+      could not be read (no SSH_CONNECTION in the gathered environment — usual
+      when the play gathers facts under become), so source-path coverage is
+      UNPROVEN, not proven absent. The ssh-opening source CIDRs are
+      {{ _firewalld_ssh_source_cidrs | default([]) }} — confirm your admin path
+      falls inside one before trusting this run.
 
 # NetworkManager owns interface→zone assignment where it manages the device.
 - name: Check for nmcli (NetworkManager present)

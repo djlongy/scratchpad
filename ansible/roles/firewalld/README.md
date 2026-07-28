@@ -136,6 +136,11 @@ dangerous one:
   bind, interface bind, inline sources/interfaces). "Restrictive default" now means
   the inventory value **or** the live one read off the host, so a host already at
   `drop` with `firewalld_default_zone` unset can no longer slip past these gates.
+- **Interface audit (`interface_audit.yml`)** — SSH "falls to default" is judged
+  against the **restrictive** default only (inventory `drop`/`block` target, else
+  live `drop`/`block`). A non-restrictive inventory value (e.g. `public`) is never
+  the compare operand, so inventory=`public` + live=`drop` + NIC in `public` is
+  not a false fail.
   Zone `rich_rules` are rejected outright (they are not renderable into zone XML —
   see `templates/zone.xml.j2`), so they are no longer an ssh path; every binding
   must target a real zone;

@@ -1,34 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 {#
   Generic firewalld service XML template.
-  Schema: see roles/conf_firewall/defaults/main.yml -> firewalld_services
+  Schema: see roles/firewalld/defaults/main.yml -> firewalld_services
   Reference: https://firewalld.org/documentation/man-pages/firewalld.service.html
+
+  Every templated value is XML-escaped with `| e` — same contract as zone.xml.j2.
+  An unescaped '&', '<' or '"' in short/description produced an unloadable
+  service file; the service then fails to load and zone ports that reference it
+  silently go missing.
 #}
 <service>
 {% if item.short is defined and item.short | length > 0 %}
-  <short>{{ item.short }}</short>
+  <short>{{ item.short | e }}</short>
 {% endif %}
 {% if item.description is defined and item.description | length > 0 %}
-  <description>{{ item.description }}</description>
+  <description>{{ item.description | e }}</description>
 {% endif %}
 {% for p in item.ports | default([]) %}
-  <port port="{{ p.port }}" protocol="{{ p.protocol }}"/>
+  <port port="{{ p.port | e }}" protocol="{{ p.protocol | e }}"/>
 {% endfor %}
 {% for proto in item.protocols | default([]) %}
-  <protocol value="{{ proto }}"/>
+  <protocol value="{{ proto | e }}"/>
 {% endfor %}
 {% for sp in item.source_ports | default([]) %}
-  <source-port port="{{ sp.port }}" protocol="{{ sp.protocol }}"/>
+  <source-port port="{{ sp.port | e }}" protocol="{{ sp.protocol | e }}"/>
 {% endfor %}
 {% for helper in item.module_helpers | default([]) %}
-  <module name="{{ helper }}"/>
+  <module name="{{ helper | e }}"/>
 {% endfor %}
 {% if item.destination is defined %}
 {%   if item.destination.ipv4 | default('') | length > 0 or item.destination.ipv6 | default('') | length > 0 %}
-  <destination{% if item.destination.ipv4 | default('') | length > 0 %} ipv4="{{ item.destination.ipv4 }}"{% endif %}{% if item.destination.ipv6 | default('') | length > 0 %} ipv6="{{ item.destination.ipv6 }}"{% endif %}/>
+  <destination{% if item.destination.ipv4 | default('') | length > 0 %} ipv4="{{ item.destination.ipv4 | e }}"{% endif %}{% if item.destination.ipv6 | default('') | length > 0 %} ipv6="{{ item.destination.ipv6 | e }}"{% endif %}/>
 {%   endif %}
 {% endif %}
 {% for inc in item.includes | default([]) %}
-  <include service="{{ inc }}"/>
+  <include service="{{ inc | e }}"/>
 {% endfor %}
 </service>
