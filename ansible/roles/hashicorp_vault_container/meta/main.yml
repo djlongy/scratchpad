@@ -1,4 +1,5 @@
 ---
+# Operator handoff: see SUPPORT.md and README.md in this role directory.
 galaxy_info:
   role_name: hashicorp_vault_container
   author: lab

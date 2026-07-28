@@ -8,34 +8,22 @@
 # Keys are DATA (hashicorp_vault_transit_keys) — define them in inventory, e.g.:
 #   - name: cosign
 #     type: ecdsa-p256                       # default
-#     export_public_key: {mount: kv-ops, path: platform/cosign/runtime}
+#     export_public_key: {mount: kv-example, path: platform/cosign/runtime}
 #
 # All writes go via docker exec on the first node with the root token in the
 # process env (never argv); writes forward to the active leader. The exported
 # public key (not a secret) is passed over STDIN only to avoid a multi-line PEM
 # on argv.
 
-- name: "Transit | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_tr_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "Transit | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_tr_token: "{{ _hashicorp_vault_tr_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "Transit | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "Transit | List existing secret mounts"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault secrets list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_tr_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_tr_mounts
   changed_when: false
   no_log: true
@@ -49,7 +37,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault secrets enable -path={{ hashicorp_vault_transit_mount }} transit
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_tr_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: >-
     (hashicorp_vault_transit_mount ~ '/') not in (_hashicorp_vault_tr_mounts.stdout | from_json).keys()
   changed_when: true
@@ -65,7 +53,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -format=json {{ hashicorp_vault_transit_mount }}/keys/{{ item.name }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_tr_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_transit_keys }}"
   loop_control:
     label: "{{ item.name }}"
@@ -87,7 +75,7 @@
       allow_plaintext_backup={{ item.item.allow_plaintext_backup | default(false) | bool | lower }}
       deletion_allowed={{ item.item.deletion_allowed | default(false) | bool | lower }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_tr_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ _hashicorp_vault_tr_key_reads.results }}"
   loop_control:
     label: "{{ item.item.name }} ({{ item.item.type | default('ecdsa-p256') }})"
@@ -108,7 +96,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -format=json {{ hashicorp_vault_transit_mount }}/keys/{{ item.name }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_tr_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_transit_keys | selectattr('export_public_key', 'defined') | list }}"
   loop_control:
     label: "{{ item.name }} -> {{ item.export_public_key.mount }}/{{ item.export_public_key.path }}"
@@ -131,7 +119,7 @@
       {{ (item.stdout | from_json).data['keys'][(item.stdout | from_json).data.latest_version | string].public_key }}
     stdin_add_newline: false
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_tr_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ _hashicorp_vault_tr_export_reads.results }}"
   loop_control:
     label: "{{ item.item.name }} -> {{ item.item.export_public_key.mount }}/{{ item.item.export_public_key.path }}"

@@ -5,27 +5,15 @@
 # bind-mounted to hashicorp_vault_logs_dir on the persistent disk), so the audit
 # trail survives container rebuilds.
 
-- name: "Audit | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_audit_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "Audit | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_audit_token: "{{ _hashicorp_vault_audit_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "Audit | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "Audit | List enabled audit devices"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault audit list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_audit_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_audit_list
   changed_when: false
   failed_when: false
@@ -40,7 +28,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault audit enable file file_path={{ hashicorp_vault_audit_path }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_audit_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: >-
     _hashicorp_vault_audit_list.rc != 0
     or 'file/' not in (_hashicorp_vault_audit_list.stdout | default('{}') | from_json).keys()

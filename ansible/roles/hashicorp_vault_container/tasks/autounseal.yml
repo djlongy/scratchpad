@@ -13,23 +13,37 @@
 # move to transit/KMS auto-unseal for keys that never touch the node.
 
 # ── Enabled: distribute keys + install the boot unit ─────────────────────────
-- name: "Auto-unseal | Read the unseal keys from the first node"
-  become: true  # root: reads the root-only vault_init.json
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
-  register: _hashicorp_vault_au_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-  when: hashicorp_vault_auto_unseal | bool
-
-- name: "Auto-unseal | Extract the threshold unseal keys"
+# Declared-var-first: hashicorp_vault_unseal_keys, else on-disk vault_init.json.
+- name: "Auto-unseal | Prefer declared unseal key list"
   ansible.builtin.set_fact:
     _hashicorp_vault_au_keys: >-
-      {{ (_hashicorp_vault_au_slurp.content | b64decode | from_json).unseal_keys_b64[:hashicorp_vault_key_threshold | int] }}
+      {{ hashicorp_vault_unseal_keys[:hashicorp_vault_key_threshold | int] }}
   run_once: true
   no_log: true
-  when: hashicorp_vault_auto_unseal | bool
+  when:
+    - hashicorp_vault_auto_unseal | bool
+    - (hashicorp_vault_unseal_keys | default([]) | length) > 0
+
+- name: "Auto-unseal | Fall back to on-disk vault_init.json"
+  when:
+    - hashicorp_vault_auto_unseal | bool
+    - (hashicorp_vault_unseal_keys | default([]) | length) == 0
+  block:
+    - name: "Auto-unseal | Read the unseal keys from the first node"
+      become: true  # root: reads the root-only vault_init.json
+      ansible.builtin.slurp:
+        src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+      register: _hashicorp_vault_au_slurp
+      delegate_to: "{{ hashicorp_vault_first_node }}"
+      run_once: true
+      no_log: true
+
+    - name: "Auto-unseal | Extract the threshold unseal keys"
+      ansible.builtin.set_fact:
+        _hashicorp_vault_au_keys: >-
+          {{ (_hashicorp_vault_au_slurp.content | b64decode | from_json).unseal_keys_b64[:hashicorp_vault_key_threshold | int] }}
+      run_once: true
+      no_log: true
 
 - name: "Auto-unseal | Distribute the unseal keys to each node"
   become: true  # root: writes the root-only unseal keys file

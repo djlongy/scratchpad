@@ -1,3 +1,7 @@
+# Examples for hashicorp_vault_container
+
+Operator handoff: **[../SUPPORT.md](../SUPPORT.md)** · full contract: **[../README.md](../README.md)**
+
 # hashicorp_vault_container — inventory examples
 
 Copy **one human path**, then add optional add-ons only when needed.

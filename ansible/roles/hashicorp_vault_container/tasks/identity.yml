@@ -9,27 +9,15 @@
 #             {identity_group_name, type: internal, policies, member_group_names}
 # All writes run once from the leader via docker exec (root token in the env).
 
-- name: "Identity | Read the root token from the first node"
-  become: true  # root: reads the root-owned root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_id_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "Identity | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_id_token: "{{ _hashicorp_vault_id_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "Identity | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "Identity | List auth methods (to resolve the ldap mount accessor)"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_id_auth
   changed_when: false
   no_log: true
@@ -53,7 +41,7 @@
       type={{ item.type | default('external') }}
       policies={{ (item.policies | default([])) | join(',') }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_identity_groups }}"
   loop_control:
     label: "{{ item.identity_group_name }} ({{ item.type | default('external') }})"
@@ -68,7 +56,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -field=id identity/group/name/{{ item.identity_group_name }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_identity_groups }}"
   loop_control:
     label: "{{ item.identity_group_name }}"
@@ -98,7 +86,7 @@
       alias_name={{ item.ldap_group }}
       alias_mount_accessor={{ _hashicorp_vault_ldap_accessor }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_identity_groups | selectattr('type', 'defined') | selectattr('type', 'equalto', 'external') | list
             + hashicorp_vault_identity_groups | rejectattr('type', 'defined') | list }}"
   loop_control:
@@ -120,7 +108,7 @@
       mount_accessor={{ _hashicorp_vault_ldap_accessor }}
       canonical_id={{ _hashicorp_vault_group_ids[item.item.identity_group_name] }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ _hashicorp_vault_id_alias_lookup.results }}"
   loop_control:
     label: "{{ item.item.ldap_group }} -> {{ item.item.identity_group_name }}"
@@ -138,7 +126,7 @@
       vault write identity/group name={{ item.identity_group_name }} type=internal
       member_group_ids={{ (item.member_group_names | map('extract', _hashicorp_vault_group_ids) | join(',')) }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_id_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_identity_groups
             | selectattr('type', 'defined') | selectattr('type', 'equalto', 'internal')
             | selectattr('member_group_names', 'defined') | list }}"

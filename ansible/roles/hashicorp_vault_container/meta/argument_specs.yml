@@ -53,6 +53,36 @@ argument_specs:
           Validate the license blob offline (vault license inspect in a
           throwaway container) before installing it.
         default: true
+      hashicorp_vault_control_groups_enabled:
+        type: bool
+        description: >-
+          Enable the DORMANT Enterprise Control Groups phase (approval-gated KV
+          reads). Double opt-in: this must be true AND the run must carry
+          --tags control_groups; the phase asserts a live Enterprise build before
+          writing. Requires hashicorp_vault_license_enabled. Off by default.
+        default: false
+      hashicorp_vault_control_groups:
+        type: list
+        elements: dict
+        description: >-
+          Gated-path definitions (env-specific; set in inventory). Each:
+          {policy_name, mount, paths (list, in-mount KV paths — /data/ infix
+          added), capabilities (default [read]), controlled_capabilities (subset
+          of capabilities — set explicitly), ttl (optional), authorizers (list of
+          {group_name: Vault Identity group, approvals: threshold int})}.
+        default: []
+      hashicorp_vault_control_groups_authorizer_policy:
+        type: str
+        description: >-
+          Name of the shared authorizer policy granting sys/control-group/authorize
+          and sys/control-group/request.
+        default: "control-group-authorizer"
+      hashicorp_vault_control_groups_max_ttl:
+        type: str
+        description: >-
+          Optional cluster-wide max wrapping-token TTL (sys/config/control-group).
+          Empty = leave Vault's default. Vault duration (s/m/h).
+        default: ""
       hashicorp_vault_data_mount:
         type: str
         description: >-
@@ -147,6 +177,28 @@ argument_specs:
           needs a manual `vault operator unseal -migrate` (not automated). Empty =
           Shamir.
         default: {}
+      hashicorp_vault_unseal_keys:
+        type: list
+        elements: str
+        description: >-
+          Declared Shamir unseal shares (base64). Preferred over on-disk
+          vault_init.json. First hashicorp_vault_key_threshold entries are used.
+          Empty list falls back to the guest init file.
+        default: []
+      hashicorp_vault_root_token:
+        type: str
+        description: >-
+          Declared root/admin token (Ansible Vault custody). Preferred over
+          on-disk root_token.txt. Resolved into _hashicorp_vault_root_token via
+          resolve_root_token.yml for all management phases.
+        default: ""
+      hashicorp_vault_persist_init:
+        type: bool
+        description: >-
+          When true, --tags unseal rewrites root_token.txt on the guest.
+          When false, that write is skipped and residual root_token.txt is removed
+          (disk-free custody; set hashicorp_vault_root_token from Ansible Vault).
+        default: true
       hashicorp_vault_manage_policies:
         type: bool
         description: Ensure kv-<tenant>-<env> mounts + write the multi-tenant/extra ACL policies.
@@ -256,6 +308,18 @@ argument_specs:
           Skip LDAPS certificate verification. Secure (false) by default; labs with a
           self-signed directory CA override to true in inventory.
         default: false
+      hashicorp_vault_ldap_token_ttl:
+        type: str
+        description: >-
+          Default token TTL for LDAP logins (whole ldap/ mount). Empty = Vault's
+          system default (768h). Accepts Vault durations (s/m/h).
+        default: ""
+      hashicorp_vault_ldap_token_max_ttl:
+        type: str
+        description: >-
+          Maximum token TTL for LDAP logins. Empty = Vault's system default.
+          Shorten to narrow how long a removed group member keeps a live token.
+        default: ""
       hashicorp_vault_userpass_accounts:
         type: list
         elements: dict

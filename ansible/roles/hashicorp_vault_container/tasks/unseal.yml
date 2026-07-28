@@ -1,33 +1,69 @@
 ---
-# Unseal — unseal every node using the stored keys. Self-contained so it can be
-# run on its OWN with `--tags unseal` to bring a node (or the whole cluster)
-# back after a reboot / container restart, WITHOUT re-running init (which only
-# touches an uninitialized cluster and never wipes an existing one, but the
-# `unseal` tag makes the safe, non-destructive intent unambiguous).
+# Unseal — unseal every node using declared shares or on-disk init material.
+# Self-contained so it can run alone with `--tags unseal` after reboot /
+# container restart, without re-running init.
 #
-#   ansible-playbook ... --tags unseal          # unseal whatever is sealed
+#   ansible-playbook ... --tags unseal
 #
-# For hands-off recovery after a reboot, enable hashicorp_vault_auto_unseal instead
-# (a systemd unit does this on boot) — see autounseal.yml.
+# Share source (declared-var-first):
+#   1. hashicorp_vault_unseal_keys  (list of base64 shares; first `threshold` used)
+#   2. else {{ keys_dir }}/vault_init.json on the first node
+#
+# Root token on disk is OPTIONAL convenience (hashicorp_vault_persist_init).
+# Management phases resolve root via resolve_root_token.yml (var → disk).
+#
+# Boot-time auto-unseal is separate — see autounseal.yml.
 
-- name: "Unseal | Read the persisted init material"
-  become: true  # root: reads the root-only vault_init.json
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
-  register: _hashicorp_vault_init_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  no_log: true
-
-- name: "Unseal | Extract unseal keys and root token"
+# ── Resolve Shamir shares ───────────────────────────────────────────────────
+- name: "Unseal | Prefer declared unseal key list"
   ansible.builtin.set_fact:
     _hashicorp_vault_unseal_keys: >-
-      {{ (_hashicorp_vault_init_slurp.content | b64decode | from_json).unseal_keys_b64[:hashicorp_vault_key_threshold | int] }}
-    _hashicorp_vault_root_token: >-
-      {{ (_hashicorp_vault_init_slurp.content | b64decode | from_json).root_token }}
+      {{ hashicorp_vault_unseal_keys[:hashicorp_vault_key_threshold | int] }}
+  when: (hashicorp_vault_unseal_keys | default([]) | length) > 0
   no_log: true
 
-- name: "Unseal | Save the root token for operator convenience (first node)"
-  become: true  # root: writes the root-only root_token.txt to the keys dir
+- name: "Unseal | Fall back to on-disk vault_init.json"
+  when: (hashicorp_vault_unseal_keys | default([]) | length) == 0
+  block:
+    - name: "Unseal | Read the persisted init material"
+      become: true  # root: reads the root-only vault_init.json
+      ansible.builtin.slurp:
+        src: "{{ hashicorp_vault_keys_dir }}/vault_init.json"
+      register: _hashicorp_vault_init_slurp
+      delegate_to: "{{ hashicorp_vault_first_node }}"
+      no_log: true
+
+    - name: "Unseal | Extract unseal keys (and root) from init JSON"
+      ansible.builtin.set_fact:
+        _hashicorp_vault_unseal_keys: >-
+          {{ (_hashicorp_vault_init_slurp.content | b64decode | from_json).unseal_keys_b64[:hashicorp_vault_key_threshold | int] }}
+        _hashicorp_vault_init_root_token: >-
+          {{ (_hashicorp_vault_init_slurp.content | b64decode | from_json).root_token | default('') }}
+      no_log: true
+
+- name: "Unseal | Assert enough unseal shares are available"
+  ansible.builtin.assert:
+    that:
+      - (_hashicorp_vault_unseal_keys | default([]) | length) >= (hashicorp_vault_key_threshold | int)
+    quiet: true
+    fail_msg: >-
+      Need at least hashicorp_vault_key_threshold ({{ hashicorp_vault_key_threshold }})
+      Shamir share(s). Set hashicorp_vault_unseal_keys (list) from Ansible Vault
+      custody, or restore {{ hashicorp_vault_keys_dir }}/vault_init.json on
+      {{ hashicorp_vault_first_node }}.
+
+# Root for optional disk persist: declared var wins, else root embedded in init JSON.
+- name: "Unseal | Resolve root token for optional disk persist"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_root_token: >-
+      {{ (hashicorp_vault_root_token | string | trim)
+         if ((hashicorp_vault_root_token | default('') | string | trim | length) > 0)
+         else (_hashicorp_vault_init_root_token | default('')) }}
+  when: hashicorp_vault_persist_init | bool
+  no_log: true
+
+- name: "Unseal | Save root_token.txt on the first node (persist_init)"
+  become: true  # root: writes the root-only root_token.txt
   ansible.builtin.copy:
     content: "{{ _hashicorp_vault_root_token }}\n"
     dest: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
@@ -37,6 +73,18 @@
   no_log: true
   run_once: true
   delegate_to: "{{ hashicorp_vault_first_node }}"
+  when:
+    - hashicorp_vault_persist_init | bool
+    - (_hashicorp_vault_root_token | default('') | length) > 0
+
+- name: "Unseal | Remove on-disk root_token.txt when not persisting"
+  become: true  # root: removes residual root-only token file
+  ansible.builtin.file:
+    path: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+    state: absent
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  when: not (hashicorp_vault_persist_init | bool)
 
 # ── Unseal the first node, then wait for it to come up ────────────────────
 - name: "Unseal | Check the first node's seal status"
@@ -49,6 +97,9 @@
   run_once: true
   delegate_to: "{{ hashicorp_vault_first_node }}"
 
+# Vault refuses non-TTY stdin for unseal ("provide as first argument"). Key is
+# therefore argv to docker/vault; no_log keeps it out of Ansible logs. Prefer
+# short-lived process argv over permanent on-disk unseal_keys when auto_unseal is off.
 - name: "Unseal | Unseal the first node"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
@@ -60,10 +111,9 @@
   delegate_to: "{{ hashicorp_vault_first_node }}"
   when: (_hashicorp_vault_leader_seal.stdout | default('{}') | from_json).sealed | default(true)
 
-# standbyok=true so this passes whether the first node is the active leader
-# (fresh init) OR a healthy unsealed STANDBY (re-run after Raft leadership
-# migrated off node 1). A sealed node still returns 503, so the wait still
-# guarantees the node is up AND unsealed.
+# standbyok=true: passes for active leader or healthy unsealed standby
+# (leadership may sit on another node). A sealed node returns 503, so the
+# wait guarantees the node is up and unsealed.
 - name: "Unseal | Wait for the first node to be unsealed (active or standby)"
   become: false  # localhost/API — API reachability probe, no host privilege
   ansible.builtin.uri:

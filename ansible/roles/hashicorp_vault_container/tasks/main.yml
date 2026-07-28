@@ -18,114 +18,136 @@
 #   init      — initialize (once), unseal all nodes, form the Raft cluster
 #   verify    — health + Raft peer / seal assertions
 
-- name: "Preflight — validate prerequisites and derive topology"
-  ansible.builtin.import_tasks: preflight.yml
-  tags: [preflight, always]
+- name: Skip hashicorp_vault_container (hashicorp_vault_container_enabled is false)
+  ansible.builtin.debug:
+    msg: "hashicorp_vault_container_enabled is false — skipping hashicorp_vault_container"
+  when: not (hashicorp_vault_container_enabled | bool)
+  tags: [always]
 
-- name: "Prerequisites — directories and firewall"
-  ansible.builtin.import_tasks: prereqs.yml
-  tags: [prereqs]
+- name: Configure hashicorp_vault_container
+  when: hashicorp_vault_container_enabled | bool
+  block:
 
-- name: "TLS — CA and server certificate"
-  ansible.builtin.import_tasks: tls.yml
-  when: hashicorp_vault_tls_enabled | bool
-  tags: [tls]
+    - name: "Preflight — validate prerequisites and derive topology"
+      ansible.builtin.import_tasks: preflight.yml
+      tags: [preflight, always]
 
-- name: "License — Enterprise license file (optional; off unless enabled)"
-  ansible.builtin.import_tasks: license.yml
-  when: hashicorp_vault_license_enabled | bool
-  tags: [license]
+    - name: "Prerequisites — directories and firewall"
+      ansible.builtin.import_tasks: prereqs.yml
+      tags: [prereqs]
 
-- name: "Deploy — config, compose, start container"
-  ansible.builtin.import_tasks: deploy.yml
-  tags: [deploy]
+    - name: "TLS — CA and server certificate"
+      ansible.builtin.import_tasks: tls.yml
+      when: hashicorp_vault_tls_enabled | bool
+      tags: [tls]
 
-- name: "Init — initialize the cluster (first run only)"
-  ansible.builtin.import_tasks: init.yml
-  tags: [init]
+    - name: "License — Enterprise license file (optional; off unless enabled)"
+      ansible.builtin.import_tasks: license.yml
+      when: hashicorp_vault_license_enabled | bool
+      tags: [license]
 
-- name: "Unseal — unseal all nodes (also standalone after a reboot: --tags unseal)"
-  ansible.builtin.import_tasks: unseal.yml
-  when: hashicorp_vault_seal_config | length == 0
-  tags: [init, unseal]
+    - name: "Deploy — config, compose, start container"
+      ansible.builtin.import_tasks: deploy.yml
+      tags: [deploy]
 
-- name: "Auto-unseal — optional systemd unseal-on-boot (hashicorp_vault_auto_unseal)"
-  ansible.builtin.import_tasks: autounseal.yml
-  tags: [autounseal]
+    - name: "Init — initialize the cluster (first run only)"
+      ansible.builtin.import_tasks: init.yml
+      tags: [init]
 
-- name: "Verify — cluster health"
-  ansible.builtin.import_tasks: verify.yml
-  tags: [verify]
+    - name: "Unseal — unseal all nodes (also standalone after a reboot: --tags unseal)"
+      ansible.builtin.import_tasks: unseal.yml
+      when: hashicorp_vault_seal_config | length == 0
+      tags: [init, unseal]
 
-- name: "Policies — multi-tenant, environment-scoped ACL policies"
-  ansible.builtin.import_tasks: policies.yml
-  when: hashicorp_vault_manage_policies | bool
-  tags: [policies]
+    - name: "Auto-unseal — optional systemd unseal-on-boot (hashicorp_vault_auto_unseal)"
+      ansible.builtin.import_tasks: autounseal.yml
+      tags: [autounseal]
 
-- name: "LDAP — auth method + group->policy mappings (FreeIPA)"
-  ansible.builtin.import_tasks: ldap.yml
-  when: hashicorp_vault_ldap_enabled | bool
-  tags: [ldap]
+    - name: "Verify — cluster health"
+      ansible.builtin.import_tasks: verify.yml
+      tags: [verify]
 
-- name: "Identity — cross-auth-method groups (external + nested internal)"
-  ansible.builtin.import_tasks: identity.yml
-  when: hashicorp_vault_identity_groups | length > 0
-  tags: [identity]
+    - name: "Policies — multi-tenant, environment-scoped ACL policies"
+      ansible.builtin.import_tasks: policies.yml
+      when: hashicorp_vault_manage_policies | bool
+      tags: [policies]
 
-- name: "Userpass — human operator accounts (data-driven, optional)"
-  ansible.builtin.import_tasks: userpass.yml
-  when: hashicorp_vault_userpass_accounts | length > 0
-  tags: [userpass]
+    - name: "LDAP — auth method + group->policy mappings (FreeIPA)"
+      ansible.builtin.import_tasks: ldap.yml
+      when: hashicorp_vault_ldap_enabled | bool
+      tags: [ldap]
 
-- name: "AppRole — automation service accounts (data-driven, optional)"
-  ansible.builtin.import_tasks: approle.yml
-  when: hashicorp_vault_approles | length > 0
-  tags: [approle]
+    - name: "Identity — cross-auth-method groups (external + nested internal)"
+      ansible.builtin.import_tasks: identity.yml
+      when: hashicorp_vault_identity_groups | length > 0
+      tags: [identity]
 
-- name: "GitLab CI JWT — pipeline JWT->token exchange via the jwt auth method (optional)"
-  ansible.builtin.import_tasks: gitlab_jwt.yml
-  when: hashicorp_vault_gitlab_jwt_enabled | bool
-  tags: [gitlab_jwt]
+    - name: "Userpass — human operator accounts (data-driven, optional)"
+      ansible.builtin.import_tasks: userpass.yml
+      when: hashicorp_vault_userpass_accounts | length > 0
+      tags: [userpass]
 
-- name: "Transit — Transit secrets engine + signing/encryption keys (Cosign) (optional)"
-  ansible.builtin.import_tasks: transit.yml
-  when: hashicorp_vault_transit_enabled | bool
-  tags: [transit, cosign]
+    - name: "AppRole — automation service accounts (data-driven, optional)"
+      ansible.builtin.import_tasks: approle.yml
+      when: hashicorp_vault_approles | length > 0
+      tags: [approle]
 
-- name: "PKI — secrets engine mount + tune + issuing roles (optional)"
-  ansible.builtin.import_tasks: pki.yml
-  when: hashicorp_vault_pki_enabled | bool
-  tags: [pki]
+    - name: "GitLab CI JWT — pipeline JWT->token exchange via the jwt auth method (optional)"
+      ansible.builtin.import_tasks: gitlab_jwt.yml
+      when: hashicorp_vault_gitlab_jwt_enabled | bool
+      tags: [gitlab_jwt]
 
-- name: "PKI-issuer — import an escrowed issuing CA + set default issuer (optional)"
-  ansible.builtin.import_tasks: pki_issuer.yml
-  when: hashicorp_vault_pki_issuer_import | bool
-  tags: [pki_issuer]
+    - name: "Transit — Transit secrets engine + signing/encryption keys (Cosign) (optional)"
+      ansible.builtin.import_tasks: transit.yml
+      when: hashicorp_vault_transit_enabled | bool
+      tags: [transit, cosign]
 
-- name: "Audit — enable the file audit device (optional)"
-  ansible.builtin.import_tasks: audit.yml
-  when: hashicorp_vault_audit_enabled | bool
-  tags: [audit]
+    - name: "PKI — secrets engine mount + tune + issuing roles (optional)"
+      ansible.builtin.import_tasks: pki.yml
+      when: hashicorp_vault_pki_enabled | bool
+      tags: [pki]
 
-- name: "Backup — scheduled Raft snapshots"
-  ansible.builtin.import_tasks: backup.yml
-  when: hashicorp_vault_backup_enabled | bool
-  tags: [backup]
+    - name: "PKI-issuer — import an escrowed issuing CA + set default issuer (optional)"
+      ansible.builtin.import_tasks: pki_issuer.yml
+      when: hashicorp_vault_pki_issuer_import | bool
+      tags: [pki_issuer]
 
-- name: "Remove-peers — evict stale Raft peers after a scale-down (opt-in)"
-  ansible.builtin.import_tasks: remove_peers.yml
-  tags: [never, remove_peers]
+    - name: "Audit — enable the file audit device (optional)"
+      ansible.builtin.import_tasks: audit.yml
+      when: hashicorp_vault_audit_enabled | bool
+      tags: [audit]
 
-- name: "Backup-now — force an on-demand Raft snapshot (opt-in; for nightly CI)"
-  ansible.builtin.import_tasks: backup_run.yml
-  tags: [never, backup_now]
+    - name: "Backup — scheduled Raft snapshots"
+      ansible.builtin.import_tasks: backup.yml
+      when: hashicorp_vault_backup_enabled | bool
+      tags: [backup]
 
-- name: "Restore — roll back to a Raft snapshot (opt-in, destructive)"
-  ansible.builtin.import_tasks: restore.yml
-  tags: [never, restore]
+    - name: "Remove-peers — evict stale Raft peers after a scale-down (opt-in)"
+      ansible.builtin.import_tasks: remove_peers.yml
+      tags: [never, remove_peers]
 
-# Non-destructive, but forces a real certificate re-issue, so it is opt-in
-# rather than part of a normal converge.
-- name: "Renew-drill — prove the certmonger renewal path today, not in 90 days (opt-in)"
-  ansible.builtin.import_tasks: renew_drill.yml
-  tags: [never, renew_drill]
+    - name: "Backup-now — force an on-demand Raft snapshot (opt-in; for nightly CI)"
+      ansible.builtin.import_tasks: backup_run.yml
+      tags: [never, backup_now]
+
+    - name: "Restore — roll back to a Raft snapshot (opt-in, destructive)"
+      ansible.builtin.import_tasks: restore.yml
+      tags: [never, restore]
+
+    # Non-destructive, but forces a real certificate re-issue, so it is opt-in
+    # rather than part of a normal converge.
+    - name: "Renew-drill — prove the certmonger renewal path today, not in 90 days (opt-in)"
+      ansible.builtin.import_tasks: renew_drill.yml
+      tags: [never, renew_drill]
+
+    # Enterprise-only and approval-gated by design. DOUBLE opt-in: BOTH the boolean
+    # AND the literal CLI tag are required — `'control_groups' in ansible_run_tags`
+    # cannot be satisfied by a co-tag or play-level cascade (the repo's documented
+    # `never`-defeat), so a persisted enabled: true still no-ops on a bare converge.
+    # control_groups.yml additionally asserts a licensed Enterprise build is live.
+    - name: "Control-groups — approval-gated KV reads (Enterprise; dormant, double opt-in)"
+      ansible.builtin.import_tasks: control_groups.yml
+      when:
+        - hashicorp_vault_control_groups_enabled | bool
+        - "'control_groups' in ansible_run_tags"
+      tags: [never, control_groups]

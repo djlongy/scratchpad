@@ -88,7 +88,7 @@
     label: "{{ item }}"
 
 # tenant is OPTIONAL. With a tenant the mount is kv-<tenant>-<env>; without one it
-# collapses to a plain kv-<env> (single-tenant/shared environment). Either way the names
+# collapses to a plain kv-<env> (single-tenant/shared estate). Either way the names
 # must be hyphen-free: a hyphen makes kv-<tenant>-<env> ambiguous (kv-a-b-c = tenant
 # a-b/env c OR tenant a/env b-c) and breaks the kv-<tenant>-* admin glob. env is
 # required; tenant may be empty/omitted (the '*' allows the empty string).

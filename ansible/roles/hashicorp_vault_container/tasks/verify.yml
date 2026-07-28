@@ -17,20 +17,8 @@
 # shrink without remove-peers: hosts leave the play while Raft still lists them;
 # operator never ran `raft remove-peer`, leaving GHOST peers that still count
 # toward quorum and silently break availability.
-- name: "Verify | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _verify_tok
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "Verify | Set the token fact"
-  ansible.builtin.set_fact:
-    _verify_root_token: "{{ _verify_tok.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "Verify | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "List Raft peers on the leader"
   become: true  # root: docker exec needs the root-owned docker socket
@@ -39,7 +27,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault operator raft list-peers -format=json
   environment:
-    VAULT_TOKEN: "{{ _verify_root_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_peers
   # Retry: a legitimate restart (e.g. a cert/config change earlier in the run)
   # can trigger a Raft re-election, and list-peers needs an active leader — ride
@@ -107,7 +95,16 @@
       hashicorp_vault_container ready:
       {{ hashicorp_vault_node_count }}-node
       {{ 'Raft HA cluster' if hashicorp_vault_is_ha | bool else 'standalone Vault' }}.
-      Init material on {{ hashicorp_vault_first_node }}:{{ hashicorp_vault_keys_dir }}/vault_init.json
+      Unseal custody:
+      {{ 'declared hashicorp_vault_unseal_keys (Ansible Vault)'
+         if ((hashicorp_vault_unseal_keys | default([]) | length) > 0)
+         else (hashicorp_vault_first_node ~ ':' ~ hashicorp_vault_keys_dir ~ '/vault_init.json') }}.
+      Root custody:
+      {{ 'declared hashicorp_vault_root_token (Ansible Vault)'
+         if ((hashicorp_vault_root_token | default('') | string | trim | length) > 0)
+         else (hashicorp_vault_first_node ~ ':' ~ hashicorp_vault_keys_dir ~ '/root_token.txt') }}.
+      Guest root_token.txt persist:
+      {{ 'on' if (hashicorp_vault_persist_init | bool) else 'off' }}.
   run_once: true
 
 # ── Enterprise license assurance (license_enabled only) ──────────────────────
@@ -122,7 +119,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault license get -format=json
   environment:
-    VAULT_TOKEN: "{{ _verify_root_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_license_status
   changed_when: false
   failed_when: false
@@ -172,7 +169,7 @@
 # exercises SNI + hostname matching against the certificate.
 #
 # Prefer canonical_fqdn (environment host identity: vault-01.dev.example.com) over
-# inventory_hostname.domain (vCenter object: dev-vault-01.example.com). Certmonger
+# inventory_hostname.domain (hypervisor-manager object: dev-vault-01.example.com). Certmonger
 # SANs and FreeIPA principal follow the OS FQDN, not the inventory key.
 - name: "Verify | Resolve the address to probe"
   ansible.builtin.set_fact:

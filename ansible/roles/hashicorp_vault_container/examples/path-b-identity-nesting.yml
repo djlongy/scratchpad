@@ -31,7 +31,7 @@ hashicorp_vault_admin_kv_mounts:
 
 # LDAP required for external group-aliases (bind config same as Path A)
 hashicorp_vault_ldap_enabled: true
-hashicorp_vault_ldap_url: "ldaps://ipa.example.com"
+hashicorp_vault_ldap_url: "ldaps://192.0.2.11"
 hashicorp_vault_ldap_binddn: "uid=svc-vault,cn=users,cn=accounts,dc=example,dc=com"
 hashicorp_vault_ldap_bindpass: "{{ vaulted_ldap_bindpass }}"
 hashicorp_vault_ldap_userdn: "cn=users,cn=accounts,dc=example,dc=com"

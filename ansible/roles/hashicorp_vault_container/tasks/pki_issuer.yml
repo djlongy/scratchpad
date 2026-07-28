@@ -16,7 +16,7 @@
 #   5. self-verify: the default issuer's certificate fingerprint == the declared cert's
 #
 # Idempotency: import responses report imported_issuers/imported_keys — EMPTY means
-# the bundle was already present, so changed_when is derived from them, never hard-true.
+# empty lists mean the bundle is already present — changed_when uses that, never hard-true.
 
 - name: "PKI-issuer | Assert the PKI engine is enabled (its mount must exist first)"
   ansible.builtin.assert:
@@ -46,24 +46,12 @@
     quiet: true
   run_once: true
 
-- name: "PKI-issuer | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_pki_issuer_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
+- name: "PKI-issuer | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
-- name: "PKI-issuer | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_pki_issuer_token: "{{ _hashicorp_vault_pki_issuer_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
-
-# pem_bundle=- makes the Vault CLI read the value from stdin; docker exec -i keeps
-# the container process's stdin open so Ansible's `stdin:` reaches it. The private
-# key travels only over stdin (never argv), and the whole task is no_log.
+# pem_bundle=- + docker exec -i: CA cert/key travel on the process stdin only
+# (never argv / never a temp file on the guest). no_log: true so PEMs never
+# land in Ansible logs if a task fails mid-write.
 - name: "PKI-issuer | Import the issuing CA (cert + key) as a pem_bundle"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
@@ -72,7 +60,7 @@
       vault write -format=json {{ hashicorp_vault_pki_mount }}/issuers/import/bundle pem_bundle=-
     stdin: "{{ hashicorp_vault_pki_issuer_cert | trim }}\n{{ hashicorp_vault_pki_issuer_key | trim }}"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_issuing_import
   # Vault returns imported_issuers/imported_keys as JSON null (not []) on an
   # idempotent re-import, so default() runs in boolean mode to replace the null.
@@ -92,7 +80,7 @@
       vault write -format=json {{ hashicorp_vault_pki_mount }}/issuers/import/bundle pem_bundle=-
     stdin: "{{ hashicorp_vault_pki_root_cert | trim }}"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_root_import
   # imported_issuers is JSON null on an idempotent re-import; boolean-mode default().
   changed_when: >-
@@ -102,7 +90,7 @@
   delegate_to: "{{ hashicorp_vault_first_node }}"
 
 # The import response's `mapping` (issuer_id -> key_id) is returned for every issuer
-# in the submitted bundle regardless of whether it was newly imported, so it resolves
+# in the submitted bundle for both first import and re-run, so it resolves
 # the issuer_id even on an idempotent re-run. The issuing CA is the one WITH a key.
 - name: "PKI-issuer | Resolve the imported issuing CA's issuer_id"
   ansible.builtin.set_fact:
@@ -129,7 +117,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -format=json {{ hashicorp_vault_pki_mount }}/config/issuers
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_default_cfg
   changed_when: false
   no_log: true
@@ -147,7 +135,7 @@
       vault write {{ hashicorp_vault_pki_mount }}/config/issuers
       default={{ _hashicorp_vault_pki_issuer_id }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: >-
     (_hashicorp_vault_pki_default_cfg.stdout | from_json).data.default
     != _hashicorp_vault_pki_issuer_id
@@ -163,7 +151,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -format=json {{ hashicorp_vault_pki_mount }}/config/urls
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_urls_cfg
   changed_when: false
   no_log: true
@@ -195,7 +183,7 @@
   args:
     executable: /bin/bash
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when:
     - hashicorp_vault_pki_urls | length > 0
     - hashicorp_vault_pki_urls != _hashicorp_vault_pki_urls_current
@@ -212,7 +200,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -format=json {{ hashicorp_vault_pki_mount }}/issuer/{{ _hashicorp_vault_pki_issuer_id }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_issuer_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_served
   changed_when: false
   no_log: true
@@ -249,7 +237,7 @@
       hashicorp_vault_pki_issuer_cert fingerprints
       {{ _hashicorp_vault_pki_declared_fp.stdout | trim }}. Re-check the escrow
       mapped onto hashicorp_vault_pki_issuer_cert/_key and that the default issuer
-      was set to the imported CA.
+      matches the imported CA.
     success_msg: >-
       Default PKI issuer matches the declared issuing CA
       ({{ _hashicorp_vault_pki_declared_fp.stdout | trim }}).

@@ -1,0 +1,41 @@
+---
+# Add-on — Control Groups (Vault Enterprise; approval-gated KV reads). DORMANT.
+#
+# Reading a gated path returns a response-wrapped accessor instead of the secret;
+# it is released only after N approvals from a named Identity group. Enterprise-
+# only. This example does nothing until you both set the enable flag AND run with
+# `--tags control_groups` against a licensed Enterprise cluster:
+#
+#   ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml \
+#     --tags control_groups
+#
+# Prerequisites:
+#   - hashicorp_vault_license_enabled: true + an entitled Enterprise image/license.
+#   - The authorizer Identity group exists — declare it in the identity phase
+#     (see path-b-identity-nesting.yml) so it is FreeIPA-aliased and populated.
+#   - The requester holds `policy_name` (attach via ldap_extra_groups / identity),
+#     and does NOT also hold an ungated policy for the same path + capability.
+
+hashicorp_vault_license_enabled: true
+
+# Approver group, created by the identity phase and mapped to a FreeIPA group.
+hashicorp_vault_identity_groups:
+  - identity_group_name: id-vault-approvers
+    type: external
+    ldap_group: vault-approvers
+    policies: [control-group-authorizer]   # the authorizer policy this phase writes
+
+hashicorp_vault_control_groups_enabled: true
+hashicorp_vault_control_groups:
+  - policy_name: acme-prod-payments-cg
+    mount: kv-acme-prod                     # an existing tenant mount
+    paths:
+      - "apps/payments/*"                   # gated in-mount path (/data/ infix added)
+    capabilities: ["read"]
+    controlled_capabilities: ["read"]       # set explicitly — unset gates every capability
+    ttl: "4h"                               # approval window for the wrapped request
+    authorizers:
+      - {group_name: id-vault-approvers, approvals: 1}
+
+# Optional cluster-wide ceiling on an unapproved request's lifetime.
+hashicorp_vault_control_groups_max_ttl: "8h"

@@ -25,27 +25,15 @@
     quiet: true
   run_once: true
 
-- name: "LDAP | Read the root token from the first node"
-  become: true  # root: reads the root-owned root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_ldap_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "LDAP | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_ldap_token: "{{ _hashicorp_vault_ldap_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "LDAP | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "LDAP | List enabled auth methods"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_auth_list
   changed_when: false
   no_log: true
@@ -57,7 +45,7 @@
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable ldap"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: "'ldap/' not in (_hashicorp_vault_auth_list.stdout | from_json).keys()"
   changed_when: true
   run_once: true
@@ -65,37 +53,36 @@
 
 - name: "LDAP | Configure the LDAP auth method"
   become: true  # root: docker exec needs the root-owned docker socket
-  # argv (not free-form cmd): an AD bind DN like "CN=Vault Service,OU=Service
-  # Accounts,..." contains spaces, so a shell-split command shatters one field into
-  # several argv entries. The list form passes each field as exactly one token.
+  # argv (not free-form cmd): a bind DN or DN in a filter may contain spaces (an AD
+  # "CN=Vault Service,OU=Service Accounts,..."), so a shell-split command shatters
+  # one field into several argv entries. The list form passes each field as exactly
+  # one token. The optional token_ttl / token_max_ttl fields are appended only when
+  # set — an empty "token_ttl=" token would fail vault's K=V parse.
   ansible.builtin.command:
-    argv:
-      - docker
-      - exec
-      - "-i"
-      - "-e"
-      - VAULT_TOKEN
-      - "{{ hashicorp_vault_name }}"
-      - vault
-      - write
-      - auth/ldap/config
-      - "url={{ hashicorp_vault_ldap_url }}"
-      - "binddn={{ hashicorp_vault_ldap_binddn }}"
-      - "bindpass=-"
-      - "userdn={{ hashicorp_vault_ldap_userdn }}"
-      - "userattr={{ hashicorp_vault_ldap_userattr }}"
-      - "groupdn={{ hashicorp_vault_ldap_groupdn }}"
-      - "groupattr={{ hashicorp_vault_ldap_groupattr }}"
-      - "groupfilter={{ hashicorp_vault_ldap_groupfilter }}"
-      - "starttls={{ hashicorp_vault_ldap_starttls | bool | lower }}"
-      - "insecure_tls={{ hashicorp_vault_ldap_insecure_tls | bool | lower }}"
+    argv: >-
+      {{ ['docker', 'exec', '-i', '-e', 'VAULT_TOKEN', hashicorp_vault_name,
+          'vault', 'write', 'auth/ldap/config',
+          'url=' ~ hashicorp_vault_ldap_url,
+          'binddn=' ~ hashicorp_vault_ldap_binddn,
+          'bindpass=-',
+          'userdn=' ~ hashicorp_vault_ldap_userdn,
+          'userattr=' ~ hashicorp_vault_ldap_userattr,
+          'groupdn=' ~ hashicorp_vault_ldap_groupdn,
+          'groupattr=' ~ hashicorp_vault_ldap_groupattr,
+          'groupfilter=' ~ hashicorp_vault_ldap_groupfilter,
+          'starttls=' ~ (hashicorp_vault_ldap_starttls | bool | lower),
+          'insecure_tls=' ~ (hashicorp_vault_ldap_insecure_tls | bool | lower)]
+         + (['token_ttl=' ~ hashicorp_vault_ldap_token_ttl]
+            if (hashicorp_vault_ldap_token_ttl | length > 0) else [])
+         + (['token_max_ttl=' ~ hashicorp_vault_ldap_token_max_ttl]
+            if (hashicorp_vault_ldap_token_max_ttl | length > 0) else []) }}
     stdin: "{{ _hashicorp_vault_ldap_bindpass }}"
     # CRITICAL: without this, Ansible appends a trailing newline to stdin, so the
     # bindpass becomes "<pass>\n" and the admin bind fails err=49 (invalid
     # credentials) -> every LDAP login fails "failed to bind as user".
     stdin_add_newline: false
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   changed_when: true
   no_log: true
   run_once: true
@@ -109,7 +96,7 @@
       auth/ldap/groups/{{ item.group }}
       policies=default,{{ item.policy }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ _hashicorp_vault_tenant_slots }}"
   loop_control:
     label: "{{ item.group }} -> {{ item.policy }}"
@@ -124,7 +111,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write
       auth/ldap/groups/{{ item.ldap_group }} policies={{ item.policies | join(',') }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_ldap_extra_groups }}"
   loop_control:
     label: "{{ item.ldap_group }}"
@@ -141,7 +128,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault write
       auth/ldap/users/{{ item.ldap_username }} policies={{ item.policies | join(',') }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ldap_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_ldap_users }}"
   loop_control:
     label: "{{ item.ldap_username }} -> {{ item.policies | join(',') }}"

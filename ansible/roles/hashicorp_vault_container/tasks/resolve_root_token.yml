@@ -1,0 +1,55 @@
+---
+# Resolve a root/admin token into the INTERNAL fact `_hashicorp_vault_root_token`.
+#
+# Declared-var-first (estate ADR pattern):
+#   1. hashicorp_vault_root_token when non-empty (Ansible Vault custody)
+#   2. else slurp {{ hashicorp_vault_keys_dir }}/root_token.txt on first node
+#   3. assert a token is available (fail closed)
+#
+# Callers include this file, then use `_hashicorp_vault_root_token` only —
+# never re-slurp, never leave the public var as the only name in later tasks.
+# Safe to include from multiple phases in one play: re-resolve is idempotent
+# and no_log'd.
+
+- name: "Root token | Prefer declared var (Ansible Vault custody)"
+  ansible.builtin.set_fact:
+    _hashicorp_vault_root_token: "{{ hashicorp_vault_root_token | string | trim }}"
+  when: (hashicorp_vault_root_token | default('') | string | trim | length) > 0
+  run_once: true
+  no_log: true
+
+- name: "Root token | Fall back to on-disk root_token.txt"
+  when: (_hashicorp_vault_root_token | default('') | length) == 0
+  block:
+    - name: "Root token | Slurp {{ hashicorp_vault_keys_dir }}/root_token.txt"
+      become: true  # root: reads the root-only token file
+      ansible.builtin.slurp:
+        src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
+      register: _hashicorp_vault_root_token_slurp
+      delegate_to: "{{ hashicorp_vault_first_node }}"
+      run_once: true
+      failed_when: false
+      no_log: true
+
+    - name: "Root token | Set fact from disk when the file was readable"
+      ansible.builtin.set_fact:
+        _hashicorp_vault_root_token: >-
+          {{ (_hashicorp_vault_root_token_slurp.content | b64decode | trim)
+             if (_hashicorp_vault_root_token_slurp.content is defined
+                 and (_hashicorp_vault_root_token_slurp.content | length) > 0)
+             else '' }}
+      run_once: true
+      no_log: true
+
+- name: "Root token | Assert a token is available"
+  ansible.builtin.assert:
+    that:
+      - (_hashicorp_vault_root_token | default('') | length) > 0
+    quiet: true
+    fail_msg: >-
+      No Vault root/admin token available. Set hashicorp_vault_root_token
+      (preferred: Ansible Vault–encrypted group_vars) or ensure
+      {{ hashicorp_vault_keys_dir }}/root_token.txt exists on
+      {{ hashicorp_vault_first_node }} (written by --tags unseal when
+      hashicorp_vault_persist_init is true, or by first init).
+  run_once: true

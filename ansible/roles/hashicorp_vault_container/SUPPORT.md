@@ -131,14 +131,23 @@ All under `hashicorp_vault_data_mount` (default `/opt/vault`):
 |---|---|
 | `config/vault.hcl` | Server config |
 | `config/license.hclic` | Enterprise license file (only if license enabled) |
-| `data/` | Raft storage (the cluster) |
+| `data/` | Raft storage (the cluster) — **local disk only** |
 | `certs/` | TLS material |
 | `keys/vault_init.json` | Unseal keys + root (first node) |
 | `keys/root_token.txt` | Root token for automation phases |
 | `keys/backup_token` | Scoped backup token |
 | `logs/` | Server + audit logs |
-| `backups/` | Raft snapshots (or NFS mountpoint) |
+| `backups/` | Raft snapshots (OK to point at NFS via `backup_nfs_*`) |
 | `docker-compose.yml` | Compose unit at mount root |
+
+**Do not mount NFS (or any network FS) at `hashicorp_vault_data_mount`.**  
+Raft is per-node local storage with HA over the network — not a shared disk.
+“Put `/opt/vault` on NFS so it survives VM death” is a common mistake; it is
+**unsupported** and unsafe (fsync/locking). For persistence across node loss:
+
+1. Local second disk per Vault VM for `/opt/vault` (live Raft + keys)
+2. 3+ odd Raft nodes for HA
+3. Snapshots to **NFS only** via `hashicorp_vault_backup_dir` + `backup_nfs_*`
 
 **Backup the keys dir and snapshots off-node.** Losing `keys/` without a recovery plan means sealed forever or break-glass re-init.
 
@@ -193,12 +202,12 @@ Autoload order (HashiCorp): `VAULT_LICENSE` → `VAULT_LICENSE_PATH` → `licens
 This role uses **file + path** (not raw env string).  
 Docs: https://developer.hashicorp.com/vault/docs/license/autoloading
 
-**Store the blob as a credential.** Escrow it in your secrets manager, then
-reference it from an **Ansible-Vault-encrypted** inventory var (the role reads the
-var, not a live secrets server, so it works even while the cluster is down):
+**Store the blob as a credential.** Escrow it in Vault, then reference it from an
+**Ansible-Vault-encrypted** inventory var — the role reads the var, not a live
+secrets server, so a license run works even while the cluster is down:
 
 ```bash
-ansible-vault encrypt_string --stdin-name vaulted_vault_enterprise_license < vault.hclic
+ansible-vault encrypt_string --stdin-name vaulted_license_blob < vault.hclic
 ```
 
 The blob **must survive as a single line** — a folded (`>-`) or unquoted YAML
@@ -213,7 +222,7 @@ versions as a separate, later step so failures are attributable.
 |---|---|
 | **First enable** | Set the three vars above → `--tags license,deploy` (image swap recreates the container) → `--tags unseal` (recreate seals Shamir nodes) → `--tags verify` (asserts `vault license get` reports an **autoloaded** license + prints expiry). The role validates the blob offline (`vault license inspect` in a throwaway container) *before* installing, so a mangled/expired key fails before anything changes. |
 | **Renewal** | Replace the blob in the vaulted var (re-escrow) → `--tags license` only. Cluster is up, so the role hot-reloads node-by-node via `sys/config/reload/license` — **no seal, no restart**. Confirm `--tags verify` — the expiry date must move. |
-| **Rollback (pre-traffic)** | Before the Enterprise image served traffic: `hashicorp_vault_license_enabled: false`, restore the Community image pin → `--tags license,deploy` → `--tags unseal`. Deploy drops `license_path`/`VAULT_LICENSE_PATH` and recreates on Community. |
+| **Rollback (pre-traffic)** | Before the Enterprise image served traffic: `hashicorp_vault_license_enabled: false`, restore the Community image pin → `--tags license,deploy` → `--tags unseal`. Both `license_path` and `VAULT_LICENSE_PATH` are gated on that boolean, so deploy drops them and recreates on Community. |
 | **Rollback (post-traffic)** | HashiCorp does **not** support Enterprise → Community downgrade on the same storage. Snapshot first (`--tags backup_now`); rollback = restore a **pre-Enterprise** snapshot onto the Community image (`--tags restore`), accepting loss of anything written since. |
 
 Every Raft node must load the **same** license (the role installs it on all hosts;
@@ -234,6 +243,12 @@ roughly contemporary.
 
 - **Cause:** `/opt/vault` is a plain directory or missing.
 - **Fix:** Run `storage` (or mount the disk). `findmnt /opt/vault`.
+
+### Tempted to put `/opt/vault` on NFS “for persistence”
+
+- **Do not.** Raft data must be **local** disk on each node. NFS is for
+  **snapshot backups** only (`backup_nfs_*`). See README *Storage: local disk
+  for Raft, NFS only for backups*.
 
 ### Container starts then restarts / API never up
 

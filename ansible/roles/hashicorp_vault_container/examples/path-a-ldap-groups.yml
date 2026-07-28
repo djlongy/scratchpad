@@ -30,7 +30,7 @@ hashicorp_vault_admin_kv_mounts:
 
 # ── FreeIPA bind (replace with your directory) ───────────────────────────
 hashicorp_vault_ldap_enabled: true
-hashicorp_vault_ldap_url: "ldaps://ipa.example.com"
+hashicorp_vault_ldap_url: "ldaps://192.0.2.11"
 hashicorp_vault_ldap_binddn: "uid=svc-vault,cn=users,cn=accounts,dc=example,dc=com"
 # Prefer vaulted inventory for the password; or use _bindpass_vault_path.
 hashicorp_vault_ldap_bindpass: "{{ vaulted_ldap_bindpass }}"

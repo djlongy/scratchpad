@@ -8,27 +8,15 @@
 # passwords in a vaulted inventory / group_vars, NEVER in role code:
 #   - {username: alice, password: "{{ vaulted_pw }}", policies: [default, ops-admin]}
 
-- name: "Userpass | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_up_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "Userpass | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_up_token: "{{ _hashicorp_vault_up_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "Userpass | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "Userpass | List enabled auth methods"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_up_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_up_auth
   changed_when: false
   no_log: true
@@ -40,7 +28,7 @@
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable userpass"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_up_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: "'userpass/' not in (_hashicorp_vault_up_auth.stdout | from_json).keys()"
   changed_when: true
   run_once: true
@@ -62,7 +50,7 @@
     # would become "<pass>\n" and the user could never log in. Suppress it.
     stdin_add_newline: false
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_up_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_userpass_accounts }}"
   loop_control:
     label: "{{ item.username }}"

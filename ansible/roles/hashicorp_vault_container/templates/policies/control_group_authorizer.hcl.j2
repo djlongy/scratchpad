@@ -1,0 +1,16 @@
+{{ ansible_managed | comment }}
+# Authorizer-side ACL policy "{{ hashicorp_vault_control_groups_authorizer_policy }}"
+# — lets members inspect and approve pending Control Group requests. Attach it to
+# the Identity groups named as authorizers in hashicorp_vault_control_groups
+# (e.g. via that group's policy list in the identity phase).
+#
+# Consuming commands (accessor comes from the requester's wrapped response):
+#   vault write sys/control-group/request   accessor=<wrapping_accessor>   # status
+#   vault write sys/control-group/authorize accessor=<wrapping_accessor>   # approve
+path "sys/control-group/request" {
+  capabilities = ["create", "update"]
+}
+
+path "sys/control-group/authorize" {
+  capabilities = ["create", "update"]
+}

@@ -11,27 +11,15 @@
 # band or in a dedicated, secret-handling play; the role deliberately does not
 # write secret_ids to disk here.
 
-- name: "AppRole | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_ar_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "AppRole | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_ar_token: "{{ _hashicorp_vault_ar_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "AppRole | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "AppRole | List enabled auth methods"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ar_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_ar_auth
   changed_when: false
   no_log: true
@@ -43,7 +31,7 @@
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable approle"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ar_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: "'approle/' not in (_hashicorp_vault_ar_auth.stdout | from_json).keys()"
   changed_when: true
   run_once: true
@@ -62,7 +50,7 @@
       token_max_ttl={{ item.token_max_ttl | default('4h') }}
       secret_id_ttl={{ item.secret_id_ttl | default('0') }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_ar_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_approles }}"
   loop_control:
     label: "{{ item.role_name }}"

@@ -1,0 +1,35 @@
+{{ ansible_managed | comment }}
+# Requester-side ACL policy "{{ _cg.policy_name }}" — approval-gated (Vault
+# Enterprise Control Group) access to KV v2 paths under mount {{ _cg.mount }}.
+#
+# A request that matches a gated path + capability returns a response-wrapped
+# accessor instead of the secret. The secret is released only after the approval
+# threshold below is met: an authorizer runs
+#   vault write sys/control-group/authorize accessor=<wrapping_accessor>
+# then the requester runs `vault unwrap <wrapping_token>`.
+#
+# controlled_capabilities is ALWAYS set explicitly. Leaving it unset gates EVERY
+# capability on the path — including reads granted by other policies attached to
+# the same token — which silently over-gates (Vault aggregates capabilities
+# across policies). It must be a subset of this path's `capabilities`.
+{% set _caps = _cg.capabilities | default(['read']) %}
+{% set _cc = _cg.controlled_capabilities | default(_caps) %}
+{% for _p in _cg.paths %}
+path "{{ _cg.mount }}/data/{{ _p }}" {
+  capabilities = {{ _caps | to_json }}
+  control_group = {
+{% if _cg.ttl | default('') | length > 0 %}
+    ttl = "{{ _cg.ttl }}"
+{% endif %}
+{% for _a in _cg.authorizers %}
+    factor "{{ _a.group_name }}" {
+      controlled_capabilities = {{ _cc | to_json }}
+      identity {
+        group_names = {{ [_a.group_name] | to_json }}
+        approvals = {{ _a.approvals | default(1) | int }}
+      }
+    }
+{% endfor %}
+  }
+}
+{% endfor %}

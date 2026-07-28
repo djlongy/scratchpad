@@ -14,20 +14,8 @@
 # All writes go via docker exec on the first node with the root token in the
 # process env (never argv); writes forward to the active leader.
 
-- name: "GitLab JWT | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_jwt_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "GitLab JWT | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_jwt_token: "{{ _hashicorp_vault_jwt_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "GitLab JWT | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "GitLab JWT | Assert the GitLab base URL is set"
   ansible.builtin.assert:
@@ -42,7 +30,7 @@
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_jwt_auth
   changed_when: false
   no_log: true
@@ -54,7 +42,7 @@
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault auth enable jwt"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: "'jwt/' not in (_hashicorp_vault_jwt_auth.stdout | from_json).keys()"
   changed_when: true
   run_once: true
@@ -69,7 +57,7 @@
       oidc_discovery_url={{ hashicorp_vault_gitlab_base_url }}
       bound_issuer={{ hashicorp_vault_gitlab_base_url }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   changed_when: true
   run_once: true
   delegate_to: "{{ hashicorp_vault_first_node }}"
@@ -96,7 +84,7 @@
       {{ [hashicorp_vault_gitlab_jwt_default_audience]
          if (hashicorp_vault_gitlab_jwt_default_audience | length > 0) else [] }}
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_jwt_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_gitlab_jwt_roles }}"
   loop_control:
     label: "{{ item.name }}"

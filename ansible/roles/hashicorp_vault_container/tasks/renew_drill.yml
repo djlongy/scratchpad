@@ -33,7 +33,7 @@
 # 127.0.0.1 probe gets ECONNREFUSED even though Vault is healthy. Using the FQDN
 # also exercises SNI and hostname matching against the certificate, which a bare
 # IP would not. Prefer canonical_fqdn (OS/cert identity) over inventory_hostname
-# (vCenter object name) — same rule as verify.yml.
+# (hypervisor-manager object name) — same rule as verify.yml.
 - name: "Drill | Resolve the address to probe"
   ansible.builtin.set_fact:
     _hashicorp_vault_probe_host: >-

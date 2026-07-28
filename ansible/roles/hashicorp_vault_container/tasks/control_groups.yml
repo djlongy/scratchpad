@@ -1,0 +1,172 @@
+---
+# Control Groups — approval-gated KV reads (Vault Enterprise). DORMANT by design.
+#
+# This phase never runs on a normal converge. It requires BOTH
+# hashicorp_vault_control_groups_enabled (default false) AND the literal
+# `--tags control_groups` on the CLI (the import in main.yml carries
+# `'control_groups' in ansible_run_tags` so a tag cascade cannot select it), and
+# it fails fast below unless a licensed Vault Enterprise build is actually running.
+#
+# It writes ACL policies whose `control_group` stanza gates reads behind an
+# Identity-group approval threshold. Enterprise-only: on a Community build the
+# stanza is rejected — the version assert stops the run before any write.
+#
+# NOT executed in this repository (no Enterprise license). Authored to the
+# documented ACL syntax and statically validated only. A licensed maintainer must
+# verify end-to-end — see README "Control Groups" for the checklist.
+
+- name: "Control-groups | Assert the Enterprise license phase is enabled"
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_license_enabled | bool
+    fail_msg: >-
+      Control Groups are a Vault Enterprise feature. Enable
+      hashicorp_vault_license_enabled and supply an entitled license via the
+      license phase before enabling control_groups.
+    quiet: true
+  run_once: true
+
+- name: "Control-groups | Assert the gated-path data model is well-formed"
+  ansible.builtin.assert:
+    that:
+      - hashicorp_vault_control_groups | length > 0
+      - hashicorp_vault_control_groups | selectattr('policy_name', 'undefined') | list | length == 0
+      - hashicorp_vault_control_groups | selectattr('mount', 'undefined') | list | length == 0
+      - hashicorp_vault_control_groups | selectattr('paths', 'undefined') | list | length == 0
+      - hashicorp_vault_control_groups | selectattr('authorizers', 'undefined') | list | length == 0
+    fail_msg: >-
+      Each hashicorp_vault_control_groups entry needs policy_name, mount, paths,
+      and authorizers (each authorizer needs group_name). See defaults/main.yml.
+    quiet: true
+  run_once: true
+
+- name: "Control-groups | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
+
+- name: "Control-groups | Read the running Vault version/edition"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault status -format=json"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
+  register: _hashicorp_vault_cg_status
+  changed_when: false
+  failed_when: false      # a sealed node returns rc=2 but still prints the version
+  run_once: true
+  no_log: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+- name: "Control-groups | Assert a Vault Enterprise build is running"
+  ansible.builtin.assert:
+    that:
+      - "'+ent' in ((_hashicorp_vault_cg_status.stdout | from_json).version | default(''))"
+    fail_msg: >-
+      The running Vault build is not Enterprise (its version lacks the '+ent'
+      marker). Control Groups require Vault Enterprise; deploy an Enterprise image
+      and license before enabling control_groups.
+    quiet: true
+  run_once: true
+
+- name: "Control-groups | Check each authorizer Identity group exists"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault read identity/group/name/{{ item.1.group_name }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
+  loop: "{{ hashicorp_vault_control_groups | subelements('authorizers') }}"
+  loop_control:
+    label: "{{ item.0.policy_name }} -> {{ item.1.group_name }}"
+  changed_when: false
+  failed_when: false
+  register: _hashicorp_vault_cg_grpcheck
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  no_log: true          # env carries the root token; match the sibling tasks
+
+- name: "Control-groups | Assert all authorizer Identity groups resolved"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_cg_grpcheck.results | selectattr('rc', 'ne', 0) | list | length == 0
+    fail_msg: >-
+      One or more authorizer Identity groups do not exist. Create them via
+      hashicorp_vault_identity_groups (the identity phase) before enabling
+      Control Groups.
+    quiet: true
+  run_once: true
+
+- name: "Control-groups | Write each requester control-group policy"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault policy write {{ item.policy_name }} -
+    stdin: "{{ lookup('template', 'policies/control_group.hcl.j2') }}"
+  vars:
+    _cg: "{{ item }}"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
+  loop: "{{ hashicorp_vault_control_groups }}"
+  loop_control:
+    label: "{{ item.policy_name }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  no_log: true          # env carries the root token; match the sibling tasks
+
+- name: "Control-groups | Write the shared authorizer policy"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -i -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault policy write {{ hashicorp_vault_control_groups_authorizer_policy }} -
+    stdin: "{{ lookup('template', 'policies/control_group_authorizer.hcl.j2') }}"
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+
+# Optional cluster-wide ceiling on how long an unapproved wrapping token lives.
+  no_log: true          # env carries the root token; match the sibling tasks
+- name: "Control-groups | Set the cluster-wide control-group max_ttl (optional)"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault write sys/config/control-group max_ttl={{ hashicorp_vault_control_groups_max_ttl }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
+  when: hashicorp_vault_control_groups_max_ttl | length > 0
+  changed_when: true
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  no_log: true          # env carries the root token; match the sibling tasks
+
+- name: "Control-groups | Read back each policy to confirm it is present + gated"
+  become: true  # root: docker exec needs the root-owned docker socket
+  ansible.builtin.command:
+    cmd: >-
+      docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
+      vault policy read {{ item.policy_name }}
+  environment:
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
+  loop: "{{ hashicorp_vault_control_groups }}"
+  loop_control:
+    label: "{{ item.policy_name }}"
+  changed_when: false
+  failed_when: false
+  register: _hashicorp_vault_cg_verify
+  run_once: true
+  delegate_to: "{{ hashicorp_vault_first_node }}"
+  no_log: true          # env carries the root token; match the sibling tasks
+
+- name: "Control-groups | Assert every policy read back with a control_group stanza"
+  ansible.builtin.assert:
+    that:
+      - _hashicorp_vault_cg_verify.results | selectattr('rc', 'ne', 0) | list | length == 0
+      - _hashicorp_vault_cg_verify.results | rejectattr('stdout', 'search', 'control_group') | list | length == 0
+    fail_msg: "A control-group policy failed to read back or lacks a control_group stanza."
+    quiet: true
+  run_once: true

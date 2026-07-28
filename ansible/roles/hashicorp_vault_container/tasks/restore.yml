@@ -26,7 +26,7 @@
   when: (hostvars[item]._rst_status.stdout | default('{}') | from_json).is_self | default(false)
   run_once: true
 
-- name: "Restore | Assert an active leader was found"
+- name: "Restore | Assert an active leader exists"
   ansible.builtin.assert:
     that:
       - _rst_leader is defined
@@ -74,7 +74,7 @@
   when: >-
     (hashicorp_vault_restore_snapshot not in ['', 'latest']) or (_rst_snaps | length > 0)
 
-- name: "Restore | Assert a snapshot was found"
+- name: "Restore | Assert a snapshot exists"
   ansible.builtin.assert:
     that:
       - _rst_chosen is defined
@@ -117,22 +117,9 @@
     _rst_leader_path: "{{ _rst_chosen.path if _rst_chosen.node == _rst_leader else '/tmp/vault-ctr-restore-' ~ hashicorp_vault_name ~ '.snap' }}"
   run_once: true
 
-- name: "Restore | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _rst_tok
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
+- name: "Restore | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
-- name: "Restore | Set the token fact"
-  ansible.builtin.set_fact:
-    _rst_token: "{{ _rst_tok.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
-
-# ── Restore on the active leader — replicates to followers automatically ─────
 - name: "Restore | Copy the snapshot into the leader container"
   become: true  # root: docker cp needs the root-owned docker socket
   ansible.builtin.command:
@@ -148,7 +135,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault operator raft snapshot restore -force /tmp/restore.snap
   environment:
-    VAULT_TOKEN: "{{ _rst_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   changed_when: true
   no_log: true
   run_once: true
@@ -177,7 +164,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault operator raft list-peers -format=json
   environment:
-    VAULT_TOKEN: "{{ _rst_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _rst_peers
   changed_when: false
   failed_when: false

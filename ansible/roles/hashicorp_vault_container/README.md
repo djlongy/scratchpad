@@ -2,9 +2,10 @@
 
 ## TL;DR
 
-Deploys HashiCorp Vault as a Docker container with all state on a persistent
-second disk. Topology auto-scales from the hosts in the play: 1 host yields
-standalone Raft, an odd N ≥ 3 yields a Raft HA cluster.
+Runs Vault as a Docker container with all state on a persistent second disk, and
+derives its topology from the hosts in the play: **1 host** → standalone Raft;
+**N hosts (odd ≥ 3)** → Raft HA with every node `retry_join`ing all peers. Preflight
+refuses an even node count (2-node Raft has no fault tolerance).
 
 ```bash
 ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml
@@ -18,9 +19,12 @@ Install collections before running (repo `requirements.yml`, or ad-hoc):
 
 | Collection | When | Used for |
 |---|---|---|
-| `community.crypto` | When `hashicorp_vault_tls_generate` (default true) | self-signed CA + server certificate |
-| `ansible.posix` | When `hashicorp_vault_manage_firewall` (default true) / NFS backup target | firewalld ports, NFS mount for backups |
-| `community.hashi_vault` | When `hashicorp_vault_ldap_enabled` + bindpass fallback | fetch the LDAP bind password from an existing Vault |
+| `ansible.posix` | always | firewalld ports, mount facts |
+| `community.crypto` | When `hashicorp_vault_tls_generate` | self-signed CA + server certificate |
+| `community.hashi_vault` | When an LDAP bind password or Enterprise license path resolves from Vault | HashiCorp Vault lookups |
+
+Control Groups (below) additionally require a **Vault Enterprise** image + an
+entitled license — off by default.
 
 ## Key variables
 
@@ -32,28 +36,27 @@ Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
 | Req | Variable | Default | Purpose |
 |---|---|---|---|
-| **Required** | `hashicorp_vault_data_mount` | `/opt/vault` | Persistent second-disk mount; all state lives under it |
-| **Required** | `hashicorp_vault_nodes` | play's hosts | Cluster members (odd count). Pin to ignore `--limit` |
+| **Required** | `hashicorp_vault_data_mount` | `/opt/vault` | Persistent second-disk mount; all Vault state lives under it (local disk only — see Behaviour) |
+| **Required** | `hashicorp_vault_nodes` | play's hosts | Cluster members (odd count: 1, 3, 5…). Pin to ignore `--limit` |
+| Optional | `hashicorp_vault_require_mounted` | `true` | Preflight fails unless `data_mount` is a real mountpoint |
 | Optional | `hashicorp_vault_image` | `hashicorp/vault:1.19.5` | Container image (pin an exact tag) |
 | Optional | `hashicorp_vault_advertise_addr` | `{{ ansible_host }}` | Address peers/clients use for this node |
-| Optional | `hashicorp_vault_api_port` / `_cluster_port` | `8200` / `8201` | API/UI and Raft cluster listeners |
-| Optional | `hashicorp_vault_key_shares` / `_key_threshold` | `1` / `1` | Shamir unseal shares generated / required at init |
-| Optional | `hashicorp_vault_auto_unseal` | `false` | Boot-time systemd unseal (places the key on every node) |
-| When KMS unseal | `hashicorp_vault_seal_config` | `{}` | `{type, config}` seal stanza for external KMS/transit auto-unseal; non-empty skips the Shamir unseal phase and is mutually exclusive with `auto_unseal` |
-| Optional | `hashicorp_vault_tls_enabled` | `true` | Serve the API over TLS |
-| Optional | `hashicorp_vault_tls_generate` | `true` | Self-sign CA + server cert; `false` supplies your own PEM paths |
-| When portable CA | `hashicorp_vault_tls_ca_url` | `""` | HTTPS URL (Artifactory generic repo) nodes fetch `ca.crt` from; wins over all other CA-cert sources for node trust |
-| When portable CA | `hashicorp_vault_tls_ca_content` | `""` | CA certificate PEM as an inventory var (public); distributes to nodes when `_ca_url` is empty |
-| When portable CA | `hashicorp_vault_tls_ca_key_content` | `""` | CA private key PEM (Ansible-Vault-encrypted var); in generate mode, with `_ca_content`, reuses one stable CA to sign server certs |
-| Optional | `hashicorp_vault_hcl_extra` | `""` | Raw HCL appended verbatim to `vault.hcl` for stanzas the role does not model (cluster_name, lease TTLs, replication, extra listeners) |
+| Optional | `hashicorp_vault_api_port` / `_cluster_port` | `8200` / `8201` | API/UI listener and Raft cluster listener |
+| Optional | `hashicorp_vault_key_shares` / `_key_threshold` | `1` / `1` | Shamir unseal key shares generated / required at init |
+| Optional | `hashicorp_vault_auto_unseal` | `false` | Systemd unseal-on-boot (puts the unseal key on every node) |
+| When KMS unseal | `hashicorp_vault_seal_config` | `{}` | `{type, config}` seal stanza for external KMS/transit auto-unseal; non-empty skips the Shamir unseal phase and is mutually exclusive with `_auto_unseal` |
+| Optional | `hashicorp_vault_backup_enabled` | `true` | Scheduled Raft snapshots |
 | Optional | `hashicorp_vault_manage_firewall` | `true` | Open API + cluster ports via firewalld |
-| Optional | `hashicorp_vault_backup_enabled` | `true` | Scheduled Raft snapshots (leader-only) |
-| When `manage_policies` | `hashicorp_vault_tenants`, `hashicorp_vault_policies` | `[]` | KV mounts + HCL policies |
-| When `ldap_enabled` | `hashicorp_vault_ldap_url`, `_binddn`, `_bindpass`, `_userdn`, `_groupdn` | `""` | FreeIPA human SSO |
-| When `pki_enabled` (default `true`) | `hashicorp_vault_pki_roles` | `[]` | PKI mount + issuing roles |
-
-When a gate is off or a list is empty, leave the related variables unset — the
-phase is skipped.
+| Optional | `hashicorp_vault_tls_enabled` / `_generate` | `true` / `true` | Serve the API over TLS; self-sign CA + multi-SAN server cert on the controller |
+| When TLS supplied | `hashicorp_vault_tls_ca_cert` / `_server_cert` / `_server_key` | `""` | Controller paths to supplied PEM material (when `_tls_generate: false`) |
+| When TLS on-host | `hashicorp_vault_tls_onhost_cert` / `_key` / `_ca` | `""` | Cert/key/CA already on the node (certmonger/ipa-getcert); overrides `_generate` |
+| When portable CA | `hashicorp_vault_tls_ca_url` | `""` | HTTPS URL (e.g. Artifactory generic repo) nodes fetch `ca.crt` from; wins over all other CA-cert sources for node trust |
+| When portable CA | `hashicorp_vault_tls_ca_content` | `""` | CA certificate PEM as an inventory var (public); distributes to nodes when `_ca_url` is empty |
+| When portable CA | `hashicorp_vault_tls_ca_key_content` | `""` | CA private key PEM (Ansible-Vault-encrypted var); in generate mode with `_ca_content`, reuses one stable CA to sign server certs |
+| Optional | `hashicorp_vault_hcl_extra` | `""` | Raw HCL appended verbatim to `vault.hcl` for stanzas the role does not model (cluster_name, lease TTLs, replication, extra listeners) |
+| When that phase is enabled | `hashicorp_vault_manage_policies`, `_ldap_enabled`, `_identity_groups`, `_userpass_accounts`, `_approles`, `_gitlab_jwt_enabled`, `_transit_enabled`, `_pki_issuer_import`, `_license_enabled`, `_audit_enabled` | Independent opt-in auth/RBAC phases — off / empty by default; see `defaults/main.yml` for each phase's full variable set |
+| When LDAP | `hashicorp_vault_ldap_token_ttl` / `_token_max_ttl` | `""` (Vault default 768h) | Token lifetime for LDAP logins; shorten to narrow how long a removed group member keeps a live token |
+| Optional (Enterprise, dormant) | `hashicorp_vault_control_groups_enabled` / `hashicorp_vault_control_groups` | `false` / `[]` | Approval-gated KV reads via Control Groups. Off; never runs without `--tags control_groups` on a licensed Enterprise build — see **Control Groups** below |
 
 ## Minimum configuration
 
@@ -68,35 +71,15 @@ hashicorp_vault_nodes: "{{ groups['hashicorp_hosts'] }}"
 ## Usage
 
 ```yaml
-- name: Deploy containerised HashiCorp Vault cluster
-  hosts: vault_servers            # 1 host -> standalone; odd N -> Raft HA
+# playbooks/vault_cluster.yml
+- name: Deploy containerized HashiCorp Vault (auto-scaling)
+  hosts: vault_container          # 1 host -> standalone; 3 hosts -> Raft HA
+  become: true
   roles:
-    - role: storage                # provision + mount the second disk
-    - role: docker                 # container engine + compose plugin
+    - role: storage               # provision + mount the second disk
+    - role: docker                # container engine + compose plugin
     - role: hashicorp_vault_container
 ```
-
-Run:
-
-```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml
-# fast iteration on a single phase:
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml --tags policies,ldap
-```
-
-## Preconditions
-
-The role consumes a **pre-mounted** disk and an **already-installed** Docker
-engine — it asserts both in preflight and fails fast otherwise:
-
-- A persistent second disk mounted at `hashicorp_vault_data_mount` (e.g. via
-  the `storage` role).
-- Docker engine + compose plugin (e.g. via the `docker` role).
-- Only odd node counts are valid (1, 3, 5…) — preflight refuses an even
-  count (2-node Raft quorum has no fault tolerance). Grow/shrink 1 ↔ 3
-  directly. Do not `--limit` a subset during `deploy`/`init` — topology is
-  derived from the play's hosts; pin `hashicorp_vault_nodes` explicitly if
-  you need a stable set.
 
 ```yaml
 # inventories/<env>/group_vars/vault.yml
@@ -113,131 +96,178 @@ storage_volumes:
 
 hashicorp_vault_data_mount: /opt/vault
 hashicorp_vault_tls_extra_sans:
-  - "DNS:vault.example.com"
+  - "DNS:vault.dev.example.com"
 ```
+
+Run everything, or a single phase for fast iteration:
+
+```bash
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/vault_cluster.yml
+ansible-playbook ... playbooks/vault_cluster.yml --tags deploy
+ansible-playbook ... playbooks/vault_cluster.yml --list-tags
+```
+
+## Preconditions
+
+- A persistent second disk already mounted at `hashicorp_vault_data_mount` (e.g.
+  via the `storage` role) and Docker engine + compose plugin (e.g. via the
+  `docker` role) — preflight asserts both and fails fast otherwise.
+- LDAP auth maps FreeIPA groups by name; it does not create them — the groups
+  referenced by `hashicorp_vault_tenants` / `_ldap_extra_groups` must already
+  exist in FreeIPA.
+- `pki_issuer_import` expects the escrowed cert/key/root already staged as
+  Ansible-Vault-encrypted vars.
 
 ## Behaviour
 
-- **Idempotency** — storage backend is always Raft (a standalone node can
-  grow into an HA cluster later without a storage migration); re-runs reuse
-  existing init material from disk, and the container restarts only when its
-  config actually changes.
-- **Portable CA trust** — by default each controller self-signs its own CA, so
-  the trust anchor differs per operator. To share one stable CA across
-  controllers and teams: the first run generates the CA under
-  `hashicorp_vault_tls_local_dir`; the operator then stores its `ca.key` as an
-  Ansible-Vault-encrypted var (`ansible-vault encrypt_string`) and uploads
-  `ca.crt` to an Artifactory generic repo. Subsequent runs on any controller set
-  `hashicorp_vault_tls_ca_key_content` + `hashicorp_vault_tls_ca_content` (the
-  role reuses that CA to sign server certs instead of minting a fresh one) and,
-  optionally, `hashicorp_vault_tls_ca_url` so every node fetches the same
-  `ca.crt` for trust. When both a URL and local generation are in play, the role
-  asserts the fetched CA fingerprint matches the controller signer, so a wrong
-  upload fails the run rather than the TLS handshake. CA-cert distribution
-  precedence is `_ca_url` > `_ca_content` > generated/provided file.
-- **Reboot / unseal** — a restarted node comes up **sealed** by default.
-  Bring it back non-destructively with `--tags unseal` (also runs under
-  `init`), or set `hashicorp_vault_auto_unseal: true` for a boot-time
-  systemd unseal unit (places the unseal key on every node). A non-empty
-  `hashicorp_vault_seal_config` (KMS/transit auto-unseal) makes the role skip
-  the unseal phase entirely — the external seal unseals Vault on start — and is
-  mutually exclusive with `hashicorp_vault_auto_unseal` (the role asserts this).
-- **Scaling** — topology follows `hashicorp_vault_nodes`. **Grow (1 → 3):**
-  add the new hosts to the group, keeping the original node first, and
-  re-run — `init` sees the cluster already initialised and skips it; new
-  nodes `retry_join` and unseal as followers. **Shrink (3 → 1):** drop the
-  retiring hosts from the group while the cluster still has a leader, then
-  run `--tags remove_peers` (opt-in, `never`-tagged) to evict them from Raft
-  membership before powering them off — a normal run otherwise fails in
-  `verify.yml` with the exact `raft remove-peer` commands needed.
-- **Backup & restore** — a systemd timer runs on every node; only the active
-  leader snapshots (checked via `is_self`), so exactly one snapshot is
-  produced per schedule. The snapshot is taken inside the container and
-  `docker cp`'d to `hashicorp_vault_backup_dir` on the host. Backups
-  authenticate with a scoped periodic token (policy: read on
-  `sys/storage/raft/snapshot`); restore uses the root token, only from the
-  first node. `--tags backup_now` (opt-in, `never`-tagged) forces a snapshot
-  now and fails the play on error; `--tags restore` (opt-in, `never`-tagged,
-  destructive) rolls back the newest snapshot across all nodes.
+- **`hashicorp_vault_data_mount` is local disk only — never NFS or another
+  network filesystem.** Raft (Integrated Storage) keeps its own copy of the
+  data per node; HA is consensus over the API/cluster ports, not a shared
+  mount, and Raft needs local `fsync`/locking semantics NFS does not provide.
+  Preflight only checks that `data_mount` is a real mountpoint — it does not
+  reject NFS, so that silence is not approval. Snapshots (`hashicorp_vault_backup_dir`)
+  are the supported way to get Raft data onto NFS.
+- Storage backend is always Raft — a single node runs standalone Raft so it can
+  be grown into HA later without a storage migration.
+- Re-runs are idempotent: existing init material is reused from disk; the
+  container only restarts when config actually changes.
+- **LDAP KV access is granted by group membership, per mount.** A member of
+  `vault-<tenant>-<env>` receives the `<tenant>-<env>` policy, which grants only
+  the matching `kv-<tenant>-<env>` mount; add mappings via
+  `hashicorp_vault_ldap_extra_groups` (group → policies) or authorise a single
+  directory user with `hashicorp_vault_ldap_users`. Grant/revoke by changing
+  FreeIPA group membership — the role reads groups by name, it does not create
+  them. Revocation is bounded by the token lifetime: a removed member keeps a
+  live token until it expires (default `token_max_ttl` is Vault's 768h) or is
+  explicitly revoked. Set `hashicorp_vault_ldap_token_max_ttl` shorter to narrow
+  that window.
+- **Portable CA trust.** By default each controller self-signs its own CA, so the
+  trust anchor differs per operator. To share one stable CA across controllers and
+  teams: the first run generates the CA under `hashicorp_vault_tls_local_dir`; the
+  operator then stores its `ca.key` as an Ansible-Vault-encrypted var
+  (`ansible-vault encrypt_string`) and uploads `ca.crt` to an Artifactory generic
+  repo. Subsequent runs on any controller set `hashicorp_vault_tls_ca_key_content` +
+  `hashicorp_vault_tls_ca_content` (the role reuses that CA to sign server certs
+  instead of minting a fresh one) and, optionally, `hashicorp_vault_tls_ca_url` so
+  every node fetches the same `ca.crt` for trust. When both a URL and local
+  generation are in play, the role asserts the fetched CA fingerprint matches the
+  controller signer, so a wrong upload fails the run rather than the TLS handshake.
+  CA-cert distribution precedence is `_ca_url` > `_ca_content` > generated/provided
+  file.
+- A restarted node comes up sealed by default. Bring it back with
+  `--tags unseal` (non-destructive, never re-initialises). For hands-off
+  recovery set `hashicorp_vault_auto_unseal: true` — this stores the unseal key
+  on every node. A non-empty `hashicorp_vault_seal_config` (KMS/transit
+  auto-unseal) makes the role skip the unseal phase entirely — the external seal
+  unseals Vault on start — and is mutually exclusive with
+  `hashicorp_vault_auto_unseal` (the role asserts this).
+- **Operator custody (declared-var-first):** set `hashicorp_vault_unseal_keys`
+  (list of base64 shares) and `hashicorp_vault_root_token` from Ansible Vault
+  (e.g. encrypted `group_vars`). Unseal prefers the share list over on-disk
+  `vault_init.json`; every management phase resolves root via
+  `tasks/resolve_root_token.yml` (var → disk → assert). With
+  `hashicorp_vault_persist_init: false`, unseal will not rewrite
+  `root_token.txt` and removes any residual copy — disk-free management for
+  seed/manual-unseal hosts.
+- First init still writes `vault_init.json` (mode 0400) on the first node as a
+  greenfield landing zone. Move that payload into Ansible Vault custody
+  (shares + root as separate vars preferred); the role does not auto-escrow yet.
+- **License hot-reload** fails closed if no root token is resolvable (declared
+  var or on-disk). Previously a soft skip when the token file was missing;
+  set `hashicorp_vault_root_token` or keep `persist_init: true` when using
+  `--tags license`.
+- **Grow (1 → 3):** add the two new hosts to the group and re-run, keeping the
+  original node **first** in the host list — `init` sees the cluster is already
+  initialised and skips; the new nodes `retry_join` and are unsealed as
+  followers.
+- **Shrink (3 → 1):** Raft does not auto-evict a departed host — it lingers as a
+  ghost peer counting toward quorum. Evict it with `--tags remove_peers` while
+  the cluster still has a leader, before powering old nodes off (see
+  **Tag safety**). Skipping it fails the next normal run in `verify.yml` with
+  the exact `raft remove-peer` commands to run.
+- A systemd timer runs on every node; only the active leader snapshots (checked
+  via `is_self`), so exactly one snapshot is produced per schedule. The
+  snapshot is taken inside the container and `docker cp`'d to
+  `hashicorp_vault_backup_dir` on the host; old snapshots are pruned by age.
+  Backups authenticate with a scoped periodic token (policy: `read` on
+  `sys/storage/raft/snapshot`), minted on the leader and distributed 0400 to
+  each node; the backup script self-heals the token if it's missing.
+  HA clusters should point `hashicorp_vault_backup_dir` at a shared/NFS
+  location (set `_backup_nfs_server` + `_nfs_export`) — the default is
+  per-node local, which is not real DR.
+- A policy name is inert until an auth object (LDAP group, userpass account,
+  AppRole, JWT role, or Identity group) attaches it. Identity groups are a
+  second RBAC layer, not a second login method.
+- Enterprise licensing (`hashicorp_vault_license_enabled: true`) uses
+  `VAULT_LICENSE_PATH` (set in compose), not the `VAULT_LICENSE` env var, to
+  avoid leaking the key via `docker inspect`. `hashicorp_vault_license_validate`
+  (default `true`) runs `vault license inspect` offline in a throwaway
+  container before installing the blob, so a mangled or expired key fails the
+  play before anything restarts.
+- The `pki` phase enables `pki/` and upserts issuing roles; it does not
+  generate or import the intermediate issuer — that lifecycle is out of scope
+  for this role (see Out of scope).
+- **Control Groups (Enterprise, dormant).** The `control_groups` phase writes
+  ACL policies whose `control_group` stanza gates KV reads behind an Identity-
+  group approval threshold: a gated read returns a response-wrapped accessor;
+  an authorizer runs `vault write sys/control-group/authorize accessor=<x>`, and
+  once the threshold is met the requester runs `vault unwrap <token>`. Define
+  gated paths in `hashicorp_vault_control_groups` (`{policy_name, mount, paths,
+  capabilities, controlled_capabilities, ttl, authorizers}` — see
+  `defaults/main.yml` and `examples/add-on-control-groups.yml`). `mount` must be
+  an existing tenant mount; each authorizer `group_name` must be an Identity
+  group created by the identity phase; attach `policy_name` to requesters via
+  the existing group/identity mechanisms. `controlled_capabilities` is rendered
+  explicitly — leaving it unset would gate every capability on the path,
+  including reads granted by other policies. A requester must not also hold an
+  ungated policy for the same path + capability, or the gate is bypassed.
+  **This phase is authored to the documented ACL syntax and statically
+  validated, but never executed here (no Enterprise license).** A licensed
+  maintainer must verify: (1) `vault policy write` accepts the rendered stanza,
+  (2) the wrap → approve → unwrap flow with a real approver, (3) TTL expiry of
+  an unapproved request, (4) that the bypass rule holds, (5) the `+ent`
+  version assert matches their build's `vault status`.
 
-  ```yaml
-  hashicorp_vault_backup_dir: /mnt/vault-backups        # point off-node for real HA DR
-  hashicorp_vault_backup_nfs_server: "nfs.example.com"
-  hashicorp_vault_backup_nfs_export: "/exports/vault-backups"
-  ```
-- **Auth & secrets phases** — each phase is independent unless noted; enable
-  only what a given token needs.
+## Out of scope
 
-  | Who / what | Auth method | Gate variable |
-  |---|---|---|
-  | Human (directory SSO) | LDAP (FreeIPA) | `hashicorp_vault_ldap_enabled` |
-  | Human (local break-glass) | userpass | `hashicorp_vault_userpass_accounts` (non-empty) |
-  | Automation | AppRole | `hashicorp_vault_approles` (non-empty) |
-  | GitLab CI job | JWT | `hashicorp_vault_gitlab_jwt_enabled` |
-
-  **Policies** (`manage_policies`) — the KV mount is the isolation domain:
-  each `{tenant, env}` pair gets its own `kv-<tenant>-<env>` mount and a
-  policy of the same name. `wide: true` on any row also writes a tenant-wide
-  policy.
-
-  **LDAP** (`ldap_enabled`) — configures `auth/ldap` against FreeIPA and
-  auto-maps each tenant to `auth/ldap/groups/vault-<tenant>-<env>`. Does not
-  create FreeIPA groups — they must already exist.
-
-  **Identity groups** (non-empty `identity_groups`) — a second RBAC layer on
-  top of LDAP: `external` groups alias an LDAP group, `internal` groups nest
-  other Identity groups. Requires LDAP for external aliases. Pick one primary
-  grant path per FreeIPA group (LDAP-direct or Identity), not both.
-
-  **PKI** (`pki_enabled`, on by default) — mounts `pki/`, tunes
-  `max_lease_ttl`, and upserts issuing roles. Does not generate or import an
-  intermediate issuer; `pki_issuer_import` (off by default) adopts an
-  escrowed, pre-signed issuing CA (cert + key + root, verified by
-  fingerprint).
-
-  **Transit** (`transit_enabled`) — enables the Transit engine and creates
-  signing keys (e.g. Cosign); the private half never leaves Vault.
-
-  **Audit** (`audit_enabled`) — enables the file audit device under
-  `/vault/logs`, persisted on the data mount.
-
-  Copy-paste inventory snippets for LDAP groups, Identity nesting, and
-  CI/AppRole add-ons live under `examples/`.
-- **Enterprise license** (`--tags license`, opt-in) — off by default
-  (`hashicorp_vault_license_enabled: false`); Community images run
-  unchanged, no license material required. Vault Enterprise autoloads a
-  license from the first match of `VAULT_LICENSE` (raw env string) →
-  `VAULT_LICENSE_PATH` (env file path) → `license_path` (HCL); this role
-  uses the last two, pointing at `license.hclic` under the bind-mounted
-  config dir — never the raw-string env, which would leak via
-  `docker inspect`.
-
-  ```yaml
-  hashicorp_vault_license_enabled: true
-  # Enterprise Hub tags ALWAYS carry the -ent suffix — bare version tags do not exist
-  hashicorp_vault_image: "hashicorp/vault-enterprise:1.19.5-ent"
-  hashicorp_vault_license: "{{ vaulted_vault_enterprise_license }}"   # vaulted inventory
-  # or a controller-side file: hashicorp_vault_license_src: "/secure/path/vault.hclic"
-  ```
-
-  Guard rails: **offline validation before install**
-  (`hashicorp_vault_license_validate`, default `true`) runs
-  `vault license inspect` in a throwaway container, so a mangled paste or
-  expired key fails before anything is installed or restarted; **hot reload
-  on renewal** applies a changed license file per node via
-  `sys/config/reload/license` with no restart/seal (first enable — an image
-  swap — recreates the container instead; follow with `--tags unseal`); the
-  **verify phase** runs `vault license get` and fails unless the running
-  binary reports an **autoloaded** license (file-in-place ≠
-  license-in-effect), then prints the expiry.
+- Generating or rotating the PKI intermediate issuer certificate — this role
+  only imports an already-escrowed issuing CA (`pki_issuer_import`) or issues
+  from whatever CA is already mounted.
+- Creating the FreeIPA groups that LDAP auth maps by name.
 
 ## Expected result
 
-- A successful run leaves every node unsealed and, in HA, every peer joined
-  to Raft — asserted automatically (`verify` phase); spot-check manually
-  with `vault status`.
-- `--tags renew_drill` (opt-in, `never`-tagged, `hashicorp_vault_tls_onhost`
-  only) proves the certmonger TLS-renewal path today instead of discovering
-  it broken ~90 days out: forces a re-issue and asserts a new certificate
-  serial was issued, published, and Vault reloaded via SIGHUP without
-  sealing.
+- `vault status` on every node reports `Sealed: false` and the expected
+  `HA Mode` (`active` on one node, `standby` on the rest).
+- `vault operator raft list-peers` matches `hashicorp_vault_nodes` exactly —
+  `verify.yml` asserts this on every run and fails loudly with remediation
+  commands when it doesn't.
+
+## Tag safety
+
+- `remove_peers` (`never`-tagged, opt-in): evicts every Raft member not in
+  `hashicorp_vault_nodes`. Run it only after a deliberate shrink, while the
+  cluster still has a leader.
+- `backup_now` (`never`-tagged, opt-in): forces an on-demand Raft snapshot via
+  the deployed `vault-container-backup.service` and fails non-zero on error.
+  The unit must already be deployed (`--tags backup` once first).
+- `restore` (`never`-tagged, opt-in, destructive): applies a Raft snapshot on
+  the active leader with `-force`; Vault replicates it to followers
+  automatically (no follower wipe/restart). Root token only, from the first
+  node. Targets same-cluster rollback (identical membership + unseal keys) —
+  restoring a snapshot from a different cluster is a separate workflow.
+  Optionally set `-e hashicorp_vault_restore_snapshot=<path>` to pick a
+  specific snapshot; default is `"latest"`, resolved across every node.
+- `renew_drill` (`never`-tagged, opt-in): forces a real certmonger certificate
+  re-issue to prove the renewal path — do not run against a healthy cluster
+  without reason.
+- `control_groups` (`never`-tagged, **double opt-in**, Enterprise): requires
+  BOTH `hashicorp_vault_control_groups_enabled: true` AND `--tags
+  control_groups` — the `'control_groups' in ansible_run_tags` guard means a
+  co-tag or play-level tag cascade cannot select it, and a persisted `enabled:
+  true` still no-ops on a bare converge. It asserts a licensed Enterprise build
+  before any write. Authored to spec, never executed in this repo — see
+  **Behaviour → Control Groups** for the licensed-verification checklist.
+- **Do not `--limit` a subset during `deploy`/`init`.** Topology is derived
+  from the play's hosts, so a limited run would misconfigure Raft. Target the
+  whole group, or pin `hashicorp_vault_nodes` explicitly in inventory.

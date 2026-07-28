@@ -127,16 +127,11 @@
   changed_when: false
   failed_when: false
 
-- name: "License | Read root token for license reload (when container is up)"
-  become: true  # root: root_token.txt is root-only
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_license_token_slurp
+- name: "License | Resolve root token for license reload (when container is up)"
   when:
     - _hashicorp_vault_license_running.stdout | default('') | trim == 'true'
     - _hashicorp_vault_license_install is changed
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "License | Hot-reload the license (sys/config/reload/license)"
   become: true  # root: docker exec needs the root-owned docker socket
@@ -145,12 +140,12 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault write -force sys/config/reload/license
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_license_token_slurp.content | b64decode | trim }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_license_reload
   when:
     - _hashicorp_vault_license_running.stdout | default('') | trim == 'true'
     - _hashicorp_vault_license_install is changed
-    - _hashicorp_vault_license_token_slurp.content is defined
+    - (_hashicorp_vault_root_token | default('') | length) > 0
   changed_when: true
   failed_when: false
   no_log: true

@@ -1,4 +1,7 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+hashicorp_vault_container_enabled: true
+
 # hashicorp_vault_container — behavioural defaults (all overridable).
 #
 # Env-specific values (node IPs, domains, VIPs) are NOT set here — they come
@@ -32,12 +35,38 @@ hashicorp_vault_license_require_enterprise_image: true
 # the container. Needs the node to be able to pull hashicorp_vault_image.
 hashicorp_vault_license_validate: true
 
+# ── Control Groups (Enterprise; approval-gated KV reads; DORMANT) ─────────
+# Vault Enterprise "Control Groups": a read of a gated KV path returns a wrapped
+# accessor instead of the secret; it is released only after N approvals from a
+# named Identity group. Requires hashicorp_vault_license_enabled + an Enterprise
+# build. DOUBLE opt-in and never part of a normal run: this must be true AND the
+# run must carry `--tags control_groups`; the phase then asserts a live Enterprise
+# build before writing. NOT executed in this repo (no license) — authored to spec.
+hashicorp_vault_control_groups_enabled: false
+# Gated-path definitions — env-specific, so populate in INVENTORY, never here.
+# Schema (see README "Control Groups" + meta/argument_specs.yml):
+#   - policy_name: acme-prod-payments-cg   # requester policy this generates
+#     mount: kv-acme-prod                  # an existing tenant mount (kv-<tenant>-<env>)
+#     paths: ["apps/payments/*"]           # in-mount KV paths; the /data/ infix is added
+#     capabilities: ["read"]               # optional (default ["read"])
+#     controlled_capabilities: ["read"]    # optional; MUST be a subset of capabilities.
+#                                          #   Set it explicitly — unset gates EVERY capability.
+#     ttl: "4h"                            # optional per-request approval window
+#     authorizers:
+#       - {group_name: id-vault-approvers, approvals: 1}  # Vault Identity group + threshold
+hashicorp_vault_control_groups: []
+# Name of the shared authorizer policy (grants sys/control-group/authorize+request).
+hashicorp_vault_control_groups_authorizer_policy: "control-group-authorizer"
+# Optional cluster-wide ceiling on an unapproved wrapping token's life. Empty = leave
+# Vault's default (sys/config/control-group). Accepts Vault durations (s/m/h).
+hashicorp_vault_control_groups_max_ttl: ""
+
 
 # ── Persistent storage (SECOND DISK) ─────────────────────────────────────
-# hashicorp_vault_data_mount MUST be the mount point of a persistent second disk,
-# provisioned + mounted BEFORE this role (e.g. by the universal `storage`
-# role). All Vault state lives under it so it survives host/container
-# rebuilds. Preflight refuses to run if it is not a real mountpoint.
+# hashicorp_vault_data_mount MUST be the mount point of a persistent LOCAL second
+# disk (e.g. via the `storage` role) — NOT NFS. Raft (data/) needs local fsync;
+# network filesystems are unsupported for live storage. Use backup_nfs_* for
+# snapshot DR only. Preflight requires a real mountpoint; it does not reject NFS.
 hashicorp_vault_data_mount: "/opt/vault"
 hashicorp_vault_require_mounted: true
 
@@ -89,7 +118,29 @@ hashicorp_vault_autounseal_script_path: "/usr/local/bin/vault-container-unseal.s
 # secrets into config — every config value lands verbatim in vault.hcl on disk.
 # Changing the seal type on an ALREADY-INITIALIZED cluster requires a manual seal
 # migration (`vault operator unseal -migrate`); the role does NOT automate that.
+# Mutually exclusive with hashicorp_vault_auto_unseal (preflight asserts this).
 hashicorp_vault_seal_config: {}
+
+# ── Operator custody (declared-var-first; Ansible Vault) ─────────────────
+# Empty defaults → fall back to on-guest files under hashicorp_vault_keys_dir.
+# Prefer setting these from encrypted group_vars (e.g. vault.yml) for seed /
+# manual-unseal hosts so Shamir shares and root need not live next to Raft data.
+#
+# hashicorp_vault_unseal_keys: list of base64 Shamir shares (any order). Unseal
+#   uses the first hashicorp_vault_key_threshold entries — same as init JSON.
+# hashicorp_vault_root_token: bootstrap root (or other full-admin token). All
+#   management phases resolve via tasks/resolve_root_token.yml into the
+#   internal fact _hashicorp_vault_root_token (never require the public var
+#   after resolve).
+# hashicorp_vault_persist_init: when true (default), --tags unseal rewrites
+#   root_token.txt on the guest for backward compatibility. When false, that
+#   write is skipped and residual root_token.txt is removed — management uses
+#   the declared var (or fails closed). First-time init still writes
+#   vault_init.json on the guest (greenfield landing zone); move it to
+#   Ansible Vault manually until auto-escrow exists.
+hashicorp_vault_unseal_keys: []
+hashicorp_vault_root_token: ""
+hashicorp_vault_persist_init: true
 
 # ── TLS ──────────────────────────────────────────────────────────────────
 hashicorp_vault_tls_enabled: true
@@ -196,7 +247,7 @@ hashicorp_vault_admin_kv_mounts: []
 #   - kv-acme-prod
 #   - kv-globex-dev
 
-# ── LDAP auth / human SSO (optional; FreeIPA in this lab) ────────────
+# ── LDAP auth / human SSO (optional; e.g. FreeIPA) ───────────────────────
 # READ FIRST: README "Behaviour" (Auth & secrets phases) + examples/path-a-ldap-groups.yml
 # Human SSO: LDAP/FreeIPA. GitLab JWT is CI-only (separate phase).
 # Path A (default): tenants auto-map auth/ldap/groups/vault-<tenant>-<env>
@@ -217,6 +268,13 @@ hashicorp_vault_ldap_starttls: false
 # Verify the directory's LDAPS certificate by default. Labs with a self-signed
 # FreeIPA CA override this to true in inventory.
 hashicorp_vault_ldap_insecure_tls: false
+# Token lifetime for LDAP logins (applies to the whole ldap/ mount). Empty = Vault's
+# system default (768h/32d). Access is granted by FreeIPA group membership; a shorter
+# max_ttl narrows the window in which a removed member keeps a live token before it
+# must be reissued (or revoked). Leave empty to keep the current default; set e.g.
+# "8h"/"24h" to tighten. Accepts Vault durations (s/m/h).
+hashicorp_vault_ldap_token_ttl: ""
+hashicorp_vault_ldap_token_max_ttl: ""
 hashicorp_vault_ldap_group_pattern: "vault-{tenant}-{env}"
 hashicorp_vault_ldap_extra_groups: []
 #   - {ldap_group: vault-admins, policies: [default, vault-admin]}
@@ -231,9 +289,9 @@ hashicorp_vault_ldap_users: []
 # INTERNAL: nests other Identity groups (member_group_names).
 # type defaults to external. Empty = phase skipped (Path A sites leave empty).
 hashicorp_vault_identity_groups: []
-#   - {identity_group_name: id-acme-all-envs, ldap_group: vault-acme-admins, policies: [acme]}
+#   - {identity_group_name: id-example-all-envs, ldap_group: vault-example-admins, policies: [example]}
 #   - {identity_group_name: id-platform-superadmins, type: internal, policies: [vault-superadmin],
-#      member_group_names: [id-acme-all-envs]}
+#      member_group_names: [id-example-all-envs]}
 
 # ── Human operator accounts (userpass, optional) ─────────────────────────
 # Data-driven; empty = phase skipped. Keep passwords in a VAULTED inventory /
@@ -259,9 +317,9 @@ hashicorp_vault_gitlab_base_url: ""              # GitLab issuer for jwt auth (O
 hashicorp_vault_gitlab_jwt_enabled: false
 hashicorp_vault_gitlab_jwt_default_audience: ""
 hashicorp_vault_gitlab_jwt_roles: []
-#   - name: gitlab-acme-deploy
+#   - name: gitlab-example-deploy
 #     bound_claims: {project_id: "42", ref: main, ref_type: branch}
-#     policies: [svc-ci-acme-prod]
+#     policies: [svc-ci-example-prod]
 #     token_ttl: 1h
 #     token_max_ttl: 4h
 
@@ -277,7 +335,7 @@ hashicorp_vault_transit_keys: []
 #   - name: cosign
 #     type: ecdsa-p256          # default
 #     exportable: false          # default (private key never leaves Vault)
-#     export_public_key: {mount: kv-ops, path: platform/cosign/runtime}
+#     export_public_key: {mount: kv-example, path: platform/cosign/runtime}
 
 # ── PKI secrets engine (mount + tune + issuing roles) ────────────────────
 # Converge-safe bootstrap of the PKI engine on this cluster (same surface as

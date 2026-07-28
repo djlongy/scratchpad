@@ -7,7 +7,7 @@
 # (generate/internal CSR + external coldca sign + set-signed). That re-keys on
 # every bare generate/internal call and lives in roles/vault_pki +
 # playbooks/25_plat_pki.yml under never-tagged opt-in tags. Enable the engine
-# here, then wire issuer + roles environment-wide via vault_pki when you have a cold
+# here, then wire issuer + roles estate-wide via vault_pki when you have a cold
 # root.
 #
 # Issuing roles are DATA (hashicorp_vault_pki_roles):
@@ -19,27 +19,15 @@
 #       max_ttl: "8760h"
 # config is a FULL REPLACE of the role (undeclared params reset to engine defaults).
 
-- name: "PKI | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _hashicorp_vault_pki_slurp
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "PKI | Set the root token fact"
-  ansible.builtin.set_fact:
-    _hashicorp_vault_pki_token: "{{ _hashicorp_vault_pki_slurp.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "PKI | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "PKI | List existing secret mounts"
   become: true  # root: docker exec needs the root-owned docker socket
   ansible.builtin.command:
     cmd: "docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }} vault secrets list -format=json"
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_mounts
   changed_when: false
   no_log: true
@@ -59,7 +47,7 @@
   args:
     executable: /bin/bash
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: >-
     (hashicorp_vault_pki_mount ~ '/') not in (_hashicorp_vault_pki_mounts.stdout | from_json).keys()
   changed_when: true
@@ -73,7 +61,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault read -format=json sys/mounts/{{ hashicorp_vault_pki_mount }}/tune
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _hashicorp_vault_pki_tune
   changed_when: false
   no_log: true
@@ -90,7 +78,7 @@
       -max-lease-ttl={{ hashicorp_vault_pki_max_lease_ttl_hours }}h
       {{ hashicorp_vault_pki_mount }}/
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   when: >-
     (_hashicorp_vault_pki_tune.stdout | from_json).data.max_lease_ttl | int
     != ((hashicorp_vault_pki_max_lease_ttl_hours | int) * 3600)
@@ -139,7 +127,7 @@
   args:
     executable: /bin/bash
   environment:
-    VAULT_TOKEN: "{{ _hashicorp_vault_pki_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ hashicorp_vault_pki_roles }}"
   loop_control:
     label: "{{ item.name }}"

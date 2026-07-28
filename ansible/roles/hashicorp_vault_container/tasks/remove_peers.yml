@@ -42,20 +42,8 @@
     quiet: true
   run_once: true
 
-- name: "Remove-peers | Read the root token from the first node"
-  become: true  # root: reads the root-only root_token.txt
-  ansible.builtin.slurp:
-    src: "{{ hashicorp_vault_keys_dir }}/root_token.txt"
-  register: _rmp_tok
-  delegate_to: "{{ hashicorp_vault_first_node }}"
-  run_once: true
-  no_log: true
-
-- name: "Remove-peers | Set the token fact"
-  ansible.builtin.set_fact:
-    _rmp_root_token: "{{ _rmp_tok.content | b64decode | trim }}"
-  run_once: true
-  no_log: true
+- name: "Remove-peers | Resolve root token (var → disk)"
+  ansible.builtin.include_tasks: resolve_root_token.yml
 
 - name: "Remove-peers | List current Raft peers"
   become: true  # root: docker exec needs the root-owned docker socket
@@ -64,7 +52,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault operator raft list-peers -format=json
   environment:
-    VAULT_TOKEN: "{{ _rmp_root_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _rmp_peers
   until: _rmp_peers.rc == 0
   retries: 12
@@ -98,7 +86,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault operator raft remove-peer {{ item }}
   environment:
-    VAULT_TOKEN: "{{ _rmp_root_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   loop: "{{ _rmp_stale }}"
   changed_when: true
   no_log: true
@@ -113,7 +101,7 @@
       docker exec -e VAULT_TOKEN {{ hashicorp_vault_name }}
       vault operator raft list-peers -format=json
   environment:
-    VAULT_TOKEN: "{{ _rmp_root_token }}"
+    VAULT_TOKEN: "{{ _hashicorp_vault_root_token }}"
   register: _rmp_recheck
   until: _rmp_recheck.rc == 0
   retries: 12

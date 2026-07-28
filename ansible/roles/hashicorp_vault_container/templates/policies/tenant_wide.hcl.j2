@@ -6,7 +6,7 @@
 # kv-<tenant>-* is a TRAILING-glob requiring the literal prefix "kv-<tenant>-". Because
 # tenant names are HYPHEN-FREE (preflight asserts it), this can never match another
 # tenant's mount — a different hyphen-free name cannot reproduce that "-" boundary
-# (kv-example-* does NOT match kv-acme-prod). Prefer the per-env policies
+# (kv-example-* does NOT match kv-exampleco-prod). Prefer the per-env policies
 # (<tenant>-<env>) for automation; reserve this wide grant for human tenant admins.
 path "{{ hashicorp_vault_kv_mount_prefix }}-{{ _t.tenant }}-*" {
   capabilities = ["create", "read", "update", "delete", "list"]
