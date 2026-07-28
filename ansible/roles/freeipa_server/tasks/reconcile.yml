@@ -4,7 +4,9 @@
 #   * SCOPED (default): only objects whose NAME contains freeipa_iam_reconcile_scope (e.g.
 #     "acme-") are eligible — other tenants/environments are never touched.
 #   * ALL-UNDECLARED (freeipa_iam_reconcile_all: true, double-gated): EVERY managed object not
-#     declared this run is eligible — the whole-realm prune. The effective match becomes "*".
+#     declared this run is eligible — the whole-realm prune. This mode is carried by its own
+#     boolean (_reconcile_all → the filter's all_undeclared argument), NEVER by a magic scope
+#     value: no string an operator can put in freeipa_iam_reconcile_scope means match-all.
 # In BOTH modes an object is deleted only if it is NOT in this run's freeipa_iam_* lists AND
 # NOT in the protected set. Protection is built ENTIRELY from the role's own declared lists
 # (builtin_groups/hostgroups, protected_groups/users, unmodifiable_users, markers,
@@ -24,6 +26,13 @@
     that:
       - ((freeipa_iam_reconcile_scope | default('')) | length > 0)
         or (freeipa_iam_reconcile_all | default(false) | bool)
+      # '*' no longer means anything special ANYWHERE — freeipa_iam_orphans takes an
+      # explicit all_undeclared argument and treats the scope as a literal substring, and
+      # iam.yml's group deleter regex_escapes it. So `-e freeipa_iam_reconcile_scope='*'`
+      # would silently prune only objects literally NAMED '*', i.e. nothing at all, while
+      # satisfying the length>0 test above. Refuse it: it is only ever a mistaken attempt
+      # at a whole-realm prune, and the real switch is freeipa_iam_reconcile_all.
+      - (freeipa_iam_reconcile_scope | default('')) != '*'
     fail_msg: >-
       Object reconcile is active (freeipa_server_authoritative) but neither
       freeipa_iam_reconcile_scope is set NOR freeipa_iam_reconcile_all is true — refusing to
@@ -58,13 +67,18 @@
       freeipa_iam_reconcile_all_confirm: true (ideally via -e on the command line) to proceed.
   when: freeipa_iam_reconcile_all | default(false) | bool
 
-# Effective match: '*' (every found object eligible) in all-undeclared mode, else the scope
-# substring. Protection is built ENTIRELY from the role's own declared lists (so it holds with
+# Effective match + mode. All-undeclared is carried by its OWN boolean, not by a magic value
+# of the scope: _reconcile_all becomes the filter's `all_undeclared` argument, and
+# _reconcile_match stays a plain literal substring (empty in all-undeclared mode, which is
+# also exactly the empty `ipa <type>-find` criteria that lists the whole realm). With the
+# flag off, no scope string whatsoever can widen the prune past its substring.
+# Protection is built ENTIRELY from the role's own declared lists (so it holds with
 # an empty desired set): built-in groups/hostgroups/HBAC-rules, stock HBAC services, protected +
 # unmodifiable users, and the role's own marker containers.
 - name: Reconcile | Resolve effective match + protection set
   ansible.builtin.set_fact:
-    _reconcile_match: "{{ '*' if (freeipa_iam_reconcile_all | default(false) | bool) else freeipa_iam_reconcile_scope }}"
+    _reconcile_all: "{{ freeipa_iam_reconcile_all | default(false) | bool }}"
+    _reconcile_match: "{{ '' if (freeipa_iam_reconcile_all | default(false) | bool) else freeipa_iam_reconcile_scope }}"
     _reconcile_protected: >-
       {{ (freeipa_iam_protected_groups | default([]))
          + (freeipa_iam_builtin_groups | default([]))
@@ -75,6 +89,74 @@
          + (freeipa_iam_protected_users | default([]))
          + (freeipa_iam_unmodifiable_users | default([]))
          + [freeipa_iam_managed_group, freeipa_iam_managed_groups_group] }}
+
+# Hoisted out of the orphan task's `vars:` so the emptiness breaker below can see the same
+# lists the orphan computation will use — one definition, no chance of the guard checking
+# something different from what gets deleted.
+- name: Reconcile | Assemble the declared object set (what this run considers DESIRED)
+  ansible.builtin.set_fact:
+    _reconcile_desired:
+      sudorule: "{{ freeipa_iam_sudo_rules | default([]) | map(attribute='name') | list }}"
+      hbacrule: "{{ freeipa_iam_hbac_rules | default([]) | map(attribute='name') | list }}"
+      hbacsvcgroup: "{{ freeipa_iam_hbacsvcgroups | default([]) | map(attribute='name') | list }}"
+      sudocmdgroup: "{{ freeipa_iam_sudocmdgroups | default([]) | map(attribute='name') | list }}"
+      hbacsvc: "{{ freeipa_iam_hbacsvcs | default([]) | map(attribute='name') | list }}"
+      sudocmd: "{{ freeipa_iam_sudo_commands | default([]) | map(attribute='name') | list }}"
+      hostgroup: "{{ freeipa_iam_hostgroups | default([]) | map(attribute='name') | list }}"
+      group: "{{ freeipa_iam_usergroups | default([]) | map(attribute='name') | list }}"
+
+# EMPTY-DESIRED BREAKER. The interlock above proves the assembly phase RAN; it does not
+# prove the assembly PRODUCED anything, and freeipa_iam_orphans fail-safes only on an empty
+# match — an empty desired set means every found in-scope object is an orphan. `--tags
+# reconcile` selects iam_desired.yml + this file only, so NONE of the three breakers in
+# iam.yml (membership/users/groups) are in the play to catch it. The tenants-dir guards do
+# not cover this either: both are USER-shaped, so a load yielding users but zero objects
+# passes them. Proven live 2026-07-28 — a tenant file with one user and no objects deleted
+# 19 objects and exited 0. Refuse instead: an all-empty desired set is a load failure, never
+# an instruction to empty the realm.
+- name: Reconcile | Refuse a prune whose declared object set is entirely empty
+  ansible.builtin.assert:
+    that:
+      - (_reconcile_desired.values() | map('length') | sum) > 0
+    fail_msg: >-
+      Object reconcile is armed but the assembled desired state declares ZERO objects of
+      every prunable type (groups, hostgroups, HBAC rules, sudo rules, HBAC services,
+      sudo commands, and their group forms). Continuing would treat every in-scope object
+      on the realm as an orphan and DELETE it. This is a desired-state ASSEMBLY failure —
+      a mistyped tenant key routes to a var of that literal name and silently leaves the
+      real list empty (e.g. `usergroups:` instead of `groups:`). Check the tenant files
+      actually populate freeipa_iam_usergroups / _hostgroups / _hbac_rules / _sudo_rules.
+    quiet: true
+
+# The prune is ARMED and NOTHING is shielded by pattern. That is correct and silent for a
+# realm this role owns exclusively — but wrong, and destructive, for one that any external
+# system also writes to: its objects are absent from the declarative model by design, so
+# every one of them is an orphan here.
+#
+# This warning exists because the shield defaults were deliberately emptied when the role was
+# made product-agnostic (see CLAUDE.md "Product-Agnostic Roles"): the patterns are an
+# environment fact and now live in inventory. That change is right, but it moved this from
+# fail-safe to fail-open for any inventory that arms a prune without declaring shields — so
+# say so out loud rather than let a new inventory inherit silent zero protection.
+#
+# WARN, not fail: a realm with no external provisioner legitimately shields nothing, and
+# forcing a placeholder pattern would be ceremony that teaches people to ignore the gate.
+- name: Reconcile | Warn that the prune is armed with NO pattern shields
+  ansible.builtin.debug:
+    msg: >-
+      WARNING — {{ 'whole-realm prune (reconcile_all)' if (freeipa_iam_reconcile_all | default(false) | bool)
+                   else "scoped prune ('" ~ freeipa_iam_reconcile_scope ~ "')" }}
+      is armed, but BOTH freeipa_iam_reconcile_protect_regexes and
+      freeipa_iam_reconcile_protect_users_regexes are EMPTY. Only the role's own built-in and
+      protected lists shield anything. If any software OUTSIDE this role provisions objects in
+      this realm (its own groups, rules, hostgroups or service accounts), they are absent from
+      the declarative model and will be treated as orphans and DELETED. Declare name patterns
+      for them in inventory host_vars/group_vars — and keep those patterns in lockstep with
+      that inventory's freeipa_server_export_scope exclusions, since both enforce the same
+      ownership boundary. Ignore this only if nothing but Ansible writes to this realm.
+  when:
+    - (freeipa_iam_reconcile_protect_regexes | default([]) | reject('equalto', '') | list | length) == 0
+    - (freeipa_iam_reconcile_protect_users_regexes | default([]) | reject('equalto', '') | list | length) == 0
 
 - name: Reconcile | Resolve admin password (shared resolver)
   ansible.builtin.include_tasks: resolve_credentials.yml
@@ -91,9 +173,10 @@
 
 - name: Reconcile | Find + prune orphans (Kerberos ticket always destroyed)
   block:
-    # find criteria is EMPTY in all-undeclared mode ('*' → list everything), else the scope substring.
+    # find criteria is EMPTY in all-undeclared mode (list everything), else the scope substring —
+    # which is exactly what _reconcile_match already holds in each mode.
     - name: Reconcile | Find managed objects in scope (one query per type)
-      ansible.builtin.command: "ipa {{ item }}-find {{ '' if _reconcile_match == '*' else _reconcile_match }} --pkey-only --sizelimit=0"
+      ansible.builtin.command: "ipa {{ item }}-find {{ _reconcile_match }} --pkey-only --sizelimit=0"
       register: _reconcile_find
       changed_when: false
       check_mode: false                      # run the read-only find even in --check (preview)
@@ -109,7 +192,7 @@
       loop_control:
         label: "{{ item.item }}"
 
-    # Shield externally-managed objects (e.g. pam_* groups + per-tenant PIM hbac/sudo
+    # Shield externally-managed objects (e.g. pam_* groups + per-tenant PAM hbac/sudo
     # rules) from orphan deletion: any FOUND name matching ANY freeipa_iam_reconcile_protect_regexes
     # entry joins the protection set, so neither a name-colliding scoped reconcile NOR reconcile_all
     # can delete it. Empty/whitespace patterns are dropped; an empty effective list degrades to a
@@ -125,26 +208,51 @@
              if (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | list | length > 0)
              else '(?!)' }}
 
+    # PER-TYPE EMPTY BREAKER. The pre-kinit assert above sums ACROSS types, so it only
+    # fires when all eight are empty — yet the failure its own message describes (a
+    # mistyped tenant key silently leaving one list empty) empties exactly ONE. The other
+    # seven then load fine, the sum is non-zero, and every in-scope object of the emptied
+    # type becomes an orphan. Compare per type now that the finds have run: `ipa <type>-find
+    # <match>` already applied the scope server-side, so a non-empty _reconcile_found[T]
+    # means the realm really does have in-scope objects of that type. Declaring zero of a
+    # type while the realm has some is an assembly failure, not an instruction to delete
+    # them all. Opt out per type with freeipa_iam_reconcile_allow_empty_types when a type
+    # is genuinely being retired.
+    - name: Reconcile | Refuse a prune where a whole object type went empty
+      ansible.builtin.assert:
+        that:
+          - _offenders | length == 0
+        fail_msg: >-
+          Object reconcile is armed but these object type(s) declare ZERO objects while the
+          realm still has in-scope objects of that type: {{ _offenders | join(', ') }}.
+          Deleting them all is almost never what was meant — this is the signature of one
+          mistyped tenant key leaving a single list empty while the rest load normally. Fix
+          the declaration, or add the type to freeipa_iam_reconcile_allow_empty_types to
+          confirm those objects really are retired.
+        quiet: true
+      vars:
+        _declared_empty: >-
+          {{ _reconcile_desired | dict2items | selectattr('value', 'equalto', [])
+             | map(attribute='key')
+             | reject('in', freeipa_iam_reconcile_allow_empty_types | default([]))
+             | list }}
+        _found_nonempty: >-
+          {{ (_reconcile_found | default({})) | dict2items
+             | rejectattr('value', 'equalto', []) | map(attribute='key') | list }}
+        _offenders: "{{ _declared_empty | select('in', _found_nonempty) | list }}"
+
     - name: Reconcile | Compute orphans (managed-but-undeclared, protected-safe)
       ansible.builtin.set_fact:
         _reconcile_orphans: >-
           {{ _reconcile_found
-             | freeipa_iam_orphans(_reconcile_desired, _reconcile_match, _reconcile_protected) }}
-      vars:
-        _reconcile_desired:
-          sudorule: "{{ freeipa_iam_sudo_rules    | default([]) | map(attribute='name') | list }}"
-          hbacrule: "{{ freeipa_iam_hbac_rules    | default([]) | map(attribute='name') | list }}"
-          hbacsvcgroup: "{{ freeipa_iam_hbacsvcgroups | default([]) | map(attribute='name') | list }}"
-          sudocmdgroup: "{{ freeipa_iam_sudocmdgroups | default([]) | map(attribute='name') | list }}"
-          hbacsvc: "{{ freeipa_iam_hbacsvcs      | default([]) | map(attribute='name') | list }}"
-          sudocmd: "{{ freeipa_iam_sudo_commands | default([]) | map(attribute='name') | list }}"
-          hostgroup: "{{ freeipa_iam_hostgroups    | default([]) | map(attribute='name') | list }}"
-          group: "{{ freeipa_iam_usergroups    | default([]) | map(attribute='name') | list }}"
+             | freeipa_iam_orphans(_reconcile_desired, _reconcile_match, _reconcile_protected,
+                                   all_undeclared=_reconcile_all | bool) }}
 
     - name: Reconcile | Report what will be deleted
       ansible.builtin.debug:
         msg: >-
-          Reconcile [{{ _reconcile_match }}] orphans to delete —
+          Reconcile [{{ 'ALL-UNDECLARED' if (_reconcile_all | bool) else _reconcile_match }}]
+          orphans to delete —
           sudo_rules: {{ _reconcile_orphans.sudorule | default([]) }},
           hbac_rules: {{ _reconcile_orphans.hbacrule | default([]) }},
           hbacsvcgroups: {{ _reconcile_orphans.hbacsvcgroup | default([]) }},
@@ -158,7 +266,7 @@
     # keyed by rule name (= target group/hostgroup). Same match + protected guards. Deleted BEFORE
     # the groups below so a rule never outlives its target. Desired = freeipa_server_automember_rules.
     - name: Reconcile | Find managed automember rules in scope (per type)
-      ansible.builtin.command: "ipa automember-find {{ '' if _reconcile_match == '*' else _reconcile_match }} --type={{ item }} --pkey-only"
+      ansible.builtin.command: "ipa automember-find {{ _reconcile_match }} --type={{ item }} --pkey-only"
       register: _reconcile_am_find
       changed_when: false
       check_mode: false
@@ -178,7 +286,8 @@
       ansible.builtin.set_fact:
         _reconcile_am_orphans: >-
           {{ _reconcile_am_found
-             | freeipa_iam_orphans(_reconcile_am_desired, _reconcile_match, _reconcile_protected) }}
+             | freeipa_iam_orphans(_reconcile_am_desired, _reconcile_match, _reconcile_protected,
+                                   all_undeclared=_reconcile_all | bool) }}
       vars:
         _reconcile_am_desired:
           group: "{{ freeipa_server_automember_rules | default([]) | selectattr('automember_type', 'equalto', 'group')     | map(attribute='name') | list }}"
@@ -187,7 +296,8 @@
     - name: Reconcile | Report automember rules to delete
       ansible.builtin.debug:
         msg: >-
-          Reconcile [{{ _reconcile_match }}] automember orphans to delete —
+          Reconcile [{{ 'ALL-UNDECLARED' if (_reconcile_all | bool) else _reconcile_match }}]
+          automember orphans to delete —
           group: {{ _reconcile_am_orphans.group | default([]) }},
           hostgroup: {{ _reconcile_am_orphans.hostgroup | default([]) }}
 

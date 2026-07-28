@@ -7,7 +7,7 @@
 #
 # Non-disruptive: the realm keeps serving the current CA cert until phase 2
 # applies the signed cert. Primary only. Called from the reparent_ca playbook
-# flow (playbooks/freeipa.yml --tags reparent_ca).
+# flow (playbooks/20_iam_freeipa.yml --tags reparent_ca).
 
 - name: Reparent emit | Assert this is the FreeIPA primary
   ansible.builtin.assert:

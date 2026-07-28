@@ -6,6 +6,55 @@
 # Applied only when freeipa_server_dns_trusted_networks is declared. Config is validated
 # with named-checkconf BEFORE the handler runs `rndc reconfig`, so a broken ACL can never
 # reach a live reload. Read-only when nothing changes; idempotent.
+#
+# main.yml gates this phase on freeipa_server_setup_dns, which is DECLARED INTENT. That is not
+# the same as integrated DNS existing: a server can carry setup_dns: true in inventory while
+# ipa-server-dns is half-installed — /etc/named.conf present but no named-pkcs11 unit and named
+# never started (observed live on a throwaway replica). Hardening then wrote its includes, notified
+# the handler, and `rndc reconfig` failed the WHOLE PLAY with "neither /etc/rndc.conf nor
+# /etc/rndc.key was found". Because handlers run last, an unrelated phase — e.g. a
+# `--tags hardening` run for OTP enforcement — went red after its own work had already
+# succeeded. It also lay dormant between runs: once the templates converged they stopped
+# notifying, so the failure only reappeared the next time either template changed.
+#
+# So probe for REALITY before touching anything, and skip loudly rather than fail.
+- name: DNS hardening | Check the rndc control key exists
+  ansible.builtin.stat:
+    path: /etc/rndc.key
+  register: _freeipa_dns_rndc_key
+
+- name: DNS hardening | Check whether named is running
+  ansible.builtin.command: systemctl is-active named-pkcs11.service named.service
+  register: _freeipa_dns_named_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: DNS hardening | Decide whether integrated BIND is operational
+  ansible.builtin.set_fact:
+    # Both conditions matter: the key is what `rndc reconfig` needs to authenticate, and a
+    # stopped named makes the reconfig pointless even with a key present.
+    #
+    # EXACT line match, never a substring test: `systemctl is-active` prints one line per unit
+    # and the string 'active' is a SUBSTRING of 'inactive', so `'active' in stdout` reports a
+    # stopped named as running — the precise failure this guard exists to catch.
+    _freeipa_dns_operational: >-
+      {{ (_freeipa_dns_rndc_key.stat.exists | bool)
+         and ((_freeipa_dns_named_active.stdout_lines | default([])
+               | map('trim') | select('equalto', 'active') | list | length) > 0) }}
+
+- name: DNS hardening | Skip — integrated BIND is not operational on this server
+  ansible.builtin.debug:
+    msg: >-
+      WARNING — skipping BIND DNS hardening. freeipa_server_setup_dns is true and
+      freeipa_server_dns_trusted_networks is declared, but integrated DNS is not operational
+      here (rndc key present={{ _freeipa_dns_rndc_key.stat.exists }},
+      named status='{{ _freeipa_dns_named_active.stdout | default('') | trim }}').
+      Writing the includes would notify `rndc reconfig`, which fails the whole play — including
+      unrelated phases that share the `hardening` tag. The trusted_network ACL and
+      recursion scope are therefore NOT applied. Either install/repair integrated DNS
+      (ipa-server-dns + named-pkcs11) or set freeipa_server_setup_dns=false for this host.
+  when: not (_freeipa_dns_operational | bool)
 
 - name: DNS hardening | Write the trusted_network ACL (ipa-ext.conf)
   ansible.builtin.template:
@@ -15,6 +64,7 @@
     group: named
     mode: "0640"
   notify: Reload BIND
+  when: _freeipa_dns_operational | bool
 
 - name: DNS hardening | Write recursion/query-cache options (ipa-options-ext.conf)
   ansible.builtin.template:
@@ -24,9 +74,11 @@
     group: named
     mode: "0640"
   notify: Reload BIND
+  when: _freeipa_dns_operational | bool
 
 # Fail loudly on a bad include BEFORE the notified reload flushes at play end — a
 # syntax error here would otherwise take named down on its next restart.
 - name: DNS hardening | Validate BIND configuration
   ansible.builtin.command: named-checkconf
   changed_when: false
+  when: _freeipa_dns_operational | bool

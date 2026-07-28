@@ -252,7 +252,7 @@
       # Managed by freeipa_server reparent_ca_apply.
       # Leaf remains SSLCertificateFile=/var/lib/ipa/certs/httpd.crt (certmonger).
       # Intermediates: reparented IPA CA + offline/Vault issuing CA.
-      # Root is not sent — clients must trust the organisation root CA.
+      # Root is not sent — clients must already trust the estate root CA.
       SSLCertificateChainFile /var/lib/ipa/certs/httpd-chain.crt
   register: _freeipa_reparent_httpd_chain_conf
   become: true

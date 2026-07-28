@@ -9,6 +9,13 @@ argument_specs:
   main:
     short_description: Install and configure a FreeIPA server cluster (install, resilience, backup, declarative IAM/DNS, hardening, export, migrate).
     options:
+      freeipa_server_enabled:
+        type: bool
+        default: true
+        description: >-
+          Role enable gate. When false the role emits a skip-debug and runs no
+          phases; set it in host/group_vars to no-op the role on hosts a broad
+          play happens to target.
       # ── Identity / topology ────────────────────────────────────────────────
       freeipa_server_domain:
         type: str
@@ -19,6 +26,19 @@ argument_specs:
       freeipa_server_fqdn:
         type: str
         description: This host's FQDN. Defaults to inventory_hostname + domain (never ansible_fqdn).
+      freeipa_server_realm_systemd_instance:
+        type: str
+        description: >-
+          The 389-ds instance name, i.e. the realm with dots replaced by dashes.
+          Derived; override only if the directory instance was named against
+          convention.
+      freeipa_server_dirsrv_service_name:
+        type: str
+        description: >-
+          systemd unit of the directory server this host's FreeIPA runs on.
+          Derived from the instance name above; the resilience phase and the
+          recovery script order themselves against this unit, so it must match
+          the unit that actually exists.
       freeipa_server_primary_group:
         type: str
         description: Inventory group whose first host is the primary. Falls back to `freeipa`, then to the current host (single-server needs no groups).
@@ -105,6 +125,26 @@ argument_specs:
           Opt-in to skip the preflight assert and let external-ca phase 1 run
           (stops after emitting /root/ipa.csr) with external_cert_files still
           empty. Default false keeps the fail-fast assert.
+      freeipa_reparent_require_self_signed:
+        type: bool
+        description: >-
+          Refuse the post-install CA reparent (--tags reparent_ca) when the IPA
+          CA is ALREADY externally signed, which guards an accidental re-run.
+          Set false to run the same flow as an external-CA renewal.
+      freeipa_reparent_csr_host_path:
+        type: str
+        description: >-
+          Host path phase 1 expects the CSR at — where `ipa-cacert-manage renew
+          --external-ca` writes it. Not the same file as the install-time CSR
+          (/root/ipa.csr); do not conflate the two.
+      freeipa_reparent_external_cert_files:
+        type: list
+        elements: str
+        description: >-
+          Host paths of the signed IPA CA cert FIRST, then its chain, staged for
+          phase 2. Populated by the reparent playbook between the two phases;
+          the apply step refuses fewer than two entries, or any entry that is
+          missing or empty on the host.
       freeipa_server_trusted_external_cas:
         type: list
         elements: dict
@@ -278,7 +318,17 @@ argument_specs:
       freeipa_server_require_otp_groups:
         type: list
         elements: str
-        description: Groups whose members are forced to OTP authentication.
+        description: >-
+          Groups whose DIRECT members are switched to user-auth-type=otp (FreeIPA has no
+          group-level auth-type). Members resolved live, so automember-added members are
+          covered; members via a nested group are not. Members with no enrolled OTP token
+          are skipped and reported rather than locked out.
+      freeipa_server_require_otp_strict:
+        type: bool
+        default: false
+        description: >-
+          Fail the run when a member of a require_otp group has no OTP token enrolled,
+          instead of skipping that member with a warning.
       freeipa_server_disable_allow_all:
         type: bool
         description: Tear down the stock allow_all HBAC rule (guarded — needs declared HBAC policy).
@@ -381,7 +431,13 @@ argument_specs:
       freeipa_server_rbac_roles:
         type: list
         elements: dict
-        description: OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group ({name, description?, member_of, members?, hbac_rules?}). member_of = EXISTING groups the role group nests into; members = users granted the role; hbac_rules carry an EXPLICIT rule name with usergroup [<role>] injected. Empty/absent = overlay off.
+        description: >-
+          OPTIONAL RBAC overlay — WYSIWYG flat list, one entry per role group
+          ({name, description?, member_of, members?, hbac_rules?, sudo_rules?}).
+          Anything that REFERENCES the role group is generated (the role group, its
+          nesting, user membership, and role-scoped HBAC/sudo rules with usergroup
+          [<role>] injected); anything the role REFERENCES must already exist
+          (member_of targets, users, hostgroups, sudo commands). Empty/absent = overlay off.
       freeipa_server_rbac_allow_unknown_users:
         type: bool
         description: Permit role members not declared in freeipa_iam_users.
@@ -398,13 +454,29 @@ argument_specs:
         description: Safe nightly mode — strip undeclared group members but suppress ALL object/user deletion. Safe per-tenant.
       freeipa_iam_reconcile_scope:
         type: str
-        description: Name-substring scope marker for object pruning under authoritative. Blank = object pruning skipped (fail-safe).
+        description: >-
+          Name-substring scope marker for object pruning under authoritative — governs
+          BOTH the orphan reconcile and the group-existence deleter. Blank = object
+          pruning deletes nothing (fail-safe); user archival is marker-based and not
+          scope-gated.
       freeipa_iam_reconcile_all:
         type: bool
         description: WHOLE-REALM prune (match-everything scope). Needs reconcile_all_confirm too (double gate).
       freeipa_iam_reconcile_all_confirm:
         type: bool
         description: Second gate for reconcile_all — set via -e at run time, never persisted.
+      freeipa_iam_reconcile_allow_empty_types:
+        type: list
+        elements: str
+        description: >-
+          Object types permitted to declare ZERO objects while the realm still
+          holds in-scope ones. The reconcile refuses that combination by
+          default, because it is the signature of one mistyped tenant key
+          emptying a single list while every other type loads normally — which
+          the all-empty breaker cannot see, since the total across types stays
+          non-zero. List a type only when its objects really are being retired.
+          Valid names are the find types: sudorule, hbacrule, hbacsvcgroup,
+          sudocmdgroup, hbacsvc, sudocmd, hostgroup, group.
       freeipa_iam_report:
         type: bool
         description: Print the end-of-run IAM summary (managed/changed/archived/deleted).
@@ -417,9 +489,24 @@ argument_specs:
       freeipa_iam_managed_groups_group:
         type: str
         description: Container-marker group for group-existence reconcile (members = groups we manage).
+      freeipa_iam_users_to_remove:
+        type: list
+        description: >-
+          Users the authoritative reconcile has decided to archive, computed by
+          iam.yml and consumed by the run report. Declared with an empty default
+          so it is never undefined on an additive-mode run (it carries no role_
+          prefix and is read by iam_report.yml); empty also reads correctly as
+          "archive nothing". Not an input — do not set it in inventory.
       freeipa_iam_preserve_archived:
         type: bool
         description: Archive (user-del --preserve, recoverable) instead of hard-deleting removed users.
+      freeipa_iam_users_preserved:
+        type: list
+        description: >-
+          Explicit offboarding list — entries MOVED out of freeipa_iam_users. Accepts a bare
+          login or a whole user dict. Always preserves (never hard-deletes) and is UNGATED by
+          freeipa_server_authoritative, since an entry here is an instruction rather than an
+          inference from absence. A login in both lists is a hard validation failure.
 
       # ── Hard delete (mock/lab realms only) ──────────────────────────────────
       freeipa_iam_delete:
@@ -476,7 +563,10 @@ argument_specs:
       # ── Config export / snapshot (--tags export) ───────────────────────────
       freeipa_server_export_output:
         type: str
-        description: Control-node path for the config snapshot written by --tags export.
+        description: >-
+          ABSOLUTE control-node path for the config snapshot written by --tags export.
+          Must start with '/' (asserted): a relative value is resolved against the
+          playbook directory, which writes the realm dump inside the repository.
       freeipa_server_export_include_host_membership:
         type: bool
         description: Pin static hostgroup rosters in the snapshot (default off — enrolment/automember own them).
@@ -562,6 +652,72 @@ argument_specs:
       freeipa_server_heal_verify_retries:
         type: int
         description: ipactl settle probes after a heal (10s apart) before the run fails.
+
+      freeipa_server_heal_pki_proxy_conf:
+        type: str
+        default: /etc/httpd/conf.d/ipa-pki-proxy.conf
+        description: >-
+          httpd config fronting Dogtag that the heal probes and re-renders when
+          missing.
+      freeipa_server_heal_pki_server_xml:
+        type: str
+        default: /etc/pki/pki-tomcat/server.xml
+        description: >-
+          Dogtag's Tomcat descriptor. Its presence is how the heal decides a CA
+          is deployed at all (the proxy conf and served ca.crt are defects only
+          on a CA-bearing server), and it is the source of truth for the AJP
+          secret cross-checked against the proxy config — a mismatch there
+          breaks every CA request while httpd itself looks healthy.
+      freeipa_server_heal_ipa_conf:
+        type: str
+        default: /etc/httpd/conf.d/ipa.conf
+        description: >-
+          Main IPA httpd config. The RPM owns the path but ships it empty
+          (%ghost) — the installer renders it — so a configured server can lose
+          it entirely; the heal re-renders it from FreeIPA's own template.
+      freeipa_server_heal_ipa_rewrite_conf:
+        type: str
+        default: /etc/httpd/conf.d/ipa-rewrite.conf
+        description: >-
+          IPA httpd rewrite rules, rendered from template the same way as
+          ipa.conf when missing.
+      freeipa_server_heal_kdcproxy_symlink:
+        type: str
+        default: /etc/httpd/conf.d/ipa-kdc-proxy.conf
+        description: >-
+          The conf.d entry for KDC-proxy, which is a SYMLINK rather than a file;
+          the heal restores the link itself.
+      freeipa_server_heal_kdcproxy_target:
+        type: str
+        default: /etc/ipa/kdcproxy/ipa-kdc-proxy.conf
+        description: >-
+          The real KDC-proxy config the symlink above points at, re-rendered
+          when missing.
+      freeipa_server_heal_ca_cert_served:
+        type: str
+        default: /usr/share/ipa/html/ca.crt
+        description: >-
+          Published copy of the CA certificate clients download from the web UI.
+          The heal republishes it from the source below when it has been lost.
+      freeipa_server_heal_ca_cert_source:
+        type: str
+        default: /etc/ipa/ca.crt
+        description: >-
+          On-host CA certificate the served copy is republished from.
+      freeipa_server_heal_nss_conf:
+        type: str
+        default: /etc/httpd/conf.d/nss.conf
+        description: >-
+          Legacy mod_nss config, absent on EL9+ where FreeIPA uses mod_ssl. It
+          is package-owned and never IPA-rendered, so the heal only REPORTS on
+          it for diagnostics — it is never fabricated.
+      freeipa_server_heal_ipa_httpd_files:
+        type: list
+        elements: str
+        description: >-
+          The set of installer-generated files whose absence means "configured
+          but broken" and triggers the re-render. Defaults to the ipa.conf,
+          ipa-rewrite.conf and KDC-proxy symlink/target paths above.
 
       # ── Resilience (cold-start recovery / ccache cleanup / SSSD self-heal) ──
       freeipa_server_resilience_enabled:
@@ -675,4 +831,7 @@ argument_specs:
         elements: str
         description: >-
           SAFETY SHIELD — logins matching one of these regexes are exempt from user
-          archival/eviction under authoritative reconcile.
+          ARCHIVAL under authoritative reconcile. Scope note: this shield applies to the
+          archival delete-list only. Membership eviction does not consult it — eviction is
+          separately constrained to the managed subset ((current ∩ managed) − desired) and
+          skips automember-target and protected groups.

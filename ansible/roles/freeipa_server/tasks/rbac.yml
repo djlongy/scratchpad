@@ -40,6 +40,7 @@
              freeipa_iam_usergroups,
              native_users=freeipa_iam_users,
              native_hbac_rules=freeipa_iam_hbac_rules,
+             native_sudo_rules=freeipa_iam_sudo_rules,
              allow_unknown_users=freeipa_server_rbac_allow_unknown_users | bool,
              allow_missing_member_of=freeipa_server_rbac_allow_missing_member_of | bool) }}
   when: (freeipa_server_rbac_roles | default([], true)) | length > 0
@@ -71,4 +72,18 @@
       {{ freeipa_iam_hbac_rules
          | freeipa_iam_merge((freeipa_server_rbac_roles | default([], true))
                               | freeipa_rbac_hbac_rules) }}
+  when: (freeipa_server_rbac_roles | default([], true)) | length > 0
+
+# Role-scoped SUDO rules — identical contract to the HBAC rules above, for the same
+# reason: a sudo rule BINDS to the role group, which does not exist until this overlay
+# creates it, so the rule cannot pre-exist natively. usergroup: [<role>] is injected by
+# the compiler; a native rule of the same name is rejected at validate. Objects the rule
+# REFERENCES (hosts, hostgroups, sudo commands and command groups) are NOT generated —
+# they must already exist, exactly like member_of targets.
+- name: RBAC overlay | Compile role-scoped sudo rules onto native rules
+  ansible.builtin.set_fact:
+    freeipa_iam_sudo_rules: >-
+      {{ freeipa_iam_sudo_rules
+         | freeipa_iam_merge((freeipa_server_rbac_roles | default([], true))
+                              | freeipa_rbac_sudo_rules) }}
   when: (freeipa_server_rbac_roles | default([], true)) | length > 0

@@ -11,7 +11,7 @@
       freeipa_server_docker_enabled is true: this host runs FreeIPA inside a
       container, so the package-install path would RPM-install the server onto
       the 389/88/464 ports the container already owns. Deploy via the container
-      plays in playbooks/freeipa.yml instead — the install path is for
+      plays in playbooks/20_iam_freeipa.yml instead — the install path is for
       bare-metal/VM hosts only.
     quiet: true
 

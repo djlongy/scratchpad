@@ -2,8 +2,16 @@
 
 Ansible-module-style documentation for the **thin RBAC overlay** input of the
 `freeipa_server` role. Declare abstract ROLES; the role compiles them into its native
-`freeipa_iam_*` lists at apply time. Nothing else is generated — sudo rules, hostgroups,
-DNS, automember and IPA delegation roles stay plain native entries.
+`freeipa_iam_*` lists at apply time.
+
+**What is and is not generated** follows one rule: *anything that must REFERENCE the role
+group is produced by the overlay; anything the role group REFERENCES must already exist.*
+So it generates the role group, its nesting into each `member_of` target, user→role
+membership, and any role-scoped **HBAC** (`hbac_rules`) and **sudo** (`sudo_rules`) rules —
+those bind to a role group that does not exist until the overlay creates it, so they cannot
+pre-exist natively. It never generates hostgroups, sudo commands, command groups, DNS,
+automember or IPA delegation roles: a rule REFERENCES those, so declare them natively
+first.
 
 ## Synopsis
 
@@ -40,6 +48,42 @@ DNS, automember and IPA delegation roles stay plain native entries.
 | `member_of` | list of str | **yes** | — | EXISTING policy/target group names the role group is nested into (paste them from the `--tags export` snapshot). At least one is required — a role granting nothing is rejected. |
 | `members` | list of str | no | `[]` | User logins granted the role (become indirect members of every `member_of` group). Each login must exist natively. |
 | `hbac_rules` | list of dict | no | `[]` | OPTIONAL role-scoped HBAC rules — see the suboptions below. Each rule is bound to the role: the compiler injects `usergroup: [<name>]`. |
+| `sudo_rules` | list of dict | no | `[]` | OPTIONAL role-scoped sudo rules — same contract as `hbac_rules`. Each rule is bound to the role: the compiler injects `usergroup: [<name>]` (which reaches `ipasudorule` as its `group` parameter). |
+
+### `sudo_rules[]` suboptions
+
+Keys are the inventory names the native `freeipa_iam_sudo_rules` contract accepts, minus
+the two that would fight the injected binding:
+
+| Key | Notes |
+|---|---|
+| `name` | REQUIRED, explicit (WYSIWYG). A rule name may appear under exactly one role, and must not also be declared in `freeipa_iam_sudo_rules`. |
+| `description`, `state`, `order` | passed through verbatim |
+| `hostcategory`, `cmdcategory` | must be `all` or `""`; `all` cannot be combined with explicit members on that axis |
+| `runasusercategory`, `runasgroupcategory` | passed through (see the caveat below) |
+| `host`, `hostgroup`, `hostmask`, `user` | must already exist natively |
+| `cmd`, `deny_cmd`, `cmdgroup`, `deny_cmdgroup` | the sudo commands / command groups must already exist natively |
+| `sudoopt`, `runasuser`, `runasgroup`, `runasuser_group` | passed through |
+| ~~`usergroup`~~ / ~~`group`~~ | **REJECTED** — the compiler injects the role binding |
+| ~~`usercategory`~~ | **REJECTED** — IPA rejects member users/groups alongside `usercategory=all`, and every role-scoped rule carries the injected role usergroup. Declare an all-users rule in the baseline `freeipa_iam_sudo_rules` instead. |
+
+CAVEAT: `runasusercategory` / `runasgroupcategory` are currently passed through WITHOUT the
+value/member-conflict checks applied to `hostcategory`/`cmdcategory`. `ipasudorule` still
+enforces the `all|""` choice, but as a raw argument error on the whole bulk call rather than
+a message naming the role and rule. See `.agent/PENDING.md`.
+
+Example:
+
+```yaml
+freeipa_server_rbac_roles:
+  - name: role-acme-prod-platform-admin
+    member_of: [ug-acme-prod-gitlab-admins]
+    members: [alice]
+    sudo_rules:
+      - name: sudo-acme-prod-platform-admin
+        hostgroup: [hg-acme-prod]          # must already exist natively
+        cmdgroup: [cmds-ops]               # must already exist natively
+```
 
 ### `hbac_rules[]` suboptions
 
@@ -146,7 +190,9 @@ freeipa_server_rbac_roles:
 ## See also
 
 - Role `README.md` → *Thin RBAC overlay* — the narrative walkthrough and design rationale.
-- `examples/rbac-overlay/` — a runnable example (inventory + group_vars + site.yml).
+- `ansible/inventories/freeipatest/tenants/` + `ansible/scripts/freeipa-chaos-regress.sh`
+  (checks R9-R11) — a runnable, live-verified example of the overlay against a throwaway
+  realm, including both fail-fast guards.
 - Baseline dicts: `freeipa_iam_usergroups`, `freeipa_iam_users`,
   `freeipa_iam_hbac_rules` (supports all three categories), `freeipa_iam_sudo_rules`
   (supports `usercategory`/`hostcategory`/`cmdcategory`/`runasusercategory`/

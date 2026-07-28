@@ -297,6 +297,7 @@
            'automember_rules': freeipa_server_automember_rules | default([]),
            'unmodifiable_users': freeipa_iam_unmodifiable_users,
            'protected_groups': freeipa_iam_protected_groups,
+           'users_preserved': freeipa_iam_users_preserved | default([], true),
            'builtin_groups': freeipa_iam_builtin_groups | default([]),
            'builtin_hostgroups': freeipa_iam_builtin_hostgroups | default([]),
            'builtin_hbacsvcgroups': freeipa_iam_builtin_hbacsvcgroups | default([]),

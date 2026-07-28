@@ -24,17 +24,21 @@
 # search-limit/anon-bind/OTP controls still run on their own gates when allow_all is left in place.
 - name: Hardening | Apply controls under an admin Kerberos ticket
   block:
-    # The ipa CLI queries below (hbacrule-find) need an ambient admin ticket; the
-    # freeipa.ansible_freeipa modules (ipaconfig/ipagroup/ipahbacrule) self-authenticate via
-    # ipaadmin_password (module_defaults) and do NOT. So the ticket is acquired only for the
-    # allow_all teardown, which is the sole remaining CLI query in this file.
+    # The ipa CLI queries in this file need an ambient admin ticket; the
+    # freeipa.ansible_freeipa modules (ipaconfig/ipauser/ipahbacrule) self-authenticate via
+    # ipaadmin_password (module_defaults) and do NOT. Two controls issue CLI queries and so
+    # gate this kinit: the allow_all teardown (hbacrule-find) and OTP enforcement
+    # (group-show + otptoken-find). Keep this `when:` in sync with them — an OTP run
+    # without a ticket fails every probe, which (fail-closed) silently hardens nobody.
     - name: Acquire Kerberos ticket for hardening CLI queries
       ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
       args:
         stdin: "{{ _freeipa_admin_password }}"
       changed_when: false
       no_log: true
-      when: freeipa_server_disable_allow_all | bool
+      when: >-
+        (freeipa_server_disable_allow_all | bool)
+        or (freeipa_server_require_otp_groups | length > 0)
 
     # One declarative call: ipaconfig sets both realm-wide search limits idempotently and
     # reports its own changed state (no stdout 'modified' sniffing). Each limit is applied only
@@ -51,18 +55,253 @@
         attributes:
           nsslapd-allow-anonymous-access: "rootdse"
         state: exact
-        server_uri: "ldapi:///"
+        # The bare `ldapi:///` default resolves to the stock 389-DS socket, which a FreeIPA
+        # instance does not have: its socket is INSTANCE-NAMED after the realm, e.g.
+        # /run/slapd-EXAMPLE-COM.socket. So this task could never connect — it failed the play
+        # every single time it was enabled, with
+        #   ldap.SERVER_DOWN ... 'Can't contact LDAP server' errno 2 'No such file or directory'
+        # meaning the anonymous-bind hardening had never once been applied
+        # (nsslapd-allow-anonymous-access was still 'on' on a host that had it turned on).
+        # Reuses the realm→systemd instance mapping the role already derives for dirsrv, so
+        # this stays correct for any realm. Slashes are %2F-encoded per RFC 4516.
+        server_uri: "ldapi://%2Frun%2Fslapd-{{ freeipa_server_realm_systemd_instance }}.socket"
       when: freeipa_server_harden_anonymous_bind | bool
 
-    - name: Require OTP for hardened admin groups
-      freeipa.ansible_freeipa.ipagroup:
-        name: "{{ item }}"
-        action: member
-        state: present
+    # ── OTP enforcement ──────────────────────────────────────────────────────
+    # FreeIPA has NO group-level authentication-type control: user-auth-type is a
+    # per-USER attribute (ipauser userauthtype) plus a realm-wide default in ipaconfig.
+    # ipagroup has no userauthtype parameter at all, so enforcement is applied to the
+    # group's MEMBERS, resolved live (so automember-added members are covered too).
+    #
+    # LOCKOUT GUARD — the reason this is three tasks instead of one. Setting
+    # user-auth-type to otp makes OTP the ONLY accepted factor for that user; a member
+    # with no token enrolled is locked out of every password path the moment this runs,
+    # including the operators this control is aimed at. So each member's tokens are
+    # counted first, tokenless members are SKIPPED and named, and only token-holders are
+    # switched. freeipa_server_require_otp_strict flips the skip into a hard failure for
+    # estates that want the run to stop rather than partially apply.
+    #
+    # The token probe FAILS CLOSED: anything other than a clear "this user has a token"
+    # reads as no-token, so an unexpected CLI output format skips the user rather than
+    # locking them out. Direct members only — users who are members via a NESTED group
+    # are not switched (resolve them by naming the nested group too).
+    #
+    # Accumulator reset: these are host facts, and this role can run twice in one execution.
+    # Without a reset, a second invocation whose probe tasks are skipped (no groups, or none
+    # resolved) would re-apply the PREVIOUS run's member list. Same class of bug as the
+    # documented set_fact accumulator leak elsewhere in this repo.
+    - name: Reset OTP enforcement accumulators
+      ansible.builtin.set_fact:
+        _freeipa_otp_members: []
+        _freeipa_otp_with_token: []
+        _freeipa_otp_without_token: []
+        _freeipa_otp_missing_groups: []
+        _freeipa_otp_empty_groups: []
+
+    - name: Read direct members of each OTP-required group
+      ansible.builtin.command: "ipa group-show {{ item }} --all --raw"
+      register: _freeipa_otp_group_show
+      changed_when: false
+      # Not fatal: hardening.yml runs BEFORE iam.yml (see main.yml), so on a first converge
+      # the declared groups legitimately do not exist yet. Unresolved groups are reported
+      # below, and are fatal only under strict mode.
+      failed_when: false
+      check_mode: false
       loop: "{{ freeipa_server_require_otp_groups }}"
       loop_control:
         label: "{{ item }}"
       when: freeipa_server_require_otp_groups | length > 0
+
+    # A typo'd or not-yet-created group otherwise yields zero members, which looks
+    # identical to "everyone is already compliant" — the run would report success having
+    # hardened nobody.
+    - name: Record OTP groups that did not resolve
+      ansible.builtin.set_fact:
+        _freeipa_otp_missing_groups: >-
+          {{ (_freeipa_otp_group_show.results | default([]))
+             | rejectattr('rc', 'undefined')
+             | selectattr('rc', 'ne', 0)
+             | map(attribute='item') | list }}
+      when: freeipa_server_require_otp_groups | length > 0
+
+    - name: Warn about OTP groups that did not resolve
+      ansible.builtin.debug:
+        msg: >-
+          WARNING — {{ _freeipa_otp_missing_groups | length }} group(s) named in
+          freeipa_server_require_otp_groups do not exist on the realm and were skipped:
+          {{ _freeipa_otp_missing_groups | join(', ') }}. Expected on a FIRST converge
+          (hardening runs before the IAM phase creates groups) — re-run to enforce. If it
+          persists, the name is wrong and this control is silently hardening nobody.
+      when: (_freeipa_otp_missing_groups | default([])) | length > 0
+
+    # The LAST way this control could report success while enforcing nothing: a group that
+    # exists but exposes no `member: uid=` line. Two real causes — the group is populated
+    # entirely by NESTED groups (deliberately out of scope, but the operator must be told it
+    # contributed nobody), or the `--all --raw` output shape changed and the parse silently
+    # matches nothing. Both look identical to "already compliant" without this.
+    # Matches on `stdout` (a genuine string) rather than stdout_lines, and searching for the
+    # literal 'member: uid=' cannot false-positive on 'memberindirect: uid='.
+    - name: Record OTP groups that resolved but exposed no direct user members
+      ansible.builtin.set_fact:
+        _freeipa_otp_empty_groups: >-
+          {{ (_freeipa_otp_group_show.results | default([]))
+             | rejectattr('rc', 'undefined') | selectattr('rc', 'equalto', 0)
+             | selectattr('stdout', 'defined')
+             | rejectattr('stdout', 'search', 'member: uid=')
+             | map(attribute='item') | list }}
+      when: freeipa_server_require_otp_groups | length > 0
+
+    - name: Warn about OTP groups with no direct user members
+      ansible.builtin.debug:
+        msg: >-
+          WARNING — {{ _freeipa_otp_empty_groups | length }} group(s) exist but contributed
+          NO members to OTP enforcement: {{ _freeipa_otp_empty_groups | join(', ') }}.
+          Most likely they are populated only via NESTED groups, which this control does not
+          traverse — name the nested group in freeipa_server_require_otp_groups as well.
+          Otherwise the `ipa group-show --all --raw` output shape has changed and the member
+          parse is matching nothing; verify by hand on the server.
+      when: (_freeipa_otp_empty_groups | default([])) | length > 0
+
+    # `ipa group-show --all --raw` returns members as raw LDAP `member:` DN lines
+    # (member: uid=<user>,cn=users,...), NOT a `member_user:` attribute — matching the
+    # latter silently selects nothing. Same idiom as the marker-group parse in iam.yml.
+    #
+    # ANCHORED with `match` (start-of-string), not `search`. An unanchored 'uid=' also
+    # matches `memberindirect: uid=...` — users who are members only via a NESTED group —
+    # and even a `description:` that happens to contain the text. Both would be silently
+    # switched to OTP-only, contradicting the direct-members-only contract documented here,
+    # in defaults/main.yml and in argument_specs. `match` on 'member: uid=' excludes them.
+    # (`ipauniqueid=` is not a false positive: it ends '…eid=', not 'uid='.)
+    #
+    # NB: avoid `\s`/`\d`-style regex classes — a folded (>-) scalar does not unescape
+    # them, so they reach the regex as a literal backslash; stick to literal text + `[^,]`.
+    - name: Build the OTP-required member list
+      ansible.builtin.set_fact:
+        _freeipa_otp_members: >-
+          {{ (_freeipa_otp_group_show.results | default([]))
+             | map(attribute='stdout_lines') | select('defined') | flatten
+             | map('trim')
+             | select('match', 'member: uid=')
+             | map('regex_replace', '.*uid=([^,]+).*', '\1')
+             | unique | sort | list }}
+      when: freeipa_server_require_otp_groups | length > 0
+
+    # --all --raw, not the pretty form. The default output's "Unique ID:" line proves a token
+    # EXISTS but says nothing about whether it is USABLE: otptoken-find also returns DISABLED
+    # tokens. Counting those as "has a token" switches the member to OTP-only while their only
+    # token cannot authenticate — precisely the lockout this guard exists to prevent.
+    # The raw form exposes `ipatokendisabled: TRUE`, which the partition below subtracts.
+    - name: Count enrolled OTP tokens per member
+      ansible.builtin.command: "ipa otptoken-find --owner={{ item }} --all --raw"
+      register: _freeipa_otp_tokens
+      changed_when: false
+      failed_when: false                   # no tokens is a normal, expected answer
+      check_mode: false
+      loop: "{{ _freeipa_otp_members | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (_freeipa_otp_members | default([])) | length > 0
+
+    # A member holds a USABLE token only when rc is 0 AND the number of tokens exceeds the
+    # number of DISABLED ones. Counting attribute lines avoids per-token block parsing: an
+    # enabled token omits ipatokendisabled (or sets FALSE), so tokens > disabled means at
+    # least one is live. Deliberately no CLI-side --disabled filter: an unsupported flag
+    # would make the whole command fail, and a fail-closed error is indistinguishable from
+    # "no tokens" — the filter would silently stop hardening anyone.
+    #
+    # FAILS CLOSED throughout: any unrecognised output shape yields 0 > 0 = false, so the
+    # member lands in the tokenless list and is skipped-and-warned, never locked out.
+    #
+    # KNOWN LIMIT: validity windows (ipatokennotbefore / ipatokennotafter) are NOT evaluated,
+    # so a token that exists and is enabled but is outside its validity period still counts as
+    # usable. Date comparison in Jinja is not worth the fragility here; the residual risk is a
+    # member with exactly one time-expired token. Enrol tokens without validity windows, or
+    # check `ipa otptoken-show` before setting freeipa_server_require_otp_strict.
+    - name: Partition members by usable OTP token enrolment
+      ansible.builtin.set_fact:
+        _freeipa_otp_with_token: >-
+          {%- set _out = [] -%}
+          {%- for _r in (_freeipa_otp_tokens.results | default([])) -%}
+          {%- set _o = _r.stdout | default('') -%}
+          {%- if (_r.rc | default(1)) == 0
+                 and ((_o | regex_findall('ipatokenuniqueid:') | length)
+                      > (_o | regex_findall('ipatokendisabled: TRUE') | length)) -%}
+          {%- set _ = _out.append(_r.item) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ _out | sort }}
+      when: (_freeipa_otp_members | default([])) | length > 0
+
+    # Split out so it can reference the fact set above (sibling set_fact keys cannot).
+    - name: Build the tokenless member list
+      ansible.builtin.set_fact:
+        _freeipa_otp_without_token: >-
+          {{ (_freeipa_otp_members | default([]))
+             | difference(_freeipa_otp_with_token | default([])) | sort }}
+      when: (_freeipa_otp_members | default([])) | length > 0
+
+    # Covers BOTH ways strict mode can be silently unsatisfied: members without tokens,
+    # and named groups that never resolved. The group case is not gated on a non-empty
+    # member list — an unresolved group yields zero members, so gating on members would
+    # skip the very check that catches a typo'd group name.
+    - name: Refuse partial OTP enforcement (strict mode)
+      ansible.builtin.assert:
+        that:
+          - (_freeipa_otp_without_token | default([])) | length == 0
+          - (_freeipa_otp_missing_groups | default([])) | length == 0
+          - (_freeipa_otp_empty_groups | default([])) | length == 0
+        fail_msg: >-
+          freeipa_server_require_otp_strict is set and OTP enforcement would be partial.
+          {% if (_freeipa_otp_missing_groups | default([])) | length > 0 -%}
+          Groups that do not exist on the realm:
+          {{ _freeipa_otp_missing_groups | join(', ') }} (on a first converge this is
+          expected — hardening runs before the IAM phase creates groups; re-run).
+          {% endif -%}
+          {% if (_freeipa_otp_empty_groups | default([])) | length > 0 -%}
+          Groups with no DIRECT user members (nested-only membership is not traversed):
+          {{ _freeipa_otp_empty_groups | join(', ') }} — name the nested group explicitly.
+          {% endif -%}
+          {% if (_freeipa_otp_without_token | default([])) | length > 0 -%}
+          Members with NO OTP token enrolled:
+          {{ _freeipa_otp_without_token | join(', ') }} — switching them to
+          user-auth-type=otp would lock them out of every password path. Enrol a token
+          for each (ipa otptoken-add --owner=<user>).
+          {% endif -%}
+          Unset freeipa_server_require_otp_strict to skip with warnings instead.
+        quiet: true
+      when: freeipa_server_require_otp_strict | bool
+
+    - name: Warn about members skipped for having no OTP token
+      ansible.builtin.debug:
+        msg: >-
+          WARNING — OTP enforcement SKIPPED for {{ _freeipa_otp_without_token | length }}
+          member(s) with no enrolled token: {{ _freeipa_otp_without_token | join(', ') }}.
+          They keep their current auth type (NOT hardened). Enrol a token
+          (ipa otptoken-add --owner=<user>) and re-run, or set
+          freeipa_server_require_otp_strict to fail instead of skipping.
+      when: (_freeipa_otp_without_token | default([])) | length > 0
+
+    # ONE USER PER CALL — not a bulk `name:` list. ipauser hard-fails with
+    # "Only one user can be added at a time using name." whenever state is present and
+    # name holds more than one entry (plugins/modules/ipauser.py, the len(names) != 1
+    # guard). The bulk form for state: present is `users:` (a list of dicts), and there
+    # userauthtype must live INSIDE each dict — a top-level userauthtype alongside
+    # `users:` is read from the dict and silently dropped, which would quietly restore
+    # the no-op this whole block exists to remove. A loop is the unambiguous form.
+    #
+    # userauthtype REPLACES the user's auth types rather than adding to them, so this
+    # makes OTP the only accepted factor — which is the intent, and why the token guard
+    # above is mandatory. Idempotent: the module compares before modifying, so a second
+    # converge reports ok.
+    - name: Require OTP for group members with an enrolled token
+      freeipa.ansible_freeipa.ipauser:
+        name: "{{ item }}"
+        userauthtype: ["otp"]
+        state: present
+      loop: "{{ _freeipa_otp_with_token | default([]) }}"
+      loop_control:
+        label: "{{ item }}"
+      when: (_freeipa_otp_with_token | default([])) | length > 0
 
     # allow_all teardown — GUARDED: only proceed if replacement HBAC rules exist,
     # so the run cannot lock operators out.
@@ -113,9 +352,15 @@
         - ansible_os_family == "RedHat"
         - (_freeipa_server_cryptopol.stdout | default('') | trim) != freeipa_server_crypto_policy
   always:
+    # MUST mirror the kinit `when:` above exactly. An OTP-only run acquires a ticket
+    # (group-show / otptoken-find need one) but, while this was gated on allow_all alone,
+    # never destroyed it — leaving the admin ccache on disk and breaking the guarantee
+    # this always: block exists to provide.
     - name: Destroy hardening Kerberos ticket
       ansible.builtin.command: kdestroy
       changed_when: false
       failed_when: false
       no_log: true
-      when: freeipa_server_disable_allow_all | bool
+      when: >-
+        (freeipa_server_disable_allow_all | bool)
+        or (freeipa_server_require_otp_groups | length > 0)

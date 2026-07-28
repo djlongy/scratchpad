@@ -70,6 +70,20 @@
     _freeipa_export: "{{ _freeipa_export | freeipa_export_scope(freeipa_server_export_scope, freeipa_server_export_scope_mode) }}"
   when: freeipa_server_export_scope | default([]) | length > 0
 
+# A relative dest is resolved against the PLAYBOOK directory by the template action, not
+# the working directory — so a relative value writes the realm dump somewhere inside the
+# repo, which is both surprising and a commit risk. Fail early and say where it would land.
+- name: Export | Require an absolute output path (a relative one lands in the repo tree)
+  ansible.builtin.assert:
+    that:
+      - freeipa_server_export_output is match('^/')
+    fail_msg: >-
+      freeipa_server_export_output must be an ABSOLUTE path on the control node; got
+      '{{ freeipa_server_export_output }}'. A relative value is resolved against the
+      playbook directory, so the snapshot would be written inside the repository
+      (and a custom filename escapes the .gitignore that currently masks this).
+    quiet: true
+
 - name: Export | Render the snapshot group_vars file on the control node
   ansible.builtin.template:
     src: freeipa.config.snapshot.yml.j2

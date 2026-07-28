@@ -134,8 +134,9 @@ freeipa_server_trusted_ca_staging_dir: "/root/.freeipa-trusted-cas"
 
 # ── Post-install CA reparent (self-signed → external; opt-in --tags reparent_ca) ─
 # Converts a FULLY WORKING CA-ful FreeIPA to an externally signed IPA CA without
-# reinstall. Driven by --tags reparent_ca (phase 1 emit CSR, phase 2 apply signed chain).
-# Host-side work lives in reparent_ca_emit.yml / reparent_ca_apply.yml.
+# reinstall. Driven by playbooks/20_iam_freeipa.yml --tags reparent_ca and
+# scripts/freeipa-reparent-ca.sh. Host-side work lives in reparent_ca_emit.yml /
+# reparent_ca_apply.yml. See docs/runbooks/freeipa-external-ca-reparent.md.
 #
 # freeipa_reparent_require_self_signed: when true (default), phase 1 fails if the
 # IPA CA is already externally signed — guards accidental re-runs. Set false to
@@ -199,7 +200,7 @@ freeipa_server_allow_zone_overlap: true
 # Applied ONLY when freeipa_server_dns_trusted_networks is non-empty (else skipped, files
 # left untouched). named-checkconf validates before a `rndc reconfig` reload.
 # File-local (not LDAP) — runs on every integrated-DNS host, not primary-only.
-freeipa_server_dns_trusted_networks: []   # ENV-SPECIFIC: e.g. ["10.0.0.0/8", "127.0.0.1", "::1"]
+freeipa_server_dns_trusted_networks: []   # ENV-SPECIFIC: e.g. ["192.168.10.0/24", "127.0.0.1", "::1"]
 # Restrict recursion + query-cache to the trusted_network ACL (the reason for the ACL).
 freeipa_server_dns_restrict_recursion: true
 # dnssec-validation stanza written into the options include. "" → omit the line (leave the
@@ -230,7 +231,7 @@ freeipa_server_dns_forward_zones: []
 freeipa_server_dns_records: []
 #  - { zone_name: "internal.example.com", name: "app1", record_type: "A", record_value: "10.0.0.20" }
 #  - { zone_name: "internal.example.com", name: "vip",  record_type: "A", record_value: ["10.0.0.21", "10.0.0.22"] }
-#  - { zone_name: "internal.example.com", name: "vcenter", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR at add
+#  - { zone_name: "internal.example.com", name: "hypervisor", record_type: "A", record_value: "10.0.0.30", create_reverse: true }  # + PTR at add
 #  - { zone_name: "internal.example.com", records: [ { record_name: "esx01", a_record: ["10.0.0.31"], create_reverse: true } ] }
 # GLOBAL PTR default: true → every A/AAAA (flat AND bulk) gets create_reverse unless the
 # record sets its own. Needs the matching reverse zone. Per-record create_reverse wins.
@@ -267,7 +268,15 @@ freeipa_server_preflight_wait_primary_timeout: 600  # replica waits for primary 
 freeipa_server_harden_anonymous_bind: false        # true → set rootdse (not full off)
 freeipa_server_search_size_limit: 0                 # 0 → leave as-is
 freeipa_server_search_time_limit: 0                 # 0 → leave as-is
-freeipa_server_require_otp_groups: []               # admin groups to force OTP on
+# Admin groups to force OTP on. FreeIPA has no group-level auth-type, so the role applies
+# user-auth-type=otp to each group's DIRECT members (resolved live, so automember-added
+# members are covered; members via a NESTED group are not — name the nested group too).
+# Members with NO enrolled OTP token are SKIPPED and named, never switched: OTP-only with
+# no token locks the user out of every password path. See freeipa_server_require_otp_strict.
+freeipa_server_require_otp_groups: []
+# true → FAIL the run when a member of a require_otp group has no OTP token enrolled,
+# instead of skipping them with a warning. Use where partial enforcement is unacceptable.
+freeipa_server_require_otp_strict: false
 freeipa_server_disable_allow_all: false             # true → tear down allow_all (guarded)
 freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "FIPS", "DEFAULT"
 
@@ -312,9 +321,16 @@ freeipa_iam_sudo_rules: []
 freeipa_iam_pwpolicies: []
 
 # ── Thin RBAC overlay (OPTIONAL; compiled inside the desired phase when declared) ──
-# Assign a user an abstract ROLE instead of many granular target groups. The overlay
-# generates ONLY: the role group, its nesting into the EXISTING groups it is member_of,
-# and user→role-group membership — merged onto the native lists (baseline wins).
+# Assign a user an abstract ROLE instead of many granular target groups.
+#
+# THE RULE: anything that must REFERENCE the role group is GENERATED here; anything the
+# role group REFERENCES must already exist. So the overlay generates the role group, its
+# nesting into the EXISTING groups it is member_of, user→role-group membership, and any
+# role-scoped HBAC/sudo rules (those BIND to the role group, which does not exist until
+# this overlay creates it — hence they cannot pre-exist natively and the compiler injects
+# usergroup: [<role>]). It never generates hostgroups, sudo commands or command groups:
+# a rule REFERENCES those, so they must be declared natively first.
+# All merged onto the native lists (baseline wins on a name collision).
 # WYSIWYG flat list, same shape as freeipa_iam_usergroups: every name is used
 # VERBATIM (no naming templates) — paste policy group names straight from the export.
 # Scope lives in the names you declare; role-<tenant>-<env>-<name> is convention, not
@@ -330,6 +346,10 @@ freeipa_server_rbac_roles: []
 #      - ug-acme-prod-gitlab-admins
 #      - ug-acme-prod-docker-operators
 #    members: [alice, bob]                      # users granted the role
+#    hbac_rules:                                # OPTIONAL — usergroup: [<role>] injected
+#      - {name: hbac-acme-prod-platform-admin, hostgroup: [hg-acme-prod], service: [sshd]}
+#    sudo_rules:                                # OPTIONAL — usergroup: [<role>] injected
+#      - {name: sudo-acme-prod-platform-admin, hostgroup: [hg-acme-prod], cmdgroup: [cmds-ops]}
 freeipa_server_rbac_allow_unknown_users: false           # permit assigning users not in freeipa_iam_users
 freeipa_server_rbac_allow_missing_member_of: false       # permit member_of targets not declared natively
 
@@ -366,14 +386,87 @@ freeipa_iam_group_gids: {}
 # retains the account (recoverable) rather than destroying it.
 freeipa_iam_preserve_archived: true
 
+# EXPLICIT offboarding list — the leaver's own entry, MOVED here from freeipa_iam_users.
+#
+# Two independent routes now preserve an account, on purpose:
+#   INFERRED  — a managed user missing from freeipa_iam_users becomes an archival candidate.
+#               Requires freeipa_server_authoritative (dropping a user from group_vars must
+#               not deactivate them on an ordinary converge).
+#   EXPLICIT  — this list. UNGATED: it runs at every setting, because an entry here is an
+#               operator INSTRUCTION, not an inference from absence. Offboarding a leaver
+#               must not require arming whole-realm authoritative mode, which also turns on
+#               group deletion and the membership strip.
+# The two agree in steady state (a user listed here is also absent from freeipa_iam_users,
+# so both routes want the same outcome) and each is idempotent, so the redundancy is free.
+#
+# Accepts a bare login OR a whole user dict, so the workflow is a literal cut-and-paste:
+#   freeipa_iam_users_preserved:
+#     - alice                                   # login only
+#     - {name: bob, first: Bob, last: Example}  # entry moved verbatim out of freeipa_iam_users
+#
+# MOVE, do not copy. A login present in BOTH lists is a hard validation failure naming the
+# user (freeipa_iam_validate, shape) — it is refused rather than resolved, because task order
+# would otherwise decide: the reactivate pass would undel the account early and this pass
+# would re-archive it late, so the run would never be idempotent and the account would be
+# able to authenticate in between. Names are folded, so `Alice` here and `alice` there is
+# still caught.
+#
+# Preserve vs destroy: this list only ever PRESERVES (user-del --preserve — deactivated,
+# retained, recoverable with `ipa user-undel`). It never hard-deletes, regardless of
+# freeipa_iam_preserve_archived. Purging preserved accounts stays behind --tags prune_preserved.
+freeipa_iam_users_preserved: []
+
+# Computed by iam.yml, but ONLY under freeipa_server_authoritative — declared here so it is
+# never undefined. It carries no role_ prefix and is read by iam_report.yml, so a future
+# consumer written without `| default([])` would otherwise break every additive-mode run.
+# An empty default also means "archive nothing", which is the safe reading.
+freeipa_iam_users_to_remove: []
+
 # ── Pruning control ───────────────────────────────────────────────────────────
 # THE authoritative switch (spec §8) — the sole pruning control.
-# false (default) = additive-safe: create/update declared objects + memberships, add users/groups,
-# but never strip undeclared members or delete undeclared objects. true = compiled desired-state is
+# false (default) = additive-safe for GROUP MEMBERSHIP and for object existence: undeclared group
+# members are left alone and no object is deleted or archived. true = compiled desired-state is
 # authoritative: undeclared group members removed, undeclared in-scope matrix objects (groups,
 # hostgroups, HBAC/sudo/automember rules) deleted, users dropped from config archived. REALM-SCOPED:
 # only run authoritative against a COMPLETE assembled desired-state, never a partial tenant file, or
 # it prunes another tenant's objects (spec §9).
+#
+# READ THIS BEFORE RELYING ON "additive". The additive contract covers USERGROUP membership and
+# object EXISTENCE only. The MEMBER LISTS OF RULES AND NESTED/ATTRIBUTE OBJECTS are reconciled
+# declaratively at EVERY setting, including all defaults. For any member key a declared object
+# CARRIES, the upstream modules compute del_list = current − declared, so a member added out of
+# band is REMOVED on the next converge with authoritative still false. (Verified live 2026-07-28;
+# re-proven 2026-07-29 by scripts/freeipa-chaos-additive-scope.sh, which drifts an HBAC rule, a
+# sudo rule and a hostgroup nesting and watches all three get revoked while a drifted GROUP member
+# survives in the same run.) The full reconciled set, each key applying only when the declared
+# object carries it:
+#   * HBAC rule    — user, usergroup, host, hostgroup, service, servicegroup
+#   * sudo rule    — user, usergroup, host, hostgroup, hostmask, cmd/deny_cmd, cmdgroup/
+#                    deny_cmdgroup, sudoopt, runasuser, runasuser_group, runasgroup.
+#                    NOTE: sudo rules have NO precheck gate — this fires on EVERY run.
+#   * hostgroup    — nesting AND `host:` members (declaring host: on an automember-target
+#                    hostgroup revokes what the automember plugin populates; omit the key and
+#                    the plugin's hosts are safe)
+#   * hbacsvcgroup — hbacsvc          * sudocmdgroup — sudocmd
+#   * iparole      — privilege, user, usergroup, host, hostgroup, service
+#   * privilege    — permission       * permission — attrs/right/memberof (wholesale REPLACE)
+#   * automember   — inclusive/exclusive condition lists
+#   * user         — principal (Kerberos aliases), manager, certificate, certmapdata
+#   * every RBAC-overlay-generated HBAC/sudo rule — the overlay injects usergroup: [<role>]
+#     unconditionally, so any other group bound to such a rule is revoked every run
+# NOT reconciled under additive: usergroup membership + nesting, membermanagers, iparole
+# sysaccount, pwpolicy attrs, hbacsvc/sudocmd descriptions, user group membership, user archival,
+# object deletion.
+# The precheck does NOT save you: its member comparators are set INEQUALITY, not subset, so
+# out-of-band drift makes the sets differ and the precheck INCLUDES the entry — driving the very
+# module call that strips it.
+# This only becomes visible when live membership is a strict superset of what is declared, which
+# is why a converge against a realm built from the same declared set looks clean. If an external
+# system grants access on an object this role declares, that grant is revoked on every run —
+# model it in the declarative data, or do not declare that object here.
+# Note also that freeipa_iam_reconcile_protect_regexes does NOT shield membership; it shields
+# object EXISTENCE (deletion) only. The strip-exempt set (protected + automember-owned groups)
+# covers USERGROUP membership only — there is no exemption mechanism for the lists above.
 freeipa_server_authoritative: false
 
 # Membership-only reconcile — the SAFE nightly drift-revoke mode. Strips undeclared group members
@@ -423,6 +516,15 @@ freeipa_iam_reconcile_scope: ""
 freeipa_iam_reconcile_all: false
 freeipa_iam_reconcile_all_confirm: false
 
+# Object types allowed to declare ZERO objects while the realm still has in-scope ones.
+# The reconcile refuses that combination by default: it is the signature of one mistyped
+# tenant key emptying a single list while the other types load normally (the all-empty
+# breaker cannot see it, because the sum across types stays non-zero). List a type here
+# only when its objects really are being retired, e.g. ["sudocmdgroup"]. Valid names are
+# the find types: sudorule, hbacrule, hbacsvcgroup, sudocmdgroup, hbacsvc, sudocmd,
+# hostgroup, group.
+freeipa_iam_reconcile_allow_empty_types: []
+
 # Built-ins never pruned by reconcile (whole-realm mode).
 freeipa_iam_builtin_hbac_rules: ["allow_all", "allow_systemd-user"]
 freeipa_iam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
@@ -433,19 +535,26 @@ freeipa_iam_builtin_hbacsvcgroups: ["Sudo", "ftp"]
 freeipa_iam_builtin_pwpolicies: ["global_policy"]
 
 # ── Externally-managed object protection (reconcile shield) ──────────────────
-# Objects a runtime PIM/provisioning manager creates (pam_* shadow groups, per-tenant
-# PIM hbac/sudo rules, and its svc accounts) are NOT in the declarative model, so a
-# scoped reconcile whose scope substring collides with their names — or reconcile_all —
-# would delete/archive them. Protection is by NAME PATTERN, not a single prefix: these are
-# LISTS of regexes, and a found object/user is shielded if its name matches ANY entry
-# (re.search — matches anywhere in the name, so a bare slug like "acme" also works). Add a
-# tenant's slug(s) here if the manager names its groups per-tenant instead of with a common
-# prefix; multiple slugs per tenant is fine — one list entry each. The shield applies to
-# BOTH scoped reconcile AND reconcile_all, and to user archival. [] → shield nothing extra.
-freeipa_iam_reconcile_protect_regexes:
-  - "^pam_"           # shadow groups from a runtime PIM manager; add tenant slugs as needed
-# Service accounts a runtime PIM/provisioning manager owns — shield from archival. Empty by
-# default; add your own patterns in inventory group_vars, e.g. ["^svc-"].
+# Some directory objects are created and owned at runtime by software OUTSIDE this role —
+# an external provisioning system writing to the same realm with its own credentials.
+# Such objects are deliberately absent from the declarative model, so a scoped reconcile
+# whose scope substring collides with their names — or reconcile_all — would delete or
+# archive them.
+#
+# These two lists are the ownership boundary: a found object/user whose name matches ANY
+# entry is shielded from BOTH scoped reconcile AND reconcile_all, and from user archival.
+# Matching is re.search, so a pattern matches ANYWHERE in the name — anchor with ^ only
+# when you really mean "starts with". Beware: external systems commonly embed their marker
+# mid-name (`sudo-<marker>-<tenant>`, `hbac-<marker>-<tenant>`), which an anchored pattern
+# silently misses.
+#
+# BOTH DEFAULT TO EMPTY, DELIBERATELY. This role is product-agnostic: it must not ship
+# patterns for any particular third-party product. Declare the patterns for whatever writes
+# to YOUR realm in inventory (host_vars/group_vars) — see the repo rule "Product-Agnostic
+# Roles" in CLAUDE.md. Keep them in lockstep with that inventory's export exclusions
+# (freeipa_server_export_scope), since the two halves enforce the same boundary and drift
+# between them is exactly how an app-owned object becomes a delete candidate.
+freeipa_iam_reconcile_protect_regexes: []
 freeipa_iam_reconcile_protect_users_regexes: []
 
 # Container-marker group for GROUP-EXISTENCE reconcile: every declared group is nested here during
@@ -482,11 +591,25 @@ freeipa_iam_unmodifiable_users:
 
 # FreeIPA BUILT-IN groups the role must never delete (state: absent is refused, so an accidental
 # absent can't tear down core schema). Membership can still be managed; only deletion is blocked.
+# These are also exempt from BOTH undeclared-member removers — the declarative membership
+# strip and the eviction/snap-back pass — under freeipa_server_authoritative /
+# freeipa_iam_reconcile_memberships_only. Membership in them stays additive.
 freeipa_iam_protected_groups:
   - admins
   - editors
   - ipausers
   - trust admins
+
+# Groups named by a freeipa_server_automember_rules entry with automember_type: group are
+# ALSO exempt from both undeclared-member removers (the declarative strip and eviction) —
+# the automember plugin owns their membership, and stripping it would empty them on every
+# steady-state converge (automember rebuild only fires when a RULE changes). The exemption
+# is derived automatically in tasks/iam.yml (_freeipa_iam_strip_exempt_groups); nothing to
+# declare here. Their declared members/nesting are still enforced additively.
+# Hostgroup-type rules need no exemption: the hostgroup reconcile passes
+# `host: default(omit)`, and omit (unlike an empty list) never strips. The exemption is
+# therefore type-filtered, so a usergroup that merely shares a name with a hostgroup rule
+# is still reconciled normally.
 
 # ── IAM reference-integrity validation ──────────────────────────────────────
 # References (role→group, user→group/role, hbac→service, sudo→command) are checked so a typo fails
@@ -539,7 +662,15 @@ freeipa_iam_hbac_rules_disable: []
 # ── Config export / snapshot (opt-in; tags: export) ─────────────────────────
 # Snapshot a LIVE FreeIPA into this role's declarative contract (read-only) to adopt an existing
 # instance. Output path on the control node (move into inventory group_vars to apply).
-freeipa_server_export_output: "freeipa.config.snapshot.yml"
+#
+# ABSOLUTE by default, and asserted absolute in export_config.yml. A bare relative name is
+# resolved by the template action against the PLAYBOOK directory, not the working directory,
+# so the previous default silently wrote a full realm dump into playbooks/ inside the repo.
+# It stayed uncommitted only because .gitignore happens to carry
+# `**/freeipa.config.snapshot*.yml` — an operator who sets a different filename loses that
+# accident and commits the realm's user/group/rule inventory. /tmp keeps the artefact outside
+# the working tree; the operator moves it into group_vars deliberately.
+freeipa_server_export_output: "/tmp/freeipa.config.snapshot.yml"
 freeipa_server_export_include_host_membership: false  # pin static hostgroup rosters (default: enrol/automember own them)
 freeipa_server_export_include_sshkeys: false          # emit per-user SSH public keys
 # Group gidnumber capture — default OFF (portable snapshots; IPA re-assigns GIDs on

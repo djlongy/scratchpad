@@ -9,7 +9,9 @@ state and call modules; these filters do the computation in between. Five groups
                    files, stamp ownership), freeipa_iam_named (bare-string
                    shorthand), freeipa_export_scope (slice a snapshot per tenant)
   deletion safety  freeipa_iam_orphans (in-scope + undeclared + unprotected; blank
-                   scope marker deletes NOTHING), freeipa_iam_evictions /
+                   scope marker deletes NOTHING, and match-all needs the explicit
+                   all_undeclared flag — no scope VALUE can mean it),
+                   freeipa_iam_evictions /
                    freeipa_iam_evict_payload (strip only role-managed members)
   bulk compilers   freeipa_iam_sudorules_payload, freeipa_iam_pwexp_bumps,
                    freeipa_dns_reverse_defaulted — one module call per type,
@@ -37,6 +39,15 @@ try:                                          # real Ansible at runtime …
 except ImportError:                           # … plain Python under pytest
     class AnsibleFilterError(Exception):
         pass
+
+try:                                          # real Ansible at runtime …
+    from ansible.utils.display import Display
+except ImportError:                           # … plain Python under pytest
+    class Display:                            # no controller to warn to: no-op,
+        def warning(self, msg):               # never print() (stdout is not a log)
+            pass
+
+_display = Display()
 
 
 # ── merge generated objects onto the baseline (native keys) ───────────────────
@@ -75,40 +86,65 @@ def freeipa_iam_merge(base, extra, key="name", union_fields=None):
 
 
 # ── orphan reconcile — what to DELETE (managed, in scope, no longer declared) ──
-def _is_orphan(name, match, want, protected):
+# Strings Ansible legitimately hands a filter for a FALSE boolean: an unquoted `-e
+# flag=false`, a `| default('')`, a templated var that never got `| bool`. Plain
+# bool('false') is True, so a naive check on the all-undeclared flag would fail OPEN
+# and widen a scoped prune into a whole-realm one.
+_FALSE_STRINGS = frozenset({"", "false", "no", "off", "0", "none", "null"})
+
+
+def _flag(value) -> bool:
+    """Strict truthiness for a DESTRUCTIVE opt-in flag — false-ish strings are FALSE."""
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSE_STRINGS
+    return bool(value)
+
+
+def _is_orphan(name, match, want, protected, all_undeclared=False):
     """A name is an orphan iff it is in scope, not desired, and not protected.
 
-    In scope means: the scope marker is a substring of the name, OR match == "*"
-    (the all-undeclared mode — every found name is eligible). A blank match is
-    handled by the caller (freeipa_iam_orphans) as a hard fail-safe (deletes
-    nothing), so it never reaches here as "".
+    In scope means: `all_undeclared` is on (the whole-realm prune — every found name is
+    eligible), OR the scope marker is a substring of the name. The scope marker is
+    ALWAYS an ordinary literal substring: NO value of it — "*" included — can mean
+    match-all. A blank match is handled by the caller (freeipa_iam_orphans) as a hard
+    fail-safe (deletes nothing), so it never reaches here as "".
     """
     if not name:
         return False
-    in_scope = (match == "*") or (match in name)
+    in_scope = all_undeclared or (match in name)
     return in_scope and name not in want and name not in protected
 
 
-def freeipa_iam_orphans(found, desired, match, protected=None):
+def freeipa_iam_orphans(found, desired, match, protected=None, all_undeclared=False):
     """Compute the orphan object names to delete, per object type.
 
-    `found`    : {type: [names currently in the realm]} (from `ipa <type>-find <match>`)
-    `desired`  : {type: [names declared this run]}
-    `match`    : the scope marker that EVERY managed name contains (e.g. "acme-prod") —
-                 a name is only ever eligible for deletion if it CONTAINS this, so other
-                 tenants/environments and unrelated objects are never touched.
-    `protected`: names that must never be deleted (e.g. freeipa_iam_protected_groups).
+    `found`     : {type: [names currently in the realm]} (from `ipa <type>-find <match>`)
+    `desired`   : {type: [names declared this run]}
+    `match`     : the scope marker that EVERY managed name contains (e.g. "acme-prod") —
+                  a name is only ever eligible for deletion if it CONTAINS this, so other
+                  tenants/environments and unrelated objects are never touched. It is a
+                  LITERAL substring and nothing else: there is no in-band value that
+                  turns it into a wildcard.
+    `protected` : names that must never be deleted (e.g. freeipa_iam_protected_groups).
+    `all_undeclared`: the whole-realm prune — EVERY found object not declared and not
+                  protected is an orphan, `match` ignored. This is the ONLY way to get
+                  match-all behaviour, and the caller must ask for it explicitly
+                  (reconcile.yml gates it behind freeipa_iam_reconcile_all +
+                  _all_confirm). Default false: absent or falsy means "no match-all".
 
-    Returns {type: [orphan names]}. An empty/blank `match` yields NOTHING (fail-safe:
-    never delete the whole realm because the scope marker was unset).
+    Returns {type: [orphan names]}. Without `all_undeclared`, an empty/blank `match`
+    yields NOTHING (fail-safe: never delete the whole realm because the scope marker
+    was unset).
     """
-    if not match:
+    all_undeclared = _flag(all_undeclared)
+    if not all_undeclared and not match:
         return {otype: [] for otype in (found or {})}
     protected = set(protected or [])
     out = {}
     for otype, names in (found or {}).items():
         want = set((desired or {}).get(otype) or [])
-        out[otype] = [n for n in (names or []) if _is_orphan(n, match, want, protected)]
+        out[otype] = [n for n in (names or [])
+                      if _is_orphan(n, match, want, protected, all_undeclared)]
     return out
 
 
@@ -216,9 +252,72 @@ _FREEIPA_IDENTITY_ALIASES = {
     "dns_zones": "freeipa_server_dns_zones",
     "dns_records": "freeipa_server_dns_records",
 }
+# Every real object var a tenant file may declare directly, so the merge can tell "a var
+# I know" from "a typo I must not guess at". The alias TARGETS, plus the vars that are
+# legitimately declared in a tenant file but are not identity objects with an alias:
+#
+#   freeipa_server_rbac_roles — the OPTIONAL RBAC overlay slice. Declaring the overlay in
+#     tenant YAML is a deliberate design goal ("where the overlay starts working"), and it
+#     only ever worked because unknown LIST keys fell through to a var of the same name.
+#     Closing that hole without listing it here would silently disable the overlay for
+#     every tenant-declared role — verified: it is absent from _FREEIPA_IDENTITY_ALIASES.
+#
+#   freeipa_server_dns_forward_zones — a list of ipadnsforwardzone objects (defaults/main.yml
+#     :227, looped in tasks/dns_records.yml:75) that `--tags export` EMITS
+#     (templates/freeipa.config.snapshot.yml.j2:79, alongside dns_zones/dns_records, which
+#     are covered via aliases). It has no short alias, so without it here a genuine export
+#     snapshot is hard-rejected and the documented adopt-a-snapshot workflow cannot run.
+_FREEIPA_KNOWN_OBJECT_VARS = set(_FREEIPA_IDENTITY_ALIASES.values()) | {
+    "freeipa_server_rbac_roles",
+    "freeipa_server_dns_forward_zones",
+}
 _FREEIPA_IDENTITY_META = {"tenant", "shared"}
+# Snapshot METADATA written by `--tags export` (files/freeipa_config_export.py via
+# templates/freeipa.config.snapshot.yml.j2). It records HOW the capture was scoped, not
+# identity, so it is skipped in BOTH its forms. Without this the documented
+# adopt-an-existing-realm workflow ("drop the snapshot into the tenants dir") could not
+# work at all: `freeipa_server_export_scope_mode` is a SCALAR and trips the non-list
+# guard below, killing the load on the first file; and `freeipa_server_export_scope` is
+# a LIST, so it would silently be merged in as declared objects and then set as a var by
+# load_tenants.yml — a tenant file quietly redefining the export scope.
+# Skipping is right, staying quiet was not: every one of these that appears in a tenant
+# file now warns (_warn_export_meta_ignored), so a hand-written `freeipa_server_domain:`
+# is reported as ignored instead of being a green no-op.
+_FREEIPA_EXPORT_META = {
+    # how the capture was scoped
+    "freeipa_server_export_scope", "freeipa_server_export_scope_mode",
+    # realm identity + DNS config the snapshot records for context. These are SERVER
+    # settings that belong in group_vars; letting them through means either an abort
+    # (the scalars trip the non-list guard) or, worse for the list-valued forwarders,
+    # a tenant file silently set_fact-ing over the inventory's DNS configuration.
+    "freeipa_server_domain", "freeipa_server_realm", "freeipa_server_fqdn",
+    "freeipa_server_forward_policy", "freeipa_server_forwarders",
+}
 _FREEIPA_USERS_VAR = "freeipa_iam_users"
 _FREEIPA_GROUPS_VAR = "freeipa_iam_usergroups"
+
+
+def _warn_export_meta_ignored(key: str, tenant: str) -> None:
+    """Say out loud that an export-metadata / server-setting key was dropped.
+
+    The skip itself is REQUIRED (see _FREEIPA_EXPORT_META) but it used to be a hard
+    error, so a hand-written `freeipa_server_domain:` in a tenant file now produces a
+    green run that did nothing — a silent no-op on an operator's stated intent. Warn
+    once per key per file. A genuine `--tags export` snapshot legitimately carries
+    these and will warn too; that is the accepted cost of never staying silent.
+    """
+    _display.warning(
+        f"freeipa_server tenant load: tenant file (tenant "
+        f"'{tenant or '(unset)'}') sets '{key}' — IGNORED, it had NO effect. "
+        f"'{key}' is a server-wide setting / --tags export snapshot marker, not a "
+        "tenant identity object list, and the tenant merge skips it so a tenant "
+        "file can never redefine the realm's DNS or export scope. TO ACTUALLY SET "
+        f"IT: put '{key}' in the inventory's group_vars (where the other "
+        "freeipa_server_* settings live, e.g. inventories/<env>/group_vars/all/"
+        f"main.yml) and delete it from the tenant file. If this file IS an untouched "
+        "--tags export snapshot, the key is expected there and the skip is correct — "
+        "nothing to do."
+    )
 
 
 def freeipa_iam_identity_merge(files: list[dict]) -> dict:
@@ -251,6 +350,10 @@ def _merge_identity_entry(entry: dict, result: dict) -> None:
     for key, value in (entry or {}).items():
         if key in _FREEIPA_IDENTITY_META:
             continue
+        if key in _FREEIPA_EXPORT_META:
+            # Skipped exactly as before — the only change is that it is now audible.
+            _warn_export_meta_ignored(key, tenant)
+            continue
         if not isinstance(value, list):
             # A tenant file's helper scalars (local_env, name-prefix vars, ...) are
             # legitimately non-list and are skipped. A KNOWN object key carrying a
@@ -265,10 +368,24 @@ def _merge_identity_entry(entry: dict, result: dict) -> None:
                 raise AnsibleFilterError(
                     f"tenant file (tenant '{tenant or '(unset)'}'): key '{key}' must "
                     f"be a LIST of objects, got {type(value).__name__}. A single "
-                    "entry still needs list form (`users: [{...}]`); dict-shaped "
-                    "freeipa_* config belongs in group_vars, not tenant files."
+                    "entry still needs list form (`users: [{...}]`); a scalar or "
+                    "dict-shaped freeipa_* setting belongs in group_vars, not a tenant "
+                    "file (snapshot metadata from --tags export is skipped already)."
                 )
             continue
+        # CLOSED allow-list. An unknown LIST key used to fall through to a var of its
+        # own literal name: `freeipa_iam_usergroup` (one character short) minted a junk
+        # var while freeipa_iam_usergroups stayed at its [] default. Measured on the live
+        # tenant files that single typo drops 71 of 96 groups — past every breaker, and
+        # hard-deleted under freeipa_server_authoritative. Reject instead of guess.
+        if key not in _FREEIPA_IDENTITY_ALIASES and key not in _FREEIPA_KNOWN_OBJECT_VARS:
+            raise AnsibleFilterError(
+                f"tenant file (tenant '{tenant or '(unset)'}'): unknown key '{key}'. "
+                "A tenant file may only declare identity object lists. Check for a typo "
+                "(e.g. 'freeipa_iam_usergroup' vs 'freeipa_iam_usergroups') — an "
+                "unrecognised key used to be accepted silently, leaving the real list "
+                "empty, which a destructive reconcile reads as 'delete everything'. "
+                "Server settings belong in group_vars, not a tenant file.")
         target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
         result["objects"].setdefault(target, []).extend(value)
         if target == _FREEIPA_USERS_VAR:
@@ -853,15 +970,42 @@ def _user_shape_problems(users: list, unmodifiable: set[str]) -> list[str]:
     return out
 
 
-def _duplicate_user_problems(users: list) -> list[str]:
-    """Duplicate usernames across the whole assembled user set."""
-    unames = [u.get("name", "(unnamed)") for u in (users or []) if isinstance(u, dict)]
+def _fold(name):
+    """Fold a directory name for COMPARISON only — never for output.
+
+    FreeIPA matches cn/uid case-insensitively (caseIgnoreMatch; verified live:
+    `ipa group-show Admins` returns the real `admins`), and lowercases uid on create.
+    So `acme-admins` and `ACME-Admins` declared in two tenant files are ONE realm object:
+    both get applied, last-in-glob-order wins on attributes, and a verbatim comparison
+    reports no problem at all. Leading/trailing space is folded too — trivial to introduce
+    in the flow-style tenant files and equally invisible to the directory.
+    """
+    return name.strip().lower() if isinstance(name, str) else name
+
+
+def _duplicate_by_fold(names: list, describe) -> list[str]:
+    """Duplicate report over folded names, quoting the ORIGINAL spellings.
+
+    Reporting the folded form would hide the very thing the operator needs to see —
+    that two differently-spelled declarations are the same object.
+    """
+    seen: dict = {}
+    for name in names:
+        seen.setdefault(_fold(name), []).append(name)
     out: list[str] = []
-    for name in dict.fromkeys(unames):  # unique, first-occurrence order
-        count = unames.count(name)
-        if count > 1:
-            out.append(f"duplicate username '{name}' ({count} entries)")
+    for spellings in seen.values():
+        if len(spellings) > 1:
+            unique = list(dict.fromkeys(spellings))
+            shown = unique[0] if len(unique) == 1 else " / ".join(unique)
+            out.append(describe(shown, len(spellings)))
     return out
+
+
+def _duplicate_user_problems(users: list) -> list[str]:
+    """Duplicate usernames across the whole assembled user set (case/space folded)."""
+    unames = [u.get("name", "(unnamed)") for u in (users or []) if isinstance(u, dict)]
+    return _duplicate_by_fold(
+        unames, lambda n, c: f"duplicate username '{n}' ({c} entries)")
 
 
 def _duplicate_named_problems(items: list, label: str) -> list[str]:
@@ -873,28 +1017,131 @@ def _duplicate_named_problems(items: list, label: str) -> list[str]:
     """
     names = [i.get("name") for i in (items or [])
              if isinstance(i, dict) and i.get("name")]
+    return _duplicate_by_fold(
+        names, lambda n, c: f"duplicate {label} '{n}' ({c} entries)")
+
+
+# (list key in the validate payload, human label). Every type that reaches a module.
+_DUPLICATE_CHECKED_TYPES = (
+    ("usergroups", "usergroup"), ("hostgroups", "hostgroup"),
+    ("hbac_rules", "HBAC rule"), ("sudo_rules", "sudo rule"),
+    ("hbacsvcs", "HBAC service"), ("hbacsvcgroups", "HBAC service group"),
+    ("sudo_commands", "sudo command"), ("sudocmdgroups", "sudo command group"),
+    ("iparoles", "IPA role"), ("pwpolicies", "password policy"),
+    ("roles", "role"),
+)
+
+
+def _non_mapping_problems(items: list, label: str) -> list[str]:
+    """Shape problems for entries that are not mappings.
+
+    Only `users` had a mapping check, so a bare-string entry anywhere else reached an
+    unguarded `.get` and killed the play with `AttributeError: 'str' object has no
+    attribute 'get'` — a Jinja traceback naming no culprit. Bare strings do arrive in
+    practice: `_stamp_group_owner` accepts name-only shorthand and iam_desired.yml
+    normalises only hbacsvcs and sudo_commands through freeipa_iam_named.
+    """
+    return [
+        f"{label} entry #{i + 1} is not a mapping (got {type(item).__name__}: {item!r}) — "
+        f"use `- name: {item}` rather than a bare value"
+        for i, item in enumerate(items or [])
+        if not isinstance(item, dict)
+    ]
+
+
+def freeipa_iam_logins(items: list) -> list[str]:
+    """Normalise a user list to login strings, preserving declared spelling.
+
+    Accepts either a bare login (``- alice``) or a whole user dict
+    (``- {name: alice, first: A, last: B}``) in the SAME list, because the
+    offboarding workflow is a literal cut-and-paste: the operator moves an entry
+    out of ``freeipa_iam_users`` and into ``freeipa_iam_users_preserved``
+    unchanged. Requiring them to strip it down to a login first is exactly the
+    kind of hand-editing that produces a half-moved entry in both lists.
+
+    Blank/None names and non-str/dict junk are dropped here; shape validation
+    reports them separately rather than this filter raising mid-render.
+    """
     out: list[str] = []
-    for name in dict.fromkeys(names):
-        count = names.count(name)
-        if count > 1:
-            out.append(f"duplicate {label} '{name}' ({count} entries)")
+    for item in items or []:
+        name = item.get("name") if isinstance(item, dict) else item
+        if isinstance(name, str) and name.strip():
+            out.append(name.strip())
+    return out
+
+
+def _preserved_conflict_problems(users: list, preserved: list) -> list[str]:
+    """A login declared BOTH active and preserved is refused.
+
+    This is the botched cut-and-paste: the entry was COPIED into
+    freeipa_iam_users_preserved but never deleted from freeipa_iam_users. There
+    is no safe way to guess the intent, and letting task order decide is worse
+    than either answer:
+
+      * reactivate (iam.yml, early) undels the account, the explicit preserve
+        pass (later) re-archives it — so the run is never idempotent, and the
+        account is LIVE and able to authenticate for the minutes in between.
+      * silently preferring the active list leaves a leaver with access;
+        silently preferring the preserved list disables someone who should not be.
+
+    So it fails at validate time, before anything is written. Names are folded on
+    both sides: FreeIPA matches uid case-insensitively, so `Alice` in one list and
+    `alice` in the other is the same account and must still be caught.
+    """
+    folded = {}
+    for name in freeipa_iam_logins(preserved):
+        folded.setdefault(_fold(name), name)
+    out: list[str] = []
+    for name in freeipa_iam_logins(users):
+        declared_as = folded.get(_fold(name))
+        if declared_as is None:
+            continue
+        same = " " if declared_as == name else (
+            f" (as '{declared_as}'; FreeIPA uid is case-insensitive, so this is "
+            "the same account) ")
+        out.append(
+            f"user '{name}' is declared in BOTH freeipa_iam_users and "
+            f"freeipa_iam_users_preserved{same}— refusing. Offboarding MOVES the "
+            "entry: delete it from freeipa_iam_users. Leaving it in both would "
+            "reactivate then re-archive the account on every run (never idempotent) "
+            "and leave it able to authenticate mid-play.")
     return out
 
 
 def _protected_group_problems(usergroups: list, protected: set[str]) -> list[str]:
-    """A protected built-in group declared state: absent is refused."""
-    return [
-        f"group '{g.get('name')}' is a protected FreeIPA built-in — "
-        "refusing state: absent (would delete core schema)"
-        for g in (usergroups or [])
-        if g.get("state", "present") == "absent" and g.get("name") in protected
-    ]
+    """A protected built-in group declared state: absent is refused.
+
+    Names are folded (trim + lowercase) on BOTH sides because FreeIPA group cn is
+    caseIgnoreMatch — `ipa group-show Admins` returns the real `admins` group
+    (verified live 2026-07-28). A verbatim comparison let `{name: Admins, state:
+    absent}` past the one guard whose job is to refuse deletes aimed at core schema.
+
+    Bare-string entries are tolerated rather than fatal: `_stamp_group_owner` accepts
+    name-only shorthand, so a string can legitimately reach here, and calling .get on
+    it raised AttributeError — a Jinja traceback instead of a shape problem. A bare
+    string carries no `state`, so it can never be an absent declaration.
+    """
+    folded = {p.strip().lower() for p in (protected or set()) if isinstance(p, str)}
+    out: list[str] = []
+    for g in usergroups or []:
+        if not isinstance(g, dict):
+            continue
+        name = g.get("name")
+        if (g.get("state", "present") == "absent"
+                and isinstance(name, str) and name.strip().lower() in folded):
+            out.append(
+                f"group '{name}' is a protected FreeIPA built-in — "
+                "refusing state: absent (would delete core schema; FreeIPA group "
+                "names are case-insensitive)")
+    return out
 
 
 def _ref_missing(items: list, fields: list[str], known: set[str], tmpl: str) -> list[str]:
     """Problems for refs in any of `fields` of each item that are not in `known`."""
     out: list[str] = []
     for item in items or []:
+        if not isinstance(item, dict):
+            continue          # reported by _non_mapping_problems; never silently valid
         for field in fields:
             for ref in item.get(field) or []:
                 if ref not in known:
@@ -982,11 +1229,21 @@ def freeipa_iam_validate(data: dict) -> dict[str, list[str]]:
 
     shape = (_user_shape_problems(users, set(_lst(data, "unmodifiable_users")))
              + _duplicate_user_problems(users)
-             + _duplicate_named_problems(usergroups, "usergroup")
-             + _duplicate_named_problems(_lst(data, "hostgroups"), "hostgroup")
-             + _duplicate_named_problems(hbac_rules, "HBAC rule")
-             + _duplicate_named_problems(sudo_rules, "sudo rule")
+             # Table-driven so a new object type cannot be added without a duplicate
+             # check. The previous four hand-written calls left SEVEN appliable types
+             # unchecked (hbacsvcs, hbacsvcgroups, sudo_commands, sudocmdgroups,
+             # iparoles, pwpolicies, roles) — an exact cross-file duplicate in any of
+             # them produced zero problems and applied twice.
+             + [problem
+                for key, label in _DUPLICATE_CHECKED_TYPES
+                for problem in _duplicate_named_problems(_lst(data, key), label)]
+             + _non_mapping_problems(usergroups, "usergroup")
+             + _non_mapping_problems(_lst(data, "hostgroups"), "hostgroup")
+             + _non_mapping_problems(hbac_rules, "HBAC rule")
+             + _non_mapping_problems(sudo_rules, "sudo rule")
+             + _non_mapping_problems(_lst(data, "pwpolicies"), "pwpolicy")
              + _protected_group_problems(usergroups, set(_lst(data, "protected_groups")))
+             + _preserved_conflict_problems(users, _lst(data, "users_preserved"))
              + _pwpolicy_builtin_absent_problems(_lst(data, "pwpolicies")))
 
     refs = (
@@ -1050,4 +1307,5 @@ class FilterModule:
             "freeipa_iam_hbac_state_mismatch": freeipa_iam_hbac_state_mismatch,
             "freeipa_iam_pwexp_bumps": freeipa_iam_pwexp_bumps,
             "freeipa_iam_validate": freeipa_iam_validate,
+            "freeipa_iam_logins": freeipa_iam_logins,
         }

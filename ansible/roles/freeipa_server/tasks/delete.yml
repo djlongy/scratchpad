@@ -28,17 +28,46 @@
 
 # Build the delete lists. Users + groups EXCLUDE protected entries so the delete can
 # never remove admin / admins / ipausers / etc. even if they were declared.
-- name: Delete | Build delete name lists (protected entries excluded)
+#
+# The exclusion MUST fold both sides. FreeIPA `uid`/`cn` are caseIgnoreMatch — `ipa
+# group-show Admins` returns the real `admins` (verified live 2026-07-28; the same reason
+# filter_plugins/freeipa_iam.py `_fold` exists). A verbatim comparison therefore lets a
+# case variant (`Admins`, `IPAusers`, `Admin`) past the exclusion and straight into
+# `ipa group-del` / `ipa user-del`, where the directory resolves it back to the real
+# protected object. Leading/trailing space is folded for the same reason: it is trivial
+# to introduce in a flow-style tenant file and invisible in the directory.
+#
+# Folding is for the COMPARISON only. The name actually handed to FreeIPA stays the
+# operator's VERBATIM declaration — that is the string the rest of the run created the
+# object with, and a blindly lowercased substitute is not ours to send.
+- name: Delete | Fold the declared and protected name lists for comparison
   ansible.builtin.set_fact:
-    _delete_users: >-
+    _delete_declared_users: >-
       {{ ((freeipa_iam_users | default([]) | map(attribute='name') | list)
           + (freeipa_iam_service_accounts | default([]) | map(attribute='name') | list)
           + (freeipa_iam_breakglass_accounts | default([]) | map(attribute='name') | list))
-         | unique | difference(freeipa_iam_protected_users | default([])) }}
+         | unique | list }}
+    _delete_declared_groups: >-
+      {{ freeipa_iam_usergroups | default([]) | map(attribute='name') | list }}
+    _delete_protected_users_folded: >-
+      {{ freeipa_iam_protected_users | default([]) | map('trim') | map('lower') | list }}
+    _delete_protected_groups_folded: >-
+      {{ ((freeipa_iam_protected_groups | default([]))
+          + (freeipa_iam_builtin_groups | default([])))
+         | map('trim') | map('lower') | unique | list }}
+
+# zip pairs every VERBATIM declared name with its FOLDED form; the reject tests the
+# folded half (element '1') and the map emits the verbatim half (element '0').
+- name: Delete | Build delete name lists (protected entries excluded, case-insensitively)
+  ansible.builtin.set_fact:
+    _delete_users: >-
+      {{ _delete_declared_users | zip(_delete_declared_users | map('trim') | map('lower'))
+         | rejectattr('1', 'in', _delete_protected_users_folded)
+         | map(attribute='0') | list }}
     _delete_groups: >-
-      {{ (freeipa_iam_usergroups | default([]) | map(attribute='name') | list)
-         | difference(freeipa_iam_protected_groups | default([]))
-         | difference(freeipa_iam_builtin_groups | default([])) }}
+      {{ _delete_declared_groups | zip(_delete_declared_groups | map('trim') | map('lower'))
+         | rejectattr('1', 'in', _delete_protected_groups_folded)
+         | map(attribute='0') | list }}
 
 - name: Delete | Announce what will be removed
   ansible.builtin.debug:
@@ -147,10 +176,19 @@
   loop_control: {label: "{{item.name | default('?')}}"}
   when: (freeipa_iam_hostgroups | default([])) | length > 0
 
-# The marker group last (it has no members left once users are gone). Skipped if it
-# is a protected/built-in name.
-- name: Delete | Remove the marker group
+# Both marker containers last (neither has members left once users and groups are gone).
+# Skipped if either is a protected/built-in name. BOTH, not just the user marker: this op
+# is "remove everything this run declared" cleanup for a mock realm, and deleting only
+# iam-managed-users left the group-existence container behind as an empty orphan that the
+# next converge then re-populated — an asymmetry with no rationale.
+- name: Delete | Remove the marker groups (user marker + group-existence container)
   freeipa.ansible_freeipa.ipagroup:
-    name: "{{ freeipa_iam_managed_group }}"
+    name: "{{ item }}"
     state: absent
-  when: freeipa_iam_managed_group not in (freeipa_iam_protected_groups | default([]))
+  loop:
+    - "{{ freeipa_iam_managed_group }}"
+    - "{{ freeipa_iam_managed_groups_group }}"
+  loop_control: {label: "{{ item }}"}
+  # Same fold as the group list above (and the built-ins too, which the verbatim
+  # comparison here never consulted): a marker name spelled `Admins` is `admins`.
+  when: (item | trim | lower) not in _delete_protected_groups_folded

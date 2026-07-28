@@ -209,6 +209,78 @@
       check_mode: false
       failed_when: false
 
+# ── EXPLICIT offboarding (freeipa_iam_users_preserved) ───────────────────────
+# The declarative twin of the INFERRED archival near the end of this file. An entry
+# here is an operator instruction, so unlike the inferred path this is NOT gated on
+# freeipa_server_authoritative — offboarding one leaver must not require arming
+# whole-realm authoritative mode (which also enables group deletion and the
+# membership strip).
+#
+# Runs HERE, immediately after reactivation and BEFORE user creation, for two reasons:
+#   * reactivation must not undel an account this list is about to archive. Validation
+#     already makes that impossible (a login in both lists hard-fails at
+#     iam_desired.yml), so this ordering is defence in depth, not the control.
+#   * the account stops being able to authenticate at the START of the run rather
+#     than ~900 lines later.
+#
+# Idempotent by construction: the find returns ACTIVE users only (preserved entries
+# live in cn=deleted and need --preserved=true), so a steady state intersects to []
+# and the module is never called. It only ever PRESERVES — freeipa_iam_preserve_archived
+# is deliberately NOT honoured here; hard-deleting is --tags prune_preserved's job.
+- name: Preserve explicitly-listed (offboarded) users
+  when: _freeipa_iam_preserved_declared | length > 0
+  vars:
+    _freeipa_iam_preserved_declared: "{{ freeipa_iam_users_preserved | default([], true) | freeipa_iam_logins }}"
+  block:
+    - name: Acquire Kerberos ticket to find active users
+      ansible.builtin.command: "kinit {{ freeipa_server_admin_principal }}@{{ freeipa_server_realm }}"
+      args:
+        stdin: "{{ _freeipa_admin_password }}"
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    # Without --preserved=true this lists ACTIVE accounts only, which is exactly the
+    # idempotency predicate: an already-preserved user simply will not appear.
+    - name: Find currently-active users
+      ansible.builtin.command: "ipa user-find --pkey-only --sizelimit=0"
+      register: _freeipa_iam_active_find
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Compute listed users that are still active
+      ansible.builtin.set_fact:
+        _freeipa_iam_to_preserve: >-
+          {{ (_freeipa_iam_active_find.stdout_lines | default([]) | map('trim')
+              | select('match', '^User login:')
+              | map('regex_replace', '^User login: ', '') | list)
+             | intersect(_freeipa_iam_preserved_declared) }}
+
+    - name: Destroy offboarding Kerberos ticket
+      ansible.builtin.command: kdestroy
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: Report explicitly-preserved users
+      ansible.builtin.debug:
+        msg: >-
+          Explicit offboarding → preserving {{ _freeipa_iam_to_preserve | length }}
+          account(s): {{ _freeipa_iam_to_preserve }}
+          (deactivated + retained; recover with `ipa user-undel <login>`)
+      when: _freeipa_iam_to_preserve | length > 0
+
+    # preserve: true is hardcoded, not freeipa_iam_preserve_archived — this list means
+    # "offboard", never "destroy". state: absent honours check mode, so --check previews.
+    - name: Preserve (archive) the listed users
+      freeipa.ansible_freeipa.ipauser:
+        name: "{{ _freeipa_iam_to_preserve }}"
+        state: absent
+        preserve: true
+      when: _freeipa_iam_to_preserve | length > 0
+      register: _freeipa_iam_changed_preserved
+
 # ── Precheck: ONE find per remaining per-item object type; those loops then run
 # ONLY for entries that differ from the realm (freeipa_iam_changed_subset — every
 # skipped iteration saves a full Python + ipalib bootstrap on the server). Fail
@@ -643,23 +715,126 @@
 # non-protected managed groups to DECLARATIVE: membership becomes exactly what is
 # declared (zero declared members = emptied). Protected/built-ins stay additive.
 # The declarative payload omits membermanager, so managers are never stripped.
-- name: Build membership reconcile payloads (additive / declarative)
+#
+# AUTOMEMBER TARGETS STAY ADDITIVE. A group named by a freeipa_server_automember_rules
+# entry has its membership owned by the automember plugin — a mechanism THIS ROLE
+# declares — so the declarative strip must not fight it. Two facts make the strip
+# actively destructive there:
+#   1. automember.yml runs AFTER iam.yml, and its rebuild fires only when a RULE
+#      changed this run (or freeipa_server_automember_rebuild) — so on a steady-state
+#      converge nothing re-adds what the strip removed.
+#   2. upstream gen_add_del_lists() skips only on None; an EMPTY LIST means
+#      "delete every current member", and these groups declare no `user:` at all.
+# Result before this exclusion: every converge emptied automember-populated groups
+# (live in mgt: ztlab-app, uid ^ztlab-). Their DECLARED members/nesting are still
+# enforced — they just move to the additive payload, exactly like protected groups.
+# Computed in its OWN task, before the payloads, so the exempt set genuinely exists
+# once: a set_fact key cannot be referenced by a sibling key in the same task, and
+# duplicating the expression is how the two payloads would silently drift apart.
+# selectattr('name', 'defined') keeps a malformed (nameless) automember rule from
+# raising here — under this file's no_log the real cause would be censored and the
+# operator would see only "output has been hidden". Such a rule still fails loudly,
+# with a readable message, in automember.yml where it belongs.
+# EMPTY-DESIRED-STATE breaker for MEMBERSHIPS. The realm-wide breaker further down guards
+# ARCHIVAL, but it sits ~250 lines below this point because it needs the marker-group read —
+# so it fires far too late to protect the strip. Live proof: a run driven to an empty desired
+# set aborted at that breaker having ALREADY stripped declared members from 22 groups (every
+# tenant group plus ug-/role-/zt-am-*). A normal converge healed it, but a guard that only
+# runs after the damage is not a guard.
+#
+# Uses freeipa_iam_desired_usernames, which is built near the top of this file and is
+# therefore available here, unlike freeipa_iam_current_managed_users. Zero declared users
+# with the strip armed means "the identity source did not load", never a real intent: it
+# would empty every managed group's membership.
+- name: Refuse a declarative membership strip against an EMPTY desired user set
+  ansible.builtin.assert:
+    that: freeipa_iam_desired_usernames | length > 0
+    fail_msg: >-
+      ZERO users are declared while the declarative membership strip is armed
+      ({{ 'freeipa_server_authoritative' if (freeipa_server_authoritative | bool)
+          else 'freeipa_iam_reconcile_memberships_only' }}=true). The strip would remove
+      every member from every managed group. An empty desired set means the identity source
+      did not load — check the tenants dir path / group_vars actually resolved. Refusing
+      BEFORE any membership is touched.
+    quiet: true
+  when: (freeipa_server_authoritative | bool) or (freeipa_iam_reconcile_memberships_only | bool)
+
+- name: Compute membership-strip exemptions
   ansible.builtin.set_fact:
     # Strip undeclared members when EITHER authoritative OR the membership-only mode is on.
     _freeipa_iam_strip_memberships: "{{ (freeipa_server_authoritative | bool) or (freeipa_iam_reconcile_memberships_only | bool) }}"
+    # Automember-owned USER groups only: a rule name may legitimately exist for both
+    # types (see automember.yml), and a hostgroup rule must not exempt a usergroup.
+    _freeipa_iam_automember_group_targets: >-
+      {{ freeipa_server_automember_rules | default([], true)
+         | selectattr('automember_type', 'defined')
+         | selectattr('automember_type', 'equalto', 'group')
+         | selectattr('name', 'defined')
+         | map(attribute='name') | unique | list }}
+
+- name: Build the strip-exempt group set (protected + automember-owned)
+  ansible.builtin.set_fact:
+    _freeipa_iam_strip_exempt_groups: >-
+      {{ ((freeipa_iam_protected_groups | default([], true))
+          + _freeipa_iam_automember_group_targets) | unique | list }}
+
+# The exempt test is CASE-FOLDED on both sides — `cn` is caseIgnoreMatch, so `Admins`
+# and `admins` are one group to FreeIPA but two strings to `in`. Verbatim, a declared
+# `Admins` fell out of the additive payload AND into the declarative one — both halves of
+# the exemption failing together — and the break-glass group was stripped to its declared
+# members. Same fold in both keys, so the pair can never disagree; the emitted entries are
+# the VERBATIM declarations, because that is what ipagroup must receive.
+- name: Build membership reconcile payloads (additive / declarative)
+  ansible.builtin.set_fact:
     _freeipa_members_protected: >-
       {{ _freeipa_iam_usergroups_members
-         | selectattr('name', 'in', freeipa_iam_protected_groups | default([])) | list }}
+         | zip(_freeipa_iam_usergroups_members | map(attribute='name')
+               | map('trim') | map('lower') | list)
+         | selectattr('1', 'in', _freeipa_iam_strip_exempt_groups
+                                 | map('trim') | map('lower') | list)
+         | map(attribute='0') | list }}
     _freeipa_members_declarative: "{{ (_mdecl_yaml | from_yaml) or [] }}"
   vars:
+    # Emit a member key ONLY when the effective group actually carries one. An OMITTED
+    # key arrives as None and upstream gen_add_del_lists early-returns on None; an EMPTY
+    # LIST does not, and means "desired membership is nothing" → delete every current
+    # member. So `| default([], true)` here silently converted "nobody declared members"
+    # into "remove everyone" — proven live 2026-07-28 (a declared group with one live
+    # member was emptied by memberships_only alone).
+    #
+    # The distinction already exists one step upstream: the enrichment at :90 adds `user`
+    # only when merged members are non-empty, so an absent key genuinely means undeclared,
+    # while `user: []` written by hand in a tenant file survives as a real, explicit
+    # "empty this group" instruction. This template was throwing that away.
+    #
+    # NESTING (`group:`) is deliberately NOT given the same treatment, because the two
+    # are not symmetric. Membership has TWO declaration channels — a group's own `user:`
+    # and the inverted `groups:` on a user entry (folded in at :90) — so an absent key
+    # genuinely means "nobody declared this anywhere". Nesting has only ONE channel, the
+    # group's own `group:`, so absent is decidable: it means "no nesting declared", and a
+    # declarative run should therefore strip out-of-band nesting. Omitting it here would
+    # let anyone nest a group into a managed group and keep that access permanently —
+    # eviction cannot catch it either (freeipa_iam.py `_evict_current_members` parses
+    # `member: uid=` only, i.e. users). So `group:` stays unconditional, as it was.
     _mdecl_yaml: |-
       {% for g in (freeipa_iam_usergroups_effective | default([], true)) %}
-      {% if (g.state | default('present')) != 'absent' and g.name not in (freeipa_iam_protected_groups | default([], true)) %}
-      - {name: "{{ g.name }}", user: {{ g.user | default([], true) | to_json }}, group: {{ g.group | default([], true) | to_json }}}
+      {% if (g.state | default('present')) != 'absent' and (g.name | trim | lower) not in (_freeipa_iam_strip_exempt_groups | map('trim') | map('lower') | list) %}
+      - {name: "{{ g.name }}"{% if 'user' in g %}, user: {{ g.user | default([], true) | to_json }}{% endif %}, group: {{ g.group | default([], true) | to_json }}}
       {% endif %}
       {% endfor %}
   # membership reconcile payload — NAMES only (no secrets) — shown at -vv.
   no_log: "{{ ansible_verbosity < 2 }}"
+
+# Visibility: the strip is destructive, so name what it will NOT touch and why.
+# Without this, an operator debugging "why is ztlab-app not being reconciled?"
+# has no signal that automember ownership deliberately exempted it.
+- name: Report groups exempt from the declarative membership strip
+  ansible.builtin.debug:
+    msg: >-
+      Declarative strip is ACTIVE. Exempt (membership left additive):
+      protected={{ freeipa_iam_protected_groups | default([], true) }};
+      automember-owned={{ _freeipa_iam_automember_group_targets }}
+  when: _freeipa_iam_strip_memberships | bool
 
 - name: Ensure group memberships present — ADDITIVE (protected always; all when not declarative)
   freeipa.ansible_freeipa.ipagroup:
@@ -840,12 +1015,25 @@
   args:
     stdin: "{{ _freeipa_admin_password }}"
   changed_when: false
+  # check_mode: false — WITHOUT this the ticket is never acquired under --check, every
+  # ipa read below fails ticketless, and the archival/eviction/group-delete candidate
+  # lists all come back EMPTY. --check then reports "0 archived, 0 deleted" no matter
+  # what the run would really do. A kinit mutates no realm state.
+  check_mode: false
   no_log: true
 
 - name: Read current members of marker group
   ansible.builtin.command: "ipa group-show {{ freeipa_iam_managed_group }} --all --raw"
   register: _freeipa_iam_managed_group
   changed_when: false
+  check_mode: false                      # read-only; drives the archival preview
+  # The marker group may legitimately not exist yet: on a first converge, on a fresh
+  # realm, or after freeipa_iam_managed_group is renamed. Before check_mode: false this
+  # command was simply SKIPPED under --check so the absence never surfaced; now it runs,
+  # and an unguarded rc=2 would kill a --check that is supposed to be read-only. The
+  # group-existence twin below already carries this for the same reason — downstream
+  # parsing default([])s, so an empty result degrades to "nothing enrolled yet".
+  failed_when: false
 
 # `ipa group-show --all --raw` returns members as raw LDAP `member:` DN lines
 # (member: uid=<user>,cn=users,...), NOT a `member_user:` attribute — matching the
@@ -864,13 +1052,42 @@
 # Evict MANAGED users who are current members of a declared group but no longer
 # declare it (e.g. GUI self-add). freeipa_iam_evictions returns only
 # (current ∩ managed) − desired, so unmanaged/out-of-band members are never touched;
-# automember-target groups and the marker containers are excluded.
-- name: Eviction | Build candidate groups (declared, not automember-populated)
+# automember-target groups, protected groups and the marker containers are excluded.
+# OPT-IN: runs only under freeipa_server_authoritative or
+# freeipa_iam_reconcile_memberships_only (see the candidate-build task below).
+# GATED ON _freeipa_iam_strip_memberships (authoritative OR memberships_only), like the
+# declarative strip above. Eviction IS a membership strip — it issues
+# `ipagroup action: member, state: absent` for managed users who dropped a group — so
+# running it unconditionally made additive mode strip undeclared members, exactly what
+# defaults/main.yml and README promise it never does. The narrow blast radius
+# ((current ∩ managed) − desired) limited the damage but never made it opt-in.
+#
+# Also exempts freeipa_iam_protected_groups, matching the declarative strip: without it a
+# declared `admins` could have a marker-managed account evicted out from under an operator.
+#
+# Empty candidate list when the gate is off ⇒ every task below no-ops on its own `when:`,
+# so the expensive group-find is skipped too.
+# Reuses _freeipa_iam_strip_exempt_groups — the SAME fact the declarative strip uses, which
+# is protected groups + automember group-type targets. Eviction and the strip are two halves
+# of one policy ("whose membership does this role own?"), so they must not answer it
+# differently; an earlier version of this task recomputed the automember list inline without
+# the type filter and had already drifted from the canonical fact.
+- name: Eviction | Build candidate groups (declared, not automember-populated, not protected)
   ansible.builtin.set_fact:
+    # Exemption test CASE-FOLDED on both sides, exactly as the declarative strip folds it
+    # — the two are one policy and must not disagree about which groups they own. Verbatim,
+    # `rejectattr('name', 'in', …)` let a declared `Admins` through as an eviction
+    # candidate while the realm resolved it to the protected `admins`. The candidate
+    # entries emitted are the VERBATIM group dicts, untouched.
     _freeipa_iam_evict_candidates: >-
-      {{ _freeipa_iam_usergroups_members | default([])
-         | rejectattr('name', 'in', (freeipa_server_automember_rules | default([]) | map(attribute='name') | list))
-         | list }}
+      {{ (_freeipa_iam_usergroups_members | default([])
+          | zip(_freeipa_iam_usergroups_members | default([]) | map(attribute='name')
+                | map('trim') | map('lower') | list)
+          | rejectattr('1', 'in', _freeipa_iam_strip_exempt_groups
+                                  | map('trim') | map('lower') | list)
+          | map(attribute='0')
+          | list)
+         if (_freeipa_iam_strip_memberships | bool) else [] }}
     _freeipa_iam_evict_payload: []
   no_log: "{{ ansible_verbosity < 2 }}"
 
@@ -888,6 +1105,7 @@
   ansible.builtin.command: "ipa group-find --all --raw --sizelimit=0"
   register: _freeipa_iam_evict_current
   changed_when: false
+  check_mode: false                      # read-only; drives the eviction preview
   failed_when: >-
     _freeipa_iam_evict_current.rc not in [0, 1]
     or ('ipa: ERROR' in (_freeipa_iam_evict_current.stderr | default('')))
@@ -914,17 +1132,24 @@
 # EMPTY-DESIRED-STATE circuit breaker: with zero desired users, EVERY managed user
 # is "removed" — a wiped realm from a typo'd tenants dir or hollow group_vars, not a
 # plausible intent. The tenants loader has its own guards; this one covers every
-# route to an empty desired set on a destructive run. NOT gated on authoritative:
-# the user ARCHIVAL below runs in the default (non-authoritative) mode too, so the
-# breaker must cover that path as well — only membership-only mode (which never
-# archives) skips it.
+# route to an empty desired set on a destructive run.
+#
+# Deliberately gated MORE LOOSELY than the archival it guards (it ignores
+# authoritative): the breaker is a cheap assert on a state that is never legitimate,
+# so it stays armed even if a future change re-widens archival. A guard that is
+# harder to disable than the destructive operation it protects is the right asymmetry.
 - name: Refuse destructive reconcile against an EMPTY desired user set
   ansible.builtin.assert:
     that: freeipa_iam_desired_usernames | length > 0
     fail_msg: >-
-      ZERO users are declared while the realm has managed users — the reconcile
-      would archive every managed user on the realm. Refusing. Check the identity
-      source (tenants dir path, group_vars) actually loaded.
+      ZERO users are declared while the realm has {{ freeipa_iam_current_managed_users | length }}
+      managed user(s). This is a PRECAUTIONARY abort: under freeipa_server_authoritative the
+      reconcile would archive every one of them, and an empty desired set is never a
+      plausible intent — it means the identity source did not load. Check the tenants dir
+      path / group_vars actually resolved.
+      {% if not (freeipa_server_authoritative | bool) %}(This run is additive, so nothing
+      would have been archived right now — the abort is deliberately armed in both modes so
+      a silently-empty desired state can never reach a destructive one.){% endif %}
     quiet: true
   when:
     - not (freeipa_iam_reconcile_memberships_only | bool)
@@ -934,13 +1159,31 @@
 # externally-managed login) from archival even if once declared then undeclared (belt-and-suspenders atop
 # the marker gate). ANY-match via re.search; an empty effective list degrades to a
 # never-matching regex so normal archival is unaffected.
+#
+# CASE-FOLDED comparison (same fix as tasks/delete.yml, e7b23701). FreeIPA `uid` is
+# caseIgnoreMatch: `ipa user-add Alice` stores and returns `alice`. The marker-group read
+# therefore hands this list the STORED spelling while freeipa_iam_desired_usernames and
+# freeipa_iam_protected_users carry the DECLARED spelling — and a verbatim difference()
+# between them archives the account this very run just created (declared ['Alice','bob']
+# against a realm reporting ['alice','bob'] archived `alice`). Folding is for the
+# COMPARISON only: `zip` pairs every VERBATIM current name with its folded form, the
+# rejects test the folded half (element '1'), and the map emits the verbatim half
+# (element '0') — ipauser must receive the name the realm actually stores, never a
+# lowercased substitute.
+#
+# The protect-users REGEXES below are deliberately still matched against the verbatim
+# name: they are operator-authored patterns, and folding the subject would break any
+# pattern containing an uppercase literal or an `[A-Z]` class. Case-insensitivity there
+# is expressed in the pattern itself ((?i)), which is the operator's call, not ours.
 - name: Build declarative user delete list
   ansible.builtin.set_fact:
     freeipa_iam_users_to_remove: >-
       {{
         freeipa_iam_current_managed_users
-        | difference(freeipa_iam_desired_usernames)
-        | difference(freeipa_iam_protected_users)
+        | zip(freeipa_iam_current_managed_users | map('trim') | map('lower') | list)
+        | rejectattr('1', 'in', freeipa_iam_desired_usernames | map('trim') | map('lower') | list)
+        | rejectattr('1', 'in', freeipa_iam_protected_users | map('trim') | map('lower') | list)
+        | map(attribute='0')
         | reject('search', _freeipa_iam_protect_users_re) | list
       }}
   vars:
@@ -948,17 +1191,41 @@
       {{ ('(' + (freeipa_iam_reconcile_protect_users_regexes | reject('equalto', '') | join(')|(')) + ')')
          if (freeipa_iam_reconcile_protect_users_regexes | reject('equalto', '') | list | length > 0)
          else '(?!)' }}
-  when: not (freeipa_iam_reconcile_memberships_only | bool)   # membership-only mode never archives users
+  when:
+    - freeipa_server_authoritative | bool                      # additive mode never archives users
+    - not (freeipa_iam_reconcile_memberships_only | bool)      # membership-only mode never archives users
 
 # Archive (don't destroy) users removed from declarative config: bulk ipauser with
 # preserve=true → user-del --preserve (deactivated + retained, recoverable). Set
 # freeipa_iam_preserve_archived=false to hard-delete instead. One bulk call.
+#
+# GATED ON freeipa_server_authoritative. This is the ONLY pruning control (defaults
+# §"Pruning control"), and additive mode is documented — in defaults/main.yml, and twice
+# in README — as "create/update declared objects, but never strip undeclared members or
+# delete undeclared objects", with archival listed as an authoritative-mode behaviour.
+# Archiving here without that gate made a merely-undeclared user destructive by DEFAULT:
+# drop a managed user from group_vars on any ordinary converge and the account was
+# deactivated. The marker gate, protect-users regexes and empty-set breaker all narrowed
+# the blast radius but none of them made it opt-in.
+#
+# Consequence in additive mode: an undeclared managed user now LINGERS instead of being
+# archived. That is the documented additive contract; --tags iam_stale_report lists such
+# accounts, and freeipa_server_authoritative archives them.
+#
+# This comment used to offer "or an explicit state: absent" as a second route. That was
+# WRONG and is removed: ipauser's `users:` suboption spec has no `state` key (preserve is
+# module-level only), and the payload build above strips just `groups`/`roles`, so a
+# `state: absent` on a user entry reaches the module as an unsupported parameter rather
+# than archiving anything. Nothing in the estate ever declared it, so it was never caught.
+# The real explicit route is freeipa_iam_users_preserved (near the top of this file), which
+# is ungated and preserve-only.
 - name: Archive (preserve) users removed from declarative config
   freeipa.ansible_freeipa.ipauser:
     name: "{{ freeipa_iam_users_to_remove }}"
     state: absent
     preserve: "{{ freeipa_iam_preserve_archived | bool }}"
   when:
+    - freeipa_server_authoritative | bool
     - not (freeipa_iam_reconcile_memberships_only | bool)
     - freeipa_iam_users_to_remove | default([]) | length > 0
 
@@ -999,15 +1266,85 @@
 # `memberof:` lines. Orphan = enrolled in the container but NOT declared, NOT protected,
 # and never the container/user-marker themselves. Same regex caveats as the user list
 # above (folded scalar: literal text + [^,], no \s/\d classes).
-- name: Build declarative group delete list (container orphans)
+#
+# SCOPE + SHIELDS, same ownership boundary reconcile.yml enforces. This deletion is HARD
+# (a group cannot be preserve-archived), so it must be at least as conservative as the
+# recoverable object prune next door — it previously honoured NEITHER control:
+#   * freeipa_iam_reconcile_scope was never read here, so a blank scope still deleted
+#     groups realm-wide while defaults/main.yml documented blank as "deletes NOTHING
+#     (fail-safe)". Proven live 2026-07-28 against that exact configuration.
+#   * freeipa_iam_reconcile_protect_regexes never applied, so a group once declared here
+#     and later taken over by an external system was deleted despite matching a shield.
+# Eligibility now matches reconcile.yml: everything when reconcile_all is on, else only
+# names containing the scope marker, else (blank scope) nothing.
+# THE NUKE GATE, ON THIS PATH TOO. reconcile.yml carries the same interlock, but it is
+# tagged [iam, reconcile] while this deleter is tagged [iam, users, groups, hbac, sudo] —
+# so `--tags groups` (or users/hbac/sudo) reaches the HARD group delete with NONE of
+# reconcile.yml's gates in the play at all. Without this assert, adding reconcile_all
+# awareness to the scope regex below handed a sub-tag run an unconfirmed whole-realm
+# group prune. Groups cannot be preserve-archived, so there is no undo.
+- name: Require explicit confirmation before a whole-realm group prune (nuke gate)
+  ansible.builtin.assert:
+    that:
+      - freeipa_iam_reconcile_all_confirm | default(false) | bool
+    fail_msg: >-
+      freeipa_iam_reconcile_all is true (delete EVERY undeclared managed group realm-wide)
+      but freeipa_iam_reconcile_all_confirm is not set. Set
+      freeipa_iam_reconcile_all_confirm: true (ideally via -e on the command line) to
+      proceed. This gate is enforced here as well as in reconcile.yml because the group
+      deleter is reachable via --tags users/groups/hbac/sudo, which do not select
+      reconcile.yml.
+    quiet: true
+  when:
+    - not (freeipa_iam_reconcile_memberships_only | bool)
+    - freeipa_server_authoritative | bool
+    - freeipa_iam_reconcile_all | default(false) | bool
+
+# CASE-FOLDED comparison, for the same reason as the user archival above and with the
+# higher stakes: `cn` is caseIgnoreMatch too, and this delete is HARD — a group cannot be
+# preserve-archived, so a shield that misses has no undo. A group created as `App-X`
+# is stored and reported by the container read as `app-x`, fails the verbatim
+# difference() against the declared `App-X`, and is deleted. `zip` pairs each VERBATIM
+# enrolled name with its folded form; the rejects test the folded half; the map emits the
+# verbatim half, which is the spelling ipagroup must be handed.
+#
+# The scope and protect REGEXES keep matching the verbatim name — see the note on the
+# user builder above.
+- name: Build declarative group delete list (container orphans, scoped + shielded)
   ansible.builtin.set_fact:
     _freeipa_iam_groups_to_remove: >-
-      {{ (_freeipa_iam_managed_groups_show.stdout_lines | default([]) | map('trim')
-          | select('match', '^member: cn=')
-          | map('regex_replace', '^member: cn=([^,]+),.*', '\1') | list)
-         | difference(freeipa_iam_group_names)
-         | difference(freeipa_iam_protected_groups)
-         | difference([freeipa_iam_managed_groups_group, freeipa_iam_managed_group]) }}
+      {{ _freeipa_iam_container_groups
+         | zip(_freeipa_iam_container_groups | map('trim') | map('lower') | list)
+         | rejectattr('1', 'in', freeipa_iam_group_names | map('trim') | map('lower') | list)
+         | rejectattr('1', 'in', freeipa_iam_protected_groups | map('trim') | map('lower') | list)
+         | rejectattr('1', 'in', [freeipa_iam_managed_groups_group, freeipa_iam_managed_group]
+                                 | map('trim') | map('lower') | list)
+         | map(attribute='0')
+         | select('search', _freeipa_iam_group_scope_re)
+         | reject('search', _freeipa_iam_protect_groups_re) | list }}
+  vars:
+    # The container's nested-group members, VERBATIM as the directory stores them.
+    # Hoisted so the fold below can pair each name with its folded form without parsing
+    # the raw output twice (two copies of this regex is how they drift apart).
+    _freeipa_iam_container_groups: >-
+      {{ _freeipa_iam_managed_groups_show.stdout_lines | default([]) | map('trim')
+         | select('match', '^member: cn=')
+         | map('regex_replace', '^member: cn=([^,]+),.*', '\1') | list }}
+    # '' matches everything (reconcile_all); '(?!)' never matches (blank scope, fail-safe);
+    # otherwise the scope marker as a literal substring — regex_escape so a marker
+    # containing '.' or '+' cannot silently widen the match.
+    # Match-all requires BOTH switches — belt and braces with the assert above, so that
+    # even if this task is ever reached without it the widening cannot happen silently.
+    _freeipa_iam_group_scope_re: >-
+      {{ '' if ((freeipa_iam_reconcile_all | default(false) | bool)
+                and (freeipa_iam_reconcile_all_confirm | default(false) | bool))
+         else ((freeipa_iam_reconcile_scope | regex_escape)
+               if ((freeipa_iam_reconcile_scope | default('')) | length > 0)
+               else '(?!)') }}
+    _freeipa_iam_protect_groups_re: >-
+      {{ ('(' + (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | join(')|(')) + ')')
+         if (freeipa_iam_reconcile_protect_regexes | reject('equalto', '') | list | length > 0)
+         else '(?!)' }}
   when:
     - not (freeipa_iam_reconcile_memberships_only | bool)
     - freeipa_server_authoritative | bool
@@ -1060,5 +1397,8 @@
 - name: Destroy temporary Kerberos ticket
   ansible.builtin.command: kdestroy
   changed_when: false
+  # check_mode: false to match the kinit above — --check now acquires a real ticket so the
+  # previews are honest, so it must destroy it too rather than leave a live ccache behind.
+  check_mode: false
   failed_when: false
   no_log: true

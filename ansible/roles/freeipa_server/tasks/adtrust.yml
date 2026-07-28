@@ -28,3 +28,9 @@
   loop: "{{ freeipa_server_ad_trusts }}"
   loop_control:
     label: "{{ item.realm }}"
+  # Defence in depth. ipatrust already declares `password` no_log=True, so the module ARGS
+  # are masked — but that does not cover the loop `item`, which is echoed verbatim in the
+  # task result. An entry using the inline `password:` form (rather than the intended
+  # password_field + Vault lookup) would otherwise land in the transcript. The label above
+  # keeps the realm visible so the loop is still readable.
+  no_log: true
