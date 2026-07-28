@@ -1,0 +1,86 @@
+---
+# roles/vault_pki/tasks/set_signed.yml
+# Import of the externally signed intermediate chain. Same issuer guard as csr.yml —
+# when the mount already has an issuer the import is skipped, so a re-converge never
+# rewrites issuers. After the phase runs, the issuer list is re-probed and asserted
+# non-empty (the role verifies its own work).
+
+- name: Vault PKI set-signed | Resolve the Vault token
+  ansible.builtin.include_tasks: resolve_token.yml
+
+- name: Vault PKI set-signed | Assert the signed-chain exchange path is configured
+  ansible.builtin.assert:
+    that:
+      - vault_pki_chain_path | default('') | length > 0
+    fail_msg: >-
+      vault_pki set_signed needs vault_pki_chain_path set (inventory) — the signed
+      intermediate chain emitted by the external signer.
+    quiet: true
+
+- name: Vault PKI set-signed | Probe the mount for existing issuers (404 = none yet)
+  ansible.builtin.uri:
+    url: "{{ vault_pki_addr }}/v1/{{ vault_pki_mount }}/issuers?list=true"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_pki_token }}"
+    status_code: [200, 404]
+    validate_certs: "{{ vault_pki_validate_certs | bool }}"
+  register: _vault_pki_issuer_probe
+  changed_when: false
+  # The token rides in a request header; no_log keeps it out of failure output.
+  no_log: true
+
+- name: Vault PKI set-signed | Record whether an issuer already exists
+  ansible.builtin.set_fact:
+    _vault_pki_issuer_present: >-
+      {{ _vault_pki_issuer_probe.status == 200
+         and (_vault_pki_issuer_probe.json.data['keys'] | default([]) | length > 0) }}
+
+- name: Vault PKI set-signed | Stat the signed chain from the external signer
+  ansible.builtin.stat:
+    path: "{{ vault_pki_chain_path }}"
+  register: _vault_pki_chain_stat
+  when: not (_vault_pki_issuer_present | bool)
+
+- name: Vault PKI set-signed | Fail fast if the signed chain is missing
+  ansible.builtin.assert:
+    that:
+      - _vault_pki_chain_stat.stat.exists
+    fail_msg: >-
+      No issuer in mount '{{ vault_pki_mount }}' and no signed chain at
+      {{ vault_pki_chain_path }}. Run the csr phase and the external signing flow
+      first (playbooks/25_plat_pki.yml --tags vault_intermediate does all three in
+      order).
+    quiet: true
+  when: not (_vault_pki_issuer_present | bool)
+
+- name: Vault PKI set-signed | Import the signed intermediate chain
+  community.hashi_vault.vault_write:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "{{ vault_pki_mount }}/intermediate/set-signed"
+    data:
+      certificate: "{{ lookup('ansible.builtin.file', vault_pki_chain_path) }}"
+  when: not (_vault_pki_issuer_present | bool)
+
+- name: Vault PKI set-signed | Re-probe the issuer list
+  ansible.builtin.uri:
+    url: "{{ vault_pki_addr }}/v1/{{ vault_pki_mount }}/issuers?list=true"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_pki_token }}"
+    status_code: [200]
+    validate_certs: "{{ vault_pki_validate_certs | bool }}"
+  register: _vault_pki_issuer_verify
+  changed_when: false
+  # The token rides in a request header; no_log keeps it out of failure output.
+  no_log: true
+
+- name: Vault PKI set-signed | Assert the mount now has an issuer
+  ansible.builtin.assert:
+    that:
+      - _vault_pki_issuer_verify.json.data['keys'] | default([]) | length > 0
+    fail_msg: >-
+      Mount '{{ vault_pki_mount }}' still lists no issuers after set-signed — the
+      import did not take. Inspect the mount by hand before re-running.
+    quiet: true

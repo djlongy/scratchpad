@@ -1,41 +1,89 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+vault_pki_enabled: true
+
 # roles/vault_pki/defaults/main.yml
 #
-# Minimal HashiCorp Vault PKI signer role: `sign_external` signs an EXTERNAL
-# subordinate-CA CSR (e.g. FreeIPA's external-ca CSR) through
-# <mount>/root/sign-intermediate. The signing key never leaves Vault; the only
-# on-disk artifacts are the signed cert and the assembled chain. There is no
-# tasks/main.yml — invoke phases explicitly via
-#   include_role: { name: vault_pki, tasks_from: sign_external }
+# Declarative manager for a HashiCorp Vault PKI secrets engine on an EXISTING cluster:
+# mount + tune, issuing roles, and the intermediate issuer lifecycle (generate the CSR
+# inside Vault -> the CSR is signed EXTERNALLY, e.g. by the coldca cold root ->
+# set-signed import). The mount's private key never leaves Vault
+# (intermediate/generate/internal); the only artifacts on disk are the public CSR and
+# the signed chain, exchanged through control-node paths.
 #
-# Every value below is generic. Environment-specific data (the Vault address,
-# exchange paths, TTLs) belongs in inventory group_vars — never here. Each
-# phase fails fast with an actionable assert when a required value is unset.
+# Every value below is GENERIC. Estate-specific data (the Vault address, real subjects,
+# exchange paths, issuing-role configs) lives in inventory group_vars — NEVER here.
+# Each phase fails fast with an actionable assert when a required value is unset.
 
-# Vault API address — inventory MUST set it, e.g.:
+# Vault API address. Env-specific — inventory MUST set it, e.g.:
 # vault_pki_addr: "https://vault.example.com:8200"
 vault_pki_addr: ""
+# false for seed Vault with self-signed TLS until a real CA is in the trust store.
+vault_pki_validate_certs: true
 
-# Token resolution: an explicitly declared token wins; when empty the role
-# reads vault_pki_token_file (the `vault login` sink). Resolution is cached per
-# play and every task that touches the token value is no_log.
+# Token resolution: an explicitly declared token wins; when empty the role reads
+# vault_pki_token_file (the `vault login` sink — the estate relies on the token file,
+# never the VAULT_TOKEN env var). Resolution is cached per play and every task that
+# touches the token value is no_log.
 vault_pki_token: ""
 vault_pki_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.vault-token"
 
-# The PKI mount that holds the issuing CA (imported from the offline-CA escrow
-# by the hashicorp_vault_container `pki_issuer` phase).
+# ── Mount (behavioural defaults) ─────────────────────────────────────────────
 vault_pki_mount: "pki"
+vault_pki_mount_description: "PKI secrets engine"
+# Mount-wide ceiling — also the longest TTL any issuer/cert under the mount can carry.
+# 87600h = 10y. Tuned only on drift, so a correct mount converges with zero changes.
+vault_pki_max_lease_ttl_hours: 87600
+
+# ── Intermediate issuer (subjects are estate data — inventory) ───────────────
+# The CSR subject composes as CN=<common_name>,O=<organization>[,C=<country>]. O= is
+# the organisation NAME, not a domain (public-CA convention). Country is optional and
+# omitted from the CSR when empty. e.g.:
+# vault_pki_intermediate_common_name: "Example Issuing CA R1"
+# vault_pki_intermediate_organization: "Example"
+# vault_pki_intermediate_country: "AU"
+vault_pki_intermediate_common_name: ""
+vault_pki_intermediate_organization: ""
+vault_pki_intermediate_country: ""
+vault_pki_intermediate_key_type: "rsa"
+vault_pki_intermediate_key_bits: 4096
+
+# Control-node exchange paths: where the generated CSR is written for the external
+# signer, and where the signed chain (intermediate cert + signing root) is read back
+# from for set-signed. Inventory sets them — they belong in the estate's gitignored
+# PKI scratch tree, e.g.:
+# vault_pki_csr_path: "{{ playbook_dir }}/../pki-example/vault/vault-int.csr"
+# vault_pki_chain_path: "{{ playbook_dir }}/../pki-example/vault/vault-int-chain.crt"
+vault_pki_csr_path: ""
+vault_pki_chain_path: ""
 
 # ── External signing (this mount acts as the SIGNER) ─────────────────────────
-# Control-node exchange paths: the fetched CSR to sign, and where the signed
-# cert + chain are written. The freeipa_signed_install playbook wires these to
-# the same paths its phase 2 reads back.
+# sign_external turns the mount around: instead of the mount's own key being signed
+# externally (csr/set_signed above), the mount's root signs an EXTERNAL CSR through
+# <mount>/root/sign-intermediate — e.g. the FreeIPA CA CSR in the signed_install flow.
+# The signing key stays inside Vault; the artifacts are the signed cert and the assembled
+# chain, written to these control-node exchange paths. The signed_install playbook wires
+# csr/cert/chain; inventory need only point at the signer mount (vault_pki_mount).
 vault_pki_sign_external_csr_path: ""
 vault_pki_sign_external_cert_out: ""
 vault_pki_sign_external_chain_out: ""
-# TTL requested for the signed child cert. sign-intermediate mints a NEW cert
-# on every call, so the replay guard skips re-signing an already-valid cert.
-# CONSTRAINT: a child must not outlive its issuer — Vault caps this at the
-# signer's remaining validity and the mount's max_lease_ttl regardless of what
-# is requested here. 87600h = 10y.
+# TTL requested for the signed child cert. sign-intermediate mints a NEW cert on every
+# call, so the guard skips re-signing an already-valid cert rather than churning this TTL.
+# CONSTRAINT: a child must not outlive its issuer — Vault caps this at the signer's
+# remaining validity and the mount's max_lease_ttl regardless of what is requested here.
+# 87600h = 10y, matching vault_pki_max_lease_ttl_hours; lower it for shorter-lived subs.
 vault_pki_sign_external_ttl: "87600h"
+
+# ── Issuing roles ────────────────────────────────────────────────────────────
+# List of {name, config} upserted to <mount>/roles/<name>. `config` is passed to the
+# Vault role API verbatim and the write is a FULL REPLACE: omitted parameters reset to
+# engine defaults, so declare every parameter that matters. Estate data — inventory
+# sets it, e.g.:
+# vault_pki_roles:
+#   - name: int-example-org
+#     config:
+#       allowed_domains: ["int.example.org"]
+#       allow_subdomains: true
+#       allow_wildcard_certificates: true
+#       max_ttl: "8760h"
+vault_pki_roles: []

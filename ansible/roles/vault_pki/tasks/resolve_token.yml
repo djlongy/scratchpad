@@ -1,0 +1,56 @@
+---
+# roles/vault_pki/tasks/resolve_token.yml
+#
+# Vault token resolution, mirroring the estate credential idiom (declared var FIRST,
+# file fallback — see roles/coldca/tasks/resolve_credentials.yml): vault_pki_token wins
+# when set; otherwise the token is read from vault_pki_token_file (`vault login` sink).
+# Sets _vault_pki_token, cached for the rest of the play so repeated phases don't
+# re-resolve. Every task that touches the token value is no_log — it must never hit
+# output.
+
+- name: Vault PKI token | Assert the Vault address and a token source are configured
+  ansible.builtin.assert:
+    that:
+      - vault_pki_addr | default('') | length > 0
+      - >-
+        (vault_pki_token | default('') | length > 0)
+        or (vault_pki_token_file | default('') | length > 0)
+    fail_msg: >-
+      vault_pki needs vault_pki_addr set (inventory) and a token source: set
+      vault_pki_token or leave vault_pki_token_file pointing at the `vault login`
+      token sink (~/.vault-token).
+    quiet: true
+  when: _vault_pki_token is not defined
+
+- name: Vault PKI token | Stat the token file
+  ansible.builtin.stat:
+    path: "{{ vault_pki_token_file }}"
+  register: _vault_pki_token_stat
+  delegate_to: localhost
+  become: false
+  when:
+    - _vault_pki_token is not defined
+    - vault_pki_token | default('') | length == 0
+
+- name: Vault PKI token | Fail fast if no declared token and the token file is missing
+  ansible.builtin.assert:
+    that:
+      - _vault_pki_token_stat.stat.exists
+    fail_msg: >-
+      No declared vault_pki_token and {{ vault_pki_token_file }} does not exist.
+      Run `vault login` (or the estate's vault-login helper) to mint a token first.
+    quiet: true
+  when:
+    - _vault_pki_token is not defined
+    - vault_pki_token | default('') | length == 0
+
+- name: Vault PKI token | Resolve the token (declared var first, token file fallback)
+  ansible.builtin.set_fact:
+    _vault_pki_token: >-
+      {{ vault_pki_token
+         if (vault_pki_token | default('') | length > 0)
+         else lookup('ansible.builtin.file', vault_pki_token_file) }}
+  no_log: true
+  delegate_to: localhost
+  become: false
+  when: _vault_pki_token is not defined

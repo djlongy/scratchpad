@@ -1,0 +1,34 @@
+---
+# roles/vault_pki/tasks/roles.yml
+# Declarative upsert of the PKI issuing roles. A vault_write to <mount>/roles/<name>
+# is a FULL REPLACE of the role config, which both adopts a hand-made role and
+# corrects drift — the vault_pki_roles list is the source of truth for every declared
+# parameter (undeclared parameters reset to engine defaults).
+
+- name: Vault PKI roles | Resolve the Vault token
+  ansible.builtin.include_tasks: resolve_token.yml
+
+- name: Vault PKI roles | Assert every issuing-role entry declares a name and config
+  ansible.builtin.assert:
+    that:
+      - vault_pki_role_item.name | default('') | length > 0
+      - vault_pki_role_item.config | default({}) | length > 0
+    fail_msg: >-
+      Every vault_pki_roles entry needs `name` and a non-empty `config` dict (passed
+      verbatim to {{ vault_pki_mount }}/roles/<name>).
+    quiet: true
+  loop: "{{ vault_pki_roles }}"
+  loop_control:
+    loop_var: vault_pki_role_item
+    label: "{{ vault_pki_role_item.name | default('<unnamed>') }}"
+
+- name: Vault PKI roles | Upsert the issuing roles (full-replace, declarative)
+  community.hashi_vault.vault_write:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "{{ vault_pki_mount }}/roles/{{ vault_pki_role_item.name }}"
+    data: "{{ vault_pki_role_item.config }}"
+  loop: "{{ vault_pki_roles }}"
+  loop_control:
+    loop_var: vault_pki_role_item
+    label: "{{ vault_pki_role_item.name }}"

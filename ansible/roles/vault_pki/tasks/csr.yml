@@ -1,0 +1,89 @@
+---
+# roles/vault_pki/tasks/csr.yml
+# Intermediate CSR generation — the key-custody guard of this role.
+# <mount>/intermediate/generate/internal mints a NEW private key inside Vault on EVERY
+# call, so generation is gated on an issuer probe: when the mount already has an issuer
+# the generate task is skipped and the mount keeps its key. The probe accepts exactly
+# 200 (issuers listed) or 404 (none yet); ANY other status — 403 permission denied, 5xx
+# — fails the play rather than being misread as "no issuer", because a misread here
+# would re-key the mount.
+
+- name: Vault PKI csr | Resolve the Vault token
+  ansible.builtin.include_tasks: resolve_token.yml
+
+- name: Vault PKI csr | Assert the intermediate subject and CSR exchange path are configured
+  ansible.builtin.assert:
+    that:
+      - vault_pki_intermediate_common_name | default('') | length > 0
+      - vault_pki_intermediate_organization | default('') | length > 0
+      - vault_pki_csr_path | default('') | length > 0
+    fail_msg: >-
+      vault_pki csr needs vault_pki_intermediate_common_name,
+      vault_pki_intermediate_organization, and vault_pki_csr_path set (inventory).
+      None are guessed.
+    quiet: true
+
+- name: Vault PKI csr | Probe the mount for existing issuers (404 = none yet)
+  ansible.builtin.uri:
+    url: "{{ vault_pki_addr }}/v1/{{ vault_pki_mount }}/issuers?list=true"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ _vault_pki_token }}"
+    status_code: [200, 404]
+    validate_certs: "{{ vault_pki_validate_certs | bool }}"
+  register: _vault_pki_issuer_probe
+  changed_when: false
+  # The token rides in a request header; no_log keeps it out of failure output.
+  no_log: true
+
+- name: Vault PKI csr | Record whether an issuer already exists
+  ansible.builtin.set_fact:
+    _vault_pki_issuer_present: >-
+      {{ _vault_pki_issuer_probe.status == 200
+         and (_vault_pki_issuer_probe.json.data['keys'] | default([]) | length > 0) }}
+
+- name: Vault PKI csr | Announce the skip when the mount already has an issuer
+  ansible.builtin.debug:
+    msg: >-
+      Mount '{{ vault_pki_mount }}' already has an issuer — intermediate generation is
+      SKIPPED so the existing private key is kept. Re-keying is a deliberate manual
+      operation (delete the issuers/keys first), never a converge side effect.
+  when: _vault_pki_issuer_present | bool
+
+# country is merged in only when declared, so an empty default composes a CN,O-only
+# subject instead of an empty C= RDN.
+- name: Vault PKI csr | Generate the intermediate key + CSR inside Vault (first time only)
+  community.hashi_vault.vault_write:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "{{ vault_pki_mount }}/intermediate/generate/internal"
+    data: >-
+      {{ {'common_name': vault_pki_intermediate_common_name,
+          'organization': vault_pki_intermediate_organization,
+          'key_type': vault_pki_intermediate_key_type,
+          'key_bits': vault_pki_intermediate_key_bits}
+         | combine({'country': vault_pki_intermediate_country}
+                   if (vault_pki_intermediate_country | default('') | length > 0)
+                   else {}) }}
+  register: _vault_pki_generate
+  when: not (_vault_pki_issuer_present | bool)
+  # generate/internal keeps the private key inside Vault and returns only the CSR, but
+  # no_log guards against any response-shape surprise ever reaching output.
+  no_log: true
+
+- name: Vault PKI csr | Ensure the CSR exchange directory exists
+  ansible.builtin.file:
+    path: "{{ vault_pki_csr_path | dirname }}"
+    state: directory
+    mode: "0755"
+  when: not (_vault_pki_issuer_present | bool)
+
+- name: Vault PKI csr | Write the CSR to the exchange path for external signing
+  ansible.builtin.copy:
+    content: "{{ _vault_pki_generate.data.data.csr }}"
+    dest: "{{ vault_pki_csr_path }}"
+    mode: "0644"
+  when: not (_vault_pki_issuer_present | bool)
+  # The CSR is public, but its source register is no_log — keep the content diff out
+  # of output too.
+  no_log: true

@@ -1,17 +1,14 @@
 # vault_pki
 
-Signs an external subordinate-CA CSR (e.g. FreeIPA's `external-ca` CSR) with the
-issuing CA held inside a HashiCorp Vault PKI mount, via
-`<mount>/root/sign-intermediate`. The signing key never leaves Vault.
-
 ## TL;DR
 
-No `tasks/main.yml` — invoke the phase explicitly. The mount must already hold
-the issuing CA.
+Manages a HashiCorp Vault PKI secrets engine on an existing cluster: the mount
+and its tuning, the issuing roles, and the intermediate issuer lifecycle
+(generate a CSR inside Vault, hand it to an external signer, `set-signed`
+import the chain back in). The intermediate's private key never leaves Vault.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_signed_install.yml \
-  -e freeipa_signed_install_phase=1
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/25_plat_pki.yml
 ```
 
 ## Requirements
@@ -22,12 +19,11 @@ Install collections before running (repo `requirements.yml`, or ad-hoc):
 
 | Collection | When | Used for |
 |---|---|---|
-| `community.hashi_vault` | always | The `sign-intermediate` call against the PKI mount |
+| `community.hashi_vault` (>= 6.1) | always | `vault_read` / `vault_write` against the PKI API |
 
 ## Key variables
 
-Full list: `defaults/main.yml`. No `meta/argument_specs.yml` — every value is
-generic; environment-specific data belongs in inventory `group_vars`.
+Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
 
 **Required** = value must be correct for a successful run (defaults often work).
 **Optional** = safe to leave default / empty; phase stays off or uses built-ins.
@@ -36,13 +32,17 @@ generic; environment-specific data belongs in inventory `group_vars`.
 | Req | Variable | Default | Purpose |
 |---|---|---|---|
 | **Required** | `vault_pki_addr` | `""` | Vault API address, e.g. `https://vault.example.com:8200` |
-| When `sign_external` | `vault_pki_sign_external_csr_path` | `""` | The fetched CSR to sign |
-| When `sign_external` | `vault_pki_sign_external_cert_out` | `""` | Where the signed cert is written |
-| When `sign_external` | `vault_pki_sign_external_chain_out` | `""` | Where the assembled chain (leaf + issuing CA + root) is written |
-| Optional | `vault_pki_mount` | `pki` | The PKI mount holding the issuing CA |
-| Optional | `vault_pki_token` | `""` | Explicit Vault token; wins over `vault_pki_token_file` |
-| Optional | `vault_pki_token_file` | `~/.vault-token` | Token file read when `vault_pki_token` is empty |
-| Optional | `vault_pki_sign_external_ttl` | `87600h` (10y) | Requested TTL for the signed child cert; capped by the signer's remaining validity |
+| Optional | `vault_pki_token` / `vault_pki_token_file` | `""` / `~/.vault-token` | Declared token wins; else the `vault login` token file |
+| Optional | `vault_pki_mount` | `pki` | Secrets-engine mount path |
+| Optional | `vault_pki_max_lease_ttl_hours` | `87600` (10y) | Mount-wide TTL ceiling, tuned on drift only |
+| When csr | `vault_pki_intermediate_common_name` / `_organization` / `_country` | `""` | Intermediate subject; country is optional |
+| Optional | `vault_pki_intermediate_key_type` / `_key_bits` | `rsa` / `4096` | Key parameters for the one-time generation |
+| When csr | `vault_pki_csr_path` | `""` | Control-node path the generated CSR is written to |
+| When set_signed | `vault_pki_chain_path` | `""` | Control-node path of the signed chain to import |
+| When sign_external | `vault_pki_sign_external_csr_path` | `""` | Control-node path of the external CSR to sign |
+| When sign_external | `vault_pki_sign_external_cert_out` / `_chain_out` | `""` | Control-node paths the signed cert/chain are written to |
+| Optional | `vault_pki_sign_external_ttl` | `87600h` | TTL requested for a signed child; Vault caps it at the issuer's remaining validity |
+| Optional | `vault_pki_roles` | `[]` | Issuing roles `[{name, config}]`; `config` is a full-replace write to the Vault role API |
 
 ## Minimum configuration
 
@@ -56,37 +56,39 @@ vault_pki_addr: "https://service.example.internal"
 ## Usage
 
 ```yaml
-- ansible.builtin.include_role:
-    name: vault_pki
-    tasks_from: sign_external
-    apply: { delegate_to: localhost, run_once: true }
+- name: Converge the estate PKI engine
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vault_pki
 ```
 
-Run it:
+Run:
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/freeipa_signed_install.yml \
-  -e freeipa_signed_install_phase=1
+ansible-playbook -i inventories/mgt/hosts.yml playbooks/25_plat_pki.yml
 ```
+
+## Preconditions
+
+- A Vault token already exists at `vault_pki_token_file` (default
+  `~/.vault-token`, from `vault login`) unless `vault_pki_token` is declared
+  directly.
+- First-time `sys/mounts` writes (enable, tune) need more than a read-only
+  token; on an already-mounted, already-tuned engine both writes are
+  skipped, so a normal converge succeeds with a read-only token.
 
 ## Behaviour
 
-- `resolve_token` resolves the Vault token once per run (from
-  `vault_pki_token` or `vault_pki_token_file`), caches it, and never logs the
-  value.
-- `sign_external` is idempotent via a replay guard: if a certificate already
-  on disk carries the CSR's public key and chains to the mount's CA, the
-  phase reports `changed=false` and skips re-signing; otherwise it calls
-  `sign-intermediate` once with `use_csr_values: true` — required for
-  FreeIPA, since without it Vault issues a CN-only subject and drops
-  `O=<REALM>`, which the external-ca install expects.
-- After signing, the phase self-verifies the assembled chain with
-  `openssl verify` before declaring success.
-
-## Known failure mode
-
-Do not join multi-cert PEM bodies with Jinja under YAML `>-` (`~ '\n' ~` can
-emit a *literal* backslash-n). Do not use bare `cat a b` when `a` may lack a
-trailing newline (glues `END CERTIFICATE` to `BEGIN CERTIFICATE`). This role
-uses a small shell block with forced newlines — keep that pattern if you fork
-it.
+- `<mount>/intermediate/generate/internal` mints a new private key on every
+  call, so the CSR-generation and signed-chain-import phases are both gated
+  on an issuer probe (`GET <mount>/issuers?list=true`): an existing issuer
+  skips generation/import outright, a 404 lets the lifecycle proceed, and
+  any other status (403, 5xx) fails the play rather than risk misreading an
+  error as "no issuer" and re-keying the mount.
+- Re-keying is a deliberate manual operation (delete the mount's
+  issuers/keys first), never a converge side effect.
+- Signing an external CSR runs only when a caller composes it via
+  `tasks_from`, handing it an external CSR (the mount acts as signer, not
+  signee) — it is not part of a normal converge.
+- Every task touching the token value is `no_log`.

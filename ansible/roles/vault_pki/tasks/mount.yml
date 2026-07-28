@@ -1,0 +1,45 @@
+---
+# roles/vault_pki/tasks/mount.yml
+# Converge-safe mount management that ADOPTS an existing engine: the PKI engine is
+# enabled only when the mount is absent from sys/mounts, and max_lease_ttl is tuned
+# only on drift — a re-run against an already-correct mount reports zero changes.
+# Nothing here touches issuers or keys.
+
+- name: Vault PKI mount | Resolve the Vault token
+  ansible.builtin.include_tasks: resolve_token.yml
+
+- name: Vault PKI mount | Read the current secrets-engine mounts
+  community.hashi_vault.vault_read:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: sys/mounts
+  register: _vault_pki_mounts
+
+- name: Vault PKI mount | Enable the PKI secrets engine (absent mounts only)
+  community.hashi_vault.vault_write:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "sys/mounts/{{ vault_pki_mount }}"
+    data:
+      type: pki
+      description: "{{ vault_pki_mount_description }}"
+  when: "(vault_pki_mount + '/') not in _vault_pki_mounts.data.data.keys()"
+
+- name: Vault PKI mount | Read the mount tuning
+  community.hashi_vault.vault_read:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "sys/mounts/{{ vault_pki_mount }}/tune"
+  register: _vault_pki_tune
+
+# Vault reports max_lease_ttl in seconds; the desired value is declared in hours.
+- name: Vault PKI mount | Tune max_lease_ttl (drift only)
+  community.hashi_vault.vault_write:
+    url: "{{ vault_pki_addr }}"
+    token: "{{ _vault_pki_token }}"
+    path: "sys/mounts/{{ vault_pki_mount }}/tune"
+    data:
+      max_lease_ttl: "{{ vault_pki_max_lease_ttl_hours }}h"
+  when: >-
+    (_vault_pki_tune.data.data.max_lease_ttl | int)
+    != ((vault_pki_max_lease_ttl_hours | int) * 3600)

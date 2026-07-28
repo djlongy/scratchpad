@@ -1,0 +1,55 @@
+---
+# roles/vault_pki/tasks/main.yml
+#
+# Flat composition: this file only imports the phase task files — no include_role/
+# import_role anywhere in the role (playbook-level composition only). The converge
+# phases (mount, roles) are safe to re-run and run on a NO-TAG converge; the issuer
+# lifecycle phases are one-time key-custody operations, so each is `never`-tagged AND
+# carries the estate `'<tag>' in ansible_run_tags` runtime guard — a co-tag cascaded
+# from a caller cannot defeat `never` and silently arm them (estate-wide idiom; see
+# roles/coldca/tasks/main.yml). The wiring playbook composes csr -> external signing ->
+# set_signed via `tasks_from`, exactly as the signed_install flow drives coldca.
+#
+# Every phase is control-node Vault API work: delegate_to: localhost, become: false,
+# run_once: true, so the role composes into a localhost play and host-targeted plays
+# without change.
+
+- name: Skip vault_pki (vault_pki_enabled is false)
+  ansible.builtin.debug:
+    msg: "vault_pki_enabled is false — skipping vault_pki"
+  when: not (vault_pki_enabled | bool)
+  tags: [always]
+
+- name: Configure vault_pki
+  when: vault_pki_enabled | bool
+  block:
+
+    - name: Converge the PKI secrets-engine mount and tuning
+      ansible.builtin.import_tasks: mount.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [vault_pki_mount]
+
+    - name: Converge the PKI issuing roles
+      ansible.builtin.import_tasks: roles.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [vault_pki_roles]
+
+    - name: Generate the intermediate key + CSR inside Vault (opt-in; skipped when an issuer exists)
+      ansible.builtin.import_tasks: csr.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: "'vault_pki_csr' in ansible_run_tags"
+      tags: [never, vault_pki_csr]
+
+    - name: Import the externally signed intermediate (opt-in; skipped when an issuer exists)
+      ansible.builtin.import_tasks: set_signed.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      when: "'vault_pki_set_signed' in ansible_run_tags"
+      tags: [never, vault_pki_set_signed]

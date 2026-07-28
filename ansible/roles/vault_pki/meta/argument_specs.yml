@@ -1,0 +1,119 @@
+---
+# Input contract — every public vault_pki_* variable from defaults/main.yml.
+argument_specs:
+  main:
+    short_description: >-
+      Manage a HashiCorp Vault PKI secrets engine (mount, roles, intermediate lifecycle).
+    description:
+      - >-
+        Declarative manager for a Vault PKI mount: enable/tune, upsert issuing
+        roles, and the intermediate issuer lifecycle (generate CSR inside Vault,
+        external signing, set-signed import). The intermediate private key never
+        leaves Vault.
+      - >-
+        Converge phases (mount, roles) run on a no-tag run. Issuer lifecycle
+        phases are never-tagged and require explicit --tags.
+    options:
+      vault_pki_addr:
+        type: str
+        default: ""
+        required: true
+        description: Vault API address (e.g. https://vault.example.com:8200).
+
+      vault_pki_validate_certs:
+        type: bool
+        default: true
+        description: >-
+          Verify Vault TLS. Set false for seed Vault with self-signed TLS until
+          a real CA is in the trust store.
+
+      vault_pki_token:
+        type: str
+        default: ""
+        description: >-
+          Explicit Vault token. When empty, the role reads vault_pki_token_file.
+
+      vault_pki_token_file:
+        type: str
+        description: >-
+          Path to the vault login token sink. Defaults to ~/.vault-token.
+
+      vault_pki_mount:
+        type: str
+        default: "pki"
+        description: Secrets-engine mount path.
+
+      vault_pki_mount_description:
+        type: str
+        default: "PKI secrets engine"
+        description: Mount description string.
+
+      vault_pki_max_lease_ttl_hours:
+        type: int
+        default: 87600
+        description: Mount-wide TTL ceiling in hours (87600h = 10y). Tuned on drift only.
+
+      vault_pki_intermediate_common_name:
+        type: str
+        default: ""
+        description: Intermediate CSR common name (required for csr phase).
+
+      vault_pki_intermediate_organization:
+        type: str
+        default: ""
+        description: Intermediate CSR O= field (organisation name, not a domain).
+
+      vault_pki_intermediate_country:
+        type: str
+        default: ""
+        description: Intermediate CSR C= field; omitted from the CSR when empty.
+
+      vault_pki_intermediate_key_type:
+        type: str
+        default: "rsa"
+        description: Key type for intermediate generation (e.g. rsa).
+
+      vault_pki_intermediate_key_bits:
+        type: int
+        default: 4096
+        description: Key size for intermediate generation.
+
+      vault_pki_csr_path:
+        type: str
+        default: ""
+        description: Control-node path the generated CSR is written to (csr phase).
+
+      vault_pki_chain_path:
+        type: str
+        default: ""
+        description: Control-node path of the signed chain to import (set_signed phase).
+
+      vault_pki_sign_external_csr_path:
+        type: str
+        default: ""
+        description: Control-node path of an external CSR for this mount to sign.
+
+      vault_pki_sign_external_cert_out:
+        type: str
+        default: ""
+        description: Control-node path for the signed cert (sign_external).
+
+      vault_pki_sign_external_chain_out:
+        type: str
+        default: ""
+        description: Control-node path for the assembled chain (sign_external).
+
+      vault_pki_sign_external_ttl:
+        type: str
+        default: "87600h"
+        description: >-
+          TTL requested for a signed child cert. Vault caps it at the issuer's
+          remaining validity and the mount max_lease_ttl.
+
+      vault_pki_roles:
+        type: list
+        elements: dict
+        default: []
+        description: >-
+          Issuing roles [{name, config}]; config is a full-replace write to the
+          Vault role API.

@@ -1,0 +1,25 @@
+---
+galaxy_info:
+  role_name: vault_pki
+  author: lab
+  description: >-
+    Declarative manager for a HashiCorp Vault PKI secrets engine: mount + tune
+    (adopting an existing mount), issuing roles, and the intermediate issuer
+    lifecycle (generate the CSR inside Vault, external signing, set-signed import)
+    with an issuer-presence guard so a converge never re-keys an already-initialised
+    mount.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [all]
+  galaxy_tags:
+    - pki
+    - vault
+    - certificate
+    - ca
+
+# Collections this role needs installed (roles cannot hard-depend on collections —
+# declare them in your requirements.yml):
+#   community.hashi_vault >= 6.1 — vault_read / vault_write
+dependencies: []
