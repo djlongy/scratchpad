@@ -43,7 +43,7 @@
     fail_msg: >-
       The lockout revert timer is STILL ACTIVE after disarm
       (systemctl is-active → '{{ _fw_guard_active_check.stdout | trim }}').
-      It will run `firewall-cmd --set-default-zone={{ _fw_guard_prev_default.stdout | default('?') | trim }}
+      It will run `firewall-cmd --set-default-zone={{ _firewalld_guard_prev_default | default('?') }}
       && firewall-cmd --reload` within {{ firewalld_lockout_guard_seconds }}s of arming and
       silently revert the change this run just made. Stop it by hand:
       systemctl stop firewalld-lockout-guard.timer
@@ -55,3 +55,11 @@
     systemctl reset-failed firewalld-lockout-guard.timer firewalld-lockout-guard.service
   changed_when: false
   failed_when: false          # units are already gone on the happy path; nothing to report
+
+# Only AFTER the timer is proven disarmed. Removing the snapshot earlier would
+# strip the revert of the config it restores while it could still fire.
+- name: Remove the guard's config snapshot
+  become: true  # root: the snapshot is written mode-root under /run
+  ansible.builtin.file:
+    path: "{{ firewalld_lockout_guard_snapshot }}"
+    state: absent

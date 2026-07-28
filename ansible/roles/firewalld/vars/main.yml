@@ -1,0 +1,19 @@
+---
+# roles/firewalld/vars/main.yml — derived constants, not configuration.
+# Inventory sets firewalld_service_state; this file derives what that MEANS for
+# the rest of the role. Deliberately in vars/ (not defaults/) so it cannot be
+# overridden out of step with the value it is derived from.
+
+# Single gate for every runtime (firewall-cmd / D-Bus / systemd-run) interaction
+# in this role.
+#
+# `firewalld_service_state: stopped` is an advertised value
+# (meta/argument_specs.yml) and means CONFIG-ONLY: permanent XML under
+# /etc/firewalld still renders — that is the role's single source of truth — but
+# nothing may talk to a daemon the operator deliberately left down. Every phase
+# that shells out to firewall-cmd, binds via ansible.posix.firewalld, reloads,
+# or arms the systemd revert guard is gated on this.
+#
+# To skip the role outright (touch neither config nor daemon) use
+# firewalld_enabled: false instead.
+firewalld_daemon_expected_up: "{{ firewalld_service_state != 'stopped' }}"

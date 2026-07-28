@@ -9,10 +9,18 @@
 # Order:
 #   1. validate inventory contract (exclusive CIDRs, drop+ssh safety)
 #   2. install + service XML + zone XML (atomic sources/ifaces)
-#   3. reload (handlers) — permanent state already complete
-#   4. reconcile runtime bindings (idempotent; belt-and-suspenders)
-#   5. set default zone LAST (drop only after sources exist)
-#   6. verify permanent state matches inventory
+#   3. audit interface→zone classification
+#   4. ARM the revert guard (snapshots /etc/firewalld) — before any reload
+#   5. reload (handlers) — permanent state already complete
+#   6. reconcile runtime bindings (idempotent; belt-and-suspenders)
+#   7. RE-ARM the guard so the switch gets a full timer budget
+#   8. set default zone LAST (drop only after sources exist)
+#   9. prove a fresh SSH connection, then disarm
+#  10. verify permanent state matches inventory
+#
+# Runtime phases are gated on `firewalld_daemon_expected_up` (vars/main.yml):
+# firewalld_service_state=stopped is a documented config-only mode where the
+# permanent XML still renders but nothing talks to the stopped daemon.
 
 - name: Skip firewalld (firewalld_enabled is false)
   ansible.builtin.debug:
@@ -40,8 +48,18 @@
     # the live default zone (root, via firewall-cmd) so the lockout gates cannot
     # be fooled by a host already running drop while inventory leaves the default
     # unset. The probe tolerates firewalld being absent, so it stays safe pre-install.
+    # It also publishes _firewalld_guard_expected, which default_zone.yml uses to
+    # fail closed when a tag selection drops the guard.
+    #
+    # import_tasks, NOT include_tasks — this is what makes the [always] above
+    # real. Tags on a DYNAMIC include apply to the include statement only: the
+    # include expands and then every untagged task inside it is filtered out. So
+    # under `--tags default_zone` this contract expanded and ran NOTHING, while
+    # the directly-tagged ICMP task further down still modified the firewall.
+    # A static import propagates `always` to every child (verified on
+    # ansible-core 2.18), so the contract really does survive tag selection.
     - name: Validate firewalld inventory contract
-      ansible.builtin.include_tasks: validate.yml
+      ansible.builtin.import_tasks: validate.yml
       tags: [always]
 
     - name: Install firewalld and start the service
@@ -65,10 +83,35 @@
 
     # Audit interface→zone classification (NICs in the default zone, NM-owned
     # binds, zone drifting) BEFORE the risky window, so a silent lockout path
-    # fails here rather than after drop takes effect.
+    # fails here rather than after drop takes effect. Needs a live daemon: with
+    # firewalld stopped every --get-zone-of-interface fails, every NIC looks
+    # unbound, and the lockout gate would fire on nothing.
     - name: Audit interface-to-zone bindings
       ansible.builtin.include_tasks: interface_audit.yml
+      when: firewalld_daemon_expected_up | bool
       tags: [interface_audit, firewalld]
+
+    # ── Risky window opens here ──────────────────────────────────────────────
+    # Arm the revert guard BEFORE the first reload. The guard snapshots
+    # /etc/firewalld, so its revert restores the zone XML this window is about to
+    # rewrite — including on a host whose default was ALREADY drop/block, where
+    # rolling the default zone back on its own recovers nothing.
+    #
+    # The tag list is shared by anchor with the re-arm and the disarm below.
+    # Arming under a tag set that does not also disarm would leave a live timer
+    # to revert a good change minutes later — `--skip-tags guard` must take out
+    # all three or none. One list, three sites.
+    #
+    # Deliberately NOT widened to the risky phase tags: these are dynamic
+    # includes, so tags here only decide whether the include expands, never
+    # whether its children run (see the import_tasks note on validate above).
+    # Phase tags would be decoration. The reachable gap `--skip-tags guard`
+    # leaves — guard skipped while default_zone still runs under `--tags
+    # firewalld` — is closed by the fail-closed assert in default_zone.yml.
+    - name: Arm the lockout revert guard (covers the reload window)
+      ansible.builtin.include_tasks: guard_arm.yml
+      when: firewalld_daemon_expected_up | bool
+      tags: &fw_guard_tags [guard, firewalld]
 
     # Flush here: zone XML already contains sources/interfaces, so reload
     # cannot drop the SSH path for default=drop hosts.
@@ -81,12 +124,16 @@
     # Still runs AFTER reload so zones exist as named objects.
     - name: Reconcile source CIDRs to zones (L3)
       ansible.builtin.include_tasks: bindings_sources.yml
-      when: firewalld_source_zone_bindings | length > 0
+      when:
+        - firewalld_daemon_expected_up | bool
+        - firewalld_source_zone_bindings | length > 0
       tags: [bindings, firewalld]
 
     - name: Reconcile interfaces to zones (L2 — use sparingly)
       ansible.builtin.include_tasks: bindings_interfaces.yml
-      when: firewalld_interface_zone_bindings | length > 0
+      when:
+        - firewalld_daemon_expected_up | bool
+        - firewalld_interface_zone_bindings | length > 0
       tags: [bindings, firewalld]
 
     # Reload + reconnect after the runtime binding reconcile. Included (not inlined)
@@ -95,25 +142,29 @@
     - name: Reload firewalld after runtime binding reconcile
       ansible.builtin.include_tasks: bindings_reload.yml
       when:
+        - firewalld_daemon_expected_up | bool
         - firewalld_reload | bool
         - (firewalld_source_zone_bindings | length > 0) or (firewalld_interface_zone_bindings | length > 0)
       tags: [bindings, reload, firewalld]
 
-    # Arm the transient revert timer immediately BEFORE the switch (not before
-    # the flush) so a long reload/reconcile cannot burn the whole timer window
-    # and leave the switch unguarded. It restores the pre-change default zone if
-    # a fresh SSH connection cannot be proven after the switch. No-op unless a
-    # reload will happen and the default is/becomes restrictive.
-    - name: Arm the lockout revert guard
+    # Re-arm immediately BEFORE the switch so a long reload/reconcile cannot burn
+    # the whole timer window and leave the switch unguarded. The snapshot and the
+    # captured pre-change default are NOT retaken — guard_arm.yml keeps the ones
+    # from the first arm, or the revert would restore post-reload state, i.e. the
+    # very change the guard exists to undo.
+    - name: Re-arm the lockout revert guard (full budget for the switch)
       ansible.builtin.include_tasks: guard_arm.yml
-      tags: [guard, firewalld]
+      when: firewalld_daemon_expected_up | bool
+      tags: *fw_guard_tags
 
     # Default zone LAST. Switching to drop parks the primary NIC in drop;
     # safe only once source-activated zones are permanent AND the revert guard
     # is proven pending (asserted inside default_zone.yml).
     - name: Set the default zone
       ansible.builtin.include_tasks: default_zone.yml
-      when: firewalld_default_zone | length > 0
+      when:
+        - firewalld_daemon_expected_up | bool
+        - firewalld_default_zone | length > 0
       tags: [default_zone, firewalld]
 
     # When no default zone is managed, ICMP must target the firewall's ACTUAL
@@ -125,6 +176,7 @@
       changed_when: false
       check_mode: false
       when:
+        - firewalld_daemon_expected_up | bool
         - firewalld_allow_icmp | bool
         - firewalld_default_zone | length == 0
       tags: [default_zone, icmp, firewalld]
@@ -139,22 +191,28 @@
         permanent: true
         immediate: true
         state: enabled
-      when: firewalld_allow_icmp | bool
+      when:
+        - firewalld_daemon_expected_up | bool
+        - firewalld_allow_icmp | bool
       tags: [default_zone, icmp, firewalld]
 
     # Prove a FRESH SSH connection survives the new default, THEN disarm the
     # revert timer. Included only when the guard was armed — meta:reset_connection
-    # inside cannot itself be gated by 'when'.
+    # inside cannot itself be gated by 'when'. Shares the arm's tag list so no tag
+    # selection can arm without disarming.
     - name: Disarm the lockout revert guard (after fresh-connection proof)
       ansible.builtin.include_tasks: guard_disarm.yml
       when: _firewalld_guard_active | default(false) | bool
-      tags: [guard, firewalld]
+      tags: *fw_guard_tags
 
     - name: Apply legacy firewall_rules (back-compat)
       ansible.builtin.include_tasks: legacy_rules.yml
-      when: firewall_rules | length > 0
+      when:
+        - firewalld_daemon_expected_up | bool
+        - firewall_rules | length > 0
       tags: [legacy_rules, firewalld]
 
     - name: Verify permanent firewalld state matches inventory
       ansible.builtin.include_tasks: verify.yml
+      when: firewalld_daemon_expected_up | bool
       tags: [verify, firewalld]

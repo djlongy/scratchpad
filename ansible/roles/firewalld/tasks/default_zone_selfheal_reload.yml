@@ -1,0 +1,25 @@
+---
+# Self-heal reload, then reconnect.
+#
+# `firewall-cmd --reload` rebuilds the ruleset and flushes connection tracking,
+# killing the ESTABLISHED SSH session Ansible is running over. The host stays
+# healthy and accepts NEW connections immediately, so the play dies later with a
+# misleading "UNREACHABLE: Data could not be sent to remote host" on whatever
+# unrelated task is running when the master is finally declared dead. Every other
+# reload in this role already pairs with a reconnect — handlers/main.yml chains
+# one off the reload handler, and bindings_reload.yml exists solely to pair the
+# two. This reload skipped it, and it fires in the narrowest window of all:
+# immediately before a restrictive default-zone switch.
+#
+# `meta: reset_connection` cannot be gated by `when:` (ansible-core ignores
+# conditionals on it — strategy/__init__.py: "These don't support 'when'
+# conditionals"), so this lives in its own file that default_zone.yml includes
+# conditionally. Same pattern as bindings_reload.yml and guard_disarm.yml.
+
+- name: Self-heal — reload so permanent ssh bindings reach runtime
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: false  # syncs runtime from already-written permanent; not a config change here
+
+- name: Reconnect after the self-heal reload flushed connection tracking
+  ansible.builtin.meta: reset_connection

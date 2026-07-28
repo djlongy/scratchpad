@@ -1,31 +1,91 @@
 ---
-# Fail-safe revert guard — ARM. A transient systemd timer restores the
-# pre-change default zone and reloads if we cannot prove a fresh SSH connection
-# after the switch. Armed BEFORE the reload flush so it covers the whole risky
-# window. Disarmed in guard_disarm.yml once wait_for_connection succeeds.
+# Fail-safe revert guard — ARM (and RE-ARM; this file is included more than once).
 #
-# The revert is a plain --set-default-zone back to the captured value plus a
-# normal --reload; it never restarts the service or drops established state.
+# A transient systemd timer restores the permanent firewalld config captured
+# before the risky window, puts the default zone back, and reloads — if we
+# cannot prove a fresh SSH connection afterwards. Disarmed in guard_disarm.yml
+# once wait_for_connection succeeds.
+#
+# WHY A CONFIG SNAPSHOT AND NOT JUST --set-default-zone <prev>:
+# reverting to the pre-change default recovers nothing on a host whose default
+# was ALREADY drop/block — the timer set drop back to drop and the operator
+# stayed locked out. The risky operations here rewrite zone XML (sources,
+# interfaces, services) and reload; only restoring that XML actually undoes
+# them. The snapshot covers /etc/firewalld wholesale, so the revert also
+# restores DefaultZone from firewalld.conf; the explicit --set-default-zone in
+# the revert is belt-and-braces for that.
+#
+# Snapshot restore is additive: a zone FILE created during the run is not
+# deleted by the extract. That is inert — a zone strands nothing unless a
+# source/interface binds it, and every binding lives in the zone XML that IS
+# restored.
+#
+# INCLUDED TWICE ON PURPOSE (main.yml): once before the handler flush so the
+# reload window is covered at all, then again immediately before the
+# default-zone switch so a slow reload/reconcile cannot burn the whole timer
+# budget and leave the switch unguarded. The snapshot and the pre-change
+# default are captured on the FIRST arm only — re-arming must not re-snapshot
+# post-reload state, or the revert would restore the very change it exists to
+# undo.
 
+# The probe is `when:`-guarded so the re-arm does not re-read a default the run
+# may already have changed. That makes PINNING the result into a set_fact
+# mandatory rather than stylistic: a SKIPPED task still registers, overwriting
+# its variable with {'skipped': true, ...} — so on the second include the
+# register alone would have no .stdout and every consumer below would fail with
+# "'dict object' has no attribute 'stdout'". set_fact values are not clobbered
+# by a later skip, so the captured zone survives the whole play.
 - name: Capture the live default zone before the risky window
   become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
   ansible.builtin.command: firewall-cmd --get-default-zone
-  register: _fw_guard_prev_default
+  register: _fw_guard_prev_default_probe
   changed_when: false
   check_mode: false
+  when: _firewalld_guard_prev_default is not defined
+
+- name: Pin the pre-change default zone (must survive the re-arm include)
+  ansible.builtin.set_fact:
+    _firewalld_guard_prev_default: "{{ _fw_guard_prev_default_probe.stdout | trim }}"
+  when: _firewalld_guard_prev_default is not defined
 
 - name: Decide whether to arm the lockout guard
   ansible.builtin.set_fact:
     # Arm only when a reload will happen AND the default is (or is becoming)
-    # restrictive. Skipped in check mode so a dry run never touches systemd.
+    # restrictive. Skipped in check mode so a dry run never touches systemd, and
+    # when the daemon is deliberately stopped (config-only mode — nothing to
+    # guard because nothing runtime is applied).
     _firewalld_guard_active: >-
       {{ (firewalld_lockout_guard | bool)
          and (firewalld_reload | bool)
+         and (firewalld_daemon_expected_up | bool)
          and (not ansible_check_mode)
          and (
                (firewalld_default_zone in ['drop', 'block'])
-               or ((_fw_guard_prev_default.stdout | default('') | trim) in ['drop', 'block'])
+               or ((_firewalld_guard_prev_default | default('') | trim) in ['drop', 'block'])
              ) }}
+
+# Snapshot BEFORE anything rewrites zone XML. `-C /etc/firewalld .` captures
+# zones/, services/, policies/ and firewalld.conf together, so the revert is a
+# single extract rather than a per-directory reconstruction.
+- name: Snapshot the permanent firewalld config for the revert guard
+  become: true  # root: reads /etc/firewalld (mode 0750, root-owned)
+  ansible.builtin.command:
+    argv:
+      - tar
+      - czf
+      - "{{ firewalld_lockout_guard_snapshot }}"
+      - -C
+      - /etc/firewalld
+      - .
+  changed_when: true
+  when:
+    - _firewalld_guard_active | bool
+    - not (_firewalld_guard_snapshot_done | default(false) | bool)
+
+- name: Mark the guard snapshot as taken (re-arm must not re-snapshot)
+  ansible.builtin.set_fact:
+    _firewalld_guard_snapshot_done: true
+  when: _firewalld_guard_active | bool
 
 - name: Clear any stale lockout-guard units before arming
   become: true  # root: systemctl manages the transient guard units
@@ -44,6 +104,9 @@
   check_mode: false
   when: _firewalld_guard_active | bool
 
+# `|| true` on the extract, then `;` before the zone revert: a missing or
+# corrupt snapshot must not stop the default-zone rollback from running. The
+# guard fails OPEN toward recovery — a partial revert beats none.
 - name: Arm the transient revert timer
   become: true  # root: systemd-run creates a transient system timer + service
   ansible.builtin.command:
@@ -56,6 +119,9 @@
       - "--on-active={{ firewalld_lockout_guard_seconds }}"
       - /bin/sh
       - -c
-      - "firewall-cmd --set-default-zone={{ _fw_guard_prev_default.stdout | trim }} && firewall-cmd --reload"
+      - >-
+        tar xzf {{ firewalld_lockout_guard_snapshot }} -C /etc/firewalld || true;
+        firewall-cmd --set-default-zone={{ _firewalld_guard_prev_default }};
+        firewall-cmd --reload
   changed_when: true
   when: _firewalld_guard_active | bool

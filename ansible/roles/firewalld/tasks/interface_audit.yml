@@ -97,7 +97,18 @@
          if (((ansible_env | default({})).get('SSH_CONNECTION', '') | string).split() | length >= 3)
          else '' }}
 
-- name: Resolve the SSH ingress interface (default route, else SSH local IP)
+# The SSH session's own local IP is the ONLY authoritative signal for which NIC
+# carries this admin session. The default route is a fallback for when
+# SSH_CONNECTION is unreadable (no ssh env under some become/fact-gathering
+# combinations) — never a preference.
+#
+# This precedence used to be inverted: via_local was computed and then discarded
+# whenever ansible_default_ipv4.interface was defined, which — because main.yml
+# self-heals the network fact subset — is effectively always. On a multi-homed
+# host whose admin session arrives on a NIC other than the default-route NIC,
+# every gate below audited the wrong interface and could pass while the
+# operator's real NIC fell to drop.
+- name: Resolve the SSH ingress interface (SSH session first, else default route)
   ansible.builtin.set_fact:
     _fw_ssh_iface: >-
       {% set via_local = [] %}
@@ -108,7 +119,20 @@
       {%- endif -%}
       {%- endfor -%}
       {%- endif -%}
-      {{ (ansible_default_ipv4.interface | default('')) if (ansible_default_ipv4.interface is defined) else (via_local | first | default('')) }}
+      {{ (via_local | first) if (via_local | length > 0) else (ansible_default_ipv4.interface | default('')) }}
+
+# Surface which signal won, so an operator reading the run can tell whether the
+# gate below judged the real session NIC or only the default-route fallback.
+- name: Report how the SSH ingress interface was resolved
+  ansible.builtin.debug:
+    msg: >-
+      firewalld interface audit: SSH ingress NIC '{{ _fw_ssh_iface }}' resolved
+      from {{ 'the SSH session (SSH_CONNECTION local IP ' ~ _fw_ssh_local_ip ~ ')'
+              if (_fw_ssh_local_ip | length > 0
+                  and _fw_ssh_iface != (ansible_default_ipv4.interface | default('')))
+              else ('the SSH session' if (_fw_ssh_local_ip | length > 0)
+                    else 'the DEFAULT ROUTE (SSH_CONNECTION unreadable — on a
+                          multi-homed host confirm this is really your session NIC)') }}.
 
 - name: Resolve the runtime zone of the SSH ingress interface
   ansible.builtin.set_fact:

@@ -37,23 +37,53 @@
 # firewalld source→zone is exclusive: one CIDR can only belong to one zone.
 # Binding the same CIDR twice (e.g. mgt.subnet → mgmt AND → lgtm) produces
 # undefined permanent state and is the classic dual-bind lockout.
+#
+# A CIDR reaches a zone by TWO routes and this check must cover both, because
+# templates/zone.xml.j2 merges them into one <source> list per zone:
+#   1. firewalld_source_zone_bindings  (zone + source pairs)
+#   2. firewalld_zones[].sources       (inline on the zone dict)
+# Inspecting only route 1 let "inline on zone A + bound to zone B" pass
+# validation and be written into both zone files — precisely the dual-bind this
+# assert exists to stop. Flattening both into one (source, zone) list first is
+# what keeps the two routes in lockstep.
+- name: Build the full source→zone map (bindings plus inline zone sources)
+  ansible.builtin.set_fact:
+    _firewalld_source_zone_pairs: >-
+      {% set out = [] %}
+      {%- for b in firewalld_source_zone_bindings | default([]) -%}
+      {%- set _ = out.append({'source': b.source, 'zone': b.zone, 'via': 'firewalld_source_zone_bindings'}) -%}
+      {%- endfor -%}
+      {%- for z in firewalld_zones | default([]) -%}
+      {%- for s in (z.sources | default([], true)) -%}
+      {%- set _ = out.append({'source': s, 'zone': z.name, 'via': 'firewalld_zones[' ~ z.name ~ '].sources'}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
 - name: Assert each source CIDR binds to exactly one zone
   vars:
     _zones_for_source: >-
-      {{ firewalld_source_zone_bindings
+      {{ _firewalld_source_zone_pairs
          | selectattr('source', 'equalto', item)
          | map(attribute='zone')
+         | list
+         | unique }}
+    _routes_for_source: >-
+      {{ _firewalld_source_zone_pairs
+         | selectattr('source', 'equalto', item)
+         | map(attribute='via')
          | list
          | unique }}
   ansible.builtin.assert:
     that:
       - _zones_for_source | length == 1
     fail_msg: >-
-      Source CIDR {{ item }} is bound to multiple zones: {{ _zones_for_source }}.
-      firewalld allows a source in only ONE zone. Put host services needed by
-      that CIDR on that single zone (e.g. mgt.subnet → mgmt with ssh+apps;
-      peers → service zone without ssh).
-  loop: "{{ firewalld_source_zone_bindings | map(attribute='source') | list | unique }}"
+      Source CIDR {{ item }} is bound to multiple zones: {{ _zones_for_source }}
+      (declared via {{ _routes_for_source }}). firewalld allows a source in only
+      ONE zone, and this role writes both routes into the same zone XML. Put host
+      services needed by that CIDR on that single zone (e.g. mgt.subnet → mgmt
+      with ssh+apps; peers → service zone without ssh).
+  loop: "{{ _firewalld_source_zone_pairs | map(attribute='source') | list | unique }}"
   loop_control:
     label: "{{ item }}"
 
@@ -375,3 +405,26 @@
       Add {{ _firewalld_controller_ip }}'s network to an ssh zone
       binding, or set firewalld_skip_controller_check=true if you administer via
       a path this check cannot see.
+
+# Whether a lockout guard SHOULD exist for this run, computed here because this
+# file is tags:[always] and therefore survives every tag selection.
+#
+# This is what lets default_zone.yml tell two very different situations apart:
+#   - guard legitimately OFF (firewalld_lockout_guard=false, deferred reload,
+#     check mode, config-only mode) → proceeding unguarded is the operator's
+#     explicit choice;
+#   - guard SKIPPED because a tag selection dropped guard_arm.yml → the switch
+#     would silently proceed with no revert timer and no fresh-connection proof.
+# Without this fact the second case is indistinguishable from the first, because
+# every consumer of _firewalld_guard_active reads it as `| default(false)`.
+- name: Determine whether a lockout guard is expected for this run
+  ansible.builtin.set_fact:
+    _firewalld_guard_expected: >-
+      {{ (firewalld_lockout_guard | bool)
+         and (firewalld_reload | bool)
+         and (firewalld_daemon_expected_up | bool)
+         and (not ansible_check_mode)
+         and (
+               (firewalld_default_zone in ['drop', 'block'])
+               or (_firewalld_lockdown | bool)
+             ) }}

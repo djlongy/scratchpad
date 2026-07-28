@@ -13,6 +13,12 @@
     enabled: "{{ firewalld_service_enabled }}"
     daemon_reload: true
 
+# `until: rc == 0` with no failure tolerance means this task IS a hard gate, so
+# it must not run when the operator asked for the daemon to be down:
+# firewalld_service_state=stopped is an advertised choice, and
+# `firewall-cmd --state` exits non-zero ("not running") on a stopped daemon, so
+# an unconditional probe retried the value into a role abort every time. See
+# vars/main.yml for what config-only mode does and does not touch.
 - name: Probe firewalld is responsive
   become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
   ansible.builtin.command: firewall-cmd --state
@@ -21,3 +27,13 @@
   retries: 3
   delay: 2
   until: _firewalld_state.rc == 0
+  when: firewalld_daemon_expected_up | bool
+
+- name: Report firewalld config-only mode (daemon deliberately stopped)
+  ansible.builtin.debug:
+    msg: >-
+      firewalld_service_state=stopped — rendering permanent XML only. The
+      reload, runtime binding reconcile, interface audit, default-zone switch,
+      lockout guard and runtime verification are all skipped because they
+      require a running daemon. Start firewalld and re-run to apply.
+  when: not (firewalld_daemon_expected_up | bool)

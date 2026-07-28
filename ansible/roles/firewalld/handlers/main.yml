@@ -8,7 +8,12 @@
   # main.yml / default_zone.yml / guard_arm.yml (which all cast) correctly deferred. Half the
   # role honoured the toggle and half ignored it, and ansible-core only whispered it as a
   # "Conditional result was of type 'str' ... interpreted as True" deprecation warning.
-  when: firewalld_reload | default(true) | bool
+  # firewalld_daemon_expected_up: firewalld_service_state=stopped is config-only
+  # mode — reloading a daemon the operator deliberately left down would fail the
+  # run on the one path that is supposed to touch nothing runtime.
+  when:
+    - firewalld_reload | default(true) | bool
+    - firewalld_daemon_expected_up | bool
   notify: Reconnect after firewalld reload
 
 # `firewall-cmd --reload` rebuilds the ruleset and flushes connection tracking,

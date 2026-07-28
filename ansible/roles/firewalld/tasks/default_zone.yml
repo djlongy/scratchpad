@@ -84,10 +84,11 @@
       {{ ((_fw_perm_ssh_sources.results | default([]) | map(attribute='stdout') | map('trim') | reject('equalto', '') | list | length) > 0)
          or ((_fw_perm_ssh_ifaces.results | default([]) | map(attribute='stdout') | map('trim') | reject('equalto', '') | list | length) > 0) }}
 
-- name: Self-heal — reload so permanent ssh bindings reach runtime
-  become: true  # root: firewall-cmd
-  ansible.builtin.command: firewall-cmd --reload
-  changed_when: false  # syncs runtime from already-written permanent; not a config change here
+# Included (not inlined) because it ends in meta: reset_connection, which cannot
+# carry a `when:` — see default_zone_selfheal_reload.yml for why the reconnect
+# is needed at all.
+- name: Self-heal reload so permanent ssh bindings reach runtime
+  ansible.builtin.include_tasks: default_zone_selfheal_reload.yml
   when:
     - _fw_target_lockdown | bool
     - not (_fw_runtime_ssh_ok | default(false) | bool)
@@ -113,6 +114,36 @@
       in the RUNNING firewall. Active zones: {{ _fw_active_zone_names | default([]) }}.
       The bindings phase must classify the admin path before the default becomes
       restrictive.
+
+# FAIL CLOSED on a guard that was expected but never armed.
+#
+# Every consumer of _firewalld_guard_active reads it as `| default(false)`, so an
+# UNDEFINED guard (guard_arm.yml never ran) was indistinguishable from a guard
+# deliberately turned off — and silently disabled the timer query, the pending
+# assert below, and the post-switch fresh-connection proof in guard_disarm.yml.
+#
+# The reachable way to land here is `--skip-tags guard` alongside a tag set that
+# still selects this phase (e.g. `--tags firewalld --skip-tags guard`): the arm
+# is filtered out while the switch still runs. Verified live — without this
+# assert that combination switched to drop with no timer and no proof.
+#
+# _firewalld_guard_expected comes from validate.yml, which is imported with
+# tags:[always] so it survives every tag selection.
+- name: Refuse a restrictive switch when the expected lockout guard never armed
+  when:
+    - _fw_target_lockdown | bool
+    - _firewalld_guard_expected | default(false) | bool
+    - not (_firewalld_guard_active | default(false) | bool)
+  ansible.builtin.fail:
+    msg: >-
+      Refusing to switch default zone to '{{ firewalld_default_zone }}': a
+      lockout revert guard is expected for this run
+      (firewalld_lockout_guard=true, reload enabled, restrictive default) but
+      guard_arm.yml never ran, so there is no revert timer and no post-switch
+      fresh-connection proof. Usually `--skip-tags guard` alongside a tag set
+      that still selects the default-zone switch. Drop the skip (or add the
+      `guard` tag), or set firewalld_lockout_guard=false to switch deliberately
+      unguarded.
 
 # The revert guard must be armed and pending right before the switch. If the
 # guard was enabled+applicable but its timer is not 'active', it may have fired

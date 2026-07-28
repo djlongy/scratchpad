@@ -55,8 +55,16 @@ firewalld_strict_interface_audit: false
 
 # Seconds the revert timer waits before firing. Must comfortably exceed the time
 # from arming to the post-switch fresh-connection probe, yet stay short enough to
-# recover a real lockout quickly.
+# recover a real lockout quickly. The timer is re-armed immediately before the
+# default-zone switch, so this budget covers arm→switch→proof, not the whole run.
 firewalld_lockout_guard_seconds: 180
+
+# Where the revert guard stores its pre-change snapshot of the permanent
+# firewalld config (/etc/firewalld). On tmpfs deliberately: a reboot clears it,
+# and a rebooted host has already left the risky window behind. Restoring this
+# archive is what lets the guard recover a host whose default zone was ALREADY
+# drop/block before the run — see guard_arm.yml.
+firewalld_lockout_guard_snapshot: /run/firewalld-lockout-guard.tar.gz
 
 # ── Custom service definitions ───────────────────────────────────────────────
 #
