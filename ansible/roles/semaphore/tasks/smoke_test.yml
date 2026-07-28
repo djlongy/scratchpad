@@ -9,6 +9,10 @@
 # the play context). status_code lists accept 200 and 201 because
 # Semaphore returns 201 on POST-create and 204 on idempotent re-runs.
 
+- name: Resolve Ansible install secrets when smoke runs without install facts
+  ansible.builtin.include_tasks: resolve_ansible_secrets.yml
+  when: _semaphore_admin_password is not defined
+
 - name: Log in as Semaphore admin
   become: false  # localhost/API — Semaphore HTTP API, no host privilege
   ansible.builtin.uri:

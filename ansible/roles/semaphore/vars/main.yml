@@ -15,11 +15,29 @@ semaphore_pg_version: "16"
 semaphore_pg_database: "semaphore"
 semaphore_pg_username: "semaphore"
 
-# Admin web user — created by Semaphore on first boot from env vars.
-# Username is fixed; password is fetched-or-generated in install.yml.
-semaphore_admin_username: "admin"
-semaphore_admin_email: "admin@{{ env }}.{{ domain }}"
-semaphore_admin_name: "Semaphore Admin"
+# Container runtime uid/gid — the host-side data dirs and bind mounts must be
+# owned by these so the non-root processes inside each container can read and
+# write them. They are fixed by the image tags above: semaphoreui/semaphore
+# runs as uid/gid 1001, postgres:{{ semaphore_pg_version }}-alpine runs as
+# uid/gid 999. Re-check both if you bump semaphore_image / semaphore_pg_version.
+semaphore_container_uid: "1001"
+semaphore_container_gid: "1001"
+semaphore_pg_uid: "999"
+semaphore_pg_gid: "999"
+
+# Local bootstrap admin — created by Semaphore on first boot from env vars;
+# password is fetched-or-generated in install.yml. Used only for the role's
+# API bootstrap (admin-promotion + smoke test).
+#
+# Name MUST NOT collide with any LDAP uid. When LDAP is enabled Semaphore
+# resolves every login through the LDAP search filter first; if that filter
+# (uid=%s) matches a directory entry, it binds AS that entry and never falls
+# back to local auth. FreeIPA always ships a `uid=admin` principal, so a local
+# admin literally named "admin" is shadowed by it and can never log in
+# (bind → LDAP code 49 → HTTP 401). Keep this a Semaphore-namespaced login.
+semaphore_admin_username: "sem-admin"
+semaphore_admin_email: "sem-admin@{{ env }}.{{ domain }}"
+semaphore_admin_name: "Semaphore Local Admin"
 
 # Smoke-test project — a single Semaphore project + template that runs
 # a non-destructive `ansible -m ping localhost` task. Mirrors the Rundeck

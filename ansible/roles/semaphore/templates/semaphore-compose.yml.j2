@@ -56,19 +56,21 @@ services:
       SEMAPHORE_ACCESS_KEY_ENCRYPTION: "{{ _semaphore_access_key_encryption }}"
       # Tell Semaphore it's behind a TLS-terminating proxy (NPM in
       # front of port {{ semaphore_server_port }}).
-      SEMAPHORE_WEB_ROOT: "https://{{ semaphore_fqdn }}"
+      SEMAPHORE_WEB_ROOT: "{{ semaphore_web_root }}"
       # Path that templates resolve playbook references against. The
       # bind below maps the host's ansible-repo dir into this path.
       SEMAPHORE_TMP_PATH: "/tmp/semaphore"
       ANSIBLE_HOST_KEY_CHECKING: "False"
-      VAULT_ADDR: "{{ vault_addr }}"
+      # No VAULT_* here. semaphore_ansible_secret_store is Ansible-side only;
+      # install secrets are already expanded into the SEMAPHORE_* env vars above.
+      # Semaphore's own runtime secret-storage (Vault/etc.) is not configured by
+      # this role.
 {% if semaphore_ldap_enabled %}
-      # ── LDAP / FreeIPA ─────────────────────────────────────────────
+      # ── LDAP (generic; FreeIPA is opt-in via freeipa_provision) ────
       # Semaphore CE config-style env vars. NEEDTLS=yes wraps the
-      # connection in TLS (LDAPS on port 636). The Go ldap client
-      # verifies the server cert against the CA bundle at
-      # SSL_CERT_FILE — we point that at the FreeIPA CA cert
-      # bind-mounted below so the self-signed FreeIPA PKI is trusted.
+      # connection in TLS (LDAPS on port 636). When a CA cert was
+      # installed (freeipa provision or semaphore_ldap_ca_cert_src),
+      # SSL_CERT_FILE points at it for LDAPS verification.
       SEMAPHORE_LDAP_ACTIVATED: "yes"
       SEMAPHORE_LDAP_HOST: "{{ semaphore_ldap_host }}"
       SEMAPHORE_LDAP_PORT: "{{ semaphore_ldap_port }}"
@@ -81,12 +83,13 @@ services:
       SEMAPHORE_LDAP_MAPPING_MAIL: "{{ semaphore_ldap_mapping_mail }}"
       SEMAPHORE_LDAP_MAPPING_UID: "{{ semaphore_ldap_mapping_uid }}"
       SEMAPHORE_LDAP_MAPPING_CN: "{{ semaphore_ldap_mapping_cn }}"
-      # Go reads SSL_CERT_FILE on init for its system CA pool. Pointing
-      # at just the FreeIPA CA means LDAPS validates correctly but the
-      # container's outbound TLS to anything ELSE on the public internet
-      # (Webhook alerts, etc) won't trust public CAs. Acceptable here
-      # because the container has no outbound public-TLS path today.
-      SSL_CERT_FILE: "/etc/ssl/certs/freeipa-ca.crt"
+{% if (semaphore_freeipa_provision | default(false)) or (semaphore_ldap_ca_cert_src | default('') | length > 0) %}
+      # Go SSL_CERT_FILE replaces the system CA pool for this process.
+      # Pointing at only the directory CA means public HTTPS from the
+      # container will not trust public CAs — acceptable while the
+      # container has no outbound public-TLS path.
+      SSL_CERT_FILE: "/etc/ssl/certs/ldap-ca.crt"
+{% endif %}
 {% endif %}
     ports:
       - "{{ semaphore_server_port }}:3000"
@@ -97,10 +100,9 @@ services:
       # Local "git" repo path — Semaphore reads the smoke-test playbook
       # from here via the file:// repo entry created in smoke_test.yml.
       - {{ semaphore_data_dir }}/ansible-repo:/tmp/semaphore_repos/ansible-repo:ro
-{% if semaphore_ldap_enabled %}
-      # FreeIPA CA cert for LDAPS verification — slurped from
-      # groups['freeipa'][0]:/etc/ipa/ca.crt at deploy time.
-      - {{ semaphore_data_dir }}/freeipa-ca.crt:/etc/ssl/certs/freeipa-ca.crt:ro
+{% if semaphore_ldap_enabled and ((semaphore_freeipa_provision | default(false)) or (semaphore_ldap_ca_cert_src | default('') | length > 0)) %}
+      # LDAPS CA — FreeIPA provisioner or operator-supplied path.
+      - {{ semaphore_data_dir }}/ldap-ca.crt:/etc/ssl/certs/ldap-ca.crt:ro
 {% endif %}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/ping || exit 1"]

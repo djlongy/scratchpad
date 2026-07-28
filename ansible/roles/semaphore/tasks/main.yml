@@ -3,24 +3,39 @@
 # Role is privilege-self-contained: root tasks carry become: true; Vault/API
 # tasks carry become: false. Playbooks must NOT set play-level become for this
 # role.
+#
+# External deps (Vault, FreeIPA, LDAP) are opt-in via defaults/inventory —
+# see semaphore_ansible_secret_store, semaphore_ldap_enabled, semaphore_freeipa_provision.
 
-- name: Install Semaphore stack
-  ansible.builtin.import_tasks: install.yml
-  tags: [install]
+- name: Skip semaphore (semaphore_enabled is false)
+  ansible.builtin.debug:
+    msg: "semaphore_enabled is false — skipping semaphore"
+  when: not (semaphore_enabled | bool)
+  tags: [always]
 
-- name: Wait for Semaphore HTTP readiness
-  ansible.builtin.import_tasks: configure.yml
-  tags: [install, config]
+- name: Configure semaphore
+  when: semaphore_enabled | bool
+  block:
 
-- name: Promote LDAP-backed admin users
-  ansible.builtin.import_tasks: promote_admins.yml
-  when: semaphore_ldap_enabled | bool
-  tags: [install, ldap]
+    - name: Install Semaphore stack
+      ansible.builtin.import_tasks: install.yml
+      tags: [install]
 
-- name: Smoke-test Semaphore via API
-  ansible.builtin.import_tasks: smoke_test.yml
-  tags: [install, smoke]
+    - name: Wait for Semaphore HTTP readiness
+      ansible.builtin.import_tasks: configure.yml
+      tags: [install, config]
 
-- name: Reconcile declarative projects
-  ansible.builtin.import_tasks: reconcile_projects.yml
-  tags: [config, reconcile, projects]
+    - name: Promote LDAP-backed admin users
+      ansible.builtin.import_tasks: promote_admins.yml
+      when:
+        - semaphore_ldap_enabled | bool
+        - (semaphore_ldap_admins | default([])) | length > 0
+      tags: [install, ldap]
+
+    - name: Smoke-test Semaphore via API
+      ansible.builtin.import_tasks: smoke_test.yml
+      tags: [install, smoke]
+
+    - name: Reconcile declarative projects
+      ansible.builtin.import_tasks: reconcile_projects.yml
+      tags: [config, reconcile, projects]

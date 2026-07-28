@@ -1,0 +1,112 @@
+---
+# ldap.yml — optional LDAP wiring for Semaphore.
+#
+# Gated by semaphore_ldap_enabled. FreeIPA auto-provision of svc-semaphore
+# and CA slurp is a separate gate: semaphore_freeipa_provision (default false).
+# Generic LDAP needs only host/bind config (+ optional CA cert path).
+
+- name: Assert LDAP host is configured when LDAP is enabled
+  ansible.builtin.assert:
+    that:
+      - (semaphore_ldap_host | default('') | length) > 0
+      - (semaphore_ldap_bind_dn | default('') | length) > 0
+    fail_msg: >-
+      semaphore_ldap_enabled requires semaphore_ldap_host and
+      semaphore_ldap_bind_dn. FreeIPA is not assumed — set these
+      explicitly, or enable semaphore_freeipa_provision with a freeipa
+      inventory group.
+
+- name: Assert freeipa provision is only requested with LDAP on
+  ansible.builtin.assert:
+    that:
+      - semaphore_ldap_enabled | bool
+    fail_msg: semaphore_freeipa_provision requires semaphore_ldap_enabled=true.
+  when: semaphore_freeipa_provision | bool
+
+# ── FreeIPA provisioner (opt-in) ─────────────────────────────────────────────
+- name: Provision FreeIPA bind account and CA for LDAPS
+  when: semaphore_freeipa_provision | bool
+  block:
+    - name: Assert FreeIPA inventory group is present and non-empty
+      ansible.builtin.assert:
+        that:
+          - (groups[semaphore_freeipa_inventory_group] | default([]) | length) > 0
+        fail_msg: >-
+          semaphore_freeipa_provision=true but inventory group
+          '{{ semaphore_freeipa_inventory_group }}' is missing or empty.
+          Add FreeIPA hosts to inventory, or disable freeipa provision and
+          configure generic LDAP (host/bind/CA) yourself.
+
+    - name: Assert a FreeIPA admin password source is configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            (semaphore_freeipa_admin_password | default('') | length > 0)
+            or (
+              (semaphore_ansible_secret_store | default('host_file')) == 'vault_kv'
+              and (vault_platform_runtime_base | default('') | length > 0)
+              and (vault_addr | default('') | length > 0)
+            )
+        fail_msg: >-
+          FreeIPA provision needs semaphore_freeipa_admin_password (declared)
+          or semaphore_ansible_secret_store=vault_kv with
+          vault_platform_runtime_base set for the freeipa/runtime admin_password
+          fallback.
+
+    - name: Fetch FreeIPA admin password (declared var first, Vault fallback)
+      ansible.builtin.set_fact:
+        _freeipa_admin_password: >-
+          {{ semaphore_freeipa_admin_password
+             if (semaphore_freeipa_admin_password | default('') | length > 0)
+             else lookup('community.hashi_vault.hashi_vault',
+                  'secret=' + vault_platform_runtime_base + '/freeipa/runtime:admin_password url=' + vault_addr) }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Create / update svc-semaphore FreeIPA user
+      freeipa.ansible_freeipa.ipauser:
+        ipaadmin_principal: admin
+        ipaadmin_password: "{{ _freeipa_admin_password }}"
+        name: "{{ semaphore_ldap_svc_user }}"
+        first: "{{ semaphore_ldap_svc_first }}"
+        last: "{{ semaphore_ldap_svc_last }}"
+        password: "{{ _semaphore_ldap_bind_password }}"
+        update_password: always
+        state: present
+      delegate_to: "{{ groups[semaphore_freeipa_inventory_group][0] }}"
+      become: false
+      no_log: true
+
+    - name: Slurp FreeIPA CA cert
+      ansible.builtin.slurp:
+        src: /etc/ipa/ca.crt
+      delegate_to: "{{ groups[semaphore_freeipa_inventory_group][0] }}"
+      become: true  # root: read IPA CA on the FreeIPA host
+      register: _freeipa_ca_slurp
+
+    - name: Write FreeIPA CA cert to the Semaphore data dir
+      become: true  # root: writes into root-owned data dir
+      ansible.builtin.copy:
+        content: "{{ _freeipa_ca_slurp.content | b64decode }}"
+        dest: "{{ semaphore_data_dir }}/ldap-ca.crt"
+        owner: "{{ semaphore_container_uid }}"
+        group: "{{ semaphore_container_gid }}"
+        mode: "0644"
+      notify: Restart semaphore
+
+# ── Generic LDAP CA (when not using FreeIPA provision) ───────────────────────
+- name: Install operator-supplied LDAP CA cert
+  when:
+    - not (semaphore_freeipa_provision | bool)
+    - (semaphore_ldap_ca_cert_src | default('') | length) > 0
+  block:
+    - name: Copy LDAP CA cert into the Semaphore data dir
+      become: true  # root: writes into root-owned data dir
+      ansible.builtin.copy:
+        src: "{{ semaphore_ldap_ca_cert_src }}"
+        dest: "{{ semaphore_data_dir }}/ldap-ca.crt"
+        owner: "{{ semaphore_container_uid }}"
+        group: "{{ semaphore_container_gid }}"
+        mode: "0644"
+      notify: Restart semaphore

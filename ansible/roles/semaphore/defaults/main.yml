@@ -1,31 +1,68 @@
 ---
+# Role enable gate — set false in host/group_vars to no-op this role
+semaphore_enabled: true
+
 # Overridable defaults — set env-specific values in host_vars/group_vars.
 # Role is privilege-self-contained (per-task become); playbooks must not set
 # play-level become for this role.
+#
+# External dependencies (HashiCorp Vault, FreeIPA, LDAP) are OFF by default.
+# Opt in per inventory only when that dependency actually exists.
 
 semaphore_fqdn: ""
 
+# Browser-facing base URL Semaphore bakes into the SPA (`<base href>` + API base).
+# It MUST match the scheme/host/port users actually load, or the frontend fetches
+# its JS/CSS from the wrong origin and renders a blank page. Default assumes an
+# external TLS proxy terminating https on 443 at semaphore_fqdn (production LB).
+# For direct-access deploys with no proxy (canary on :3000), override to the real
+# URL, e.g. "http://<fqdn>:{{ semaphore_server_port }}".
+semaphore_web_root: "https://{{ semaphore_fqdn }}"
+
 # Container DNS resolvers. Empty = Docker inherits the host resolv.conf.
 # Inventory sets estate resolvers when the container must resolve service
-# aliases the host's FreeIPA-only path cannot (e.g. edge + IdM DNS).
+# aliases the host path cannot (e.g. edge + IdM DNS).
 semaphore_dns_servers: []
 
-# ── Credential inputs ────────────────────────────────────────────────────────
-# FreeIPA admin password used to provision svc-semaphore when LDAP is enabled.
-# Empty → HashiCorp Vault at vault_platform_runtime_base/freeipa/runtime.
-# Semaphore admin/db/access-key/ldap-bind passwords and the CI API token are
-# self-managed (fetch-or-generate, written back to Vault) — not role inputs.
+# ── Ansible deploy secret store (NOT Semaphore app secret storage) ───────────
+# Where THIS ROLE persists install-time secrets it generates (admin password,
+# DB password, access-key encryption, optional LDAP bind password).
+#
+# This is Ansible-side only. Resolved values are injected into compose as env
+# vars (SEMAPHORE_ADMIN_PASSWORD, …). It is NOT Semaphore's own runtime
+# secret-storage setting (which can also target HashiCorp Vault) — that is
+# out of scope for this role.
+#
+#   host_file — host path {{ semaphore_data_dir }}/secrets/runtime.yml (default)
+#   vault_kv  — HashiCorp KV v2 apps/semaphore/runtime (estate Vault required)
+semaphore_ansible_secret_store: host_file
+
+# Optional declared secrets (e.g. Ansible Vault encrypted vars). Empty →
+# generate once and persist via semaphore_ansible_secret_store. Declared
+# values always win over store/generate.
+semaphore_admin_password: ""
+semaphore_db_password: ""
+semaphore_access_key_encryption: ""
+semaphore_ldap_bind_password: ""
+
+# FreeIPA admin password used only when freeipa provision is on.
+# Empty → HashiCorp Vault at vault_platform_runtime_base/freeipa/runtime
+# (requires semaphore_ansible_secret_store=vault_kv or a declared password).
 semaphore_freeipa_admin_password: ""
 
-# ── LDAP / FreeIPA integration ─────────────────────────────────────────────
-# When enabled: provisions svc-semaphore in FreeIPA, persists bind password to
-# apps/semaphore/runtime, slurps FreeIPA CA for LDAPS trust in the container.
+# ── LDAP (generic; off by default) ───────────────────────────────────────────
+# Enables Semaphore's LDAP auth env vars. Does NOT assume FreeIPA unless
+# semaphore_freeipa_provision is also true.
 semaphore_ldap_enabled: false
 
-semaphore_ldap_host: "{{ groups['freeipa'][0] | default('freeipa-01') }}.{{ domain | default('example.com') }}"
+# Required when semaphore_ldap_enabled. Empty default so a bare role run
+# never reaches into a freeipa inventory group that may not exist.
+semaphore_ldap_host: ""
 semaphore_ldap_port: 636
 semaphore_ldap_needtls: true
 
+# FreeIPA-shaped DNs are convenient defaults when you do use FreeIPA; they are
+# plain strings and do not touch inventory groups.
 semaphore_ldap_dn_search: "cn=users,cn=accounts,{{ 'dc=' ~ ((domain | default('example.com')) | replace('.', ',dc=')) }}"
 semaphore_ldap_search_filter: "(uid=%s)"
 
@@ -39,9 +76,21 @@ semaphore_ldap_mapping_mail: "mail"
 semaphore_ldap_mapping_uid: "uid"
 semaphore_ldap_mapping_cn: "cn"
 
+# Optional CA cert for LDAPS trust when not using freeipa provision.
+# Path on the FreeIPA host is ignored here — use a control-node or manager
+# path, or leave empty and set semaphore_ldap_needtls: false.
+semaphore_ldap_ca_cert_src: ""
+
 # LDAP users promoted to Semaphore admin on first install. Must already exist
-# in FreeIPA. Empty default — set in inventory (e.g. host_vars).
+# in the directory. Empty default — set in inventory (e.g. host_vars).
 semaphore_ldap_admins: []
+
+# ── FreeIPA provisioner (off by default; requires LDAP on) ───────────────────
+# When true: create/update svc-semaphore via freeipa.ansible_freeipa.ipauser
+# on groups['freeipa'][0], and slurp /etc/ipa/ca.crt for LDAPS trust.
+# Only enable when FreeIPA is in inventory and reachable.
+semaphore_freeipa_provision: false
+semaphore_freeipa_inventory_group: freeipa
 
 # ── Declarative project / template reconciliation ──────────────────────────
 # List of project definitions reconciled via the REST API. Empty = no-op.

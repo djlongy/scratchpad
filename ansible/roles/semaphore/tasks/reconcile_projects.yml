@@ -12,14 +12,10 @@
 - name: Reconcile declared Semaphore projects
   when: (semaphore_projects | default([])) | length > 0
   block:
-    - name: Fetch Semaphore admin password from Vault
-      ansible.builtin.set_fact:
-        _semaphore_admin_password: >-
-          {{ lookup('community.hashi_vault.hashi_vault',
-             'secret=' + vault_apps_runtime_base + '/semaphore/runtime:admin_password url=' + vault_addr) }}
-      delegate_to: localhost
-      become: false
-      no_log: true
+    # Re-resolve secrets when this phase runs without install (e.g. --tags config).
+    - name: Resolve Semaphore secrets for reconcile
+      ansible.builtin.include_tasks: resolve_ansible_secrets.yml
+      when: _semaphore_admin_password is not defined
 
     - name: Login as Semaphore admin
       become: false  # API on localhost — no host privilege
@@ -40,8 +36,9 @@
         _sem_cookie: "{{ _sem_login.cookies_string }}"
       no_log: true
 
-    # CI API token bootstrap — first install only; skips when Vault already has one.
-    - name: Check if Semaphore CI API token already exists in Vault
+    # CI API token bootstrap — first install only; skips when already persisted.
+    - name: Load existing CI API token (vault_kv store)
+      when: (semaphore_ansible_secret_store | default('host_file')) == 'vault_kv'
       ansible.builtin.set_fact:
         _sem_existing_ci_token: >-
           {{ lookup('community.hashi_vault.hashi_vault',
@@ -51,8 +48,37 @@
       become: false
       no_log: true
 
+    - name: Load existing CI API token (host_file store)
+      when: (semaphore_ansible_secret_store | default('host_file')) == 'host_file'
+      block:
+        - name: Stat local secrets file for CI token
+          become: true
+          ansible.builtin.stat:
+            path: "{{ semaphore_data_dir }}/secrets/runtime.yml"
+          register: _sem_ci_local_stat
+
+        - name: Slurp local secrets for CI token
+          become: true
+          ansible.builtin.slurp:
+            src: "{{ semaphore_data_dir }}/secrets/runtime.yml"
+          register: _sem_ci_local_slurp
+          when: _sem_ci_local_stat.stat.exists | default(false)
+
+        - name: Set existing CI token from local secrets
+          ansible.builtin.set_fact:
+            _sem_existing_ci_token: >-
+              {{ ((_sem_ci_local_slurp.content | b64decode | from_yaml).api_token_ci | default('', true))
+                 if (_sem_ci_local_stat.stat.exists | default(false))
+                 else '' }}
+          no_log: true
+
+    - name: Default empty CI token when still unset
+      ansible.builtin.set_fact:
+        _sem_existing_ci_token: ""
+      when: _sem_existing_ci_token is not defined
+
     - name: Generate Semaphore CI API token (first run only)
-      when: _sem_existing_ci_token | length == 0
+      when: (_sem_existing_ci_token | default('') | length) == 0
       block:
         - name: POST /api/user/tokens
           become: false  # API on localhost — no host privilege
@@ -68,7 +94,8 @@
           register: _sem_new_token
           no_log: true
 
-        - name: Patch token into Vault (preserves other fields)
+        - name: Patch CI token into Vault (preserves other fields)
+          when: (semaphore_ansible_secret_store | default('host_file')) == 'vault_kv'
           ansible.builtin.command:
             argv:
               - vault
@@ -83,6 +110,37 @@
           become: false
           no_log: true
           changed_when: true
+
+        - name: Assemble local secrets payload with CI token
+          when: (semaphore_ansible_secret_store | default('host_file')) == 'host_file'
+          ansible.builtin.set_fact:
+            _sem_local_payload_ci: >-
+              {{ {
+                   'admin_password': _semaphore_admin_password,
+                   'db_password': _semaphore_db_password,
+                   'access_key_encryption': _semaphore_access_key_encryption,
+                   'api_token_ci': _sem_new_token.json.id
+                 }
+                 | combine(
+                     {
+                       'ldap_bind_password': _semaphore_ldap_bind_password,
+                       'ldap_bind_dn': semaphore_ldap_bind_dn
+                     }
+                     if (semaphore_ldap_enabled | bool)
+                     else {}
+                   ) }}
+          no_log: true
+
+        - name: Persist CI token into local secrets file
+          when: (semaphore_ansible_secret_store | default('host_file')) == 'host_file'
+          become: true  # root: updates mode-0600 secrets file
+          ansible.builtin.copy:
+            dest: "{{ semaphore_data_dir }}/secrets/runtime.yml"
+            owner: root
+            group: root
+            mode: "0600"
+            content: "{{ _sem_local_payload_ci | to_nice_yaml(indent=2) }}"
+          no_log: true
 
     - name: Reconcile each declared project
       ansible.builtin.include_tasks: reconcile_one_project.yml
