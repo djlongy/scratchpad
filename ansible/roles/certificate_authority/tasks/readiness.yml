@@ -1,0 +1,98 @@
+---
+# roles/certificate_authority/tasks/readiness.yml
+# Front-door readiness banner + ALL-AT-ONCE contract check (imported FIRST in
+# main.yml, before the root phase). It answers, out loud and before anything is
+# written, the two questions the 2026-07-17 incident got wrong: WHICH tree am I
+# writing, and WHICH identity am I minting? Then it collects EVERY contract gap into
+# ONE failure list (never fails piecemeal), each line carrying its copy-paste fix.
+#
+# Tags: [root, intermediate, wildcard] — the generation tags. So it runs on an
+# untagged generation run AND on any `--tags root|intermediate|wildcard`, but stays
+# OUT of the maintenance/read paths (`--tags crl|report|sign_ipa|distribute`), which
+# carry their own asserts. It never runs for tasks_from callers (they bypass main.yml).
+# These are the FRONT DOOR only — the deeper per-phase identity/coherence/passphrase
+# guards remain the backstop and are NOT duplicated here.
+
+- name: Readiness | Resolve the PKI tree realpath (which tree this run writes)
+  ansible.builtin.set_fact:
+    _ca_pki_realpath: "{{ certificate_authority_pki_dir | realpath }}"
+
+- name: Readiness | Banner — which tree + which identity this run writes
+  ansible.builtin.debug:
+    msg: >-
+      PKI tree: {{ _ca_pki_realpath }} · root CN:
+      {{ certificate_authority_root.common_name | default('') }}
+
+- name: Readiness | Stat the resolved PKI tree
+  ansible.builtin.stat:
+    path: "{{ certificate_authority_pki_dir }}"
+  register: _ca_pki_stat
+
+- name: Readiness | Stat the resolved PKI tree parent (typo tell)
+  ansible.builtin.stat:
+    path: "{{ _ca_pki_realpath | dirname }}"
+  register: _ca_pki_parent_stat
+
+# Collect gaps one at a time (reset to [] first — set_fact accumulators persist across
+# plays) so a single assert can render them all together.
+- name: Readiness | Start with an empty contract-gap list
+  ansible.builtin.set_fact:
+    _ca_readiness_gaps: []
+
+- name: Readiness | Gap — root CN is unset
+  ansible.builtin.set_fact:
+    _ca_readiness_gaps: "{{ _ca_readiness_gaps + [_gap] }}"
+  vars:
+    _gap: >-
+      ROOT CN is empty. Fix: set certificate_authority_root in inventory
+      group_vars/all (visible to a localhost play), e.g.
+      certificate_authority_root: { common_name: "<Your Org> Root CA", days: 7300 }.
+  when: (certificate_authority_root.common_name | default('') | trim | length) == 0
+
+- name: Readiness | Gap — root CN is still the placeholder default
+  ansible.builtin.set_fact:
+    _ca_readiness_gaps: "{{ _ca_readiness_gaps + [_gap] }}"
+  vars:
+    _gap: >-
+      ROOT CN is the placeholder default "Example Root CA" — refusing to mint a
+      placeholder CA. Fix: set a real certificate_authority_root.common_name in
+      inventory group_vars/all (this file, not role defaults).
+  when: (certificate_authority_root.common_name | default('')) == "Example Root CA"
+
+- name: Readiness | Gap — no passphrase source configured
+  ansible.builtin.set_fact:
+    _ca_readiness_gaps: "{{ _ca_readiness_gaps + [_gap] }}"
+  vars:
+    _gap: >-
+      No passphrase source configured — certificate_authority_root_key_passphrase and
+      certificate_authority_vault_secret are both empty. Fix: set
+      certificate_authority_root_key_passphrase from a vaulted group_var, OR set
+      certificate_authority_vault_secret to the KV path holding it.
+  when:
+    - (certificate_authority_root_key_passphrase | default('') | length) == 0
+    - (certificate_authority_vault_secret | default('') | length) == 0
+    # Bring-your-own-key mode may ship a passwordless key — no passphrase needed then.
+    - (certificate_authority_root_key_content | default('') | length) == 0
+
+- name: Readiness | Gap — PKI tree path looks wrong (neither it nor its parent exists)
+  ansible.builtin.set_fact:
+    _ca_readiness_gaps: "{{ _ca_readiness_gaps + [_gap] }}"
+  vars:
+    _gap: >-
+      PKI tree path looks wrong — neither {{ _ca_pki_realpath }} nor its parent exists
+      (likely a typo in certificate_authority_pki_dir). Fix: point
+      certificate_authority_pki_dir at an existing tree, or a scratch dir whose parent
+      exists.
+  when:
+    - not _ca_pki_stat.stat.exists
+    - not _ca_pki_parent_stat.stat.exists
+
+- name: Readiness | Contract check — refuse to proceed with any unresolved gaps
+  ansible.builtin.assert:
+    that:
+      - (_ca_readiness_gaps | length) == 0
+    quiet: true
+    success_msg: >-
+      certificate_authority readiness OK — generating into {{ _ca_pki_realpath }}
+      as root CN "{{ certificate_authority_root.common_name }}".
+    fail_msg: "certificate_authority is NOT ready to generate into {{ _ca_pki_realpath }} — resolve ALL of the following before re-running:{{ '\n  - ' + (_ca_readiness_gaps | join('\n  - ')) }}"

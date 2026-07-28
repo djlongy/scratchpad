@@ -10,7 +10,7 @@ argument_specs:
     options:
       certificate_authority_pki_dir:
         type: str
-        description: On-disk PKI tree root. Defaults to the repo-root pki/ relative to the playbook. Override with an absolute path for a scratch/throwaway run.
+        description: On-disk PKI tree root. Defaults to the ansible-root pki/ (playbook_dir/../pki — inside the repo even when ansible/ is the repo root). Override with an absolute path for a scratch/throwaway run.
       certificate_authority_root:
         type: dict
         description: "Root CA definition: { common_name, days }. common_name is estate data; days is the validity horizon (~20 yr)."
@@ -28,6 +28,19 @@ argument_specs:
       certificate_authority_renew_within_days:
         type: int
         description: Re-issue any wildcard leaf whose remaining validity falls inside this window (days).
+      certificate_authority_allow_identity_change:
+        type: bool
+        description: >-
+          Fail-closed override for BOTH cert guards. Default false: the role refuses to
+          re-issue an existing root/intermediate/wildcard cert when either (1) its on-disk
+          subject CN differs from the declared CN (identity guard — guards the 2026-07-17
+          wrong-pki_dir clobber), or (2) the on-disk cert and its private key are not the
+          same keypair (coherence guard — a silent re-issue of the root cert would invalidate
+          every trust store carrying the old anchor; content mode instead checks the provided
+          key vs cert). Set true ONLY to deliberately rename a CA in place (same key, new CN)
+          OR to repair a cert/key mismatch by re-issuing the cert from the canonical key (a
+          new anchor — re-distribute it). Does not bypass regenerate:never (keys are never
+          re-keyed).
       certificate_authority_ipa_csr_path:
         type: str
         description: Control-node path of a FreeIPA external-ca CSR to sign (--tags sign_ipa).
@@ -40,17 +53,26 @@ argument_specs:
       certificate_authority_crl_days:
         type: int
         description: CRL nextUpdate horizon (days) for the root and intermediate CRLs.
+      certificate_authority_revocations:
+        type: list
+        elements: dict
+        description: >-
+          Declarative revocation list fed into the root CRL (--tags crl) and cross-referenced
+          by the inventory snapshot (revoked: true). Shape: { serial (int or hex string, colons/0x
+          tolerated), reason (RFC 5280 camelCase e.g. keyCompromise, or the module snake_case),
+          revoked_at (ASN.1 time e.g. "20260717000000Z") }. community.crypto builds the CRL from
+          this list — no openssl CLI index database.
       certificate_authority_root_key_passphrase:
         type: str
         description: >-
-          Root private-key passphrase (declared-var-first). Set from an
+          Root private-key passphrase (declared-var-first, ADR-0011). Set from an
           Ansible-Vault group_var, or leave empty to use the HashiCorp Vault fallback.
       certificate_authority_intermediate_key_passphrase:
         type: str
-        description: Intermediate private-key passphrase (declared-var-first).
+        description: Intermediate private-key passphrase (declared-var-first, ADR-0011).
       certificate_authority_wildcard_key_passphrase:
         type: str
-        description: Wildcard private-key passphrase (declared-var-first).
+        description: Wildcard private-key passphrase (declared-var-first, ADR-0011).
       certificate_authority_root_key_content:
         type: str
         description: >-
@@ -62,6 +84,19 @@ argument_specs:
         description: >-
           CA (root) certificate as PEM CONTENT (public), paired with
           certificate_authority_root_key_content for in-memory signing.
+      certificate_authority_bootstrap_file:
+        type: str
+        description: >-
+          Destination of the Ansible-Vault-encrypted root store written by --tags
+          bootstrap (default: the playbook-adjacent group_vars/all/root_ca.yml, which
+          auto-loads for every play under playbooks/). Bootstrap is fail-closed while
+          this file exists.
+      certificate_authority_bootstrap_verify_file:
+        type: str
+        description: >-
+          Existing Ansible-Vault-encrypted file the bootstrap phase trial-decrypts to
+          prove the supplied encryption password IS the estate's vault password before
+          writing anything. Empty or absent skips the check with a loud warning.
       certificate_authority_vault_secret:
         type: str
         description: HashiCorp Vault KV path holding the passphrases (empty = no fallback; the declared vars must then be set).

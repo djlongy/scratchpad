@@ -1,0 +1,403 @@
+---
+# roles/certificate_authority/tasks/bootstrap.yml
+# Opt-in (--tags bootstrap): put the ROOT CA into an Ansible-Vault-encrypted
+# group_vars file (certificate_authority_bootstrap_file, default
+# playbooks/group_vars/all/root_ca.yml — the same auto-loading scope as the estate's
+# vault.yml) so every later run consumes it in CONTENT mode: root generation is
+# skipped and signing happens in memory. The private key is stored as an inline
+# `!vault |` value unlocked by the SAME Ansible Vault password as the rest of the
+# estate — whether that password arrives via ANSIBLE_VAULT_PASSWORD or
+# --ask-vault-pass on later runs.
+#
+# Two AUTOMATIC modes (banner announces which):
+#   import   - {{ pki_dir }}/root/root.key exists → wrap the EXISTING root. The key
+#              is embedded AS-IS (typically passphrase-encrypted PKCS#8 — the wired
+#              certificate_authority_root_key_passphrase stays required); the cert is
+#              unchanged, so the distributed trust anchor does NOT rotate.
+#   generate - no on-disk root → mint a fresh root IN MEMORY (community.crypto
+#              *_pipe modules). The key is PASSWORDLESS — Ansible Vault is the single
+#              at-rest layer — and never touches disk.
+#
+# Encryption password: Ansible does not expose the secret it collected via
+# --ask-vault-pass to playbook code, so this phase resolves its own copy:
+# ANSIBLE_VAULT_PASSWORD / VAULT_PASSWORD from the environment when exported,
+# otherwise a hidden double-entry prompt. Before anything is written it FAIL-CLOSED
+# verifies the password by decrypting an existing vaulted file
+# (certificate_authority_bootstrap_verify_file) — a typo or wrong-estate password can
+# never produce a root_ca.yml the real vault password won't open.
+#
+# Fail-closed guards: refuses to run while the destination file exists (re-mint =
+# deliberately move/delete it first) or while content mode is already wired from
+# elsewhere. Import mode enforces the identity guard (on-disk CN must equal the
+# declared CN) unless certificate_authority_allow_identity_change is set.
+
+# ── Guards (before any prompt or generation) ──────────────────────────────────
+- name: Bootstrap | Stat the destination group_vars file
+  ansible.builtin.stat:
+    path: "{{ certificate_authority_bootstrap_file }}"
+  register: _ca_bootstrap_dest_stat
+
+- name: Bootstrap | Refuse to overwrite an existing bootstrap file
+  ansible.builtin.assert:
+    that:
+      - not _ca_bootstrap_dest_stat.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ certificate_authority_bootstrap_file }} already exists — bootstrap is
+      generate-if-absent and will not overwrite the estate's encrypted root store.
+      To re-mint deliberately: move or delete that file (git history keeps the old
+      one), then re-run --tags bootstrap. To merely re-encrypt under a NEW vault
+      password use `ansible-vault rekey` semantics instead: decrypt the key var and
+      re-run bootstrap after deleting the file.
+
+- name: Bootstrap | Refuse when content mode is already wired from another source
+  ansible.builtin.assert:
+    that:
+      - (certificate_authority_root_key_content | default('') | length) == 0
+    quiet: true
+    fail_msg: >-
+      certificate_authority_root_key_content is already set (content mode is wired
+      from an existing var source). Bootstrap would create a SECOND, competing root
+      store. Unwire the existing source first if you really intend to re-bootstrap.
+
+- name: Bootstrap | Stat the on-disk root key (mode selection)
+  ansible.builtin.stat:
+    path: "{{ certificate_authority_pki_dir }}/root/root.key"
+  register: _ca_bootstrap_key_stat
+
+- name: Bootstrap | Stat the on-disk root certificate (mode selection)
+  ansible.builtin.stat:
+    path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+  register: _ca_bootstrap_crt_stat
+
+- name: Bootstrap | Select the mode (import an existing root vs generate a fresh one)
+  ansible.builtin.set_fact:
+    _ca_bootstrap_mode: "{{ 'import' if _ca_bootstrap_key_stat.stat.exists else 'generate' }}"
+
+- name: Bootstrap | Import mode needs BOTH root.key and root.crt on disk
+  ansible.builtin.assert:
+    that:
+      - _ca_bootstrap_crt_stat.stat.exists
+    quiet: true
+    fail_msg: >-
+      {{ certificate_authority_pki_dir }}/root/root.key exists but root.crt does not —
+      an import without its certificate would leave no trust anchor to publish.
+      Restore the matching root.crt (it is committed under pki/) or remove the
+      orphaned key deliberately before re-running.
+  when: _ca_bootstrap_mode == 'import'
+
+# A fresh generate must not mint the placeholder identity; import takes its CN from
+# the on-disk cert (asserted against the declared CN below), so only generate checks.
+- name: Bootstrap | Generate mode — refuse an empty or placeholder root CN
+  ansible.builtin.assert:
+    that:
+      - (certificate_authority_root.common_name | default('') | trim | length) > 0
+      - (certificate_authority_root.common_name | default('')) != "Example Root CA"
+    quiet: true
+    fail_msg: >-
+      certificate_authority_root.common_name is empty or still the placeholder
+      "Example Root CA" — refusing to mint a placeholder root. Set the real CN in
+      inventory group_vars/all (visible to a localhost play) and re-run.
+  when: _ca_bootstrap_mode == 'generate'
+
+- name: Bootstrap | Banner — which mode, which tree, which destination
+  ansible.builtin.debug:
+    msg: >-
+      bootstrap mode: {{ _ca_bootstrap_mode }} · PKI tree:
+      {{ certificate_authority_pki_dir | realpath }} · destination:
+      {{ certificate_authority_bootstrap_file }} · root CN:
+      {{ certificate_authority_root.common_name | default('') }}
+
+# ── Resolve the Ansible Vault ENCRYPTION password (env first, hidden prompt else) ──
+- name: Bootstrap | Resolve the vault password from the environment (if exported)
+  ansible.builtin.set_fact:
+    _ca_bootstrap_vault_password: >-
+      {{ lookup('env', 'ANSIBLE_VAULT_PASSWORD') or lookup('env', 'VAULT_PASSWORD') or '' }}
+  no_log: true  # the resolved value is the estate vault password
+
+- name: Bootstrap | Prompt for the Ansible Vault password (input hidden)
+  ansible.builtin.pause:
+    prompt: >-
+      ANSIBLE_VAULT_PASSWORD is not exported — enter the estate's Ansible Vault
+      password to encrypt {{ certificate_authority_bootstrap_file | basename }}
+      (input hidden)
+    echo: false
+  register: _ca_bootstrap_pw_first
+  no_log: true  # registered result carries user_input
+  when: (_ca_bootstrap_vault_password | length) == 0
+
+- name: Bootstrap | Confirm the Ansible Vault password (input hidden)
+  ansible.builtin.pause:
+    prompt: "Re-enter the same password to confirm (input hidden)"
+    echo: false
+  register: _ca_bootstrap_pw_confirm
+  no_log: true  # registered result carries user_input
+  when: (_ca_bootstrap_vault_password | length) == 0
+
+- name: Bootstrap | Assert the two entries match
+  ansible.builtin.assert:
+    that:
+      - _ca_bootstrap_pw_first.user_input == _ca_bootstrap_pw_confirm.user_input
+    quiet: true
+    fail_msg: The two password entries differ — re-run and type the same password twice.
+  # No no_log: assert prints only the expression TEXT and fail_msg, never the values,
+  # and hiding this would leave the operator blind to why the run stopped.
+  when: (_ca_bootstrap_vault_password | length) == 0
+
+- name: Bootstrap | Adopt the prompted password
+  ansible.builtin.set_fact:
+    _ca_bootstrap_vault_password: "{{ _ca_bootstrap_pw_first.user_input }}"
+  no_log: true
+  when: (_ca_bootstrap_vault_password | length) == 0
+
+- name: Bootstrap | Assert a non-empty vault password was obtained
+  ansible.builtin.assert:
+    that:
+      - (_ca_bootstrap_vault_password | length) > 0
+    quiet: true
+    fail_msg: >-
+      Empty vault password — export ANSIBLE_VAULT_PASSWORD or answer the prompt.
+  no_log: true
+
+# ── Verify the password against the estate's EXISTING vaulted file (fail-closed) ──
+# slurp (not lookup('file')) — the file lookup auto-DECRYPTS vaulted files via the
+# loader's own secrets, which would make this check vacuously pass/fail wrongly.
+- name: Bootstrap | Stat the estate vault probe file
+  ansible.builtin.stat:
+    path: "{{ certificate_authority_bootstrap_verify_file }}"
+  register: _ca_bootstrap_probe_stat
+  when: (certificate_authority_bootstrap_verify_file | length) > 0
+
+- name: Bootstrap | Read the estate vault probe file raw (no auto-decrypt)
+  ansible.builtin.slurp:
+    src: "{{ certificate_authority_bootstrap_verify_file }}"
+  register: _ca_bootstrap_probe_raw
+  no_log: true  # ciphertext, but keep the b64 blob out of output
+  when:
+    - (certificate_authority_bootstrap_verify_file | length) > 0
+    - _ca_bootstrap_probe_stat.stat.exists
+
+- name: Bootstrap | Verify the password decrypts the estate's existing vault file
+  when:
+    - (certificate_authority_bootstrap_verify_file | length) > 0
+    - _ca_bootstrap_probe_stat.stat.exists
+    - (_ca_bootstrap_probe_raw.content | b64decode) is match('^\$ANSIBLE_VAULT')
+  block:
+    - name: Bootstrap | Trial-decrypt the probe file with the supplied password
+      ansible.builtin.set_fact:
+        _ca_bootstrap_probe_ok: >-
+          {{ (_ca_bootstrap_probe_raw.content | b64decode
+              | unvault(_ca_bootstrap_vault_password) | length) > 0 }}
+      no_log: true  # decrypted probe content flows through this expression
+  rescue:
+    - name: Bootstrap | Fail — the supplied password is NOT the estate's vault password
+      ansible.builtin.fail:
+        msg: >-
+          The supplied password does NOT decrypt
+          {{ certificate_authority_bootstrap_verify_file }} — it is not the estate's
+          Ansible Vault password (typo, or the wrong estate). Refusing to mint a
+          root_ca.yml the real vault password could never open. Re-run and supply the
+          password that unlocks the estate's existing vaulted group_vars. (To
+          bootstrap against a DIFFERENT vault password on purpose, point
+          certificate_authority_bootstrap_verify_file at a file vaulted under that
+          password, or set it empty to skip this check.)
+
+# The probe is a safety net, not a hard requirement — but never skip it SILENTLY.
+- name: Bootstrap | Warn when the estate-password check could not run
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: password verification against an existing vaulted file was SKIPPED
+      ({{ 'certificate_authority_bootstrap_verify_file is empty'
+          if (certificate_authority_bootstrap_verify_file | length) == 0
+          else certificate_authority_bootstrap_verify_file + ' does not exist or is not a vaulted file' }}).
+      Only the self-consistency round-trip below protects you — double-check the
+      password you supplied is the estate's real Ansible Vault password.
+  when: >-
+    (certificate_authority_bootstrap_verify_file | length) == 0
+    or not (_ca_bootstrap_probe_stat.stat.exists | default(false))
+    or not ((_ca_bootstrap_probe_raw.content | default('') | b64decode) is match('^\$ANSIBLE_VAULT'))
+
+# ── Obtain the root material ──────────────────────────────────────────────────
+# IMPORT: wrap the existing on-disk root exactly as it is.
+- name: Bootstrap | Import — read the existing root key (kept encrypted as-is)
+  ansible.builtin.slurp:
+    src: "{{ certificate_authority_pki_dir }}/root/root.key"
+  register: _ca_bootstrap_import_key
+  no_log: true  # encrypted PEM, but private key material never enters output
+  when: _ca_bootstrap_mode == 'import'
+
+- name: Bootstrap | Import — read the existing root certificate
+  ansible.builtin.slurp:
+    src: "{{ certificate_authority_pki_dir }}/root/root.crt"
+  register: _ca_bootstrap_import_crt
+  when: _ca_bootstrap_mode == 'import'
+
+- name: Bootstrap | Import — adopt the on-disk pair
+  ansible.builtin.set_fact:
+    _ca_bootstrap_key_pem: "{{ _ca_bootstrap_import_key.content | b64decode }}"
+    _ca_bootstrap_cert_pem: "{{ _ca_bootstrap_import_crt.content | b64decode }}"
+  no_log: true
+  when: _ca_bootstrap_mode == 'import'
+
+- name: Bootstrap | Import — identity guard (on-disk CN must equal the declared CN)
+  when:
+    - _ca_bootstrap_mode == 'import'
+    - not (certificate_authority_allow_identity_change | bool)
+  block:
+    - name: Bootstrap | Import — read the existing root certificate subject
+      community.crypto.x509_certificate_info:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+      register: _ca_bootstrap_import_info
+
+    - name: Bootstrap | Import — assert the imported CN matches the declared CN
+      ansible.builtin.assert:
+        that:
+          - _ca_bootstrap_import_info.subject.commonName == certificate_authority_root.common_name
+        quiet: true
+        fail_msg: >-
+          IMPORT IDENTITY MISMATCH — the on-disk root
+          ({{ certificate_authority_pki_dir }}/root/root.crt) has subject CN
+          "{{ _ca_bootstrap_import_info.subject.commonName }}" but this run declares
+          certificate_authority_root.common_name =
+          "{{ certificate_authority_root.common_name }}". Likely the wrong PKI tree
+          (see the banner) or stale inventory data. Align the declared CN with the
+          real root, fix certificate_authority_pki_dir, or override deliberately with
+          -e certificate_authority_allow_identity_change=true.
+
+# GENERATE: mint a fresh root entirely in memory — nothing touches disk.
+- name: Bootstrap | Generate — mint the root private key in memory (passwordless)
+  community.crypto.openssl_privatekey_pipe:
+    type: RSA
+    size: 4096
+    format: pkcs8
+  register: _ca_bootstrap_gen_key
+  no_log: true  # result contains the private key PEM
+  changed_when: false  # in-memory only; the on-disk change is the bootstrap file below
+  when: _ca_bootstrap_mode == 'generate'
+
+- name: Bootstrap | Generate — build the root CSR in memory (CA:TRUE, keyCertSign, cRLSign)
+  community.crypto.openssl_csr_pipe:
+    privatekey_content: "{{ _ca_bootstrap_gen_key.privatekey }}"
+    common_name: "{{ certificate_authority_root.common_name }}"
+    use_common_name_for_san: false
+    basic_constraints:
+      - "CA:TRUE"
+    basic_constraints_critical: true
+    key_usage:
+      - keyCertSign
+      - cRLSign
+    key_usage_critical: true
+  register: _ca_bootstrap_gen_csr
+  no_log: true  # module args carry the private key
+  changed_when: false
+  when: _ca_bootstrap_mode == 'generate'
+
+- name: Bootstrap | Generate — self-sign the root certificate in memory
+  community.crypto.x509_certificate_pipe:
+    csr_content: "{{ _ca_bootstrap_gen_csr.csr }}"
+    privatekey_content: "{{ _ca_bootstrap_gen_key.privatekey }}"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ certificate_authority_root.days }}d"
+  register: _ca_bootstrap_gen_crt
+  no_log: true  # module args carry the private key
+  changed_when: false
+  when: _ca_bootstrap_mode == 'generate'
+
+- name: Bootstrap | Generate — adopt the minted pair
+  ansible.builtin.set_fact:
+    _ca_bootstrap_key_pem: "{{ _ca_bootstrap_gen_key.privatekey }}"
+    _ca_bootstrap_cert_pem: "{{ _ca_bootstrap_gen_crt.certificate }}"
+  no_log: true
+  when: _ca_bootstrap_mode == 'generate'
+
+# ── Coherence + encryption round-trip (both modes, before anything is written) ──
+- name: Bootstrap | Detect whether the key content is itself passphrase-encrypted
+  ansible.builtin.set_fact:
+    _ca_bootstrap_key_is_encrypted: "{{ 'ENCRYPTED' in _ca_bootstrap_key_pem }}"
+  no_log: true
+
+# An encrypted imported key needs its passphrase for the pair check — resolve it via
+# the role's standard ADR-0011 chain (declared var first, HashiCorp Vault fallback).
+- name: Bootstrap | Resolve the root key passphrase (encrypted key only)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _ca_resolve: [root]
+  when: _ca_bootstrap_key_is_encrypted
+
+- name: Bootstrap | Coherence — read the key's public key
+  community.crypto.openssl_privatekey_info:
+    content: "{{ _ca_bootstrap_key_pem }}"
+    passphrase: "{{ (_ca_root_key_passphrase | default('') or omit) if _ca_bootstrap_key_is_encrypted else omit }}"
+  register: _ca_bootstrap_key_pub
+  no_log: true  # module args carry the private key + passphrase
+
+- name: Bootstrap | Coherence — read the certificate's public key
+  community.crypto.x509_certificate_info:
+    content: "{{ _ca_bootstrap_cert_pem }}"
+  register: _ca_bootstrap_crt_pub
+
+- name: Bootstrap | Coherence — the key and certificate must be the same pair
+  ansible.builtin.assert:
+    that:
+      - (_ca_bootstrap_key_pub.public_key | trim) == (_ca_bootstrap_crt_pub.public_key | trim)
+    quiet: true
+    success_msg: Bootstrap coherence confirmed — the root key and certificate are the same pair.
+    fail_msg: >-
+      ROOT KEYPAIR MISMATCH — the root key and certificate being bootstrapped are NOT
+      the same keypair. Import mode: the on-disk pki tree holds a mismatched
+      root.key/root.crt — restore the matching pair from git before importing.
+      Refusing to encrypt a broken pair into the estate's root store.
+
+- name: Bootstrap | Encrypt the root key with the estate's Ansible Vault password
+  ansible.builtin.set_fact:
+    _ca_bootstrap_key_vaulted: "{{ _ca_bootstrap_key_pem | vault(_ca_bootstrap_vault_password) }}"
+  no_log: true
+
+- name: Bootstrap | Round-trip — the encrypted key must decrypt back with the same password
+  ansible.builtin.assert:
+    that:
+      - (_ca_bootstrap_key_vaulted | unvault(_ca_bootstrap_vault_password)) == _ca_bootstrap_key_pem
+    quiet: true
+  no_log: true  # expressions evaluate the private key
+
+# ── Write + verify the destination file ───────────────────────────────────────
+- name: Bootstrap | Write the encrypted root store ({{ certificate_authority_bootstrap_file | basename }})
+  ansible.builtin.template:
+    src: root_ca.yml.j2
+    dest: "{{ certificate_authority_bootstrap_file }}"
+    mode: "0644"
+  no_log: true  # --diff would render the (vaulted) payload; keep the write quiet
+
+- name: Bootstrap | Verify the written file carries the vaulted key and the cert
+  ansible.builtin.slurp:
+    src: "{{ certificate_authority_bootstrap_file }}"
+  register: _ca_bootstrap_written
+  no_log: true
+
+- name: Bootstrap | Assert the written file is complete
+  ansible.builtin.assert:
+    that:
+      # The vault filter emits a 1.2;AES256;filter_default envelope (vault-id
+      # labelled), NOT 1.1 — match the version-agnostic prefix. Labels don't gate
+      # decryption unless DEFAULT_VAULT_ID_MATCH is enabled (it isn't here).
+      - "'$ANSIBLE_VAULT;1.' in (_ca_bootstrap_written.content | b64decode)"
+      - "'BEGIN CERTIFICATE' in (_ca_bootstrap_written.content | b64decode)"
+      - "'BEGIN' not in (_ca_bootstrap_written.content | b64decode | regex_replace('-----BEGIN CERTIFICATE-----', ''))"
+    quiet: true
+    fail_msg: >-
+      {{ certificate_authority_bootstrap_file }} failed post-write verification — it
+      must contain the inline-vaulted key, the public certificate, and NO plaintext
+      key material. Delete the file and re-run --tags bootstrap.
+  no_log: true
+
+- name: Bootstrap | Done — summary + next steps
+  ansible.builtin.debug:
+    msg: >-
+      Bootstrapped ({{ _ca_bootstrap_mode }}) →
+      {{ certificate_authority_bootstrap_file }}. Every play under playbooks/ now
+      loads the root in CONTENT mode (key decrypts with the estate's Ansible Vault
+      password — env var or --ask-vault-pass alike).
+      {{ 'The imported key remains passphrase-encrypted: keep certificate_authority_root_key_passphrase wired. The bundle is now the only copy — nothing under pki/ is committed (docs/reference/ca.md).'
+         if _ca_bootstrap_mode == 'import'
+         else 'The minted key is passwordless inside the vault — no root passphrase var is needed.' }}
+      Commit the file: it is safe at rest (AES256 Ansible Vault).

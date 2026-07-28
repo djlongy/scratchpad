@@ -1,7 +1,7 @@
 ---
 # roles/certificate_authority/tasks/sign_ipa.yml
 # Sign a FreeIPA external-ca CSR as a CA certificate off the ROOT (never off an
-# intermediate — a pathlen:0 issuer is forbidden to sign a CA). The
+# intermediate — a pathlen:0 issuer is forbidden to sign a CA; ADR-0014 §2). The
 # FreeIPA CSR already requests CA:TRUE + keyCertSign; ownca preserves the CSR's
 # extensions, so the emitted cert is a CA cert. Emits the cert + a chain file
 # (signed IPA CA cert + root.crt). Opt-in (--tags sign_ipa). Control node only.
@@ -16,9 +16,15 @@
     _ca_resolve: [root]
   when: not _ca_ipa_from_content
 
-- name: Sign IPA | Use the supplied (optional) key passphrase (external content mode)
+# Pass the wired passphrase ONLY when the provided key content is itself encrypted
+# ("ENCRYPTED" appears in both PKCS#8 and legacy PEM encrypted headers). A bootstrap-
+# generated key is passwordless (Ansible Vault is its at-rest layer) — feeding it a
+# stale passphrase var would fail with "Passphrase was given but key is not encrypted".
+- name: Sign IPA | Use the supplied key passphrase only if the key content is encrypted
   ansible.builtin.set_fact:
-    _ca_root_key_passphrase: "{{ certificate_authority_root_key_passphrase | default('') }}"
+    _ca_root_key_passphrase: >-
+      {{ (certificate_authority_root_key_passphrase | default(''))
+         if ('ENCRYPTED' in certificate_authority_root_key_content) else '' }}
   when: _ca_ipa_from_content
   no_log: true
 

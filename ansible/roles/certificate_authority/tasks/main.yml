@@ -4,16 +4,30 @@
 # File-based internal CA (community.crypto only). Composition is FLAT: this file
 # does nothing but import the phase task files — no include_role/import_role
 # anywhere in the role (playbook-level composition only), internal decomposition
-# via import_tasks. See the README's task-file table.
+# via import_tasks. See ADR-0014 and the design doc's task-file table.
 #
-# Phase order (a no-tag run generates the whole hierarchy on the control node):
+# Phase order (a no-tag run generates the declared hierarchy on the control node —
+# only the root passphrase is unlocked when intermediate/wildcard tiers are empty):
+#   readiness    → FRONT DOOR (first): banner (which pki_dir realpath + which root CN)
+#                  + one all-at-once contract check. Tagged [root,intermediate,wildcard]
+#                  so it runs on generation but not on maintenance/read paths.
 #   root         → self-signed root key + cert (generate-if-absent)
-#   intermediate → per-env pathlen:0, name-constrained TLS issuing CA (root-signed)
-#   wildcard     → per-env wildcard leaf (issue/renew inside its window)
-#   crl          → root + intermediate CRL files
-# Opt-in (`never`, only with explicit --tags):
+#   intermediate → per-env pathlen:0, name-constrained TLS issuing CA (root-signed);
+#                  no-ops (and demands no passphrase) when the tier is empty
+#   wildcard     → per-env wildcard leaf (issue/renew inside its window);
+#                  no-ops (and demands no passphrase) when the tier is empty
+# Opt-in (`never`, only with explicit --tags — each ALSO carries a
+# `'<tag>' in ansible_run_tags` runtime guard so a co-tag cascaded from the caller
+# cannot defeat `never` and silently arm the phase; estate-wide idiom from a04b9b14):
+#   crl          → root + intermediate CRL files. Opt-in because the CRLs are
+#                  vestigial (ADR-0014 §4: no CDP/OCSP URLs embedded, nothing
+#                  serves them) AND the pre-split crl phase demanded the intermediate
+#                  passphrase a root-only estate doesn't have. (root.yml already
+#                  resolves + uses the root passphrase on every untagged run.)
 #   sign_ipa     → sign a fetched FreeIPA CSR as a CA cert off the ROOT
 #   distribute   → push the root anchor into a target host's OS trust store
+# Imported LAST, tag [report] (runs untagged AND with --tags report):
+#   inventory    → rebuild pki/inventory.json from on-disk certs (public snapshot)
 #
 # Generation/signing phases run delegate_to: localhost, become: false,
 # run_once: true so the same role composes into a localhost play AND a remote-host
@@ -21,41 +35,91 @@
 # self-escalates become: true per task. Each signing phase resolves its own
 # passphrases via include of resolve_credentials.yml.
 
-- name: Generate the root CA (self-signed, generate-if-absent)
-  ansible.builtin.import_tasks: root.yml
-  delegate_to: localhost
-  become: false
-  run_once: true
-  tags: [root]
+- name: Skip certificate_authority (certificate_authority_enabled is false)
+  ansible.builtin.debug:
+    msg: "certificate_authority_enabled is false — skipping certificate_authority"
+  when: not (certificate_authority_enabled | bool)
+  tags: [always]
 
-- name: Generate the TLS issuing intermediates (root-signed, pathlen:0, name-constrained)
-  ansible.builtin.import_tasks: intermediates.yml
-  delegate_to: localhost
-  become: false
-  run_once: true
-  tags: [intermediate]
+- name: Configure certificate_authority
+  when: certificate_authority_enabled | bool
+  block:
 
-- name: Issue/renew the wildcard leaf certificates
-  ansible.builtin.import_tasks: wildcards.yml
-  delegate_to: localhost
-  become: false
-  run_once: true
-  tags: [wildcard]
+    - name: Readiness banner + all-at-once contract check (front door, before any write)
+      ansible.builtin.import_tasks: readiness.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      # Generation tags only: runs on an untagged run and on --tags root|intermediate|
+      # wildcard, but not on the maintenance/read paths (crl/report/sign_ipa/distribute),
+      # which carry their own asserts. tasks_from callers bypass main.yml → never runs there.
+      tags: [root, intermediate, wildcard]
 
-- name: Sign a fetched FreeIPA CSR as a CA cert off the root (opt-in)
-  ansible.builtin.import_tasks: sign_ipa.yml
-  delegate_to: localhost
-  become: false
-  run_once: true
-  tags: [never, sign_ipa]
+    - name: Bootstrap the root CA into an Ansible-Vault-encrypted group_vars file (opt-in)
+      ansible.builtin.import_tasks: bootstrap.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      # Guard against tag cascade: a co-tag inherited from the caller can defeat
+      # `never`, so only bootstrap when `bootstrap` was explicitly passed via --tags.
+      when: "'bootstrap' in ansible_run_tags"
+      tags: [never, bootstrap]
 
-- name: Maintain CRL files for the root and intermediates
-  ansible.builtin.import_tasks: crl.yml
-  delegate_to: localhost
-  become: false
-  run_once: true
-  tags: [crl]
+    - name: Generate the root CA (self-signed, generate-if-absent)
+      ansible.builtin.import_tasks: root.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [root]
 
-- name: Distribute the root anchor into the target host trust store (opt-in)
-  ansible.builtin.import_tasks: distribute.yml
-  tags: [never, distribute]
+    - name: Generate the TLS issuing intermediates (root-signed, pathlen:0, name-constrained)
+      ansible.builtin.import_tasks: intermediates.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [intermediate]
+
+    - name: Issue/renew the wildcard leaf certificates
+      ansible.builtin.import_tasks: wildcards.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [wildcard]
+
+    - name: Sign a fetched FreeIPA CSR as a CA cert off the root (opt-in)
+      ansible.builtin.import_tasks: sign_ipa.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      # Guard against tag cascade: a co-tag inherited from the caller can defeat
+      # `never`, so only sign when `sign_ipa` was explicitly passed via --tags.
+      when: "'sign_ipa' in ansible_run_tags"
+      tags: [never, sign_ipa]
+
+    - name: Maintain CRL files for the root and intermediates (opt-in)
+      ansible.builtin.import_tasks: crl.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      # Guard against tag cascade: a co-tag inherited from the caller can defeat
+      # `never`, so only refresh CRLs when `crl` was explicitly passed via --tags.
+      when: "'crl' in ansible_run_tags"
+      tags: [never, crl]
+
+    - name: Distribute the root anchor into the target host trust store (opt-in)
+      ansible.builtin.import_tasks: distribute.yml
+      # Guard against tag cascade: a co-tag inherited from the caller can defeat
+      # `never`, so only distribute when `distribute` was explicitly passed via --tags.
+      when: "'distribute' in ansible_run_tags"
+      tags: [never, distribute]
+
+    # Imported LAST: rebuild the structured CA inventory (pki/inventory.json) from the
+    # on-disk certs — a self-healing current-state snapshot beside the append-only
+    # issued.log. Tagged [report] so it runs on an untagged run AND can be refreshed alone
+    # with --tags report (public fields only; no key material touched).
+    - name: Rebuild the structured CA inventory snapshot (inventory.json)
+      ansible.builtin.import_tasks: inventory.yml
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: [report]

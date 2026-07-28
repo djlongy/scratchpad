@@ -1,0 +1,98 @@
+---
+# roles/certificate_authority/tasks/inventory.yml
+# Structured CA inventory — a SELF-HEALING snapshot of the on-disk PKI, REBUILT from
+# the certificates themselves on every run and written to <pki_dir>/inventory.json.
+# It complements (never replaces) the append-only issued.log audit: issued.log is the
+# immutable ledger of issuance events; inventory.json is the current-state index,
+# always regenerated from what is actually on disk (so a hand-deleted cert vanishes
+# from it next run). PUBLIC material only — subjects/issuers/serials/dates/fingerprints,
+# never a byte of key material.
+#
+# Tags: [report] — imported LAST in main.yml with delegate_to: localhost / run_once /
+# become: false. `report` runs on an UNTAGGED run (untagged runs execute every task
+# not tagged `never`) AND lets an operator refresh the snapshot alone with
+# `--tags report` without touching any private key. main.yml-level tags are safe here
+# because tasks_from callers bypass main.yml entirely — inventory only ever runs via it.
+#
+# gather_facts is false in the generation play — this file uses NO ansible_date_time /
+# now(); every field is derived from the certificate, so the output is stable across
+# runs and the copy compare gives changed=0 when nothing on disk changed.
+
+- name: Inventory | Find all issued certificates on disk (exclude derived chain files)
+  ansible.builtin.find:
+    paths:
+      - "{{ certificate_authority_pki_dir }}/root"
+      - "{{ certificate_authority_pki_dir }}/intermediates"
+      - "{{ certificate_authority_pki_dir }}/wildcards"
+      - "{{ certificate_authority_pki_dir }}/ipa"
+    patterns: "*.crt"
+    # Skip the consumer artifacts (feature B) and the ipa chain — they are copies of
+    # certs already inventoried under their own tier, not distinct issued certs.
+    excludes:
+      - "*-chain.crt"
+      - "*-fullchain.crt"
+    file_type: file
+  register: _ca_inv_files
+
+- name: Inventory | Read each certificate (public fields only)
+  community.crypto.x509_certificate_info:
+    path: "{{ item.path }}"
+  loop: "{{ _ca_inv_files.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: _ca_inv_info
+
+# Normalised set of revoked serials (ints) from the declared revocations, so a cert
+# whose serial matches is flagged revoked: true — regardless of whether the opt-in crl
+# phase has run. Serial may be declared as an int (decimal) or a hex string (colons/0x
+# tolerated). Same normalisation rule as crl.yml.
+- name: Inventory | Start with an empty revoked-serial set
+  ansible.builtin.set_fact:
+    _ca_revoked_serials: []
+
+- name: Inventory | Normalise each declared revoked serial to an integer
+  ansible.builtin.set_fact:
+    _ca_revoked_serials: "{{ _ca_revoked_serials + [_serial] }}"
+  loop: "{{ certificate_authority_revocations }}"
+  loop_control:
+    label: "{{ item.serial }}"
+  vars:
+    _serial: >-
+      {{ item.serial if (item.serial is integer)
+         else (item.serial | string | regex_replace('[^0-9A-Fa-fXx]', '')
+               | regex_replace('^0[xX]', '') | int(0, 16)) }}
+
+- name: Inventory | Start with an empty entry list
+  ansible.builtin.set_fact:
+    _ca_inventory_entries: []
+
+- name: Inventory | Build one entry per certificate (public fields, revoked cross-ref)
+  ansible.builtin.set_fact:
+    _ca_inventory_entries: "{{ _ca_inventory_entries + [_entry] }}"
+  loop: "{{ _ca_inv_info.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  vars:
+    _tier_map:
+      root: root
+      intermediates: intermediate
+      wildcards: wildcard
+      ipa: ipa
+    _entry:
+      tier: "{{ _tier_map[item.item.path | dirname | basename] }}"
+      file: "{{ item.item.path | relpath(certificate_authority_pki_dir) }}"
+      subject_cn: "{{ item.subject.commonName | default('') }}"
+      issuer_cn: "{{ item.issuer.commonName | default('') }}"
+      serial: "{{ item.serial_number }}"
+      not_before: "{{ item.not_before }}"
+      not_after: "{{ item.not_after }}"
+      sha256: "{{ item.fingerprints.sha256 | default('') }}"
+      revoked: "{{ item.serial_number in _ca_revoked_serials }}"
+
+# copy content= (not template/lineinfile): identical bytes ⇒ changed=0. Keys are
+# sorted by to_nice_json; the list is sorted by file path for a stable key order.
+- name: Inventory | Write the rebuilt inventory.json snapshot
+  ansible.builtin.copy:
+    dest: "{{ certificate_authority_pki_dir }}/inventory.json"
+    content: "{{ ({'certificates': (_ca_inventory_entries | sort(attribute='file'))} | to_nice_json) + '\n' }}"
+    mode: "0644"

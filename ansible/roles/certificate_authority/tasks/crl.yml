@@ -1,14 +1,24 @@
 ---
 # roles/certificate_authority/tasks/crl.yml
-# Maintain CRL files for the root and each intermediate (CRLs exist,
+# Maintain CRL files for the root and each intermediate (ADR-0014 §4: CRLs exist,
 # but NO CDP/OCSP URLs are embedded in issued certs in v1 — no serving endpoint).
 # Empty revocation lists are valid: leaf compromise = reissue. ignore_timestamps
 # keeps re-runs idempotent (changed=0). Control node only.
 
-- name: CRL | Resolve the root + intermediate key passphrases
+# The root CRL is always generated when this (opt-in) phase runs, so the root
+# passphrase always resolves. The intermediate passphrase resolves ONLY when an
+# intermediate is declared — an empty tier must never demand a secret. The
+# per-intermediate CRL task below is loop-driven and no-ops when the list is empty.
+- name: CRL | Resolve the root key passphrase
   ansible.builtin.include_tasks: resolve_credentials.yml
   vars:
-    _ca_resolve: [root, intermediate]
+    _ca_resolve: [root]
+
+- name: CRL | Resolve the intermediate key passphrase (only when intermediates declared)
+  ansible.builtin.include_tasks: resolve_credentials.yml
+  vars:
+    _ca_resolve: [intermediate]
+  when: certificate_authority_intermediates | length > 0
 
 - name: CRL | Ensure the crl directory exists
   ansible.builtin.file:
@@ -16,7 +26,72 @@
     state: directory
     mode: "0755"
 
-- name: CRL | Generate the root CRL
+# ── Declarative revocation (community.crypto, NOT the openssl CLI database) ─────
+# certificate_authority_revocations is the single source of truth for what is revoked.
+# Each entry { serial, reason, revoked_at } is mapped to the x509_crl revoked_certificates
+# schema (serial_number / reason / revocation_date). serial may be an int (decimal) or a
+# hex string (colons/0x tolerated) — same normalisation as inventory.yml. reason accepts
+# either the RFC 5280 camelCase name (keyCompromise) or the module's snake_case
+# (key_compromise); both map to the module's choice. An unknown reason fails fast below.
+# RFC 5280 camelCase names AND the module's snake_case choices both map to the
+# community.crypto.x509_crl `reason` choice, so operators can write either spelling.
+- name: CRL | Define the accepted revocation-reason map (RFC 5280 + snake_case → module)
+  ansible.builtin.set_fact:
+    _ca_crl_reason_map:
+      unspecified: unspecified
+      keyCompromise: key_compromise
+      key_compromise: key_compromise
+      caCompromise: ca_compromise
+      ca_compromise: ca_compromise
+      affiliationChanged: affiliation_changed
+      affiliation_changed: affiliation_changed
+      superseded: superseded
+      cessationOfOperation: cessation_of_operation
+      cessation_of_operation: cessation_of_operation
+      certificateHold: certificate_hold
+      certificate_hold: certificate_hold
+      privilegeWithdrawn: privilege_withdrawn
+      privilege_withdrawn: privilege_withdrawn
+      aACompromise: aa_compromise
+      aa_compromise: aa_compromise
+      removeFromCRL: remove_from_crl
+      remove_from_crl: remove_from_crl
+
+- name: CRL | Validate every declared revocation reason
+  ansible.builtin.assert:
+    that:
+      - item.reason in _ca_crl_reason_map
+    quiet: true
+    fail_msg: >-
+      Unknown revocation reason "{{ item.reason }}" for serial {{ item.serial }} in
+      certificate_authority_revocations. Use an RFC 5280 name (keyCompromise, caCompromise,
+      affiliationChanged, superseded, cessationOfOperation, certificateHold,
+      privilegeWithdrawn, aACompromise, removeFromCRL, unspecified) or its snake_case form.
+  loop: "{{ certificate_authority_revocations }}"
+  loop_control:
+    label: "{{ item.serial }}"
+
+- name: CRL | Start with an empty revoked-certificate list
+  ansible.builtin.set_fact:
+    _ca_revoked_certs: []
+
+- name: CRL | Build the revoked-certificate entries from the declared revocations
+  ansible.builtin.set_fact:
+    _ca_revoked_certs: "{{ _ca_revoked_certs + [_entry] }}"
+  loop: "{{ certificate_authority_revocations }}"
+  loop_control:
+    label: "{{ item.serial }}"
+  vars:
+    _serial: >-
+      {{ item.serial if (item.serial is integer)
+         else (item.serial | string | regex_replace('[^0-9A-Fa-fXx]', '')
+               | regex_replace('^0[xX]', '') | int(0, 16)) }}
+    _entry:
+      serial_number: "{{ _serial | int }}"
+      reason: "{{ _ca_crl_reason_map[item.reason] }}"
+      revocation_date: "{{ item.revoked_at }}"
+
+- name: CRL | Generate the root CRL (with any declared revocations)
   community.crypto.x509_crl:
     path: "{{ certificate_authority_pki_dir }}/crl/root.crl"
     privatekey_path: "{{ certificate_authority_pki_dir }}/root/root.key"
@@ -26,7 +101,7 @@
     last_update: "+0s"
     next_update: "+{{ certificate_authority_crl_days }}d"
     ignore_timestamps: true
-    revoked_certificates: []
+    revoked_certificates: "{{ _ca_revoked_certs }}"
   no_log: true
 
 - name: CRL | Generate each intermediate CRL

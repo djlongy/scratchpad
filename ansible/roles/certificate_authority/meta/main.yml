@@ -8,7 +8,7 @@ galaxy_info:
     TLS issuing intermediates, wildcard leaves, signs FreeIPA external-ca CSRs off
     the root, maintains CRLs, and distributes the root anchor to a host trust store.
     System of record is a plain PEM tree under pki/; every operation has a bare
-    openssl break-glass equivalent.
+    openssl break-glass equivalent (ADR-0014).
   license: MIT
   min_ansible_version: "2.14"
   platforms:
@@ -27,6 +27,6 @@ galaxy_info:
 # declare them in your requirements.yml):
 #   community.crypto        — all openssl_*/x509_* generation + signing (always)
 #   community.hashi_vault   — ONLY if you use the Vault passphrase fallback
-# freeipa.ansible_freeipa is NOT used by this role directly (a signed-install
+# freeipa.ansible_freeipa is NOT used by this role directly (the signed-install
 # playbook composes it at the playbook level). No role dependencies (no nested roles).
 dependencies: []

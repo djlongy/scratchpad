@@ -3,29 +3,40 @@
 # Push the root CA anchor into a target host's OS trust store. Unlike the generation
 # phases this runs ON the target host (NOT delegated) and self-escalates become: true
 # per task (freeipa_server-style least privilege). EL-family trust store: drop the
-# root PEM into the anchors dir + run update-ca-trust. `src` is read from the control
-# node's pki tree. Opt-in (--tags distribute).
+# root PEM into the anchors dir + run update-ca-trust. Anchor source: the
+# certificate_authority_root_cert_content var when content mode is wired (e.g. the
+# bootstrap-generated root_ca.yml — no on-disk tree needed), else the control node's
+# pki tree file. Opt-in (--tags distribute).
 
-- name: Distribute | Assert the root certificate exists on the control node
+- name: Distribute | Detect the anchor source (external cert content vs pki/ file)
+  ansible.builtin.set_fact:
+    _ca_dist_from_content: "{{ certificate_authority_root_cert_content | default('') | length > 0 }}"
+
+- name: Distribute | Assert the root certificate exists on the control node (file mode)
   ansible.builtin.stat:
     path: "{{ certificate_authority_pki_dir }}/root/root.crt"
   delegate_to: localhost
   become: false
   run_once: true
   register: _ca_root_crt_stat
+  when: not _ca_dist_from_content
 
-- name: Distribute | Fail early if the root certificate has not been generated
+- name: Distribute | Fail early if the root certificate has not been generated (file mode)
   ansible.builtin.assert:
     that:
       - _ca_root_crt_stat.stat.exists
     fail_msg: >-
       No root certificate at {{ certificate_authority_pki_dir }}/root/root.crt on the
-      control node. Run the CA playbook (--tags root) first.
+      control node (and certificate_authority_root_cert_content is not wired). Run
+      playbooks/<playbook>.yml (--tags root) or --tags bootstrap first.
     quiet: true
+  when: not _ca_dist_from_content
 
+# src and content are mutually exclusive — the unused side is omit-ted.
 - name: Distribute | Install the root CA anchor into the OS trust store
   ansible.builtin.copy:
-    src: "{{ certificate_authority_pki_dir }}/root/root.crt"
+    src: "{{ omit if _ca_dist_from_content else certificate_authority_pki_dir + '/root/root.crt' }}"
+    content: "{{ certificate_authority_root_cert_content if _ca_dist_from_content else omit }}"
     dest: "{{ certificate_authority_trust_anchor_dir }}/{{ certificate_authority_trust_anchor_name }}.crt"
     owner: root
     group: root

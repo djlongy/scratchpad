@@ -4,10 +4,52 @@
 # a pathlen:0, name-constrained CA signed DIRECTLY by the root. Idempotent.
 # Runs on the control node (directives set on the import in main.yml).
 
+# Only resolve passphrases when an intermediate is actually declared — an empty
+# tier must never demand a secret. Every generation task below is loop-driven
+# over certificate_authority_intermediates and no-ops when the list is empty.
 - name: Intermediates | Resolve the root + intermediate key passphrases
   ansible.builtin.include_tasks: resolve_credentials.yml
   vars:
     _ca_resolve: [root, intermediate]
+  when: certificate_authority_intermediates | length > 0
+
+# ── Per-item identity guard — fail closed on a CN mismatch (clobber prevention) ─
+# For each DECLARED intermediate, if a cert already exists at intermediates/<name>.crt
+# and its subject CN differs from the declared item.common_name, FAIL before re-issuing.
+# Same rationale/incident as root.yml. Loop-safe: no-ops on an empty tier (the read task
+# is gated on length > 0), and a missing/unreadable cert simply has no subject to check.
+# failed_when:false lets an absent cert (first mint) pass straight through to generation.
+- name: Intermediates | Identity guard — read any existing intermediate certificates
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.crt"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_int_identity
+  failed_when: false
+  when:
+    - certificate_authority_intermediates | length > 0
+    - not (certificate_authority_allow_identity_change | bool)
+
+- name: Intermediates | Identity guard — each existing intermediate CN must match its declared CN
+  ansible.builtin.assert:
+    that:
+      - item.subject.commonName == item.item.common_name
+    quiet: true
+    fail_msg: >-
+      INTERMEDIATE CA IDENTITY MISMATCH for "{{ item.item.name }}" — refusing to re-issue
+      under a different CN. On-disk
+      {{ certificate_authority_pki_dir }}/intermediates/{{ item.item.name }}.crt has subject CN
+      "{{ item.subject.commonName }}", but this run declares item.common_name =
+      "{{ item.item.common_name }}". LIKELY CAUSE: certificate_authority_pki_dir resolved to the
+      wrong tree (a localhost play sees group_vars/all but NOT host_vars). Exits: (1) fix the
+      inventory/pki_dir or align the declared CN; (2) wipe intermediates/{{ item.item.name }}.*
+      and re-run to mint fresh under the new CN; (3) override with
+      -e certificate_authority_allow_identity_change=true.
+  loop: "{{ _ca_int_identity.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.subject is defined
 
 - name: Intermediates | Generate each intermediate private key (passphrase-encrypted PKCS#8)
   community.crypto.openssl_privatekey:
@@ -18,10 +60,69 @@
     cipher: auto
     passphrase: "{{ _ca_intermediate_key_passphrase }}"
     mode: "0600"
+    # regenerate: never — a wrong/changed passphrase must FAIL loudly, never silently re-key a CA (a re-key orphans every cert signed off the old key); still mints when the file is absent.
+    regenerate: never
   loop: "{{ certificate_authority_intermediates }}"
   loop_control:
     label: "{{ item.name }}"
   no_log: true
+
+# ── Per-item coherence guard — cert and key MUST be the same pair ─────────────
+# After the passphrase-validated key task (regenerate:never above) and BEFORE the CSR:
+# for each DECLARED intermediate that already has a cert on disk, assert it shares its
+# key's public key. x509_certificate silently RE-ISSUES a cert that does not match its
+# key — a new serial/notBefore on an issuing CA breaks every chain built on the old one
+# and every trust store pinning it. Loop-safe: reads are gated on length > 0 and no-op on
+# an empty tier; an absent cert (first mint) has no public_key and is skipped, so the item
+# falls straight through to generation. Bypassed by the same override var as the root guard.
+- name: Intermediates | Coherence guard — read each intermediate key public key
+  community.crypto.openssl_privatekey_info:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.key"
+    passphrase: "{{ _ca_intermediate_key_passphrase }}"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_int_key_pub
+  no_log: true  # module params include the key passphrase
+  when:
+    - certificate_authority_intermediates | length > 0
+    - not (certificate_authority_allow_identity_change | bool)
+
+- name: Intermediates | Coherence guard — read each existing intermediate cert public key
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/intermediates/{{ item.name }}.crt"
+  loop: "{{ certificate_authority_intermediates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_int_crt_pub
+  failed_when: false
+  when:
+    - certificate_authority_intermediates | length > 0
+    - not (certificate_authority_allow_identity_change | bool)
+
+- name: Intermediates | Coherence guard — each existing intermediate cert+key must be a pair
+  ansible.builtin.assert:
+    that:
+      - (_ca_int_key_pub.results[idx].public_key | trim) == (item.public_key | trim)
+    quiet: true
+    fail_msg: >-
+      INTERMEDIATE KEYPAIR MISMATCH for "{{ item.item.name }}" — refusing to re-issue its
+      cert from a key it does not belong to. The cert
+      {{ certificate_authority_pki_dir }}/intermediates/{{ item.item.name }}.crt and the key
+      {{ certificate_authority_pki_dir }}/intermediates/{{ item.item.name }}.key are NOT the
+      same keypair (public keys differ). Unguarded, x509_certificate would SILENTLY re-issue
+      the cert from the key with a new serial/notBefore, invalidating every chain and trust
+      store pinning the old issuing CA. Exits: (1) restore the matching cert+key pair from git
+      (committed under pki/) and re-run; (2) if the KEY is canonical, re-run with
+      -e certificate_authority_allow_identity_change=true to deliberately re-issue this cert
+      from that key, then re-distribute the new issuing CA; (3) wipe
+      {{ certificate_authority_pki_dir }}/intermediates/{{ item.item.name }}.* and re-run to
+      mint a fresh keypair + cert.
+  loop: "{{ _ca_int_crt_pub.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+    index_var: idx
+  when: item.public_key is defined
 
 - name: Intermediates | Build each intermediate CSR (CA:TRUE, pathlen:0, name-constrained)
   community.crypto.openssl_csr:

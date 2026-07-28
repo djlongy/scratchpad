@@ -20,6 +20,84 @@
     - ipa
     - crl
 
+# ── CN contract guards — fail closed even when entered via tasks_from ──────────
+# A caller through main.yml hits readiness.yml's equivalent CN guards first and
+# never reaches here with a bad CN. A `tasks_from: root` caller (e.g. a zero-touch
+# playbook) bypasses main.yml entirely, so these mirror those two checks as the
+# last line of defense before any generation/mutation below. Unconditional on
+# existing-cert state — they must catch a first mint, not just a re-issue.
+- name: Root | Guard — refuse an empty root CN
+  ansible.builtin.assert:
+    that:
+      - (certificate_authority_root.common_name | default('') | trim | length) > 0
+    quiet: true
+    fail_msg: >-
+      ROOT CN is empty. Fix: set certificate_authority_root in inventory
+      group_vars/all (visible to a localhost play), e.g.
+      certificate_authority_root: { common_name: "<Your Org> Root CA", days: 7300 }.
+
+- name: Root | Guard — refuse the placeholder default root CN
+  ansible.builtin.assert:
+    that:
+      - (certificate_authority_root.common_name | default('')) != "Example Root CA"
+    quiet: true
+    fail_msg: >-
+      ROOT CN is the placeholder default "Example Root CA" — refusing to mint a
+      placeholder CA. Fix: set a real certificate_authority_root.common_name in
+      inventory group_vars/all (this file, not role defaults).
+
+# ── Identity guard — fail closed on a root CN mismatch (clobber prevention) ────
+# INCIDENT 2026-07-17: a localhost CA play resolved certificate_authority_pki_dir to
+# its DEFAULT (the REAL estate tree — now ansible/pki) because the driving inventory kept
+# pki_dir in host_vars — which an implicit-localhost play NEVER sees (group_vars/all IS
+# visible to implicit localhost, host_vars is NOT). The run then re-issued the real root
+# CSR+cert under a test CN. regenerate:never saved the private key; the CSR/cert re-issue
+# had no equivalent guard. This closes that gap: if a root cert already exists on disk,
+# its subject CN MUST equal the declared certificate_authority_root.common_name or the run
+# FAILS before any generation/overwrite. Runs in BOTH file mode and external-key (content)
+# mode — a content-mode copy overwriting a DIFFERENT existing CN is the same class of
+# clobber (content-mode operators must therefore set certificate_authority_root.common_name
+# to their provided cert's CN). Bypass only with certificate_authority_allow_identity_change=true.
+- name: Root | Identity guard — an existing root cert must match the declared CN
+  when: not (certificate_authority_allow_identity_change | bool)
+  block:
+    - name: Root | Stat any existing root certificate
+      ansible.builtin.stat:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+      register: _ca_root_crt_stat
+
+    - name: Root | Read the existing root certificate subject
+      community.crypto.x509_certificate_info:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+      register: _ca_root_existing
+      when: _ca_root_crt_stat.stat.exists
+
+    - name: Root | Assert the existing root CN matches the declared root CN
+      ansible.builtin.assert:
+        that:
+          - _ca_root_existing.subject.commonName == certificate_authority_root.common_name
+        quiet: true
+        success_msg: >-
+          Root CA identity confirmed: on-disk CN "{{ _ca_root_existing.subject.commonName }}"
+          matches the declared CN under {{ certificate_authority_pki_dir }}/root/root.crt.
+        fail_msg: >-
+          ROOT CA IDENTITY MISMATCH — refusing to re-issue the root under a different CN.
+          On-disk {{ certificate_authority_pki_dir }}/root/root.crt has subject CN
+          "{{ _ca_root_existing.subject.commonName }}", but this run declares
+          certificate_authority_root.common_name = "{{ certificate_authority_root.common_name }}".
+          LIKELY CAUSE: certificate_authority_pki_dir resolved to the WRONG tree. This play
+          targets localhost, and an implicit-localhost play sees an inventory's group_vars/all
+          but NEVER its host_vars — so a pki_dir set only in host_vars silently falls back to
+          the role default (ansible-root pki/, the REAL estate). Echo the resolved
+          certificate_authority_pki_dir to confirm which tree you are about to write.
+          THREE deliberate exits: (1) FIX THE INVENTORY — set certificate_authority_pki_dir at
+          group_vars/all scope (visible to this localhost play) pointing at the intended tree,
+          and/or align the declared CN; (2) RE-MINT FROM SCRATCH — wipe the target tree
+          ({{ certificate_authority_pki_dir }}) and re-run to mint a fresh root under the new CN;
+          (3) OVERRIDE (deliberate in-place rename, same key, new CN) — re-run with
+          -e certificate_authority_allow_identity_change=true.
+      when: _ca_root_crt_stat.stat.exists
+
 # ── Bring-your-own root (external key content): skip generation ───────────────
 - name: Root | External key mode — materialise the public root cert + guard scope
   when: certificate_authority_root_key_content | default('') | length > 0
@@ -35,6 +113,58 @@
           intermediates or wildcards needs file mode (unset root_key_content), or the
           same *_content mechanism extended to those tiers.
         quiet: true
+
+    # ── Coherence guard (content mode) — provided key + cert MUST be one pair ────
+    # The file-mode block below is skipped in content mode, so its on-disk pair check
+    # never runs here. Instead we validate the OPERATOR-PROVIDED material: if the wired
+    # _root_key_content and _root_cert_content are not the same keypair, sign_ipa would
+    # emit a chain whose IPA cert is signed by one key while root.crt is a DIFFERENT
+    # anchor — a silently broken trust chain. Cheap (privatekey_info/x509_certificate_info
+    # both accept `content`) and fail-closed BEFORE we materialise root.crt on disk.
+    # Passphrase is passed only if the provided key is itself encrypted (it may be
+    # passwordless — Ansible Vault is then the single at-rest layer). Bypassed by the
+    # same override var as the on-disk guards.
+    - name: Root | Coherence guard (content mode) — read the provided key public key
+      community.crypto.openssl_privatekey_info:
+        content: "{{ certificate_authority_root_key_content }}"
+        # Passphrase only if the provided key content is itself encrypted (header
+        # check, same idiom as sign_ipa.yml) — a passwordless bootstrap-generated key
+        # with a stale passphrase var wired must not receive that passphrase.
+        passphrase: >-
+          {{ (certificate_authority_root_key_passphrase | default('') or omit)
+             if ('ENCRYPTED' in certificate_authority_root_key_content) else omit }}
+      register: _ca_root_content_key_pub
+      no_log: true  # module params include the provided key content + its passphrase
+      when: not (certificate_authority_allow_identity_change | bool)
+
+    - name: Root | Coherence guard (content mode) — read the provided cert public key
+      community.crypto.x509_certificate_info:
+        content: "{{ certificate_authority_root_cert_content }}"
+      register: _ca_root_content_crt_pub
+      when: not (certificate_authority_allow_identity_change | bool)
+
+    - name: Root | Coherence guard (content mode) — provided root cert + key must be a pair
+      ansible.builtin.assert:
+        that:
+          - (_ca_root_content_key_pub.public_key | trim) == (_ca_root_content_crt_pub.public_key | trim)
+        quiet: true
+        success_msg: >-
+          Root CA coherence confirmed (content mode): the provided
+          certificate_authority_root_cert_content and certificate_authority_root_key_content
+          are the same keypair.
+        fail_msg: >-
+          ROOT CA KEYPAIR MISMATCH (content mode) — the provided
+          certificate_authority_root_cert_content and certificate_authority_root_key_content
+          are NOT the same keypair (their public keys differ). Signing off this key while
+          publishing that cert as the trust anchor yields a silently BROKEN chain: every
+          cert this run signs (e.g. via sign_ipa) validates against the key, but the
+          distributed root.crt anchor is a DIFFERENT key — so no client can build a path.
+          Exits: (1) re-wire the two _content vars to a matching cert/key pair from your
+          secret store; (2) if the KEY is canonical, derive its matching self-signed cert
+          and wire that as _root_cert_content, then re-distribute the anchor;
+          (3) re-run with -e certificate_authority_allow_identity_change=true only to
+          deliberately publish this cert paired with a different key (almost never correct).
+      when: not (certificate_authority_allow_identity_change | bool)
 
     - name: Root | Materialise the provided public root certificate (no private key on disk)
       ansible.builtin.copy:
@@ -60,7 +190,70 @@
         cipher: auto
         passphrase: "{{ _ca_root_key_passphrase }}"
         mode: "0600"
+        # regenerate: never — a wrong/changed passphrase must FAIL loudly, never silently re-key a CA (a root re-key orphans every cert signed off the old key); still mints when the file is absent.
+        regenerate: never
       no_log: true
+
+    # ── Coherence guard — an EXISTING root cert MUST match its key (clobber prevention) ──
+    # Placed AFTER the passphrase-validated key task (regenerate:never above has proven the
+    # passphrase and left the on-disk key untouched) and BEFORE the CSR/self-sign tasks.
+    # community.crypto.x509_certificate silently RE-ISSUES a cert whose public key does not
+    # match its private key — for the ROOT that cert IS the distributed trust anchor, so a
+    # silent re-issue (new serial/notBefore) invalidates every trust store carrying the old
+    # anchor. Gated on the cert already existing (first mint has no cert → generation proceeds)
+    # AND the override being off. Re-stat here (rather than lean on the identity-guard block's
+    # stat) so the check is self-contained within the generation block.
+    - name: Root | Coherence guard — stat any existing root certificate
+      ansible.builtin.stat:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+      register: _ca_root_crt_pair_stat
+      when: not (certificate_authority_allow_identity_change | bool)
+
+    - name: Root | Coherence guard — read the existing root key public key
+      community.crypto.openssl_privatekey_info:
+        path: "{{ certificate_authority_pki_dir }}/root/root.key"
+        passphrase: "{{ _ca_root_key_passphrase }}"
+      register: _ca_root_key_pub
+      no_log: true  # module params include the key passphrase
+      when:
+        - not (certificate_authority_allow_identity_change | bool)
+        - _ca_root_crt_pair_stat.stat.exists | default(false)
+
+    - name: Root | Coherence guard — read the existing root certificate public key
+      community.crypto.x509_certificate_info:
+        path: "{{ certificate_authority_pki_dir }}/root/root.crt"
+      register: _ca_root_crt_pub
+      when:
+        - not (certificate_authority_allow_identity_change | bool)
+        - _ca_root_crt_pair_stat.stat.exists | default(false)
+
+    - name: Root | Coherence guard — the existing root cert and key must be the same pair
+      ansible.builtin.assert:
+        that:
+          - (_ca_root_key_pub.public_key | trim) == (_ca_root_crt_pub.public_key | trim)
+        quiet: true
+        success_msg: >-
+          Root CA coherence confirmed: on-disk
+          {{ certificate_authority_pki_dir }}/root/root.crt and root.key are the same keypair.
+        fail_msg: >-
+          ROOT CA KEYPAIR MISMATCH — refusing to re-issue the root cert from a key it does
+          not belong to. The cert {{ certificate_authority_pki_dir }}/root/root.crt and the
+          key {{ certificate_authority_pki_dir }}/root/root.key are NOT the same keypair
+          (their public keys differ). Left unguarded, x509_certificate would SILENTLY
+          re-issue root.crt from root.key with a new serial and notBefore — and because the
+          root cert is the trust anchor distributed to every host, that silent re-issue
+          INVALIDATES every trust store still carrying the old anchor (TLS breaks estate-wide
+          until every store is re-distributed). THREE deliberate exits: (1) RESTORE THE
+          MATCHING PAIR — check out the cert+key that belong together from git
+          (they are committed under pki/) and re-run; (2) KEY IS CANONICAL — if root.key is
+          the one you want to keep, re-run with
+          -e certificate_authority_allow_identity_change=true to deliberately re-issue root.crt
+          FROM this key (a NEW anchor), then re-distribute it to every trust store; (3) MINT
+          FROM SCRATCH — wipe {{ certificate_authority_pki_dir }}/root/root.* and re-run to
+          generate a fresh root keypair + cert.
+      when:
+        - not (certificate_authority_allow_identity_change | bool)
+        - _ca_root_crt_pair_stat.stat.exists | default(false)
 
     - name: Root | Build the root certificate signing request (CA:TRUE, keyCertSign, cRLSign)
       community.crypto.openssl_csr:

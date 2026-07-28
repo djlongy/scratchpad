@@ -5,10 +5,52 @@
 # A freshly issued cert is far outside its window, so a re-run is changed=0.
 # Runs on the control node (directives set on the import in main.yml).
 
+# Only resolve passphrases when a wildcard is actually declared — an empty tier
+# must never demand a secret. Every generation task below is loop-driven over
+# certificate_authority_wildcards and no-ops when the list is empty.
 - name: Wildcards | Resolve the intermediate + wildcard key passphrases
   ansible.builtin.include_tasks: resolve_credentials.yml
   vars:
     _ca_resolve: [intermediate, wildcard]
+  when: certificate_authority_wildcards | length > 0
+
+# ── Per-item identity guard — fail closed on a CN mismatch (clobber prevention) ─
+# For each DECLARED wildcard, if a cert already exists at wildcards/<name>.crt and its
+# subject CN differs from the declared item.common_name, FAIL before re-issuing. Same
+# rationale/incident as root.yml. Loop-safe: no-ops on an empty tier (read gated on
+# length > 0); an absent cert (first issue) has no subject and passes through. This is a
+# distinct check from the renewal-window inspection below (identity vs. validity horizon).
+- name: Wildcards | Identity guard — read any existing wildcard certificates
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.crt"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_wc_identity
+  failed_when: false
+  when:
+    - certificate_authority_wildcards | length > 0
+    - not (certificate_authority_allow_identity_change | bool)
+
+- name: Wildcards | Identity guard — each existing wildcard CN must match its declared CN
+  ansible.builtin.assert:
+    that:
+      - item.subject.commonName == item.item.common_name
+    quiet: true
+    fail_msg: >-
+      WILDCARD IDENTITY MISMATCH for "{{ item.item.name }}" — refusing to re-issue under a
+      different CN. On-disk
+      {{ certificate_authority_pki_dir }}/wildcards/{{ item.item.name }}.crt has subject CN
+      "{{ item.subject.commonName }}", but this run declares item.common_name =
+      "{{ item.item.common_name }}". LIKELY CAUSE: certificate_authority_pki_dir resolved to the
+      wrong tree (a localhost play sees group_vars/all but NOT host_vars). Exits: (1) fix the
+      inventory/pki_dir or align the declared CN; (2) wipe wildcards/{{ item.item.name }}.*
+      and re-run to mint fresh under the new CN; (3) override with
+      -e certificate_authority_allow_identity_change=true.
+  loop: "{{ _ca_wc_identity.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.subject is defined
 
 - name: Wildcards | Generate each wildcard private key (passphrase-encrypted PKCS#8)
   community.crypto.openssl_privatekey:
@@ -19,10 +61,70 @@
     cipher: auto
     passphrase: "{{ _ca_wildcard_key_passphrase }}"
     mode: "0600"
+    # regenerate: never — a wrong/changed passphrase must FAIL loudly, never silently re-key a leaf/CA (a re-key orphans anything signed off the old key); still mints when the file is absent.
+    regenerate: never
   loop: "{{ certificate_authority_wildcards }}"
   loop_control:
     label: "{{ item.name }}"
   no_log: true
+
+# ── Per-item coherence guard — cert and key MUST be the same pair ─────────────
+# After the passphrase-validated key task (regenerate:never above) and BEFORE the CSR:
+# for each DECLARED wildcard that already has a cert on disk, assert it shares its key's
+# public key. x509_certificate silently RE-ISSUES a cert that does not match its key —
+# a wildcard served with a cert that does not match its private key fails every TLS
+# handshake. Distinct from the renewal-window inspection below: a legitimate in-window
+# renewal re-issues from the SAME key (public key unchanged), so this guard passes it
+# through and only fires on a genuine cert/key mismatch. Loop-safe: reads gated on
+# length > 0; an absent cert (first issue) has no public_key and is skipped. Bypassed by
+# the same override var as the root/intermediate guards.
+- name: Wildcards | Coherence guard — read each wildcard key public key
+  community.crypto.openssl_privatekey_info:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.key"
+    passphrase: "{{ _ca_wildcard_key_passphrase }}"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_wc_key_pub
+  no_log: true  # module params include the key passphrase
+  when:
+    - certificate_authority_wildcards | length > 0
+    - not (certificate_authority_allow_identity_change | bool)
+
+- name: Wildcards | Coherence guard — read each existing wildcard cert public key
+  community.crypto.x509_certificate_info:
+    path: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}.crt"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: _ca_wc_crt_pub
+  failed_when: false
+  when:
+    - certificate_authority_wildcards | length > 0
+    - not (certificate_authority_allow_identity_change | bool)
+
+- name: Wildcards | Coherence guard — each existing wildcard cert+key must be a pair
+  ansible.builtin.assert:
+    that:
+      - (_ca_wc_key_pub.results[idx].public_key | trim) == (item.public_key | trim)
+    quiet: true
+    fail_msg: >-
+      WILDCARD KEYPAIR MISMATCH for "{{ item.item.name }}" — refusing to re-issue its cert
+      from a key it does not belong to. The cert
+      {{ certificate_authority_pki_dir }}/wildcards/{{ item.item.name }}.crt and the key
+      {{ certificate_authority_pki_dir }}/wildcards/{{ item.item.name }}.key are NOT the same
+      keypair (public keys differ). Unguarded, x509_certificate would SILENTLY re-issue the
+      cert from the key with a new serial/notBefore; a leaf whose cert does not match its
+      served key fails every TLS handshake. Exits: (1) restore the matching cert+key pair from
+      git (committed under pki/) and re-run; (2) if the KEY is canonical, re-run with
+      -e certificate_authority_allow_identity_change=true to deliberately re-issue this cert
+      from that key; (3) wipe {{ certificate_authority_pki_dir }}/wildcards/{{ item.item.name }}.*
+      and re-run to mint a fresh keypair + cert.
+  loop: "{{ _ca_wc_crt_pub.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+    index_var: idx
+  when: item.public_key is defined
 
 - name: Wildcards | Build each wildcard CSR (leaf, serverAuth)
   community.crypto.openssl_csr:
@@ -98,3 +200,29 @@
   loop_control:
     label: "{{ item.name }}"
     index_var: idx
+
+# ── Consumer chain artifacts (PUBLIC only — never a key) ──────────────────────
+# For each declared wildcard, emit the two files TLS consumers actually want:
+#   <name>-chain.crt     = the leaf's issuing intermediate cert (the "chain" a server
+#                          concatenates after its leaf so clients get the intermediate)
+#   <name>-fullchain.crt = leaf + intermediate + root (a complete verifiable path)
+# copy content= ⇒ changed=0 when unchanged; loop no-ops on an empty tier. A combined
+# key+chain file is DELIBERATELY not produced (secret-handling smell). Not no_log — all
+# three source files are public certificates.
+- name: Wildcards | Write each consumer chain file (issuing intermediate; public)
+  ansible.builtin.copy:
+    dest: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}-chain.crt"
+    content: "{{ (lookup('file', certificate_authority_pki_dir + '/intermediates/' + item.issuer + '.crt') | trim) + '\n' }}"
+    mode: "0644"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Wildcards | Write each consumer fullchain file (leaf + intermediate + root; public)
+  ansible.builtin.copy:
+    dest: "{{ certificate_authority_pki_dir }}/wildcards/{{ item.name }}-fullchain.crt"
+    content: "{{ (lookup('file', certificate_authority_pki_dir + '/wildcards/' + item.name + '.crt') | trim) + '\n' + (lookup('file', certificate_authority_pki_dir + '/intermediates/' + item.issuer + '.crt') | trim) + '\n' + (lookup('file', certificate_authority_pki_dir + '/root/root.crt') | trim) + '\n' }}"
+    mode: "0644"
+  loop: "{{ certificate_authority_wildcards }}"
+  loop_control:
+    label: "{{ item.name }}"
