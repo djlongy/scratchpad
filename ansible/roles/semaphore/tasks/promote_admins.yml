@@ -10,6 +10,12 @@
 # Re-runnable: existing-by-username users get PUT'd with admin=true;
 # new ones get POST'd.
 
+# Tag-isolated runs (--tags ldap) do not go through install; re-resolve secrets
+# when the admin password fact is missing (same guard as smoke_test.yml).
+- name: Resolve Ansible install secrets when promote runs without install facts
+  ansible.builtin.include_tasks: resolve_ansible_secrets.yml
+  when: _semaphore_admin_password is not defined
+
 - name: Log in as Semaphore admin (for admin-promotion API calls)
   become: false  # localhost/API — Semaphore HTTP API, no host privilege
   ansible.builtin.uri:

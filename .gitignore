@@ -77,6 +77,13 @@ secring.*
 # 17 task files including a file that does not exist
 !**/roles/hashicorp_vault_container/tasks/resolve_root_token.yml
 !**/roles/vault_pki/tasks/resolve_token.yml
+# semaphore's secret RESOLVER. Its own header says it is named
+# resolve_ansible_secrets rather than secrets.yml to dodge a `**/secrets.yml`
+# rule — but the rule HERE is `*secrets*`, which the rename does not escape.
+# Four task files in that role include or import it (install.yml does so with
+# import_tasks, which fails at PARSE time), so without this line the role cannot
+# run from a clean clone at all.
+!**/roles/semaphore/tasks/resolve_ansible_secrets.yml
 
 # Vault / encrypted files
 *.vault

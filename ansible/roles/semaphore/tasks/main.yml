@@ -21,6 +21,13 @@
       ansible.builtin.import_tasks: install.yml
       tags: [install]
 
+    # install.yml may notify "Restart semaphore" (compose/unit change). Flush
+    # BEFORE configure/smoke/reconcile so those API phases hit the new container,
+    # not the pre-change process still serving until end-of-play handler flush.
+    - name: Apply pending Semaphore service restarts before API phases
+      ansible.builtin.meta: flush_handlers
+      tags: [install, config, smoke, ldap, reconcile, projects]
+
     - name: Wait for Semaphore HTTP readiness
       ansible.builtin.import_tasks: configure.yml
       tags: [install, config]

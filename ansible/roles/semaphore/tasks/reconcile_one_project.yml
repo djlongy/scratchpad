@@ -82,6 +82,24 @@
     return_content: true
   register: _sem_repos
 
+# Non-none ssh_key_name is not implemented yet — refuse BEFORE any create so a
+# mixed project does not partially apply valid repos then abort.
+- name: "[{{ _sem_project.name }}] Refuse repositories that need a named SSH key"  # noqa: name[template]
+  ansible.builtin.assert:
+    that:
+      - (item.ssh_key_name | default('none')) == 'none'
+    fail_msg: >-
+      Project '{{ _sem_project.name }}' repository '{{ item.name }}' declares
+      ssh_key_name='{{ item.ssh_key_name }}', but this role only creates repos
+      that use the project default type=none key. Named SSH keys are not
+      implemented yet — set ssh_key_name: none (or omit it), or create the
+      key+repo out of band.
+    quiet: true
+  loop: "{{ _sem_project.repositories | default([]) }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in (_sem_repos.json | map(attribute='name') | list)
+
 - name: "[{{ _sem_project.name }}] Create missing repositories"  # noqa: name[template]
   become: false  # localhost/API — Semaphore HTTP API, no host privilege
   ansible.builtin.uri:
@@ -101,9 +119,7 @@
   loop: "{{ _sem_project.repositories | default([]) }}"
   loop_control:
     label: "{{ item.name }}"
-  when:
-    - item.name not in (_sem_repos.json | map(attribute='name') | list)
-    - (item.ssh_key_name | default('none')) == 'none'
+  when: item.name not in (_sem_repos.json | map(attribute='name') | list)
 
 - name: "[{{ _sem_project.name }}] Re-list repositories (for ID map)"  # noqa: name[template]
   become: false  # localhost/API — Semaphore HTTP API, no host privilege
