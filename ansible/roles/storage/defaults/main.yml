@@ -29,9 +29,12 @@ storage_enabled: true
 # LOCAL entries (all fields except `name` optional — defaults below fill them):
 #   name:             logical handle (labels, selection, fstab comment)   [required]
 #   disk:             auto | /dev/sdb | by-size:50G | by-serial:X | by-wwn:X
-#                     (ignored for grow-only LVM volumes, which are located
-#                     via their VG). Prefer by-size:. For a by-id/by-path
-#                     alias give the full path, e.g. /dev/disk/by-id/<id>.
+#                     (ignored for grow-only LVM volumes, located via their VG).
+#                     No by-id: — /dev/disk/by-id names are usually
+#                     '<bus>-<model>_<serial>', so by-serial:/by-wwn: address the
+#                     same disk from values lsblk reports directly. validate.yml
+#                     rejects any other prefix rather than failing later with a
+#                     misleading "matched no available blank disk".
 #   lvm:              true  -> parted/whole-disk PV -> VG -> LV
 #                     false -> partition + filesystem directly
 #   partition:        LVM only. true -> parted GPT + lvm flag, PV on the

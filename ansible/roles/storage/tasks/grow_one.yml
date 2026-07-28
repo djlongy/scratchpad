@@ -36,14 +36,57 @@
     - "'NOCHANGE' not in (_g_growpart.stdout + _g_growpart.stderr)"
   when: _g_has_part | bool
 
-- name: "{{ vol.name }} | resize physical volume"
+# EVERY PV in the VG, not just vol._pv (which is `| first` of the VG's PV list). pvresize is
+# a no-op on a PV that has not grown, so this is safe and idempotent.
+#
+# SCOPE — read before trusting this on a multi-PV VG. The rescan and growpart above still
+# act on ONE disk only (the parent of vol._pv), because vol.partition_number is a single
+# per-volume value that cannot be correct for several disks at once. So on a VG spanning
+# several disks this claims new capacity only from PVs whose larger size the kernel ALREADY
+# sees — a whole-disk PV after a reboot or an external rescan. A partition-backed PV on a
+# second disk is still neither rescanned nor grown, and pvresize on it remains a no-op.
+# Completing that needs per-PV rescan + per-PV growpart, deriving each PV's parent disk and
+# its own partition index from the PV path; no multi-PV VG exists in this estate to test
+# against, so it is logged as tech debt rather than written blind. Single-PV VGs — every
+# volume the estate actually declares — are fully handled.
+#
+# Falls back to vol._pv when the PV map has no entry for this VG, which happens when the
+# `pvs` probe in discover.yml failed (all its LVM probes are failed_when: false), not on a
+# tag-limited run — discover.yml carries the `grow` tag, so --tags grow does run the probe.
+- name: "{{ vol.name }} | resize physical volume(s)"
   # pvresize always reports "resized or updated" even on a no-op, so it is
   # not a reliable change signal; actual growth surfaces via lvextend below.
   become: true  # root: LVM pvresize
-  ansible.builtin.command: "pvresize {{ vol._pv }}"
+  ansible.builtin.command: "pvresize {{ item }}"
   register: _g_pvresize
   changed_when: false
+  loop: "{{ _g_vg_pvs if (_g_vg_pvs | length > 0) else ([vol._pv] | select | list) }}"
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    _g_vg_pvs: >-
+      {{ _storage_pv_map | default([])
+         | selectattr('vg', 'equalto', vol.vg)
+         | map(attribute='pv') | unique | list }}
   when: vol.lvm | bool
+
+# An empty loop makes Ansible skip the task silently, so the one state that produces it —
+# no PV map entry for this VG AND an empty vol._pv, i.e. the `pvs` probe came back empty for
+# a volume whose VG supposedly exists — would otherwise pass unremarked, leaving growth to
+# rely on lvextend alone. Say it out loud. (Before the loop this state ran a bare `pvresize`
+# and failed with a usage error; a silent skip is better, but silence is not.)
+- name: "{{ vol.name }} | warn that no physical volume could be resolved for resize"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING — no PV resolved for vg '{{ vol.vg }}', so pvresize was skipped entirely.
+      discover.yml's `pvs` probe returned nothing for this VG (its LVM probes are
+      failed_when: false, so a broken/absent lvm2 is silent). Any capacity added to the
+      underlying disk will NOT be visible to LVM and the lvextend below can only claim
+      extents that are already free. Check `pvs` and `vgs` on the host.
+  when:
+    - vol.lvm | bool
+    - (_storage_pv_map | default([]) | selectattr('vg', 'equalto', vol.vg) | list | length) == 0
+    - (vol._pv | default('') | length) == 0
 
 # LVM resolves percentage sizes differently by suffix, so grow must match:
 #   *FREE (100%FREE, 50%FREE) → free-relative, ADD with `-l +<size>`

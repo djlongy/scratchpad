@@ -80,8 +80,17 @@
       name: "{{ item.name }}"
       size_bytes: "{{ item.size | int }}"
       size_gib: "{{ ((item.size | int) / 1073741824) | round(0, 'common') | int }}"
-      serial: "{{ item.serial | default('') | default('', true) }}"
-      wwn: "{{ item.wwn | default('') | default('', true) }}"
+      # `| string` is LOAD-BEARING, not decoration. This repo runs jinja2_native=True, so a
+      # whole-string template is literal_eval'd into a native Python type: a numeric serial
+      # ("68000") becomes int 68000, and a WWN ("0x33333330000109a0") becomes
+      # int 3689348800998082976 because it is a valid Python hex literal. The by-serial:/by-wwn:
+      # selectors then compare a str to an int and silently match NOTHING — the volume dead-ends
+      # with the misleading "matched no available blank disk". An alphanumeric serial
+      # (ZJV01KJ2) survives as a str, which is why this only bites numeric serials and hex WWNs.
+      # `| map('string')` at compare time cannot fix wwn: hex->int is not reversible
+      # (3689348800998082976 != '0x33333330000109a0'), so the coercion must be prevented HERE.
+      serial: "{{ item.serial | default('') | default('', true) | string }}"
+      wwn: "{{ item.wwn | default('') | default('', true) | string }}"
   loop: "{{ _storage_lsblk.blockdevices | selectattr('type', 'equalto', 'disk') | rejectattr('name', 'in', _storage_root_disks) | list }}"
   loop_control:
     label: "{{ item.name }}"
@@ -257,6 +266,10 @@
     _vg_exists: "{{ (item.lvm | bool) and (item.vg in _storage_existing_vgs) }}"
     _lv_exists: "{{ (item.lvm | bool) and ((item.vg ~ '/' ~ item.lv) in _storage_existing_lvs) }}"
     _existing_pv: "{{ (_storage_pv_map | selectattr('vg', 'equalto', item.vg) | map(attribute='pv') | list | first) | default('') }}"
+    # NOT trimmed, deliberately — validate.yml's V10 rejects a whitespace-padded selector
+    # outright, so nothing padded reaches here. Trimming at this point instead would let a
+    # padded 'by-size:' slip past the by-size ambiguity assert above, which matches the
+    # UNtrimmed '^by-size:' prefix and would silently skip its two-blank-disks check.
     _sel: "{{ item.disk | default('') }}"
     _free_blank: "{{ _storage_blank_disks | difference(_consumed) }}"
     # by-size matches on rounded GiB, accepting BOTH size conventions: the
@@ -282,8 +295,12 @@
            | map(attribute='0') | list
            | difference(_consumed) | first) | default(''))
          if _sel.startswith('by-size:') else '' }}
-    _match_serial: "{{ ((_storage_disks | selectattr('serial', 'equalto', _sel | regex_replace('^by-serial:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-serial:') else '' }}"
-    _match_wwn: "{{ ((_storage_disks | selectattr('wwn', 'equalto', _sel | regex_replace('^by-wwn:', '')) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-wwn:') else '' }}"
+    # `| string` on BOTH sides: the catalogue side is forced at build time (see the note there),
+    # and the selector payload is forced here so an unquoted numeric serial in YAML
+    # (disk: by-serial:68000) cannot arrive as an int either. Both sides must be str or
+    # selectattr('equalto') silently matches nothing.
+    _match_serial: "{{ ((_storage_disks | selectattr('serial', 'equalto', (_sel | regex_replace('^by-serial:', '') | string)) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-serial:') else '' }}"
+    _match_wwn: "{{ ((_storage_disks | selectattr('wwn', 'equalto', (_sel | regex_replace('^by-wwn:', '') | string)) | map(attribute='name') | difference(_consumed) | first) | default('')) if _sel.startswith('by-wwn:') else '' }}"
     _resolved_disk: >-
       {{ '' if (_vg_exists | bool)
          else _sel if _sel.startswith('/dev/')
@@ -301,7 +318,12 @@
       {{ _existing_pv if ((_vg_exists | bool) and (_existing_pv | length > 0))
          else _part_dev if (item.partition | bool)
          else _resolved_disk }}
-    _dm_dev: "{{ ('/dev/mapper/' ~ item.vg ~ '-' ~ item.lv) if (item.lvm | bool) else _part_dev }}"
+    # /dev/<vg>/<lv>, NOT /dev/mapper/<vg>-<lv>. The device-mapper name escapes a literal
+    # hyphen by DOUBLING it (vg-data/lv-main → /dev/mapper/vg--data-lv--main), so building
+    # the mapper path by simple concatenation yields a nonexistent device for any vg or lv
+    # whose name contains '-'. The /dev/<vg>/<lv> symlink LVM creates needs no escaping and
+    # is equivalent for every consumer here (mkfs, mount, resize2fs).
+    _dm_dev: "{{ ('/dev/' ~ item.vg ~ '/' ~ item.lv) if (item.lvm | bool) else _part_dev }}"
     _exists: "{{ (_lv_exists | bool) if (item.lvm | bool) else (_part_dev in _storage_fs_devices) }}"
     _entry: "{{ item | combine({'_disk': _resolved_disk, '_part_dev': _part_dev, '_pv': _pv, '_dm_dev': _dm_dev, '_exists': _exists | bool, '_vg_exists': _vg_exists | bool}) }}"
   loop: "{{ _storage_local_volumes }}"

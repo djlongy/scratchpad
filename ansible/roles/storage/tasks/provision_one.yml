@@ -53,6 +53,12 @@
   community.general.lvg:
     vg: "{{ vol.vg }}"
     pvs: "{{ vol._pv }}"
+    # NB: this module version has no remove_extra_pvs toggle (checked with ansible-doc against
+    # the pinned community.general) — given a single-PV `pvs:` it vgreduces any OTHER PV out of
+    # an existing VG, with no way to opt out. Safe only because discovery makes it unreachable:
+    # a volume whose VG already exists resolves _disk to '' and provision.yml filters it out
+    # before this task. Do not weaken that filter, and re-check this if the collection is
+    # upgraded (newer versions add remove_extra_pvs, default true — set it false then).
   when: vol.lvm | bool
 
 - name: "{{ vol.name }} | create logical volume {{ vol.lv }} ({{ vol.size }})"

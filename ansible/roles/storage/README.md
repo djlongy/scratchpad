@@ -217,7 +217,7 @@ storage_profiles:
   worker:
     - {name: opt,   disk: "by-size:80G", vg: vg_app, lv: lv_opt,   size: 40G,       fstype: xfs, mount: /opt}
     - {name: cache, vg: vg_app,          lv: lv_cache, size: "100%FREE",            fstype: xfs, mount: /var/cache/app}
-    - {name: shared, kind: nfs, server: nas1.example.internal, export: /export/shared, mount: /shared}
+    - {name: shared, kind: nfs, server: nas-01.example.internal, export: /export/shared, mount: /shared}
 ```
 
 The second entry of `worker` omits `disk` deliberately: it is a second LV in a
@@ -257,7 +257,7 @@ ansible-playbook … -e storage_profile=db-node --tags provision
   spell out `fstype: xfs` for clarity even though it is already the default.
 - A profile is a plain list, so network volumes (`kind: nfs` / `kind: cifs`)
   belong in it too — see `worker` above.
-- Profiles are resolved before validation, so all rules V1–V9 apply to the
+- Profiles are resolved before validation, so all rules V1–V10 apply to the
   resolved list exactly as if it had been written into `storage_volumes`.
 
 ## Minimum configuration
@@ -316,14 +316,14 @@ Network volumes live in the same list:
 
           - name: stroom-data
             kind: nfs
-            server: nas1.example.internal
+            server: nas-01.example.internal
             export: /mnt/user/stroom-data
             mount: /stroomdata/stroom-data-p00
             opts: "hard,noatime,x-systemd.mount-timeout=30"
 
           - name: media-archive
             kind: cifs
-            server: nas2.example.internal
+            server: nas-02.example.internal
             share: archive
             mount: /mnt/archive
             opts: "vers=3.1.1,uid=0,gid=0,file_mode=0640,dir_mode=0750"
