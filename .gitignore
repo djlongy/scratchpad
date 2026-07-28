@@ -72,6 +72,11 @@ secring.*
 # splunk_config: scrub/reseed orchestration only — no embedded secret values
 !**/roles/splunk_config/tasks/export/push_splunk_secret.yml
 !**/roles/splunk_config/tasks/apply/reseed_secrets.yml
+# Vault token RESOLVERS — declared-var-first with an on-disk fallback, no_log, no
+# hardcoded values; the *token* blanket above would otherwise strip them and leave
+# 17 task files including a file that does not exist
+!**/roles/hashicorp_vault_container/tasks/resolve_root_token.yml
+!**/roles/vault_pki/tasks/resolve_token.yml
 
 # Vault / encrypted files
 *.vault
