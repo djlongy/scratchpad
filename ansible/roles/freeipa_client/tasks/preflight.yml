@@ -1,10 +1,13 @@
 ---
 # roles/freeipa_client/tasks/preflight.yml
-# Hostname/time guards + stale-enrolment detection and cleanup. This is what makes
-# rejoining stale machines reliable: an existing enrolment is health-checked
-# (realm match + host-keytab kinit), and a broken or realm-mismatched one is
-# uninstalled so enroll.yml can cleanly re-join. A healthy, correct enrolment is
-# left untouched (idempotent — enroll.yml then no-ops).
+# Hostname/time guards + stale-enrolment CLEANUP. This is what makes rejoining stale
+# machines reliable: detect.yml health-checks an existing enrolment (realm match +
+# host-keytab kinit), and this file uninstalls a broken or realm-mismatched one so
+# enroll.yml can cleanly re-join. A healthy, correct enrolment is left untouched
+# (idempotent — enroll.yml then no-ops).
+#
+# Every MUTATION lives here (packages, hostname, uninstall); the read-only detection
+# that decides stale/healthy lives in detect.yml under the `always` tag.
 
 # Note: the FreeIPA-server guard (end_host) lives at the top of main.yml, tagged
 # `always`, so it fires on every invocation — including tag-limited runs that skip
@@ -37,68 +40,9 @@
       enrolment fails above ~5 min clock skew — fix NTP if join fails.
   when: _freeipa_client_chrony.rc != 0
 
-- name: Check whether the host is already IPA-enrolled
-  ansible.builtin.stat:
-    path: /etc/ipa/default.conf
-  register: _freeipa_client_conf
-
-- name: Read current enrolment config (if enrolled)
-  ansible.builtin.slurp:
-    src: /etc/ipa/default.conf
-  register: _freeipa_client_conf_raw
-  when: _freeipa_client_conf.stat.exists
-
-- name: Parse current enrolment realm
-  ansible.builtin.set_fact:
-    _freeipa_client_current_realm: >-
-      {{ (_freeipa_client_conf_raw.content | b64decode
-          | regex_search('realm\s*=\s*(\S+)', '\1') | first | default('')) | trim }}
-  when: _freeipa_client_conf.stat.exists
-
-# A FAILURE HERE UNINSTALLS THE ENROLMENT, so it must not trigger on a blip.
-# One unlucky kinit — a KDC restart, a moment of clock skew, crypto state still
-# settling right after a FIPS reboot — would otherwise tear down a perfectly
-# healthy client and force a full re-enrol, which destabilises krb5 for every
-# task that follows. Retry before concluding the enrolment is genuinely broken.
-- name: Health-check existing enrolment via host-keytab kinit
-  ansible.builtin.command: "kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}"
-  register: _freeipa_client_kinit
-  until: _freeipa_client_kinit.rc == 0
-  retries: 3
-  delay: 5
-  changed_when: false
-  failed_when: false
-  become: true                           # /etc/krb5.keytab is root-only; non-root → "no suitable keys"
-  when:
-    - _freeipa_client_conf.stat.exists
-    - freeipa_client_rejoin_stale | bool
-
-- name: Destroy health-check ticket
-  ansible.builtin.command: kdestroy
-  changed_when: false
-  failed_when: false
-  become: true                           # clear the root ccache the kinit above created
-  when:
-    - _freeipa_client_conf.stat.exists
-    - freeipa_client_rejoin_stale | bool
-
-- name: Decide whether the enrolment is stale and needs a rejoin
-  ansible.builtin.set_fact:
-    _freeipa_client_stale: >-
-      {{ (freeipa_client_force_rejoin | bool)
-         or (_freeipa_client_conf.stat.exists and freeipa_client_rejoin_stale | bool and (
-              (_freeipa_client_current_realm | default('')) != freeipa_client_realm
-              or (_freeipa_client_kinit.rc | default(1)) != 0
-         )) }}
-
-- name: Report enrolment state
-  ansible.builtin.debug:
-    msg: >-
-      enrolled={{ _freeipa_client_conf.stat.exists }}
-      current_realm={{ _freeipa_client_current_realm | default('none') }}
-      target_realm={{ freeipa_client_realm }}
-      host_keytab_kinit_rc={{ _freeipa_client_kinit.rc | default('n/a') }}
-      needs_rejoin={{ _freeipa_client_stale }}
+# Enrolment DETECTION (is it enrolled / healthy / stale?) lives in detect.yml, which
+# main.yml imports with `always` so the facts exist under every tag selection. This
+# file consumes those facts; it does not compute them.
 
 # Packages are installed above, but a half-enrolled host (leftover /etc/ipa
 # without ipa-client) or a tag-limited run that skipped the dnf task can still

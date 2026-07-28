@@ -328,27 +328,8 @@ network_underlays:
 #
 # platforms: [catalog_only] keeps the demo from queueing 20 port groups onto a
 # real distributed switch. Set it to [hypervisor, switches] to actually reconcile them.
-network_segment_pools:
-  acme_lab:
-    tenant: acme
-    env: lab
-    site: site-a
-    zone: tenant
-    vlan_base: 2000
-    vlan_stride: 10
-    instances: 4
-    roles: [app, db, web, cache, mgmt]
-    platforms: [catalog_only]
-    key_parts: [pool, instance_nn, role]
-    name_parts: [vlan, tenant, env, instance_nn, role]
-    subnet_base: "10.20.0.0/26"
-    subnet_stride: 1
-    gateway_offset: 1
-    name_case: lower
+# Pools moved OUT of this file — see playbooks/pools.yml (network_pools_file).
 
-# ── Fallbacks ──────────────────────────────────────────────────────────────
-# Inventory should pick a segment netmask; these exist so a play that forgets
-# still renders something obvious rather than an undefined-variable error.
 network_underlay_netmask: "255.255.255.0"
 network_netmask: "{{ network_underlay_netmask }}"
 

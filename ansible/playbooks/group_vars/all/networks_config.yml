@@ -1,12 +1,12 @@
 ---
 # ── Network catalog — ENGINE CONFIGURATION ─────────────────────────────────
-# What the estate-agnostic engine (plugins/filter/network_catalog.py) needs to
+# What the estate-agnostic engine (filter_plugins/network_catalog.py) needs to
 # know about US: which platforms exist, how names are built, what a well-formed
 # segment must carry, what every segment inherits.
 #
 # You touch this file when the RULES change, not when a segment does.
 #
-# Every option below is documented in docs/network-catalog.md
+# Every option below is documented in filter_plugins/docs/network_catalog.md
 # Segments live in networks.yml; output shapes in networks_platforms.yml;
 # the contract you read is _networks_derived.yml.
 
@@ -55,15 +55,12 @@ network_name_recipes:
     sep: "-"
     vlan_prefix: "VLAN"
     # pad 2 renders VLAN0 as VLAN00 and VLAN1 as VLAN01, matching the names
-    # already on the distributed switch; ids of 3+ digits are unaffected.
+    # already on the vDS; ids of 3+ digits are unaffected.
     vlan_pad: 2
   short_name:
     from: name
     drop_tokens: [vlan, vlan_label, vid]
 
-# Fallback description (str.format over the segment's fields) when a segment
-# declares none. Empty = no description.
-network_description_template: ""
 
 # ── Required fields (what a well-formed segment must carry here) ───────────
 # Checked against the segment AS WRITTEN — a field supplied only by
@@ -82,3 +79,43 @@ network_required_fields:
 # ── Partitions to build (_segments_by.<field> / _cidrs_by.<field>) ─────────
 # `pool` groups every pool-generated segment under its pool name.
 network_partition_fields: [site, zone, role, env, tenancy, pool]
+
+# ── What makes two segments neighbours for uniqueness ──────────────────────
+# A duplicate VLAN id or name is only a clash WITHIN one L2 domain. VLAN 10
+# at site-a and VLAN 10 at site-b are two broadcast domains that happen
+# to share a tag — ordinary multi-site practice, not a mistake — so the
+# duplicate checks group by these fields before comparing.
+#
+# `site` suits this estate. Widen it if one site ever runs isolated fabrics
+# that may each carry the same tag:
+#
+#   network_uniqueness_scope: [site, fabric]
+#
+# Empty list = compare across the whole estate (the old behaviour).
+# Segments declaring none of these fields are compared against each other.
+network_uniqueness_scope: [site]
+
+# ── Where the pools live ───────────────────────────────────────────────────
+# Pools are read from a plain file, not from group_vars, because they use
+# `{{ }}` templates for their keys and names. Ansible renders a group_vars
+# value the moment it is referenced — before any pool member exists — so those
+# braces must never reach the templar. The catalog engine opens this path
+# itself, which keeps them out of it. Point this elsewhere to swap pool sets
+# per estate; a path that cannot be read becomes one line in _config_errors.
+network_pools_file: "{{ playbook_dir }}/pools.yml"
+
+# ── Where the views live ───────────────────────────────────────────────────
+# Same constraint as pools, same solution: a view's fields are `{{ }}` and
+# Ansible would render them the moment the variable is referenced — before any
+# row exists to bind `seg` to. Read through lookup+from_yaml, whose output
+# Ansible does not re-template. Point this elsewhere to swap view sets.
+network_views_file: "{{ playbook_dir }}/networks_views.yml"
+
+# Ceiling on what ONE pool may generate. instances x roles is a multiplication,
+# so a typo in `instances` is not a slightly bigger catalog — it is thousands
+# of segments built before anyone can object. Raise it deliberately if a pool
+# genuinely needs to be that large.
+#
+# 0 (or unset) means "use the engine's built-in default of 2000" — there is no
+# way to say "allow nothing". A negative value is refused and reported.
+network_pool_max_segments: 2000

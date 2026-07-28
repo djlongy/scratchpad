@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  author: infrastructure
+  description: Build and display per-platform lists declared in a views file.
+  license: MIT
+  min_ansible_version: "2.15"
+  galaxy_tags: [networking, catalog]
+dependencies: []

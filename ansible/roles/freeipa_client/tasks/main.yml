@@ -49,6 +49,16 @@
       when: ansible_default_ipv4 is not defined
       tags: [always]
 
+    # [always]: read-only enrolment detection. Carries `always` because BOTH later
+    # phases depend on its facts and would otherwise misbehave under a tag-limited run:
+    # enroll.yml derives ipaclient_force_join from _freeipa_client_healthy (undefined →
+    # falls back to the raw inventory flag → re-keys a healthy client), and preflight's
+    # stale-uninstall consumes _freeipa_client_stale. Cheap: one stat, and a kinit only
+    # when an enrolment already exists.
+    - name: Detect current FreeIPA enrolment state (healthy / stale)
+      ansible.builtin.import_tasks: detect.yml
+      tags: [always]
+
     - name: Run FreeIPA client preflight (incl. stale-rejoin cleanup)
       ansible.builtin.import_tasks: preflight.yml
       tags: [preflight]

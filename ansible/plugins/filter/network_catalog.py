@@ -1,6 +1,6 @@
 """Network catalog engine — one SSOT of network segments, many platform lists.
 
-FULL REFERENCE: filter_plugins/docs/network_catalog.md — every option, its
+FULL REFERENCE: plugins/filter/docs/network_catalog.md — every option, its
 default, what it does, worked examples and expected output.
 
 ESTATE-AGNOSTIC. This module knows nothing about any particular site, role,
@@ -18,22 +18,25 @@ Config keys (all optional except the segments themselves):
 
     pools             spec-driven segments (instances x roles) merged with
                       the hand-written ones
+    pools_file        path to a YAML file holding those pools, read directly
+                      so its `{{ }}` templates never meet Ansible's templar.
+                      Ignored when `pools` is given inline
     names             name RECIPES — how to build each name from tokens
     name_default      which recipe is the segment's primary name
-    views             {namespace: {list: spec}} — the output row shapes; the
-                      outer key is a free output label, each spec's `platform`
-                      key is the membership filter (they need not match)
     platforms         platform names allowed in a segment's platforms[]
     required          {all: [field], by_platform: {platform: [field]}}
     defaults          fields every segment inherits unless it overrides
     partition_fields  fields to build by/cidrs_by partitions from
-    desc_template     str.format fallback for a segment without a description
+    uniqueness_scope  fields bounding one L2 domain; duplicate vlan/name
+                      checks group by these first. Unset = estate-wide
+    pool_max_segments ceiling on what one pool may generate. 0 or unset means
+                      the built-in default (2000); negatives are refused
 
 Per-segment fields the engine reads directly: vlan_id, platforms[], instance
 (feeds the instance / instance_nn name tokens), and whatever your recipes and
 views reference. Everything else passes through untouched.
 
-Returns a dict with: segments, views, by, cidrs_by, vlan_ids_by_platform,
+Returns a dict with: segments, by, cidrs_by, vlan_ids_by_platform,
 vlan_ranges_by_platform, by_key, keys, names, vlan_ids, tagged_vlan_ids,
 operator_cidrs, derived_names, name_overrides, errors, missing,
 duplicate_names, duplicate_vlans.
@@ -44,6 +47,8 @@ from __future__ import annotations
 import ipaddress
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+import yaml
+
 # Tokens the engine contributes on top of the segment's own fields. Every other
 # token in a name recipe is simply a field name on the segment.
 VLAN_TOKENS = ("vlan", "vlan_label", "vid")
@@ -51,8 +56,13 @@ VLAN_TOKENS = ("vlan", "vlan_label", "vid")
 # Keys consumed by the pool generator itself; everything else a pool declares is
 # stamped onto each segment it emits.
 POOL_GENERATOR_KEYS = frozenset(
-    {"vlan_base", "instances", "vlan_stride", "roles", "key_parts", "key_case",
-     "key_sep", "subnet_base", "subnet_stride", "gateway_offset", "subnet_index"}
+    {"vlan_base", "instances", "vlan_stride", "roles", "subnet_base",
+     "subnet_stride", "gateway_offset", "subnet_index",
+     # `key`/`name` are this pool's own templates. Everything else a pool
+     # declares — including name_parts/name_case — is stamped onto each
+     # segment, because those are the SEGMENT's naming recipe, not the
+     # generator's.
+     "key", "name"}
 )
 
 # Repeated literals (SonarQube S1192).
@@ -64,6 +74,28 @@ F_NAME = "name"
 F_KEY = "key"
 CASE_UPPER = "upper"
 CASE_LOWER = "lower"
+
+# Fields `enrich` computes and overwrites UNCONDITIONALLY. Declaring one is not
+# an override — it is a value that is silently discarded. `tagged: false` on a
+# tagged VLAN read exactly like a way to keep a segment off a trunk, and was
+# not one. Value = what the engine derives it from, for the error message.
+COMPUTED_FIELDS = {
+    "tagged": "vlan_id",
+    "gateway_cidr": "gateway and the subnet prefix",
+    "derived_name": "the default name recipe",
+    F_KEY: "the segment's own key in the matrix",
+}
+
+# Field names the engine itself reads or computes. A name RECIPE may not take
+# one: a segment carrying that field pins the recipe's name to its own value,
+# so a `gateway` recipe plus `gateway: 10.0.0.1` makes the primary name an IP
+# address. `name` is deliberately absent — pinning `name:` IS the documented
+# mechanism, and `description`/`instance` are ordinary user data.
+ENGINE_FIELDS = frozenset({
+    F_KEY, F_VLAN_ID, F_PLATFORMS, F_SUBNET, "gateway", "netmask", "prefixlen",
+    "tagged", "gateway_cidr", "names", "operator_source", "derived_name",
+    "desc_template", "role", "pool",
+})
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -83,12 +115,62 @@ def _as_list(value: Any) -> List[Any]:
     return []
 
 
+def _string_where_list_expected(label: str, value: Any) -> Optional[str]:
+    """A bare string where a list belongs is dropped, not read.
+
+    `_as_list` returns [] for a str on purpose — a string IS a sequence in
+    Python and iterating it character-by-character would be worse. But every
+    caller then saw "not configured" instead of "configured wrongly", so
+    `uniqueness_scope: site` silently compared estate-wide and `roles: app`
+    silently generated nothing. A segment's `platforms:` already refuses this;
+    the rest did not.
+    """
+    if isinstance(value, (str, bytes)):
+        return (f"{label} must be a LIST, got the string {value!r} — "
+                f"write [{value}]")
+    return None
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     """Coerce to int; unparseable degrades to the default instead of raising."""
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+_BOOL_TRUE = frozenset({"true", "yes", "on", "y", "t", "1"})
+_BOOL_FALSE = frozenset({"false", "no", "off", "n", "f", "0", ""})
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Coerce YAML-ish truth to a real bool.
+
+    `bool("false")` is True, which is how a quoted flag ends up enabling the
+    thing it was meant to disable — for `operator_source` that means a subnet
+    silently joining bastion and proxy allow-lists. Anything unrecognised
+    degrades to `default` and is reported separately by _validate, so an
+    unreadable flag never widens access on its own.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in _BOOL_TRUE:
+        return True
+    if text in _BOOL_FALSE:
+        return False
+    return default
+
+
+def _bool_is_readable(value: Any) -> bool:
+    """Would _as_bool understand this, or is it falling back to the default?"""
+    if value is None or isinstance(value, (bool, int, float)):
+        return True
+    return str(value).strip().lower() in (_BOOL_TRUE | _BOOL_FALSE)
 
 
 def _is_group(token: Any) -> bool:
@@ -149,27 +231,65 @@ def _prefixlen_of(seg: Mapping[str, Any]) -> int:
         return 0
 
 
+def _strict_env(env: Any) -> Any:
+    """The caller's Jinja environment, but an undefined name RAISES.
+
+    Jinja's default Undefined renders as an empty string, so a typo'd token
+    was not an error — it was a shorter key. `{{ pool }}-{{ nope }}` gave every
+    member of the pool the key `p-`, which then collapsed under the collision
+    check into one surviving segment, reported as a name clash rather than as
+    the typo it was.
+
+    `| default(...)` still works: the default filter inspects an undefined
+    value rather than rendering it, so an optional token stays optional.
+    """
+    if env is None:
+        return None
+    try:
+        from jinja2 import StrictUndefined
+
+        return env.overlay(undefined=StrictUndefined)
+    except (ImportError, AttributeError, TypeError):  # pragma: no cover
+        # An environment that cannot be overlaid still renders; it just keeps
+        # the lenient undefined. Better a permissive render than no catalog.
+        return env
+
+
+def _render_template(env: Any, source: str, tokens: Mapping[str, Any],
+                     where: str) -> str:
+    """Render one `{{ }}` pool template against a member's tokens.
+
+    Pools are loaded through `lookup('file', ...) | from_yaml` for the same
+    reason views are: Ansible renders a variable the moment it is referenced,
+    so a `{{ pool }}` sitting in group_vars is templated before any member
+    exists. A filter chain's output is not re-templated, which is what lets
+    the braces survive to here.
+    """
+    if env is None:
+        raise ValueError(
+            f"{where}: '{source}' uses {{{{ }}}} but no Jinja environment "
+            f"reached the generator. Pools using templates must be loaded "
+            f"with `lookup('file', ...) | from_yaml`."
+        )
+    try:
+        return str(env.from_string(source).render(dict(tokens)))
+    except Exception as exc:
+        raise ValueError(f"{where}: '{source}' failed — {exc}") from exc
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 0 — pools
 # ──────────────────────────────────────────────────────────────────────────
 def _normalise_roles(raw: Any) -> List[Dict[str, Any]]:
-    """Both roles forms -> [{name, offset, fields}].
+    """`roles:` -> [{name, offset, fields}]. Offset is the LIST POSITION.
 
-    dict: {app: {offset: 0, ...}}     offset explicit, else declaration order
-    list: [app, {db: {...}}]          offset is the list position
+        roles: [app, {db: {offset: 5, mtu: 1500}}]
+
+    A mapping form used to be accepted too, with its own offset rules. Two
+    grammars for one list is two things to learn and two code paths to test,
+    and no pool ever used the second.
     """
     specs: List[Dict[str, Any]] = []
-    if isinstance(raw, Mapping):
-        for position, (rname, rmeta) in enumerate(raw.items()):
-            fields = _as_dict(rmeta)
-            specs.append(
-                {
-                    F_NAME: rname,
-                    "offset": _as_int(fields.get("offset", position), position),
-                    "fields": fields,
-                }
-            )
-        return specs
     for position, entry in enumerate(_as_list(raw)):
         if isinstance(entry, Mapping):
             rname = next(iter(entry), None)
@@ -184,16 +304,6 @@ def _normalise_roles(raw: Any) -> List[Dict[str, Any]]:
             }
         )
     return specs
-
-
-def _render_key(parts: Iterable[Any], tokens: Mapping[str, Any], sep: str, case: str) -> str:
-    rendered: List[str] = []
-    for token in parts:
-        if _is_group(token):
-            rendered.append("".join(str(tokens.get(t, "")) for t in token))
-        else:
-            rendered.append(str(tokens.get(token, "")))
-    return _apply_case(sep.join(p for p in rendered if p), case)
 
 
 def _pool_segment(pool: Mapping[str, Any], role: Mapping[str, Any], vlan: int, n: int,
@@ -224,6 +334,17 @@ def _stamp_pool_subnet(seg: Dict[str, Any], base_net: Any, index: int, stride: i
     Explicitly declared values always win (setdefault semantics); returns an
     error string when the computed network falls outside the address space.
     """
+    # A negative index walks BACKWARDS out of the pool's own block and still
+    # produces a perfectly valid network, so it validated clean and shipped —
+    # subnet_base 10.0.0.0/24 with a role offset of -5 became 9.255.251.0/24.
+    # It happens whenever `subnet_index: vlan` meets a role offset that puts a
+    # member below vlan_base.
+    if index < 0:
+        return (f"pools.{pool_key}: computed subnet index for '{seg_key}' is "
+                f"{index}, which is below the pool's own base {base_net} — a "
+                f"role offset is putting this member under vlan_base. Raise "
+                f"vlan_base or drop the negative offset.")
+
     step = base_net.num_addresses * stride
     try:
         subnet = ipaddress.ip_network(
@@ -235,11 +356,133 @@ def _stamp_pool_subnet(seg: Dict[str, Any], base_net: Any, index: int, stride: i
     seg[F_SUBNET] = str(subnet)
     seg.setdefault("netmask", str(subnet.netmask))
     if gateway_offset:
-        seg.setdefault("gateway", str(subnet.network_address + gateway_offset))
+        gateway = subnet.network_address + gateway_offset
+        # `in subnet` is true for the network and broadcast addresses too, so
+        # the existing bounds check let gateway_offset 255 on a /24 through.
+        # Neither is assignable to an interface.
+        if not _is_usable_host(subnet, gateway):
+            return (f"pools.{pool_key}: gateway {gateway} for '{seg_key}' is "
+                    f"the {'network' if gateway == subnet.network_address else 'broadcast'}"
+                    f" address of {subnet}, which no interface can hold")
+        seg.setdefault("gateway", str(gateway))
     return None
 
 
-def expand_pools(pools: Any) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
+def _is_usable_host(subnet: Any, address: Any) -> bool:
+    """Can an interface actually take this address on this subnet?
+
+    NEVER materialise `hosts()` to answer this. A /64 has 2**64 addresses and
+    building that set never returns — an IPv6 `subnet_base` with any
+    `gateway_offset` hung the whole play, with no output to say why. A /8 is
+    the same bug with a smaller exponent: 16M address objects.
+
+    A /31, /32, /127 and /128 have no network/broadcast convention, so every
+    address in them is usable. Otherwise the network address is not. IPv4 also
+    reserves the last address as broadcast; IPv6 does not — there the last
+    address is an ordinary interface address, which is exactly what `hosts()`
+    models for each family. Verified equal to `set(hosts())` on both.
+    """
+    if address not in subnet:
+        return False
+    if subnet.num_addresses <= 2:
+        return True
+    if address == subnet.network_address:
+        return False
+    return subnet.version != 4 or address != subnet.broadcast_address
+
+
+DEFAULT_POOL_MAX_SEGMENTS = 2000
+
+
+def load_pools_file(path: Any) -> Tuple[Any, List[str]]:
+    """Read a pools file from disk. Returns (parsed, errors).
+
+    Pools carry `{{ }}` templates for their keys and names, and Ansible renders
+    a group_vars value the moment it is referenced — before any member exists
+    to render against. Reading the file HERE keeps those braces out of the
+    templar entirely, and turns a misspelled path into one named error instead
+    of a lookup traceback thrown from the middle of templating `__catalog`.
+
+    An unset path is not an error: a catalog may legitimately have no pools.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return None, []
+    try:
+        with open(text, "r", encoding="utf-8") as handle:
+            return yaml.safe_load(handle), []
+    except OSError as exc:
+        return None, [
+            f"pools_file '{text}' could not be read — {exc.strerror or exc}"
+        ]
+    except yaml.YAMLError as exc:
+        return None, [f"pools_file '{text}' is not valid YAML — {exc}"]
+
+
+def _resolve_pool_cap(raw: Any) -> Tuple[int, List[str]]:
+    """The per-pool segment ceiling, and any complaint about how it was set.
+
+    0 and unset both mean "use the default" — the wiring layer passes 0 for an
+    undeclared setting, so the two cannot be told apart and are documented as
+    the same thing. A NEGATIVE cap is different: every pool then trips the
+    over-limit guard and the message reads as though the estate were too big,
+    when the cap itself is the bug.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_POOL_MAX_SEGMENTS, []
+    try:
+        cap = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_POOL_MAX_SEGMENTS, [
+            f"pool_max_segments {raw!r} is not a number — using the default "
+            f"{DEFAULT_POOL_MAX_SEGMENTS}"
+        ]
+    if cap == 0:
+        return DEFAULT_POOL_MAX_SEGMENTS, []
+    if cap < 0:
+        return DEFAULT_POOL_MAX_SEGMENTS, [
+            f"pool_max_segments is {cap} — it must be a POSITIVE integer "
+            f"(0 or unset means the default {DEFAULT_POOL_MAX_SEGMENTS}). "
+            f"Using the default; no pool was refused for being over a "
+            f"negative limit."
+        ]
+    return cap, []
+
+
+def _pool_guards(plan: Mapping[str, Any], cap: int) -> List[str]:
+    """Refuse a pool before expanding it, not after.
+
+    Both of these are typos that look like configuration. A stride at or below
+    the widest role offset makes instance N+1 start inside instance N's block,
+    so members quietly share VLANs — caught today only as a duplicate, which
+    names the collision but not the cause. And nothing bounded the expansion:
+    `instances: 5000` across five roles is 25,000 segments built before anyone
+    can object.
+    """
+    errs: List[str] = []
+    roles = plan["roles"]
+    widest = max((role["offset"] for role in roles), default=0)
+    if plan["instances"] > 1 and plan["stride"] <= widest:
+        errs.append(
+            f"pools.{plan['pool_key']}: vlan_stride is {plan['stride']} but the "
+            f"roles span offsets 0..{widest}, so instance 2 would start inside "
+            f"instance 1's block and members would share VLANs. Use a stride "
+            f"of at least {widest + 1}."
+        )
+    total = plan["instances"] * len(roles)
+    if total > cap:
+        errs.append(
+            f"pools.{plan['pool_key']}: would generate {total} segments "
+            f"({plan['instances']} instances x {len(roles)} roles), over the "
+            f"{cap} limit. Raise pool_max_segments if that is genuinely "
+            f"wanted; otherwise check instances."
+        )
+    return errs
+
+
+def expand_pools(pools: Any, env: Any = None,
+                 cap: int = DEFAULT_POOL_MAX_SEGMENTS
+                 ) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
     """Emit `instances` x `roles` segments per pool, plus any addressing errors.
 
     vlan = vlan_base + (n - 1) * vlan_stride + role_offset      # n = 1..instances
@@ -253,27 +496,61 @@ def expand_pools(pools: Any) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
     """
     out: Dict[str, Dict[str, Any]] = {}
     errors: List[str] = []
+    if pools is not None and not isinstance(pools, Mapping):
+        # A pools file written as a LIST parsed fine, coerced to {} and left a
+        # catalog that reported zero errors and zero pools — indistinguishable
+        # from not having any. Views already refuse the wrong root shape; so
+        # does this now.
+        return out, [
+            f"pools must be a mapping of pool name -> spec, got "
+            f"{type(pools).__name__} — check the top level of the pools file"
+        ]
+    env = _strict_env(env)
     for pool_key, raw_pool in _as_dict(pools).items():
+        if raw_pool is not None and not isinstance(raw_pool, Mapping):
+            errors.append(
+                f"pools.{pool_key} must be a mapping of pool settings, got "
+                f"{type(raw_pool).__name__}"
+            )
+            continue
         pool = _as_dict(raw_pool)
         if not pool:
             continue
         plan, addr_errors = _pool_plan(pool_key, pool)
         errors.extend(addr_errors)
-        for key, seg, err in _pool_members(plan):
-            if err:
-                errors.append(err)
-            if key in out:
-                # Silently overwriting loses a whole segment from every derived
-                # view while the health check still reads clean, so a colliding
-                # key is an error, not a last-one-wins.
-                errors.append(
-                    f"pool '{plan['pool_key']}': generated key '{key}' collides with an "
-                    f"earlier generated segment (vlan {out[key].get(F_VLAN_ID)} vs "
-                    f"{seg.get(F_VLAN_ID)}) — widen key_parts so each member is unique"
-                )
-                continue
-            out[key] = seg
+        guard_errors = _pool_guards(plan, cap)
+        if guard_errors:
+            # Emit nothing for a pool whose shape is wrong: the members would
+            # be built from the same bad numbers the error is about.
+            errors.extend(guard_errors)
+            continue
+        errors.extend(_collect_pool_members(plan, env, out))
     return out, errors
+
+
+def _collect_pool_members(plan: Mapping[str, Any], env: Any,
+                          out: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Insert one pool's members into `out`; return what went wrong."""
+    errors: List[str] = []
+    for key, seg, err in _pool_members(plan, env):
+        if err:
+            errors.append(err)
+        if key is None:
+            # No identity — the error above says why. Emitting it anyway is
+            # what put `<pool>-error-<n>-<role>` segments into live views.
+            continue
+        if key in out:
+            # Silently overwriting loses a whole segment from every derived
+            # view while the health check still reads clean, so a colliding
+            # key is an error, not a last-one-wins.
+            errors.append(
+                f"pool '{plan['pool_key']}': generated key '{key}' collides with an "
+                f"earlier generated segment (vlan {out[key].get(F_VLAN_ID)} vs "
+                f"{seg.get(F_VLAN_ID)}) — widen `key:` so each member is unique"
+            )
+            continue
+        out[key] = seg
+    return errors
 
 
 def _pool_plan(pool_key: str, pool: Mapping[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
@@ -287,28 +564,67 @@ def _pool_plan(pool_key: str, pool: Mapping[str, Any]) -> Tuple[Dict[str, Any], 
         "stride": _as_int(pool.get("vlan_stride", len(roles)), len(roles)),
         "base_vlan": _as_int(pool.get("vlan_base", 0)),
         "instances": _as_int(pool.get("instances", 1), 1),
-        "key_parts": _as_list(pool.get("key_parts")) or ["pool", F_INSTANCE, "role"],
-        "key_case": pool.get("key_case", CASE_LOWER),
-        "key_sep": pool.get("key_sep", "-"),
         "base_net": base_net,
         "subnet_stride": _as_int(pool.get("subnet_stride", 1), 1) or 1,
         "gateway_offset": _as_int(pool.get("gateway_offset", 0)),
         "vlan_indexed": pool.get("subnet_index") == "vlan",
+        "key_template": pool.get("key") if isinstance(pool.get("key"), str) else "",
+        "name_template": pool.get("name") if isinstance(pool.get("name"), str) else "",
     }
     return plan, addr_errors
 
 
-def _pool_members(plan: Mapping[str, Any]):
-    """Yield (key, segment, error) for every instance x role the pool declares."""
+def _pool_member_identity(plan: Mapping[str, Any], seg: Dict[str, Any],
+                          tokens: Mapping[str, Any], n: int,
+                          role: Mapping[str, Any], env: Any
+                          ) -> Tuple[Optional[str], Optional[str]]:
+    """One member's catalog key, with its `name:` template stamped onto it.
+
+    Returns (None, error) when the member has no usable identity — a template
+    that failed to render, or one that rendered blank. Such a member is not
+    generated at all. It used to be: a failed render still emitted the segment
+    under the placeholder key `<pool>-error-<n>-<role>`, carrying a real
+    vlan_id and real on_<platform> flags, so a reported error still shipped
+    four segments into every derived view under a name nobody wrote.
+    """
+    where = f"pools.{plan['pool_key']}"
+    # `key:` is the only grammar: the separators, literal text and order are
+    # all visible in the one string.
+    try:
+        key = _render_template(env, plan["key_template"], tokens, f"{where}.key")
+        if plan["name_template"]:
+            seg[F_NAME] = _render_template(env, plan["name_template"], tokens,
+                                           f"{where}.name")
+    except ValueError as exc:
+        return None, str(exc)
+    if not str(key).strip():
+        return None, (
+            f"{where}: instance {n} role '{role[F_NAME]}' rendered a BLANK key "
+            f"from {plan['key_template']!r} — nothing can "
+            f"address a segment with no key, so it is not generated. Check "
+            f"every token that key names actually exists on this pool."
+        )
+    return key, None
+
+
+def _pool_members(plan: Mapping[str, Any], env: Any = None):
+    """Yield (key, segment, error) for every instance x role the pool declares.
+
+    A key of None means the member has no identity and must not be emitted;
+    the error alongside it says why.
+    """
     emitted = 0
     for n in range(1, plan["instances"] + 1):
         base = plan["base_vlan"] + (n - 1) * plan["stride"]
         for role in plan["roles"]:
             vlan = base + role["offset"]
             seg = _pool_segment(plan["pool"], role, vlan, n, plan["pool_key"])
-            key = _render_key(plan["key_parts"],
-                              _pool_key_tokens(seg, plan["pool_key"], n, vlan, role),
-                              plan["key_sep"], plan["key_case"])
+            tokens = _pool_key_tokens(seg, plan["pool_key"], n, vlan, role)
+            key, identity_error = _pool_member_identity(plan, seg, tokens, n,
+                                                        role, env)
+            if key is None:
+                yield None, None, identity_error
+                continue
             err = None
             if plan["base_net"] is not None and F_SUBNET not in seg:
                 index = (vlan - plan["base_vlan"]) if plan["vlan_indexed"] else emitted
@@ -324,7 +640,7 @@ def _pool_members(plan: Mapping[str, Any]):
 
 def _pool_key_tokens(seg: Mapping[str, Any], pool_key: str, n: int,
                      vlan: int, role: Mapping[str, Any]) -> Dict[str, Any]:
-    """The segment's own fields plus the pool-only tokens key_parts may name."""
+    """The segment's own fields plus the pool-only tokens `key:` may name."""
     tokens = dict(seg)
     tokens.update(
         {
@@ -344,7 +660,10 @@ def _pool_key_tokens(seg: Mapping[str, Any], pool_key: str, n: int,
 def _name_tokens(seg: Mapping[str, Any], key: str, spec: Mapping[str, Any],
                  vlan_num: int) -> Dict[str, Any]:
     vlan_prefix = spec.get("vlan_prefix") or ""
-    vid = f"{vlan_num:0{_as_int(spec.get('vlan_pad') or 0)}d}"
+    # max(0, ...): a negative pad lands inside the format spec as "0-3d" and
+    # f-string raises. Validation reports it; this keeps the render itself
+    # total so one bad recipe cannot abort the whole catalog.
+    vid = f"{vlan_num:0{max(0, _as_int(spec.get('vlan_pad') or 0))}d}"
     inst = seg.get(F_INSTANCE, "")
     # A non-numeric instance cannot be zero-padded; degrade to the raw string
     # rather than raising (the "almost nothing raises" contract).
@@ -381,6 +700,11 @@ def _render_parts(spec: Mapping[str, Any], tokens: Mapping[str, Any]) -> List[st
         if _is_group(token):
             # The whole group goes if any of its tokens is dropped — that is how
             # "the same name minus the VLAN part" removes a glued VLANnn.
+            # A nested list here would be used as a dict key — unhashable —
+            # so one level of glue is the whole grammar. Validation names it;
+            # skipping keeps the render total.
+            if any(_is_group(t) for t in token):
+                continue
             if any(t in drop for t in token):
                 continue
             rendered.append("".join(str(tokens.get(t, "")) for t in token))
@@ -441,20 +765,6 @@ def build_names(seg: Mapping[str, Any], key: str, recipes: Mapping[str, Any],
 # ──────────────────────────────────────────────────────────────────────────
 # Stage 2 — enrichment
 # ──────────────────────────────────────────────────────────────────────────
-def _describe(seg: Mapping[str, Any], key: str, primary: str, vlan_num: int,
-              fallback: str) -> str:
-    declared = seg.get("description")
-    if declared:
-        return str(declared)
-    template = seg.get("desc_template") or fallback
-    if not template:
-        return ""
-    ctx = dict(seg)
-    ctx.update({F_KEY: key, F_NAME: primary, "vid": vlan_num})
-    try:
-        return str(template).format(**ctx)
-    except (KeyError, IndexError, ValueError):
-        return ""
 
 
 def enrich(key: str, raw: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str, Any]:
@@ -484,13 +794,16 @@ def enrich(key: str, raw: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str
             F_PLATFORMS: platforms,
             "tagged": vlan_num > 0,
             "prefixlen": prefixlen,
-            "gateway_cidr": f"{gateway}/{prefixlen}" if gateway and prefixlen else "",
+            "gateway_cidr": _gateway_cidr(gateway, prefixlen, seg.get(F_SUBNET)),
             "names": names,
             F_NAME: primary,
             "derived_name": names.get(default_recipe, ""),
-            "description": _describe(seg, key, primary, vlan_num,
-                                     cfg.get("desc_template") or ""),
-            "operator_source": bool(seg.get("operator_source", False)),
+            # Declared or absent. A `desc_template` str.format fallback used
+            # to live here — a THIRD string sublanguage beside the name recipes
+            # and the view fields, with an empty estate template and no segment
+            # ever setting its own. It described nothing.
+            "description": str(seg.get("description") or ""),
+            "operator_source": _as_bool(seg.get("operator_source")),
             F_INSTANCE: seg.get(F_INSTANCE, ""),
         }
     )
@@ -501,142 +814,6 @@ def enrich(key: str, raw: Mapping[str, Any], cfg: Mapping[str, Any]) -> Dict[str
     return seg
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# Stage 3 — views
-# ──────────────────────────────────────────────────────────────────────────
-def _render_field(spec: Any, ctx: Mapping[str, Any]) -> Tuple[bool, Any]:
-    """(emit?, value) for one output field."""
-    if isinstance(spec, Mapping):
-        return _render_mapping_field(spec, ctx)
-    if isinstance(spec, str):
-        return _render_string_field(spec, ctx)
-    return True, spec
-
-
-def _render_mapping_field(spec: Mapping[str, Any],
-                          ctx: Mapping[str, Any]) -> Tuple[bool, Any]:
-    """A literal `const`, or a nested `group` gated by `emit_when_any`."""
-    if "const" in spec:
-        return True, spec["const"]
-    if "group" not in spec:
-        return False, None
-    watch = _as_list(spec.get("emit_when_any"))
-    if watch and not any(ctx.get(w) for w in watch):
-        return False, None
-    nested = {}
-    for out_key, inner in _as_dict(spec["group"]).items():
-        emit, value = _render_field(inner, ctx)
-        if emit:
-            nested[out_key] = value
-    return True, nested
-
-
-def _render_string_field(spec: str, ctx: Mapping[str, Any]) -> Tuple[bool, Any]:
-    """A `{token}` format string, or a plain field name copied from the row."""
-    if "{" in spec:
-        try:
-            return True, spec.format(**ctx)
-        except (KeyError, IndexError, ValueError):
-            return False, None
-    # A plain field name is copied only when the source row actually has it,
-    # so odd segments and appended rows do not sprout null keys.
-    return (spec in ctx), ctx.get(spec)
-
-
-def _build_row(spec: Mapping[str, Any], ctx: Mapping[str, Any]) -> Dict[str, Any]:
-    row: Dict[str, Any] = {}
-    for out_key, field_spec in _as_dict(spec.get("fields")).items():
-        emit, value = _render_field(field_spec, ctx)
-        if emit:
-            row[out_key] = value
-    for out_key in _as_list(spec.get("omit_if_falsy")):
-        if out_key in row and not row[out_key]:
-            del row[out_key]
-    return row
-
-
-def _keep(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool:
-    platform = spec.get("platform")
-    if platform is not None and platform not in _as_list(row.get(F_PLATFORMS)):
-        return False
-    return all(row.get(f) == v for f, v in _as_dict(spec.get("where")).items())
-
-
-def _dedupe(rows: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:
-    seen, out = set(), []
-    for row in rows:
-        marker = row.get(field)
-        if not isinstance(marker, (str, int, float, bool, tuple, type(None))):
-            marker = repr(marker)  # lists/dicts can't be set members; still dedupes
-        if marker not in seen:
-            seen.add(marker)
-            out.append(row)
-    return out
-
-
-def _finish(rows: List[Dict[str, Any]], spec: Mapping[str, Any],
-            extra: Any) -> List[Dict[str, Any]]:
-    out = _dedupe(rows, spec["unique_by"]) if "unique_by" in spec else list(rows)
-    out.extend(_as_list(extra))
-    if "sort_by" in spec:
-        out.sort(key=lambda r: r.get(spec["sort_by"]))
-    return out
-
-
-def build_view(spec: Mapping[str, Any], source_rows: Sequence[Mapping[str, Any]]) -> Any:
-    """Project rows through one view. Returns a list, or a dict when group_by."""
-    consts = _as_dict(spec.get("consts"))
-    group_by = spec.get("group_by")
-    buckets: Dict[str, List[Dict[str, Any]]] = {}
-    flat: List[Dict[str, Any]] = []
-
-    for row in source_rows:
-        if not _keep(row, spec):
-            continue
-        bucket = flat
-        if group_by is not None:
-            bucket = buckets.setdefault(str(row.get(group_by, "")), [])
-        ctx: Dict[str, Any] = dict(row)
-        ctx.update(consts)
-        # index/index0 count within the GROUP, so a per-group ordinal is right.
-        ctx.update({"index": len(bucket) + 1, "index0": len(bucket)})
-        bucket.append(_build_row(spec, ctx))
-
-    append = spec.get("append")
-    if group_by is None:
-        return _finish(flat, spec, append)
-    # Bucket keys are stringified, so append keys must be too. Append-only
-    # groups still get a bucket — a purely hand-maintained site is not
-    # silently dropped from a grouped view.
-    extras = {str(k): v for k, v in _as_dict(append).items()}
-    for extra_key in extras:
-        buckets.setdefault(extra_key, [])
-    return {key: _finish(rows, spec, extras.get(key)) for key, rows in buckets.items()}
-
-
-def build_views(views_cfg: Any, segments: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
-    """{namespace: {view: rows}} — the output namespaces users read.
-
-    The outer key is a free output label (it becomes `views.<namespace>` and
-    qualifies bare `source:` references). Segment membership is filtered by
-    each spec's `platform:` key — the two need not match.
-    """
-    out: Dict[str, Dict[str, Any]] = {}
-    built: Dict[str, Any] = {}
-    for namespace, group in _as_dict(views_cfg).items():
-        out[namespace] = {}
-        for view_name, raw_spec in _as_dict(group).items():
-            spec = _as_dict(raw_spec)
-            source = spec.get("source")
-            rows: Sequence[Mapping[str, Any]] = segments
-            if source:
-                ref = source if "." in source else f"{namespace}.{source}"
-                candidate = built.get(ref)
-                rows = candidate if isinstance(candidate, list) else []
-            result = build_view(spec, rows)
-            out[namespace][view_name] = result
-            built[f"{namespace}.{view_name}"] = result
-    return out
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -688,6 +865,81 @@ def _partition_by_platform(segments: Sequence[Mapping[str, Any]]
     return plat_rows, plat_cidrs, plat_vlans
 
 
+def _validate_addressing(key: str, seg: Mapping[str, Any], source: str) -> List[str]:
+    """L3 sanity: the subnet parses, and gateway and netmask agree with it.
+
+    A gateway outside its own subnet and a netmask that contradicts the CIDR
+    prefix both used to validate clean and only surface as a device rejecting
+    the config — or worse, accepting it and blackholing the segment.
+    """
+    errs: List[str] = []
+    raw_subnet = seg.get(F_SUBNET)
+    if not raw_subnet:
+        return errs
+    try:
+        network = ipaddress.ip_network(str(raw_subnet), strict=False)
+    except ValueError as exc:
+        return [f"{source}.{key}: subnet '{raw_subnet}' is not a valid CIDR ({exc})"]
+
+    gateway = seg.get("gateway")
+    if gateway:
+        try:
+            errs.extend(_gateway_placement(key, network,
+                                           ipaddress.ip_address(str(gateway)), source))
+        except ValueError as exc:
+            errs.append(f"{source}.{key}: gateway '{gateway}' is not an IP ({exc})")
+
+    netmask = seg.get("netmask")
+    if netmask and str(netmask) != str(network.netmask):
+        errs.append(
+            f"{source}.{key}: netmask {netmask} contradicts subnet {network} "
+            f"(which is {network.netmask})"
+        )
+    return errs
+
+
+def _gateway_placement(key: str, network: Any, gateway: Any,
+                       source: str) -> List[str]:
+    """Is a hand-written gateway an address an interface can actually hold?
+
+    The POOL path has refused a network/broadcast gateway since round 3; the
+    hand-written path only checked `in network`, which is true for both of
+    them. Same subnet, same wrong gateway, two different answers depending on
+    which file the segment happened to be written in.
+    """
+    if gateway not in network:
+        return [f"{source}.{key}: gateway {gateway} is outside its subnet "
+                f"{network} — nothing on this segment can reach it"]
+    if _is_usable_host(network, gateway):
+        return []
+    role = "network" if gateway == network.network_address else "broadcast"
+    return [f"{source}.{key}: gateway {gateway} is the {role} address of "
+            f"{network}, which no interface can hold"]
+
+
+def _gateway_cidr(gateway: Any, prefixlen: int, subnet: Any) -> str:
+    """`<gateway>/<prefixlen>`, but only when the two belong to each other.
+
+    A v6 gateway against a v4 subnet built 'fd00::1/24' — a string that is not
+    an address in any family, handed on to whatever templates a device's
+    interface line. The mismatch is reported separately; this stops the
+    nonsense value being built at all.
+    """
+    if not gateway or not prefixlen:
+        return ""
+    try:
+        address = ipaddress.ip_address(str(gateway))
+    except ValueError:
+        return ""
+    if isinstance(subnet, str) and subnet:
+        try:
+            if ipaddress.ip_network(subnet, strict=False).version != address.version:
+                return ""
+        except ValueError:
+            return ""
+    return f"{address}/{prefixlen}"
+
+
 def _validate_segment(key: str, seg: Mapping[str, Any], cfg: Mapping[str, Any],
                       source: str) -> List[str]:
     errs: List[str] = []
@@ -697,11 +949,28 @@ def _validate_segment(key: str, seg: Mapping[str, Any], cfg: Mapping[str, Any],
         errs.append(f"{source}.{key}: vlan_id is required")
     else:
         try:
-            int(raw_vlan)
+            vlan_num = int(raw_vlan)
         except (TypeError, ValueError):
             errs.append(
                 f"{source}.{key}: vlan_id '{raw_vlan}' is not a number (degraded to 0)"
             )
+        else:
+            # 0 is the untagged/native case and stays legal. 4095 is reserved
+            # by 802.1Q and anything above it cannot exist on the wire, but
+            # both used to validate clean and only fail at the device.
+            if not 0 <= vlan_num <= 4094:
+                errs.append(
+                    f"{source}.{key}: vlan_id {vlan_num} is outside the 802.1Q "
+                    f"range — tagged VLANs are 1..4094 (0 = untagged; 4095 is "
+                    f"reserved)"
+                )
+    errs.extend(_validate_addressing(key, seg, source))
+    if not _bool_is_readable(seg.get("operator_source")):
+        errs.append(
+            f"{source}.{key}: operator_source '{seg.get('operator_source')}' is "
+            f"not a recognisable boolean — treated as false, so this subnet is "
+            f"NOT in the operator allow-lists. Use true or false unquoted."
+        )
     raw = seg.get(F_PLATFORMS)
     if raw is not None and isinstance(raw, (str, Mapping)):
         errs.append(f"{source}.{key}: platforms must be a LIST, got {type(raw).__name__}")
@@ -715,46 +984,103 @@ def _validate_segment(key: str, seg: Mapping[str, Any], cfg: Mapping[str, Any],
     for rname in _as_dict(seg.get("names")):
         if rname not in _as_dict(cfg.get("names")):
             errs.append(f"{source}.{key}: names.'{rname}' is not a recipe in the name config")
+    errs.extend(_validate_computed_fields(key, seg, cfg, source))
     return errs
 
 
-def _validate_views(cfg: Mapping[str, Any]) -> List[str]:
-    errs: List[str] = []
-    known = _as_list(cfg.get("platforms"))
-    seen: List[str] = []
-    for namespace, group in _as_dict(cfg.get("views")).items():
-        for view_name, raw in _as_dict(group).items():
-            label = f"views.{namespace}.{view_name}"
-            if not isinstance(raw, Mapping):
-                errs.append(f"{label} must be a dict, got {type(raw).__name__}")
-                continue
-            errs.extend(_validate_one_view(_as_dict(raw), label, namespace, seen, known))
-            # `source:` references resolve against the NAMESPACE — never the
-            # spec's platform filter. The two are independent: a namespace
-            # groups views for one consumer, the filter picks which segments
-            # they see, and nothing requires them to share a word.
-            seen.append(f"{namespace}.{view_name}")
-    return errs
+def _validate_computed_fields(key: str, seg: Mapping[str, Any],
+                              cfg: Mapping[str, Any], source: str) -> List[str]:
+    """A segment may not declare what the engine computes.
 
-
-def _validate_one_view(spec: Mapping[str, Any], label: str, namespace: str,
-                       seen: Sequence[str], known: Sequence[Any]) -> List[str]:
-    """Source resolves, platform filter is declared, fields is present."""
-    errs: List[str] = []
-    source = spec.get("source")
-    if source:
-        ref = source if "." in source else f"{namespace}.{source}"
-        if ref not in seen:
-            errs.append(f"{label}: source '{source}' is not a view declared earlier")
-    # The view's `platform:` FILTER is checked against the declared
-    # platforms; the outer namespace key is a free label and is not.
-    filter_platform = spec.get("platform")
-    if filter_platform and known and filter_platform not in known:
+    Every one of these is overwritten by `enrich`, so the declared value never
+    reaches a device — but it reads, in the file, exactly like configuration.
+    """
+    errs = [
+        f"{source}.{key}: '{field}' is computed by the engine (from {owner}) "
+        f"and a declared value is silently discarded — remove it."
+        for field, owner in COMPUTED_FIELDS.items() if field in seg
+    ]
+    # prefixlen is an INPUT when there is no subnet to derive it from, and an
+    # output when there is. Only the second case is a discarded value.
+    if F_SUBNET in seg and "prefixlen" in seg:
         errs.append(
-            f"{label}: platform '{filter_platform}' is not in the declared platforms"
+            f"{source}.{key}: 'prefixlen' is computed from subnet "
+            f"'{seg[F_SUBNET]}' and a declared value is silently discarded — "
+            f"remove it. (A segment with no subnet may declare prefixlen.)"
         )
-    if not _as_dict(spec.get("fields")):
-        errs.append(f"{label}: fields is required (output_key: source_field)")
+    for platform in _as_list(cfg.get("platforms")):
+        if f"on_{platform}" in seg:
+            errs.append(
+                f"{source}.{key}: 'on_{platform}' is computed from platforms[] "
+                f"and a declared value is silently discarded — add or remove "
+                f"'{platform}' in platforms instead."
+            )
+    return errs
+
+
+def _validate_name_graph(cfg: Mapping[str, Any]) -> List[str]:
+    """`name_default` resolves, and every `from:` points somewhere usable."""
+    recipes = _as_dict(cfg.get("names"))
+    errs: List[str] = []
+    default = cfg.get("name_default")
+    if default and default not in recipes:
+        errs.append(
+            f"name_default '{default}' is not a declared recipe (have: "
+            f"{', '.join(recipes) or 'none'}) — every segment's primary name "
+            f"would be blank"
+        )
+    order = list(recipes)
+    for rname, raw in recipes.items():
+        parent = _as_dict(raw).get("from")
+        if not parent:
+            continue
+        if parent not in recipes:
+            errs.append(f"names.{rname}: from '{parent}' is not a declared "
+                        f"recipe — this recipe inherits nothing")
+        elif parent == rname:
+            errs.append(f"names.{rname}: from '{parent}' refers to itself")
+        elif order.index(parent) > order.index(rname):
+            # `from` inherits the parent AS RESOLVED FOR THIS SEGMENT, which
+            # only exists once the parent has run. A forward reference falls
+            # back to the parent's raw definition, losing the segment's own
+            # overrides. Every cycle contains at least one forward edge, so
+            # this catches circular `from` chains too.
+            errs.append(f"names.{rname}: from '{parent}' is declared LATER — a "
+                        f"recipe can only inherit one declared before it")
+    return errs
+
+
+def _validate_primary_names(segments: Sequence[Mapping[str, Any]],
+                            cfg: Mapping[str, Any]) -> List[str]:
+    """Segments whose PRIMARY name came out blank.
+
+    Nothing downstream can address one: it becomes a nameless port group, a
+    nameless VLAN. The four-list gate checks errors, missing fields and
+    duplicates — a single blank name is none of those, so it shipped.
+
+    Skipped when the recipe set is empty or the default recipe is already
+    reported missing; both would report every segment for one root cause.
+    """
+    recipes = _as_dict(cfg.get("names"))
+    default = cfg.get("name_default") or (next(iter(recipes), ""))
+    if not recipes or default not in recipes:
+        return []
+    errs: List[str] = []
+    for seg in segments:
+        primary = seg.get(F_NAME, "")
+        if not isinstance(primary, (str, bytes)):
+            # A field named after a recipe PINS that name, so a recipe sharing
+            # its name with a list-valued field makes the primary name a list.
+            errs.append(
+                f"{seg[F_KEY]}: primary name is a {type(primary).__name__}, not "
+                f"a name — recipe '{default}' shares its name with a field on "
+                f"this segment, and that field's value pinned it"
+            )
+        elif not str(primary).strip():
+            errs.append(
+                f"{seg[F_KEY]}: primary name is blank — recipe '{default}' "
+                f"produced nothing for this segment"
+            )
     return errs
 
 
@@ -774,17 +1100,81 @@ def _missing_fields(underlays: Mapping[str, Any], cfg: Mapping[str, Any]) -> Lis
     return out
 
 
+def _hashable(value: Any) -> Any:
+    """A set-safe stand-in for a value that might be a list or a dict.
+
+    A name is normally a string, but a recipe named after a list-valued field
+    pins the primary name to that list, and the duplicate scan then died on
+    `value in seen` — a TypeError raised while BUILDING the return dict, so
+    the whole catalog aborted and the validation naming the real problem was
+    never readable. `_dedupe` has taken this precaution all along.
+    """
+    if isinstance(value, (str, int, float, bool, tuple, type(None))):
+        return value
+    return repr(value)
+
+
 def _duplicates(values: Iterable[Any]) -> List[Any]:
-    seen, dupes = set(), []
+    seen: set = set()
+    reported: set = set()
+    dupes: List[Any] = []
     for value in values:
-        if value in seen and value not in dupes:
+        marker = _hashable(value)
+        if marker in seen and marker not in reported:
+            reported.add(marker)
             dupes.append(value)
-        seen.add(value)
+        seen.add(marker)
     return dupes
 
 
+def _duplicates_scoped(segments: Iterable[Mapping[str, Any]], field: str,
+                       scope: Sequence[str]) -> List[Any]:
+    """Values repeated WITHIN a scope group, in first-seen order.
+
+    Segments carrying none of the scope fields land in one group together, so
+    a catalog that never declares `site` behaves exactly as it did before.
+    """
+    groups: Dict[Tuple[str, ...], List[Any]] = {}
+    for seg in segments:
+        key = tuple(str(seg.get(name, "")) for name in scope)
+        groups.setdefault(key, []).append(seg[field])
+
+    dupes: List[Any] = []
+    for values in groups.values():
+        for value in _duplicates(values):
+            if value not in dupes:
+                dupes.append(value)
+    return dupes
+
+
+def _validate_pool_specs(pools: Any) -> List[str]:
+    """Shape and precedence complaints about the pool specs themselves."""
+    errs: List[str] = []
+    for pool_key, raw_pool in _as_dict(pools).items():
+        pool = _as_dict(raw_pool)
+        problem = _string_where_list_expected(f"pools.{pool_key}.roles",
+                                              pool.get("roles"))
+        if problem:
+            errs.append(problem)
+        if isinstance(pool.get("roles"), Mapping):
+            errs.append(
+                f"pools.{pool_key}: `roles:` must be a LIST — the offset is the "
+                f"list position. Per-role settings go in a single-key mapping "
+                f"inside it: roles: [app, {{db: {{offset: 5}}}}]"
+            )
+        key_template = pool.get(F_KEY)
+        if not (isinstance(key_template, str) and key_template.strip()):
+            errs.append(
+                f"pools.{pool_key}: `key:` is required — it is the template "
+                f"that names each generated segment, e.g. "
+                f'"{{{{ pool }}}}-{{{{ instance_nn }}}}-{{{{ role }}}}".'
+            )
+    return errs
+
+
 def _validate(underlays: Mapping[str, Any], generated: Mapping[str, Any],
-              hand: Mapping[str, Any], cfg: Mapping[str, Any]) -> List[str]:
+              hand: Mapping[str, Any], cfg: Mapping[str, Any],
+              pools: Any = None) -> List[str]:
     errs: List[str] = []
     if not underlays:
         errs.append("no segments — declare the segment matrix and/or pools")
@@ -794,6 +1184,39 @@ def _validate(underlays: Mapping[str, Any], generated: Mapping[str, Any],
                 f"pool-generated key '{key}' collides with a hand-written segment "
                 "(the hand-written one wins)"
             )
+    for label, value in (("uniqueness_scope", cfg.get("uniqueness_scope")),
+                         ("partition_fields", cfg.get("partition_fields")),
+                         ("platforms", cfg.get("platforms"))):
+        problem = _string_where_list_expected(label, value)
+        if problem:
+            errs.append(problem)
+    errs.extend(_validate_name_graph(cfg))
+    for recipe_name, raw_recipe in _as_dict(cfg.get("names")).items():
+        recipe = _as_dict(raw_recipe)
+        if recipe_name in ENGINE_FIELDS:
+            errs.append(
+                f"names.{recipe_name}: a recipe may not be named after a field "
+                f"the engine reads. A segment carrying '{recipe_name}' pins the "
+                f"name to that value — a `gateway` recipe on a segment with "
+                f"`gateway: 10.0.0.1` makes the primary name an IP address. "
+                f"Rename the recipe."
+            )
+        if _as_int(recipe.get("vlan_pad") or 0) < 0:
+            errs.append(
+                f"names.{recipe_name}: vlan_pad is "
+                f"{recipe.get('vlan_pad')!r} — a pad cannot be negative"
+            )
+        for token in _as_list(recipe.get("parts")):
+            if _is_group(token) and any(_is_group(t) for t in token):
+                errs.append(
+                    f"names.{recipe_name}: parts contains a glue group nested "
+                    f"more than one deep ({token!r}). A group glues plain "
+                    f"tokens; it cannot contain another group."
+                )
+
+    errs.extend(_validate_pool_specs(pools if pools is not None
+                                     else cfg.get("pools")))
+
     for key, raw in underlays.items():
         seg = _as_dict(raw)
         source = "pools" if key in generated and key not in hand else "underlays"
@@ -801,14 +1224,14 @@ def _validate(underlays: Mapping[str, Any], generated: Mapping[str, Any],
             errs.append(f"{source}.{key} must be a dict")
             continue
         errs.extend(_validate_segment(key, seg, cfg, source))
-    errs.extend(_validate_views(cfg))
     return errs
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # entry point
 # ──────────────────────────────────────────────────────────────────────────
-def network_catalog(underlays: Any, config: Any = None) -> Dict[str, Any]:
+def network_catalog(underlays: Any, config: Any = None,
+                    env: Any = None) -> Dict[str, Any]:
     """Turn a segment matrix into every per-platform list, plus validation."""
     cfg = _as_dict(config)
     hand = _as_dict(underlays)
@@ -817,7 +1240,21 @@ def network_catalog(underlays: Any, config: Any = None) -> Dict[str, Any]:
         root_errors.append(
             f"network_underlays must be a dict of segments, got {type(underlays).__name__}"
         )
-    generated, pool_errors = expand_pools(cfg.get("pools"))
+    # No default here on purpose. What bounds an L2 domain is an estate fact,
+    # so it belongs in the config the estate edits, not in this file — a
+    # Python fallback would be a behaviour nobody reading the YAML can see.
+    # Unset means compare estate-wide, which is what a catalog with no site
+    # field wants anyway.
+    scope = [str(f) for f in _as_list(cfg.get("uniqueness_scope"))]
+    # Inline `pools` wins, so a caller (and the unit suite) can hand the
+    # generator a dict directly; `pools_file` is the wiring the estate uses.
+    pools = cfg.get("pools")
+    if pools is None:
+        pools, root_file_errors = load_pools_file(cfg.get("pools_file"))
+        root_errors.extend(root_file_errors)
+    cap, cap_errors = _resolve_pool_cap(cfg.get("pool_max_segments"))
+    root_errors.extend(cap_errors)
+    generated, pool_errors = expand_pools(pools, env, cap)
 
     merged: Dict[str, Any] = dict(generated)
     merged.update(hand)  # a hand-written key wins, so one pool member can be pinned
@@ -830,7 +1267,6 @@ def network_catalog(underlays: Any, config: Any = None) -> Dict[str, Any]:
 
     return {
         "segments": segments,
-        "views": build_views(cfg.get("views"), segments),
         "by": by,
         "cidrs_by": cidrs_by,
         "vlan_ids_by_platform": vlan_ids_by_platform,
@@ -854,15 +1290,36 @@ def network_catalog(underlays: Any, config: Any = None) -> Dict[str, Any]:
             {F_KEY: s[F_KEY], F_NAME: s[F_NAME], "derived_name": s["derived_name"]}
             for s in segments if s[F_NAME] != s["derived_name"]
         ],
-        "errors": root_errors + pool_errors + _validate(merged, generated, hand, cfg),
+        "errors": root_errors + pool_errors
+                  + _validate(merged, generated, hand, cfg, pools)
+                  + _validate_primary_names(segments, cfg),
         "missing": _missing_fields(merged, cfg),
-        "duplicate_names": _duplicates(s[F_NAME] for s in segments),
-        "duplicate_vlans": _duplicates(s[F_VLAN_ID] for s in tagged),
+        "duplicate_names": _duplicates_scoped(segments, F_NAME, scope),
+        "duplicate_vlans": _duplicates_scoped(tagged, F_VLAN_ID, scope),
     }
+
+
+try:  # optional: only the filter path needs it, tests call the plain function
+    from jinja2 import pass_context as _pass_context
+except ImportError:  # pragma: no cover
+    def _pass_context(func):  # type: ignore[misc]
+        return func
+
+
+@_pass_context
+def _network_catalog_filter(ctx: Any, underlays: Any,
+                            config: Any = None) -> Dict[str, Any]:
+    """Filter entry point — hands the generator a Jinja environment.
+
+    network_catalog() itself stays a plain function so the unit suite can call
+    it without a context, as it has all along.
+    """
+    return network_catalog(underlays, config,
+                           env=getattr(ctx, "environment", None))
 
 
 class FilterModule:
     """Ansible filter plugin entry point."""
 
     def filters(self):
-        return {"network_catalog": network_catalog}
+        return {"network_catalog": _network_catalog_filter}

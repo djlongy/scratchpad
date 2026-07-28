@@ -16,9 +16,21 @@ freeipa_client_enabled: true
 freeipa_client_domain: "{{ domain }}"
 freeipa_client_realm: "{{ freeipa_client_domain | upper }}"
 
-# This client's own FQDN (built from hostname + domain, not gathered facts).
+# This client's own FQDN — the Kerberos host principal and the cert SAN. Built from
+# identity vars, never from gathered facts (ansible_fqdn depends on runtime DNS).
+#
+# Defaults to canonical_fqdn, a host-identity convention of the form
+# canonical_hostname.env.domain (nginx-01.mgt.example.com), which strips the
+# environment prefix from inventory_hostname so the env is not doubled. The previous
+# default, inventory_hostname.domain, baked an inventory prefix into the principal and
+# left no env label wherever the naming scheme carries one. Every existing client
+# already overrode it to work around exactly that; new hosts silently did not.
+#
+# Falls back to the old expression when canonical_fqdn is undefined, so the role stays
+# usable from a portable inventory that does not carry the estate's identity vars.
 # A client may live in a different DNS domain than the realm; override if so.
-freeipa_client_fqdn: "{{ inventory_hostname }}.{{ domain }}"
+freeipa_client_fqdn: >-
+  {{ canonical_fqdn | default(inventory_hostname ~ '.' ~ (domain | default('')), true) }}
 freeipa_client_set_hostname: true        # set the OS hostname to freeipa_client_fqdn before join
 
 # FreeIPA servers to enrol against. Defaults to the `freeipa` inventory group;
@@ -46,7 +58,15 @@ freeipa_client_use_otp: false
 freeipa_client_otp: ""
 
 # ── Join behaviour ───────────────────────────────────────────────────────────
-freeipa_client_force_join: false         # join even if the host entry already exists on the server
+# Join even if the host entry already exists on the server — for a guest rebuilt under
+# the SAME FQDN, whose server-side host entry outlived its keytab ("krb5.keytab missing!
+# Retry with ipaclient_force_join=yes"). Applies ONLY while this host is not already
+# healthily enrolled: upstream implements force_join as "purge the realm from
+# /etc/krb5.keytab, then re-join", so honouring it unconditionally re-keys the host on
+# every converge. Safe to leave true permanently in host_vars — it self-disables once
+# enrolment is healthy (see the gate in tasks/enroll.yml). To force a re-join of a
+# HEALTHY client, use freeipa_client_force_rejoin instead.
+freeipa_client_force_join: false
 freeipa_client_kinit_attempts: 5
 freeipa_client_no_dns_lookup: false      # true → ignore SRV discovery, use freeipa_client_servers only
 freeipa_client_on_master: false          # only true when (re)configuring a client ON an IPA server
@@ -57,6 +77,15 @@ freeipa_client_on_master: false          # only true when (re)configuring a clie
 # This also drives realm-cutover re-enrolment (old realm → new realm).
 freeipa_client_rejoin_stale: true
 freeipa_client_force_rejoin: false       # force uninstall + re-join regardless of health
+
+# Let upstream REPAIR a half-configured client in place instead of re-keying it. Upstream
+# runs its deployment block when the host is already configured only if allow_repair OR
+# force_join is set (ipaclient/tasks/install.yml) — but where force_join purges
+# /etc/krb5.keytab and re-joins, allow_repair fixes local config (krb5.conf, sssd, CA certs)
+# against the EXISTING keytab. That makes it the non-destructive option for a host whose
+# keytab is fine but whose client config drifted. Off by default so an ordinary converge on
+# a healthy client stays a true no-op.
+freeipa_client_allow_repair: false
 
 # ── Home directories ─────────────────────────────────────────────────────────
 freeipa_client_mkhomedir: true           # oddjob/pam_oddjob_mkhomedir on first login
@@ -104,8 +133,8 @@ freeipa_client_dns_reverse_zone: ""
 # SSSD dyndns (maps to ipasssd_enable_dns_updates). Default ON: the client self-registers
 # its A record at join (--enable-dns-updates) and SSSD keeps it current on each start/reboot
 # and per dyndns_refresh_interval (daily). Only effective where IPA is AUTHORITATIVE for the
-# zone — with external DNS (e.g. a firewall/gateway resolver) it warns and creates nothing,
-# so set false there.
+# zone — with external DNS (e.g. a firewall/gateway resolver) it warns and creates
+# nothing, so set false there.
 # A live in-place re-IP isn't picked up until the next sssd restart/refresh.
 freeipa_client_enable_dns_updates: true
 # Restart SSSD during the run to force an immediate dyndns refresh when the A record has

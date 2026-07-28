@@ -15,9 +15,11 @@ argument_specs:
         type: str
         required: false
         description: >-
-          This client's own FQDN, built from inventory_hostname + domain (not
-          gathered facts). Used as the join hostname, the kinit -k principal, and
-          (with set_hostname) the OS hostname target.
+          This client's own FQDN. Prefers `canonical_fqdn` when the inventory
+          supplies it, falling back to inventory_hostname + domain — never
+          gathered facts, so it is stable before the host is reachable. Used as
+          the join hostname, the kinit -k principal, and (with set_hostname) the
+          OS hostname target.
       freeipa_client_set_hostname:
         type: bool
         default: true
@@ -67,7 +69,21 @@ argument_specs:
       freeipa_client_force_join:
         type: bool
         default: false
-        description: Join even if the host entry already exists on the server.
+        description: >-
+          Join even if the host entry already exists on the server (rebuilt guest, same
+          FQDN, surviving host entry but no keytab). Honoured only while the host is not
+          already healthily enrolled — upstream force_join purges /etc/krb5.keytab and
+          re-joins, so applying it unconditionally re-keys the host on every converge.
+          Self-disables once enrolment is healthy; use freeipa_client_force_rejoin to
+          force a re-join of a healthy client.
+      freeipa_client_allow_repair:
+        type: bool
+        default: false
+        description: >-
+          Let upstream repair a half-configured client in place (krb5.conf, sssd, CA certs)
+          against the existing keytab, instead of the force_join path which purges
+          /etc/krb5.keytab and re-joins. Non-destructive; off by default so a converge on a
+          healthy client is a true no-op.
       freeipa_client_kinit_attempts:
         type: int
         default: 5

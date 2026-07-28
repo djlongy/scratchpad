@@ -1,0 +1,50 @@
+---
+# ── Print one list ─────────────────────────────────────────────────────────
+# `view_ref` is "namespace.name". Three shapes, by how much you asked for:
+#   default                    every row
+#   network_views_field=x      just that column
+#   network_views_explain      the declaration beside the output
+
+- name: Resolve this list
+  ansible.builtin.set_fact:
+    _ns: "{{ view_ref.split('.')[0] }}"
+    _name: "{{ view_ref.split('.')[1] }}"
+  become: false
+
+- name: The declaration that produced {{ view_ref }}
+  ansible.builtin.debug:
+    var: _declared
+  vars:
+    _declared: "{{ (lookup('file', network_views_file) | from_yaml)[_ns][_name] }}"
+  when: network_views_explain | bool
+  become: false
+
+# map(attribute=) on a key no row has raises a bare "dict object has no
+# attribute 'x'", which names neither the knob that asked for it nor the
+# columns this list actually emits. Say both, before the map runs.
+- name: The column asked for exists in {{ view_ref }}
+  ansible.builtin.assert:
+    that: network_views_field in _columns
+    fail_msg: >-
+      network_views_field={{ network_views_field }} is not a column of
+      {{ view_ref }}. It emits: {{ _columns | join(', ') | default('nothing', true) }}.
+    quiet: true
+  vars:
+    _columns: "{{ network_views_built[_ns][_name] | map('list') | flatten | unique | sort }}"
+  when:
+    - network_views_field | length > 0
+    - network_views_built[_ns][_name] | length > 0
+  become: false
+
+- name: One column of {{ view_ref }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ network_views_built[_ns][_name] | map(attribute=network_views_field) | list }}
+  when: network_views_field | length > 0
+  become: false
+
+- name: Rows of {{ view_ref }}
+  ansible.builtin.debug:
+    var: network_views_built[_ns][_name]
+  when: network_views_field | length == 0
+  become: false

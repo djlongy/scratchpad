@@ -7,6 +7,23 @@
 # `omit` does NOT work for include_role vars (it leaks the placeholder string),
 # so required inputs are set via set_fact and optional ones only when provided.
 
+# detect.yml is imported with `always`, so these facts exist under every tag selection.
+# Asserting it makes that contract load-bearing instead of implicit: the force_join gate
+# below reads _freeipa_client_healthy with `| default(false)`, which fails OPEN (force
+# applies). If a future refactor stops detect.yml from running, that silently restores the
+# every-converge keytab purge this gate exists to prevent. Fail loudly instead.
+- name: Assert enrolment detection ran (detect.yml facts present)
+  ansible.builtin.assert:
+    that:
+      - _freeipa_client_healthy is defined
+      - _freeipa_client_stale is defined
+    fail_msg: >-
+      detect.yml did not run — _freeipa_client_healthy/_freeipa_client_stale are missing.
+      enroll.yml derives ipaclient_force_join from them; without them a host with
+      freeipa_client_force_join=true would purge /etc/krb5.keytab and re-join on EVERY
+      converge. main.yml must import detect.yml with `tags: [always]` before this phase.
+    quiet: true
+
 - name: Validate enrolment inputs
   ansible.builtin.assert:
     that:
@@ -33,7 +50,30 @@
     ipaclient_realm: "{{ freeipa_client_realm }}"
     ipaclient_hostname: "{{ freeipa_client_fqdn }}"
     ipaclient_servers: "{{ freeipa_client_servers }}"
-    ipaclient_force_join: "{{ (freeipa_client_force_join | bool) or (_freeipa_client_stale | default(false) | bool) }}"
+    # NEVER force-join a host that is already healthily enrolled. Upstream reads
+    # force_join as "purge the realm's principals from /etc/krb5.keytab
+    # (ipa-rmkeytab -r REALM) and re-join" — see ipaclient/tasks/install.yml, the
+    # rmkeytab task gated on `ipaclient_use_otp or ipaclient_force_join`, and the
+    # Join task gated on `not krb5_keytab_ok or ipaclient_force_join`. It also
+    # defeats the already-configured short-circuit at the top of that file. Left
+    # unconditional, a permanent `freeipa_client_force_join: true` in host_vars
+    # re-keyed the host on EVERY converge, churning SSSD/GSSAPI/certmonger.
+    #
+    # The flag stays meaningful where it was actually needed: a guest rebuilt under
+    # the SAME FQDN, whose server-side host entry survives but whose keytab does not
+    # ("krb5.keytab missing! Retry with ipaclient_force_join=yes"). That host is not
+    # healthy — no /etc/ipa/default.conf — so the force still applies on that first
+    # join, and stops applying once enrolment succeeds.
+    #
+    # _freeipa_client_stale still forces unconditionally: preflight has just
+    # uninstalled that enrolment, so a clean re-join is exactly what is wanted.
+    # _freeipa_client_healthy comes from detect.yml, which runs under `always` so this
+    # gate holds under --tags enroll too.
+    ipaclient_force_join: >-
+      {{ (_freeipa_client_stale | default(false) | bool)
+         or ((freeipa_client_force_join | bool)
+             and not (_freeipa_client_healthy | default(false) | bool)) }}
+    ipaclient_allow_repair: "{{ freeipa_client_allow_repair | bool }}"
     ipaclient_kinit_attempts: "{{ freeipa_client_kinit_attempts | int }}"
     ipaclient_no_dns_lookup: "{{ freeipa_client_no_dns_lookup }}"
     ipaclient_on_master: "{{ freeipa_client_on_master }}"

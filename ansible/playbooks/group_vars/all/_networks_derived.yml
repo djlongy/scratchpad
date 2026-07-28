@@ -1,98 +1,96 @@
 ---
 # ── Network catalog — the CONTRACT (do not edit per-estate) ─────────────────
 #
-# The engine is plugins/filter/network_catalog.py — estate-agnostic Python,
-# unit-tested in tests/unit/roles/test_network_catalog.py. This file just calls
-# it once and gives the results names. Everything specific to this estate lives
-# in networks.yml / networks_config.yml / networks_platforms.yml next door.
+# Engine: filter_plugins/network_catalog.py (estate-agnostic, unit-tested).
+# This file calls it once and names the results. Estate specifics live next
+# door: networks.yml (segments) · pools.yml (generators) · networks_config.yml
+# (rules) · networks_platforms.yml (output shapes).
 #
-# FULL REFERENCE — every config option, default, example and expected output:
-#   docs/network-catalog.md
+# Full reference: filter_plugins/docs/network_catalog.md
 #
-# ══════════════════ WHAT YOU READ — jump to your platform ══════════════════
+# ── What you read, 99% of the time ─────────────────────────────────────────
 #
-#   _net.<platform>.<list>       ← THE ONE YOU WANT, 99% of the time
+#   _net.<namespace>.<list>
 #
-#     _net.hypervisor.port_groups          hypervisor port groups (matrix + custom)
-#     _net.hypervisor.hv_mgr_portgroups   the same, shaped for a portgroup module
+#     _net.hypervisor.port_groups          hypervisor port groups
+#     _net.hypervisor.hv_mgr_portgroups   the same, shaped for a distributed-switch portgroup module
 #     _net.switches.vlans                the switch fabric VLANs
 #     _net.edge.interfaces           edge L3 subinterfaces
 #     _net.edge.zones                edge zones
-#     _net.firewall.vlans.<site>      the firewall 802.1q VLANs, per site
-#     _net.firewall.interfaces.<site> the firewall SVIs, per site
-#     _net.wifi.vlans.<site>        the wifi controller vlan-only networks, per site
-#
-#   Browse them without reading YAML:
-#     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags views
-#     …--tags platform -e p=hypervisor        one platform, everything it gets
-#     …--tags view -e view=switches.vlans   one list, every row
-#
-#   Want the task that pulls one, to copy into your own role?
-#     ansible-playbook -i inventories/example playbooks/ops_net_facts.yml --tags platform_lists
-#   Every fact below has a three-line recipe in roles/network_facts/tasks/.
+#     _net.firewall.vlans.<site>      firewall 802.1q VLANs, per site
+#     _net.firewall.interfaces.<site> firewall SVIs, per site
+#     _net.wifi.vlans.<site>        Wi-Fi vlan-only networks, per site
 #
 #   Wire one into a host:
-#     fw_network_vlans: "{{ _net.firewall.vlans.site-a }}"
-#     hv_mgr_config.portgroups: "{{ _net.hypervisor.hv_mgr_portgroups }}"
+#     firewall_network_vlans: "{{ _net.firewall.vlans.site-a }}"
+#     hypervisor manager_config.portgroups: "{{ _net.hypervisor.hv_mgr_portgroups }}"
 #
-#   Already have a hand-maintained list? Concatenate — same shape, one loop:
+#   Concatenate with a hand-maintained list — same shape, one loop:
 #     loop: "{{ my_existing_rows + _net.hypervisor.port_groups }}"
-#   (or declare `append:` on the view and get one list for free)
 #
-# ══════════════════════ EVERYTHING ELSE ══════════════════════
-#   _segments        every segment as a flat row (your fields + built names,
-#                    platforms, tagged, prefixlen, gateway_cidr, on_<platform>)
-#   _segments_by.<field>.<v>  partition by any field: _segments_by.role.svc,
-#                    _segments_by.platform.hypervisor
-#   _cidrs_by.<f>.<v>  the same, as subnet lists — firewall rule fodder
-#   _vlan_ids_by_platform  platform → sorted unique tagged VLAN ids
-#   _vlan_ranges_by_platform  the same ids compressed to range strings
-#                    (['10','2000-2004',…]) — chunk into switch trunk lines:
-#                    {% for c in _vlan_ranges_by_platform.hypervisor | batch(6) %}
-#                    switchport trunk allowed vlan {{ 'add ' if not loop.first }}{{ c | join(',') }}
-#   _operator_cidrs  subnets flagged operator_source (bastion/proxy allow-lists)
-#   _segment_by_key / _vlan_by_key / _name_by_key / _subnet_by_key /
-#   _gateway_by_key / _key_by_vlan     lookup maps
+#   Browse without reading YAML:
+#     ops_net_show.yml --tags views        every list
+#     ops_net_facts.yml --tags validate    is the catalog well-formed
+#     ops_net_views.yml                    the network_views engine's lists
+#
+# ── Everything else ────────────────────────────────────────────────────────
+#   _segments                  every segment as a flat row (your fields plus
+#                              built names, platforms, tagged, prefixlen,
+#                              gateway_cidr, on_<platform>)
+#   _segments_by.<field>.<v>   partition by any field — _segments_by.role.svc
+#   _cidrs_by.<field>.<v>      the same as subnet lists — firewall rule fodder
+#   _vlan_ids_by_platform      platform → sorted unique tagged VLAN ids
+#   _vlan_ranges_by_platform   those ids compressed — ['10','2000-2004', …]:
+#     {% for c in _vlan_ranges_by_platform.hypervisor | batch(6) %}
+#     switchport trunk allowed vlan {{ 'add ' if not loop.first }}{{ c | join(',') }}
+#   _operator_cidrs            subnets flagged operator_source (allow-lists)
+#   *_by_key / _key_by_vlan    lookup maps
 #   _segment_keys / _segment_names / _vlan_ids / _tagged_vlan_ids   columns
-#   _names_from_recipes / _names_pinned   what the recipes produce vs pinned
+#   _names_from_recipes / _names_pinned    recipe output vs pinned names
 #   _config_errors / _missing_required_fields / _duplicate_names /
-#   _duplicate_vlans validation — all want to be empty. Assert them first:
-#                    ansible-playbook … ops_net_facts.yml --tags validate
+#   _duplicate_vlans           validation — all want to be empty, and the
+#                              network_facts role asserts them before it hands
+#                              you any list.
 #
-# Naming tiers: no underscore = your config; _one = derived, safe to consume;
-# __two = internal. `_net` follows that rule — the underscore is also the
-# collision defence, since nothing in ansible-core, any collection or this repo
-# ships an underscore-prefixed global.
-#
-# `_net` is NOT reserved: it is absent from ansible-core's reserved names
-# (checked against 2.18.18), from the playbook keywords, and from the Jinja
-# template globals — unlike `q`, `lookup`, `query`, `now`, `range`, `namespace`.
-# The removed `net_*` MODULES (ansible.netcommon.net_interface et al, EOL
-# 2022-06-01) were module names, which never collide with variable names.
-# Two templates in this repo do use `{{ net }}` — roles/baseline chrony.conf.j2
-# and roles/freeipa_server ipa-ext.conf.j2 — but both as `{% for net in ... %}`
-# loop variables, which shadow only inside their loop. Verified by rendering
-# both with this global in scope.
-# Residual risk: a role's vars/main.yml outranks playbook group_vars, so a role
-# that declares its own `_net` would shadow this one inside that role. Nothing
-# in this repo does; grep before adding one.
+# Naming tiers: no underscore = your config · _one = derived, safe to consume ·
+# __two = internal. A role's vars/main.yml outranks playbook group_vars, so a
+# role declaring its own `_net` would shadow this inside that role. Nothing
+# does; grep before adding one.
 
 # One call. Everything below is a slice of its result.
+#
+# `pools_file` is a PATH, not the pools themselves: the engine opens it. Pool
+# specs carry `{{ }}` for their keys and names, and Ansible renders a
+# group_vars value the moment it is referenced — before any member exists to
+# render against — so those braces must never pass through the templar. Reading
+# the file inside the engine keeps them out of it, and turns a misspelled path
+# into one line in _config_errors instead of a lookup traceback thrown from the
+# middle of templating this variable.
 __catalog: >-
   {{ network_underlays | default({}, true) | network_catalog({
-       'pools': network_segment_pools | default({}, true),
+       'pools_file': network_pools_file | default('', true),
        'names': network_name_recipes | default({}, true),
        'name_default': network_primary_name_recipe | default('', true),
-       'views': network_platform_lists | default({}, true),
        'platforms': network_platforms | default([], true),
        'required': network_required_fields | default({}, true),
        'defaults': network_segment_defaults | default({}, true),
        'partition_fields': network_partition_fields | default([], true),
-       'desc_template': network_description_template | default('', true),
+       'uniqueness_scope': network_uniqueness_scope | default([], true),
+       'pool_max_segments': network_pool_max_segments | default(0, true),
      }) }}
 
 # ── The headline: per-platform lists ───────────────────────────────────────
-_net: "{{ __catalog.views }}"
+# Built by the VIEWS engine (filter_plugins/network_views.py) from the
+# catalog's segments. `_net` is the contract every consumer reads — inventory
+# host_vars, group_vars and the device plays all index it — so the engine
+# behind it can change without any of them changing, and did.
+#
+# The lookup+from_yaml chain is load-bearing, not style: Ansible does not
+# re-template a filter chain's output, which is the only reason the
+# `{{ seg.x }}` in the views file survives to be rendered against a row.
+_net: >-
+  {{ __catalog.segments
+     | network_views(lookup('file', network_views_file) | from_yaml) }}
 
 # ── Segments and partitions ────────────────────────────────────────────────
 _segments: "{{ __catalog.segments }}"

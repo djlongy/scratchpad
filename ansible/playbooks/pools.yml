@@ -1,0 +1,72 @@
+---
+# ── Network segment POOLS — the file you edit ──────────────────────────────
+#
+# A pool is a spec that GENERATES segments: `instances` x `roles`, each with a
+# VLAN and (optionally) a computed subnet. One declaration here becomes many
+# entries in the catalog.
+#
+# Generated segments join `network_underlays` AUTOMATICALLY — a pool member is
+# a segment like any other, and every summary reports the split so you can see
+# it. What decides whether they reach a device is `platforms:`, below.
+# A hand-written key in networks.yml WINS over a generated one, which is how
+# you pin a single member.
+#
+# The catalog engine opens this file itself (the path comes from
+# `network_pools_file`), which is what lets `{{ }}` survive to the generator.
+# Ansible renders a variable the moment it is referenced, so a `{{ pool }}`
+# written in group_vars would be templated before any member exists. Do not
+# move these back into group_vars.
+#
+# The top level must be a MAPPING of pool name -> spec. A list here is refused.
+#
+#   key:   "{{ pool }}-{{ instance_nn }}-{{ role }}"   REQUIRED — the key
+#   name:  "vlan{{ vid }}-{{ role }}"                  optional — primary name
+#
+#   roles: [app, {db: {offset: 5, mtu: 1500}}]         a LIST; offset is the
+#                                                      position unless given
+#
+# Tokens available in both: every field the pool stamps (tenant, env, site…),
+# plus `pool`, `instance` (1, 2, …), `instance_nn` (01, 02, …), `vid` (the
+# member's VLAN), `role`, `offset`. Ordinary Jinja applies — `~`, `| upper`,
+# `| default(...)`.
+#
+# Templates render STRICT: a token that does not exist is an error naming it,
+# not an empty string quietly shortening the key. Use `| default(...)` for a
+# token that is genuinely optional. A key that renders blank is refused and
+# that member is not generated — a segment nothing can address is worse than
+# a missing one.
+#
+# ONE grammar. `key:` is a template and is required. A token DSL
+# (`key_parts`/`key_case`/`key_sep`) and a mapping form of `roles:` used to be
+# accepted alongside it — two ways to say one thing, two code paths to test,
+# and no pool ever used the second. Both are gone.
+#
+# `name:` here sets the segment's primary name directly. The `name_parts` /
+# `name_case` recipe knobs are a different thing and still work: a pool stamps
+# them onto each segment, where the NAME RECIPES read them.
+
+
+acme_lab:
+  tenant: acme
+  env: lab
+  site: site-a                  # stamped on every generated segment (required)
+  zone: tenant                  # ditto
+
+  vlan_base: 2000
+  vlan_stride: 10               # gap between instances, so roles never collide
+  instances: 4
+  roles: [app, db, web, cache, mgmt]
+
+  # DEMONSTRATION POOL — generated and inspectable, applied NOWHERE.
+  # `catalog_only` is a declared platform with no view, so these segments appear
+  # in ops_net_show, _segments and the name/subnet maps while every device list
+  # skips them. Name a real platform here only when you actually want twenty
+  # more rows on that device.
+  platforms: [catalog_only]
+
+  key: "{{ pool }}-{{ instance_nn }}-{{ role }}"
+  name: "vlan{{ vid }}-{{ tenant }}-{{ env }}-{{ instance_nn }}-{{ role }}"
+
+  subnet_base: "10.20.0.0/26"   # each member gets the Nth /26 from here,
+  subnet_index: vlan            #   N = its VLAN's distance from vlan_base
+  gateway_offset: 1             # gateway = network address + 1

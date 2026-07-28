@@ -1,0 +1,95 @@
+---
+# ── network_views — build the declared lists, then show them ───────────────
+# Four steps: check the catalog is here, build, narrow, print.
+
+- name: The network catalog must be in scope
+  # _segments comes from playbooks/group_vars/all/_networks_derived.yml, which
+  # only loads for playbooks living in playbooks/. Called from anywhere else
+  # every task below would fail one at a time on an undefined variable.
+  ansible.builtin.assert:
+    that:
+      - _segments is defined
+    fail_msg: >-
+      _segments is not defined. This role reads the network catalog from
+      playbooks/group_vars/all/, so it has to run from a playbook inside
+      playbooks/ — e.g. playbooks/ops_net_views.yml.
+    quiet: true
+  become: false
+  tags: [always]
+
+- name: Build every declared list
+  # The lookup+from_yaml chain is load-bearing, not style: Ansible does not
+  # re-template a filter chain's output, which is the only reason the
+  # `{{ seg.x }}` in the views file survives long enough for the filter to
+  # bind a row to it. Declared as a plain var, it would be rendered here
+  # instead — against a scope with no `seg` in it.
+  ansible.builtin.set_fact:
+    network_views_built: >-
+      {{ _segments | network_views(lookup('file', network_views_file) | from_yaml) }}
+  become: false
+  tags: [always]
+
+- name: Index the lists as namespace.name references
+  ansible.builtin.set_fact:
+    network_views_refs: |
+      {% set refs = [] %}
+      {% for namespace, lists in network_views_built.items() %}
+      {%   for name in lists %}
+      {%     set _ = refs.append(namespace ~ '.' ~ name) %}
+      {%   endfor %}
+      {% endfor %}
+      {{ refs | to_json }}
+  become: false
+
+- name: Narrow to the selection
+  ansible.builtin.set_fact:
+    # `hypervisor` matches hypervisor.*; `hypervisor.port_groups` matches exactly one.
+    network_views_chosen: >-
+      {{ (network_views_refs | from_json) if not network_views_select
+         else ((network_views_refs | from_json)
+               | select('match', network_views_select | regex_escape ~ '(\.|$)')
+               | list) }}
+  become: false
+
+- name: The selection must match something
+  ansible.builtin.assert:
+    that:
+      - network_views_chosen | length > 0
+    fail_msg: >-
+      network_views_select='{{ network_views_select }}' matches no list.
+      Available: {{ network_views_refs | from_json | join(', ') }}
+    quiet: true
+  become: false
+
+- name: Printing one column needs exactly one list selected
+  # Without this the loop walks every list and dies partway through on the
+  # first one lacking the column — a mid-run 'dict object has no attribute'
+  # that names neither the knob nor the list it failed on.
+  ansible.builtin.assert:
+    that:
+      - network_views_chosen | length == 1
+    fail_msg: >-
+      network_views_field='{{ network_views_field }}' prints one column, so it
+      needs one list — {{ network_views_chosen | length }} are selected
+      ({{ network_views_chosen | join(', ') }}). Add
+      network_views_select=<namespace>.<list>.
+    quiet: true
+  when: network_views_field | length > 0
+  become: false
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      {{ _segments | length }} segments in the catalog →
+      {{ network_views_chosen | length }} of
+      {{ network_views_refs | from_json | length }} list(s) selected
+  become: false
+
+- name: Show each list
+  # No `become:` here — an include cannot carry it. Every task inside show.yml
+  # sets its own, which is where privilege belongs anyway.
+  ansible.builtin.include_tasks: show.yml
+  loop: "{{ network_views_chosen }}"
+  loop_control:
+    loop_var: view_ref
+    label: "{{ view_ref }}"

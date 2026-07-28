@@ -1,0 +1,154 @@
+---
+# ── Network VIEWS — the file you edit ──────────────────────────────────────
+#
+# One entry per list a device module loops over. Read the results as
+# `_net.<namespace>.<list>`; the wiring is in `_networks_derived.yml`.
+#
+#   <namespace>:
+#     <list name>:
+#       platform:  <membership label>      REQUIRED  which segments
+#                                                    (omit when chaining)
+#       source:    <earlier list>          optional  project THAT list's rows
+#       fields:                            REQUIRED  the shape you want out
+#         <output key>: "{{ seg.<field> }}"
+#       where:     {field: value}          optional  extra filter
+#       group_by:  <segment field>         optional  emit buckets, not rows
+#       unique_by: [output key, ...]       optional  one row per combination
+#       consts:    {key: value}            optional  fixed columns
+#       append:    "{{ some_var }}"        optional  hand-written rows
+#                                                    (a MAPPING keyed by
+#                                                     bucket when group_by set)
+#
+# `seg` is the current segment, the way `item` is the current loop element.
+# Ordinary play variables are in scope too. `{{ }}`, `~`, `| default(...)`,
+# interpolation — all mean what they mean everywhere else in Ansible.
+#
+# `| default(omit)` drops the key from the row entirely, which is how an
+# optional column stays absent rather than null.
+#
+# This file is read through `lookup('file', ...) | from_yaml`, which is what
+# lets the `{{ }}` survive: Ansible renders a group_vars value the moment it
+# is referenced — before any row exists to bind `seg` to. Do not move these
+# into group_vars. Same constraint, same solution, as playbooks/pools.yml.
+#
+# NAMING IS MODEL POLICY. If you find yourself building a name here, you want
+# a recipe in `network_name_recipes` instead — a name computed in a view is a
+# fork of the model that no other view sees.
+
+# ── Hypervisor ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+hypervisor:
+  # _net.hypervisor.port_groups — every hypervisor-targeted segment + the hand-written
+  # extras (the trunk, legacy vDS rows).
+  port_groups:
+    platform: hypervisor
+    fields:
+      name: "{{ seg.name }}"
+      switch: "{{ seg.hv_vswitch | default(omit) }}"
+      vlan: "{{ seg.vlan_id }}"
+      allow_promiscuous: "{{ seg.hv_allow_promiscuous | default(omit) }}"
+      allow_forged_transmits: "{{ seg.hv_allow_forged_transmits | default(omit) }}"
+      allow_mac_change: "{{ seg.hv_allow_mac_change | default(omit) }}"
+      num_ports: "{{ seg.hv_num_ports | default(omit) }}"
+      port_binding: "{{ seg.hv_port_binding | default(omit) }}"
+    append: "{{ hv_port_groups_extra }}"
+
+  # _net.hypervisor.hv_mgr_portgroups — the same rows reshaped for
+  # a distributed-switch portgroup module. `security` is emitted only for a row
+  # that relaxes something, so every other port group keeps
+  # network_policy.inherited=true.
+  hv_mgr_portgroups:
+    source: port_groups
+    fields:
+      name: "{{ seg.name }}"
+      vds: "{{ seg.switch }}"
+      vlan_id: "{{ seg.vlan }}"
+      num_ports: "{{ seg.num_ports | default(omit) }}"
+      port_binding: "{{ seg.port_binding | default(omit) }}"
+      # default(omit, true) — absent OR falsy, so an empty trunk drops the key.
+      vlan_trunk: "{{ seg.trunk | default(omit, true) }}"
+      security: >-
+        {{ {'allow_promiscuous': seg.allow_promiscuous,
+            'allow_forged_transmits': seg.allow_forged_transmits,
+            'allow_mac_change': seg.allow_mac_change}
+           if (seg.allow_promiscuous | default(false)
+               or seg.allow_forged_transmits | default(false)
+               or seg.allow_mac_change | default(false)) else omit }}
+
+# ── Switch fabric ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+switches:
+  # _net.switches.vlans
+  # Field ORDER here is the display order — `name` first so a dumped list
+  # reads `- name: …` rather than being alphabetised. Modules do not care
+  # about dict key order, so this is purely for humans.
+  vlans:
+    platform: switches
+    fields:
+      name: "{{ seg.short_name }}"
+      id: "{{ seg.vlan_id }}"
+      key: "{{ seg.key }}"
+      site: "{{ seg.site }}"
+
+# ── Edge firewall ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+edge:
+  # _net.edge.interfaces — ip is the segment gateway, because the
+  # subinterface IS the gateway.
+  interfaces:
+    platform: edge
+    where: {tagged: true}
+    fields:
+      name: "{{ edge_parent_interface }}.{{ seg.vlan_id }}"
+      parent: "{{ edge_parent_interface }}"
+      tag: "{{ seg.vlan_id }}"
+      ip: "{{ seg.gateway_cidr | default(omit) }}"
+      comment: "{{ seg.fw_descr | default(omit) }}"
+      zone: "z-{{ seg.zone }}"
+      virtual_router: "{{ edge_virtual_router }}"
+      key: "{{ seg.key }}"
+      site: "{{ seg.site }}"
+
+  # _net.edge.zones — the distinct zones the subinterfaces landed on.
+  zones:
+    source: interfaces
+    unique_by: [name]
+    fields:
+      name: "{{ seg.zone }}"
+      mode: "layer3"
+      enable_user_identification: "{{ false }}"
+
+# ── Firewall ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+firewall:
+  # _net.firewall.vlans.<site> — one firewall consumes one site:
+  #   firewall_network_vlans: "{{ _net.firewall.vlans.site-a }}"
+  vlans:
+    platform: firewall
+    where: {tagged: true}
+    group_by: site
+    fields:
+      interface: "{{ seg.fw_parent | default(omit) }}"
+      vlan_id: "{{ seg.vlan_id }}"
+      descr: "{{ seg.fw_descr | default(omit) }}"
+      priority: "{{ seg.fw_priority | default(omit) }}"
+
+  # _net.firewall.interfaces.<site>
+  interfaces:
+    platform: firewall
+    where: {tagged: true}
+    group_by: site
+    fields:
+      descr: "{{ seg.fw_descr | default(omit) }}"
+      interface: "{{ seg.fw_parent }}.{{ seg.vlan_id }}"
+      ipv4_address: "{{ seg.gateway | default(omit) }}"
+      ipv4_prefixlen: "{{ seg.prefixlen | default(omit) }}"
+
+# ── Wi-Fi ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+wifi:
+  # _net.wifi.vlans.<site> — the append list carries the legacy rows we drive
+  # to state: absent.
+  vlans:
+    platform: wifi
+    group_by: wifi_site
+    fields:
+      name: "{{ seg.wifi_net_name | default(omit) }}"
+      vlan_id: "{{ seg.vlan_id }}"
+      purpose: "vlan-only"
+    append: "{{ wifi_vlans_extra }}"

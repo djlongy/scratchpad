@@ -1,0 +1,26 @@
+---
+# ── ops_net_views — see the lists your views file produces ─────────────────
+#
+# Everything:
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/ops_net_views.yml
+#
+# One namespace, or one list:
+#   ... -e network_views_select=hypervisor
+#   ... -e network_views_select=hypervisor.port_groups
+#
+# One column out of one list:
+#   ... -e network_views_select=hypervisor.port_groups -e network_views_field=name
+#
+# The declaration beside its output, to see the mapping:
+#   ... -e network_views_select=firewall.interfaces -e network_views_explain=true
+#
+# Your own declarations instead of the shipped ones:
+#   ... -e network_views_file=/path/to/my-views.yml
+#
+# The catalog itself is controller-side data, so this never touches a host.
+
+- name: Network views
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - network_views

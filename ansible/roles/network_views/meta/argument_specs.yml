@@ -1,0 +1,23 @@
+---
+argument_specs:
+  main:
+    short_description: Build and display network views from a declarations file
+    options:
+      network_views_file:
+        type: str
+        required: false
+        description: Path to the YAML file declaring the views.
+      network_views_select:
+        type: str
+        required: false
+        description: >-
+          Narrow the output to one namespace ("hypervisor") or one list
+          ("hypervisor.port_groups"). Empty prints everything.
+      network_views_field:
+        type: str
+        required: false
+        description: Print a single column instead of whole rows.
+      network_views_explain:
+        type: bool
+        required: false
+        description: Print each view's declaration beside its output.

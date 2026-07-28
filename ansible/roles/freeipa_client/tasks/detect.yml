@@ -1,0 +1,150 @@
+---
+# roles/freeipa_client/tasks/detect.yml
+# READ-ONLY enrolment detection. Answers two questions and nothing else:
+#   _freeipa_client_healthy — is this host ALREADY correctly enrolled?
+#   _freeipa_client_stale   — is an existing enrolment broken / in the wrong realm?
+#
+# Imported from main.yml with `always`, so it runs under EVERY tag selection. That
+# matters for two reasons:
+#   1. enroll.yml derives ipaclient_force_join from _freeipa_client_healthy. Under a
+#      tag-isolated run the fact would otherwise be undefined, fall back to the raw
+#      inventory flag, and re-key a perfectly healthy client. The selection that
+#      actually exposed this is `--tags install`: every caller invokes the role with a
+#      role-level `tags: [freeipa_client, freeipa, enroll]`, so `enroll` cascades onto
+#      the whole role and does NOT isolate it — `install`/`certs`/`resilience` do.
+#   2. preflight.yml's stale-uninstall consumes _freeipa_client_stale; a --tags run
+#      that skipped detection would either fail hard or silently never rejoin.
+#
+# Contains no packages, no hostname change and no uninstall — every mutation stays in
+# preflight.yml under the `preflight` tag. Safe to run BEFORE those packages are
+# installed because it never assumes the client stack is present: the kinit probe is
+# itself guarded by a `command -v kinit` check, and a missing binary is recorded as
+# "unverified" rather than "broken" (which would trigger a destructive uninstall).
+
+- name: Check whether the host is already IPA-enrolled
+  ansible.builtin.stat:
+    path: /etc/ipa/default.conf
+  register: _freeipa_client_conf
+
+- name: Read current enrolment config (if enrolled)
+  ansible.builtin.slurp:
+    src: /etc/ipa/default.conf
+  register: _freeipa_client_conf_raw
+  when: _freeipa_client_conf.stat.exists
+
+- name: Parse current enrolment realm
+  ansible.builtin.set_fact:
+    # default([''], true) goes BEFORE first, not after. regex_search returns
+    # None when the file has no `realm =` line, and `None | first` raises
+    # TypeError — the trailing default never got the chance to catch it. A
+    # default.conf that exists but is missing the realm then failed detection
+    # outright, when "enrolled, realm unknown" is exactly the state a
+    # half-written or hand-edited conf is in.
+    _freeipa_client_current_realm: >-
+      {{ (_freeipa_client_conf_raw.content | b64decode
+          | regex_search('realm\s*=\s*(\S+)', '\1')
+          | default([''], true) | first | default('', true)) | trim }}
+  when: _freeipa_client_conf.stat.exists
+
+# Detection now runs BEFORE preflight installs krb5-workstation, so the kinit binary is
+# not guaranteed to exist even when /etc/ipa/default.conf does (a half-installed or
+# hand-broken host). Without this probe, `command: kinit` returns rc=2 ([Errno 2] No such
+# file or directory, neutralised by failed_when) — indistinguishable from a failed
+# authentication, which would mark the enrolment stale and UNINSTALL a client whose only
+# real problem is a missing package. Probe first and treat "cannot verify" as unverified
+# rather than broken. Mirrors preflight's `command -v ipa-client-install` guard.
+- name: Locate kinit before health-checking the enrolment
+  ansible.builtin.command: command -v kinit
+  register: _freeipa_client_kinit_bin
+  changed_when: false
+  failed_when: false
+  when:
+    - _freeipa_client_conf.stat.exists
+    - freeipa_client_rejoin_stale | bool
+
+# A FAILURE HERE UNINSTALLS THE ENROLMENT (in preflight.yml), so it must not trigger
+# on a blip. One unlucky kinit — a KDC restart, a moment of clock skew, crypto state
+# still settling right after a FIPS reboot — would otherwise tear down a perfectly
+# healthy client and force a full re-enrol, which destabilises krb5 for every task
+# that follows. Retry before concluding the enrolment is genuinely broken.
+- name: Health-check existing enrolment via host-keytab kinit
+  ansible.builtin.command: "kinit -k host/{{ freeipa_client_fqdn }}@{{ freeipa_client_realm }}"
+  register: _freeipa_client_kinit
+  until: _freeipa_client_kinit.rc == 0
+  retries: 3
+  delay: 5
+  changed_when: false
+  failed_when: false
+  become: true                           # /etc/krb5.keytab is root-only; non-root → "no suitable keys"
+  when:
+    - _freeipa_client_conf.stat.exists
+    - freeipa_client_rejoin_stale | bool
+    - (_freeipa_client_kinit_bin.rc | default(1)) == 0
+
+- name: Destroy health-check ticket
+  ansible.builtin.command: kdestroy
+  changed_when: false
+  failed_when: false
+  become: true                           # clear the root ccache the kinit above created
+  when:
+    - _freeipa_client_conf.stat.exists
+    - freeipa_client_rejoin_stale | bool
+    - (_freeipa_client_kinit_bin.rc | default(1)) == 0
+
+# Did the keytab actually authenticate? Only true when the probe RAN and succeeded, so a
+# missing kinit binary reads as "unverified", never as "verified broken".
+- name: Record whether the host keytab was actually verified
+  ansible.builtin.set_fact:
+    _freeipa_client_kinit_verified: >-
+      {{ (_freeipa_client_conf.stat.exists | bool)
+         and (freeipa_client_rejoin_stale | bool)
+         and ((_freeipa_client_kinit_bin.rc | default(1)) == 0)
+         and ((_freeipa_client_kinit.rc | default(1)) == 0) }}
+
+# STALE = positively broken. A realm mismatch is decided from config alone, so it stands
+# on its own. A failed kinit only counts when the binary was present — otherwise a missing
+# package would masquerade as a dead keytab and trigger a destructive uninstall.
+- name: Decide whether the enrolment is stale and needs a rejoin
+  ansible.builtin.set_fact:
+    _freeipa_client_stale: >-
+      {{ (freeipa_client_force_rejoin | bool)
+         or (_freeipa_client_conf.stat.exists and freeipa_client_rejoin_stale | bool and (
+              (_freeipa_client_current_realm | default('')) != freeipa_client_realm
+              or (((_freeipa_client_kinit_bin.rc | default(1)) == 0)
+                  and (_freeipa_client_kinit.rc | default(1)) != 0)
+         )) }}
+
+# HEALTHY = enrolled here, in the right realm, with a host keytab PROVEN to authenticate.
+# This is the gate that keeps ipaclient_force_join off on a converge: upstream treats
+# force_join as "purge /etc/krb5.keytab (ipa-rmkeytab -r REALM) and re-join", which is
+# correct for a rebuilt guest and pure churn for a working one.
+#
+# Requires positive proof, not merely the absence of a stale verdict — otherwise the
+# "cannot verify" case (kinit binary missing) would read as healthy, suppress force_join,
+# and leave a genuinely broken keytab unrepaired. Unverified → not healthy → force_join
+# still applies if the operator set it, which regenerates the keytab WITHOUT the
+# destructive uninstall a stale verdict would trigger.
+#
+# When freeipa_client_rejoin_stale is false there is no kinit evidence by design, so an
+# existing enrolment is taken at face value — the same assumption the rest of the role
+# already makes in that mode.
+- name: Decide whether the existing enrolment is healthy
+  ansible.builtin.set_fact:
+    _freeipa_client_healthy: >-
+      {{ (_freeipa_client_conf.stat.exists | bool)
+         and (not (_freeipa_client_stale | bool))
+         and ((_freeipa_client_kinit_verified | bool)
+              or (not (freeipa_client_rejoin_stale | bool))) }}
+
+- name: Report enrolment state
+  ansible.builtin.debug:
+    msg: >-
+      enrolled={{ _freeipa_client_conf.stat.exists }}
+      current_realm={{ _freeipa_client_current_realm | default('none') }}
+      target_realm={{ freeipa_client_realm }}
+      kinit_binary={{ 'present' if (_freeipa_client_kinit_bin.rc | default(1)) == 0
+                      else 'MISSING (keytab unverifiable)' }}
+      host_keytab_kinit_rc={{ _freeipa_client_kinit.rc | default('n/a') }}
+      keytab_verified={{ _freeipa_client_kinit_verified }}
+      healthy={{ _freeipa_client_healthy }}
+      needs_rejoin={{ _freeipa_client_stale }}

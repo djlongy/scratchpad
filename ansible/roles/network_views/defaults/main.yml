@@ -1,0 +1,44 @@
+---
+# ── network_views — the knobs ──────────────────────────────────────────────
+# This role builds the lists declared in a views file and prints them. It
+# changes nothing on any host.
+
+# The declarations. Point this at your own file to use a different set.
+#   -e network_views_file=/path/to/my-views.yml
+network_views_file: "{{ playbook_dir }}/networks_views.yml"
+
+# What to print. Empty prints every list.
+#   -e network_views_select=hypervisor                 one namespace
+#   -e network_views_select=hypervisor.port_groups     one list
+network_views_select: ""
+
+# Print one column instead of whole rows. Needs a single list selected.
+#   -e network_views_select=hypervisor.port_groups -e network_views_field=name
+network_views_field: ""
+
+# Print the raw declaration next to its output, so the mapping is visible.
+network_views_explain: false
+
+# ── What the role hands back ───────────────────────────────────────────────
+# Not knobs — set by the role, listed here because a consuming role needs to
+# know the name. This is the whole point of running it before another role:
+#
+#   network_views_built   {namespace: {list: [rows]}} — every declared list
+#
+# Same play, same host:
+#   - role: network_views
+#   - role: config_switch
+#     vars:
+#       switch_vlans: "{{ network_views_built.switches.vlans }}"
+#
+# Built on the controller, consumed on a device — set_fact is host-scoped,
+# so the second play reads it off localhost:
+#   - hosts: switches
+#     roles:
+#       - role: config_switch
+#         vars:
+#           switch_vlans: >-
+#             {{ hostvars['localhost'].network_views_built.switches.vlans }}
+#
+# network_views_refs and network_views_chosen are internal bookkeeping for
+# the printing tasks; nothing outside this role should read them.

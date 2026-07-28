@@ -302,7 +302,7 @@ Every list the estate currently derives, and what is special about each:
 | Output | Selects (membership) | Row shape for | Special behaviour |
 |---|---|---|---|
 | `_net.hypervisor.port_groups` | `hypervisor` | distributed switch port groups | Appends `hv_port_groups_extra` (the TRUNK row) |
-| `_net.hypervisor.hv_mgr_portgroups` | *(chained from `port_groups`)* | `community.portgroup module.portgroup module` | `security:` emitted only when a row relaxes something; `vlan_trunk` left out when empty/false |
+| `_net.hypervisor.hv_mgr_portgroups` | *(chained from `port_groups`)* | shaped for a distributed-switch portgroup module | `security:` emitted only when a row relaxes something; `vlan_trunk` left out when empty/false |
 | `_net.switches.vlans` | `switches` | the switch fabric VLANs | Uses `short_name` (no `VLANnn` in the label) |
 | `_net.edge.interfaces` | `edge`, tagged only | edge L3 subinterfaces | `consts` inject parent IF + VR; `ip` is the segment **gateway** (the subinterface *is* the gateway) |
 | `_net.edge.zones` | *(chained from `interfaces`)* | edge zones | `unique_by: name` dedupes to distinct zones |
@@ -536,7 +536,8 @@ recipe here is `[vlan, env, role]`, which already gives you
 
 ```yaml
 - name: Reconcile distributed switch port groups
-  community.portgroup module.portgroup module:
+  # Substitute your platform's port-group module.
+  your_collection.dvs_portgroup:
     portgroup_name: "{{ item.name }}"          # honours pins
     vlan_id: "{{ item.vlan_id }}"
     switch_name: "{{ item.hv_vswitch }}"
