@@ -441,7 +441,7 @@ def _ssh_iface(ssh_local_ip: str, default_iface: str | None,
     return render(expr, scope)
 
 
-ADDRS = {"ens192": "192.168.10.92", "ens224": "192.168.50.92", "ens256": "10.0.1.92"}
+ADDRS = {"ens192": "192.168.10.92", "ens224": "192.168.50.92", "ens256": "10.50.1.92"}
 
 
 def test_ssh_session_nic_beats_the_default_route_nic() -> None:
@@ -487,10 +487,10 @@ def _zones_for(source: str, pairs: list[dict[str, str]]) -> set[str]:
 def test_inline_zone_sources_are_collected_alongside_bindings() -> None:
     pairs = _pairs(
         [{"zone": "mgmt", "source": "192.168.10.0/24"}],
-        [{"name": "data", "sources": ["10.0.1.0/24"]}],
+        [{"name": "data", "sources": ["10.50.1.0/24"]}],
     )
     assert _zones_for("192.168.10.0/24", pairs) == {"mgmt"}
-    assert _zones_for("10.0.1.0/24", pairs) == {"data"}
+    assert _zones_for("10.50.1.0/24", pairs) == {"data"}
 
 
 def test_dual_bind_across_inline_and_binding_is_now_visible() -> None:
