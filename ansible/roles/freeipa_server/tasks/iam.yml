@@ -1079,9 +1079,19 @@
     # `rejectattr('name', 'in', …)` let a declared `Admins` through as an eviction
     # candidate while the realm resolved it to the protected `admins`. The candidate
     # entries emitted are the VERBATIM group dicts, untouched.
+    #
+    # Candidates come from the DECLARED effective set (2026/07/29), not the membership
+    # payload. Sourcing `_freeipa_iam_usergroups_members` skipped every declared group
+    # whose LAST declared member was just removed — the group fell out of the payload,
+    # out of the candidate list, and the managed dropper kept the access forever (the
+    # declarative strip skips it too, correctly: absent != empty). Eviction is the pass
+    # built for exactly that case — (current ∩ managed) − desired removes only accounts
+    # this role created, so a memberless candidate with desired=[] evicts managed
+    # droppers and never touches out-of-band/system members. `state: absent` groups are
+    # excluded: they are being deleted, not membership-reconciled.
     _freeipa_iam_evict_candidates: >-
-      {{ (_freeipa_iam_usergroups_members | default([])
-          | zip(_freeipa_iam_usergroups_members | default([]) | map(attribute='name')
+      {{ (_freeipa_iam_evictable_declared
+          | zip(_freeipa_iam_evictable_declared | map(attribute='name')
                 | map('trim') | map('lower') | list)
           | rejectattr('1', 'in', _freeipa_iam_strip_exempt_groups
                                   | map('trim') | map('lower') | list)
@@ -1089,6 +1099,16 @@
           | list)
          if (_freeipa_iam_strip_memberships | bool) else [] }}
     _freeipa_iam_evict_payload: []
+  vars:
+    # Two-part select instead of `rejectattr('state', 'equalto', 'absent')` alone:
+    # comparing an UNDEFINED attribute is undefined-typed on 2.19+, so the single
+    # rejectattr form is a trap; `selectattr('state', 'undefined')` is decidable.
+    _freeipa_iam_evictable_declared: >-
+      {{ (freeipa_iam_usergroups_effective | default([], true)
+          | selectattr('state', 'undefined') | list)
+         + (freeipa_iam_usergroups_effective | default([], true)
+            | selectattr('state', 'defined')
+            | rejectattr('state', 'equalto', 'absent') | list) }}
   no_log: "{{ ansible_verbosity < 2 }}"
 
 # ONE group-find covers every group's current members, and the payload compiles in
