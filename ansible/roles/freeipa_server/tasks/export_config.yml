@@ -70,24 +70,47 @@
     _freeipa_export: "{{ _freeipa_export | freeipa_export_scope(freeipa_server_export_scope, freeipa_server_export_scope_mode) }}"
   when: freeipa_server_export_scope | default([]) | length > 0
 
-# A relative dest is resolved against the PLAYBOOK directory by the template action, not
-# the working directory — so a relative value writes the realm dump somewhere inside the
-# repo, which is both surprising and a commit risk. Fail early and say where it would land.
-- name: Export | Require an absolute output path (a relative one lands in the repo tree)
+- name: Export | Assert the output path is set
   ansible.builtin.assert:
     that:
-      - freeipa_server_export_output is match('^/')
-    fail_msg: >-
-      freeipa_server_export_output must be an ABSOLUTE path on the control node; got
-      '{{ freeipa_server_export_output }}'. A relative value is resolved against the
-      playbook directory, so the snapshot would be written inside the repository
-      (and a custom filename escapes the .gitignore that currently masks this).
+      - freeipa_server_export_output | default('') | length > 0
+    fail_msg: freeipa_server_export_output must not be empty.
     quiet: true
+
+# The template action resolves a relative dest against the PLAYBOOK directory — never
+# what a human means by "./snapshot.yml". Instead of refusing relative paths (the old
+# behaviour), resolve them explicitly against the directory ansible-playbook was
+# INVOKED from ($PWD), falling back to the playbook directory when $PWD is unset
+# (cron/CI). '~' passes through — the template action expands it on localhost.
+- name: Export | Resolve the output path (relative = invocation cwd)
+  vars:
+    # Hoisted so the unit harness can replay the set_fact expression without a
+    # live lookup plugin: the env read happens here, the arithmetic below.
+    _freeipa_export_cwd: "{{ lookup('ansible.builtin.env', 'PWD') | default(playbook_dir, true) }}"
+  ansible.builtin.set_fact:
+    _freeipa_export_output: >-
+      {{ freeipa_server_export_output
+         if freeipa_server_export_output is match('^[/~]')
+         else _freeipa_export_cwd.rstrip('/') ~ '/' ~ freeipa_server_export_output }}
+
+# The old absolute-only assert existed for one reason: a snapshot inside the repo is a
+# commit risk (only the default filename pattern is gitignored). That concern survives
+# as a loud warning instead of a refusal — the path is now explicit and predictable,
+# so where it lands is the operator's call, but never a silent one.
+- name: Export | Warn when the snapshot lands inside the repository tree
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: resolved export path '{{ _freeipa_export_output }}' is INSIDE the
+      repository tree. Only the default snapshot filename pattern
+      (freeipa.config.snapshot*.yml) is gitignored — a custom filename here is one
+      broad `git add` away from committing the realm's full user/group/rule
+      inventory. Move it out of the repo or confirm it stays untracked.
+  when: (playbook_dir | dirname | dirname) in _freeipa_export_output
 
 - name: Export | Render the snapshot group_vars file on the control node
   ansible.builtin.template:
     src: freeipa.config.snapshot.yml.j2
-    dest: "{{ freeipa_server_export_output }}"
+    dest: "{{ _freeipa_export_output }}"
     mode: "0640"
   delegate_to: localhost
   become: false
@@ -96,5 +119,5 @@
   ansible.builtin.debug:
     msg: >-
       Captured {{ _freeipa_export.meta.realm }} from {{ _freeipa_export.meta.source }}
-      → {{ freeipa_server_export_output }} ({{ _freeipa_export.meta.counts | to_json }}).
+      → {{ _freeipa_export_output }} ({{ _freeipa_export.meta.counts | to_json }}).
       Move it into an inventory group_vars to reapply with this role.

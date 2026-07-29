@@ -663,13 +663,13 @@ freeipa_iam_hbac_rules_disable: []
 # Snapshot a LIVE FreeIPA into this role's declarative contract (read-only) to adopt an existing
 # instance. Output path on the control node (move into inventory group_vars to apply).
 #
-# ABSOLUTE by default, and asserted absolute in export_config.yml. A bare relative name is
-# resolved by the template action against the PLAYBOOK directory, not the working directory,
-# so the previous default silently wrote a full realm dump into playbooks/ inside the repo.
-# It stayed uncommitted only because .gitignore happens to carry
-# `**/freeipa.config.snapshot*.yml` — an operator who sets a different filename loses that
-# accident and commits the realm's user/group/rule inventory. /tmp keeps the artefact outside
-# the working tree; the operator moves it into group_vars deliberately.
+# Absolute, '~', or RELATIVE. A relative value is resolved against the directory
+# ansible-playbook was invoked from ($PWD; playbook dir when unset), NOT the playbook
+# directory — so `./snapshot.yml` means what a human expects. If the resolved path lands
+# inside the repository tree, export_config.yml warns loudly: only the default filename
+# pattern `**/freeipa.config.snapshot*.yml` is gitignored, so a custom filename inside the
+# repo risks committing the realm's user/group/rule inventory. /tmp default keeps the
+# artefact outside the working tree; the operator moves it into group_vars deliberately.
 freeipa_server_export_output: "/tmp/freeipa.config.snapshot.yml"
 freeipa_server_export_include_host_membership: false  # pin static hostgroup rosters (default: enrol/automember own them)
 freeipa_server_export_include_sshkeys: false          # emit per-user SSH public keys

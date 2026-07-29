@@ -564,9 +564,11 @@ argument_specs:
       freeipa_server_export_output:
         type: str
         description: >-
-          ABSOLUTE control-node path for the config snapshot written by --tags export.
-          Must start with '/' (asserted): a relative value is resolved against the
-          playbook directory, which writes the realm dump inside the repository.
+          Control-node path for the config snapshot written by --tags export.
+          Absolute, '~', or relative — a relative value resolves against the
+          directory ansible-playbook was invoked from ($PWD; playbook dir when
+          unset). A resolved path inside the repository tree warns loudly (only
+          the default snapshot filename pattern is gitignored).
       freeipa_server_export_include_host_membership:
         type: bool
         description: Pin static hostgroup rosters in the snapshot (default off — enrolment/automember own them).
