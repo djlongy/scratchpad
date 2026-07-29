@@ -233,13 +233,41 @@ def test_identity_merge_carries_every_object_type(fp):
          "freeipa_iam_hostgroups": [{"name": "acme-hosts"}]},   # full snapshot key passes through
         {"tenant": "global", "shared": True,
          "hbac_rules": [{"name": "allow-all"}],
+         "breakglass_accounts": [{"name": "bg-root", "givenname": "Break", "sn": "Glass"}],
          "freeipa_server_dns_zones": [{"name": "example.com"}]},
     ]
     obj = fp.freeipa_iam_identity_merge(files)["objects"]
     assert [r["name"] for r in obj["freeipa_iam_hbac_rules"]] == ["acme-ssh", "allow-all"]
     assert [r["name"] for r in obj["freeipa_iam_sudo_rules"]] == ["acme-sudo"]
     assert [h["name"] for h in obj["freeipa_iam_hostgroups"]] == ["acme-hosts"]
+    assert [u["name"] for u in obj["freeipa_iam_breakglass_accounts"]] == ["bg-root"]
     assert [z["name"] for z in obj["freeipa_server_dns_zones"]] == ["example.com"]
+
+
+def test_breakglass_accounts_are_tenant_declarable(fp):
+    """Break-glass accounts may be declared in a tenant file.
+
+    Both the short alias and the full role var route to
+    freeipa_iam_breakglass_accounts, concatenating across tenants like every
+    other object list. Downstream (iam_desired.yml) folds them into the working
+    user set and auto-adds them to freeipa_iam_protected_users, so a
+    tenant-declared break-glass account gets the same never-delete/never-archive
+    shield as a group_vars-declared one. The one-character typo still raises —
+    the closed allow-list is relaxed by one named key, not reopened.
+    """
+    merged = fp.freeipa_iam_identity_merge([
+        {"tenant": "acme",
+         "breakglass_accounts": [{"name": "bg-acme", "givenname": "Break", "sn": "Glass"}]},
+        {"tenant": "global",
+         "freeipa_iam_breakglass_accounts": [{"name": "bg-root", "givenname": "Break", "sn": "Glass"}]},
+    ])
+    assert [u["name"] for u in merged["objects"]["freeipa_iam_breakglass_accounts"]] == [
+        "bg-acme", "bg-root"]
+
+    with pytest.raises(Exception) as exc:
+        fp.freeipa_iam_identity_merge(
+            [{"tenant": "acme", "breakglass_account": [{"name": "bg-acme"}]}])
+    assert "breakglass_account" in str(exc.value)
 
 
 def test_identity_merge_concatenates_rbac_overlay_across_tenants(fp):

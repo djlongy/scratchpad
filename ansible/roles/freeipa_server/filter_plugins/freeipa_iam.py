@@ -248,6 +248,7 @@ _FREEIPA_IDENTITY_ALIASES = {
     "iparoles": "freeipa_iam_iparoles",
     "pwpolicies": "freeipa_iam_pwpolicies",
     "service_accounts": "freeipa_iam_service_accounts",
+    "breakglass_accounts": "freeipa_iam_breakglass_accounts",
     "automember": "freeipa_server_automember_rules",
     "dns_zones": "freeipa_server_dns_zones",
     "dns_records": "freeipa_server_dns_records",
