@@ -270,6 +270,46 @@ def test_breakglass_accounts_are_tenant_declarable(fp):
     assert "breakglass_account" in str(exc.value)
 
 
+def test_helper_keys_give_include_vars_flexibility(fp):
+    """A tenant file composes like a normal include_vars file.
+
+    The include_vars load resolves a tenant file's Jinja against its OWN keys, so
+    `t: beta` + `name: "{{ t }}-group"` (and `users: "{{ admins + operators }}"`)
+    arrive here already resolved — the merge just has to not choke on the leftover
+    building blocks. Helpers of ANY shape and ANY innocent name pass free and must
+    never leak into the objects dict (they would become set_fact'd vars). Only a
+    key the resemblance guard reads as a typo'd object key is refused — carrying
+    'freeipa', containing a known alias, or difflib-close to one — and the error
+    TEACHES the leading-underscore escape hatch ('_my_users').
+    """
+    merged = fp.freeipa_iam_identity_merge([{
+        "tenant": "beta",
+        "t": "beta",                                 # scalar building block
+        "admins": [{"name": "beta.dave"}],           # bare helper list
+        "_defaults": {"shell": "/bin/bash"},         # underscore helper dict
+        # what `groups: [{name: "{{ t }}-group"}]` resolves to by load time:
+        "groups": [{"name": "beta-group"}],
+        "users": [{"name": "beta.dave"}, {"name": "beta.erin"}],
+    }])
+    assert [u["name"] for u in merged["objects"]["freeipa_iam_users"]] == [
+        "beta.dave", "beta.erin"]
+    assert [g["name"] for g in merged["objects"]["freeipa_iam_usergroups"]] == [
+        "beta-group"]
+    declared = set(merged["objects"])
+    assert declared == {"freeipa_iam_users", "freeipa_iam_usergroups"}, (
+        f"helper keys must never become object vars: {declared}")
+
+    # An object-ish unknown key still raises in ANY shape — and names the escape hatch.
+    with pytest.raises(Exception) as exc:
+        fp.freeipa_iam_identity_merge(
+            [{"tenant": "beta", "my_users": [{"name": "beta.dave"}]}])
+    assert "_my_users" in str(exc.value), (
+        f"the rejection must teach the underscore escape hatch: {exc.value}")
+    with pytest.raises(Exception):
+        fp.freeipa_iam_identity_merge(
+            [{"tenant": "beta", "usergroups": {"a": 1}}])
+
+
 def test_identity_merge_concatenates_rbac_overlay_across_tenants(fp):
     # freeipa_server_rbac_roles (WYSIWYG flat LIST) rides the tenant loader like any
     # other freeipa_* list key — each tenant contributes its own overlay slice.

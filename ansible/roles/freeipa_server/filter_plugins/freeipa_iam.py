@@ -31,6 +31,7 @@ Unit tests: ansible/tests/unit/roles/test_freeipa_iam_filters.py (CI-enforced).
 """
 from __future__ import annotations
 
+import difflib
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -344,6 +345,36 @@ def freeipa_iam_identity_merge(files: list[dict]) -> dict:
     return result
 
 
+def _resembles_object_key(key: str) -> bool:
+    """Does an UNKNOWN tenant-file key look like a typo'd object key?
+
+    The guard that separates helper freedom from the measured disaster class:
+    `freeipa_iam_usergroup` (one character short) once silently dropped 71 of 96
+    groups from the desired state — past every breaker, hard-deleted under
+    freeipa_server_authoritative. Three deterministic tests, any hit = reject:
+
+      * carries the role's namespace ('freeipa' anywhere, case-insensitive) —
+        nobody names a helper that; it is always a mistyped role var;
+      * contains a known short alias as a substring ('usergroups', 'my_users') —
+        plausibly meant to declare those objects;
+      * fuzzy-close to a known alias or object var (difflib >= 0.75:
+        'sudorules', 'hbac_rule', 'dns_recods').
+
+    Anything else ('t', 'local_env', 'prefix', 'admins') is an innocent
+    tenant-local helper and is skipped without ceremony. A helper whose name
+    trips this guard is still one underscore away ('_my_users') — the rejection
+    message teaches that.
+    """
+    k = key.lower()
+    if "freeipa" in k:
+        return True
+    if any(alias in k for alias in _FREEIPA_IDENTITY_ALIASES):
+        return True
+    return bool(difflib.get_close_matches(
+        k, list(_FREEIPA_IDENTITY_ALIASES) + sorted(_FREEIPA_KNOWN_OBJECT_VARS),
+        n=1, cutoff=0.75))
+
+
 def _merge_identity_entry(entry: dict, result: dict) -> None:
     """Fold one tenant file's object lists into the realm-wide result (in place)."""
     tenant = entry.get("tenant", "")
@@ -355,17 +386,38 @@ def _merge_identity_entry(entry: dict, result: dict) -> None:
             # Skipped exactly as before — the only change is that it is now audible.
             _warn_export_meta_ignored(key, tenant)
             continue
+        if key.startswith("_"):
+            # Explicit tenant-local HELPER namespace: a leading underscore always
+            # means "mine, not an object list" — skipped in ANY shape, exempt from
+            # the resemblance guard below. The escape hatch for a helper whose
+            # natural name looks object-ish ('_my_users').
+            continue
+        if key not in _FREEIPA_IDENTITY_ALIASES and key not in _FREEIPA_KNOWN_OBJECT_VARS:
+            # UNKNOWN key: a tenant file works like a normal include_vars file, so
+            # ad-hoc building blocks (`t: beta`, `admins: [...]` templated into
+            # object lists) are allowed in any shape and simply skipped by the
+            # merge. The ONE exception is a key that looks like a typo'd object
+            # key — silently skipping that is the measured delete-everything
+            # hazard, so it fails loud instead.
+            if _resembles_object_key(key):
+                raise AnsibleFilterError(
+                    f"tenant file (tenant '{tenant or '(unset)'}'): unknown key "
+                    f"'{key}' looks like a mistyped OBJECT key (e.g. "
+                    "'freeipa_iam_usergroup' vs 'freeipa_iam_usergroups'). An "
+                    "unrecognised key used to be accepted silently, leaving the "
+                    "real list empty — which a destructive reconcile reads as "
+                    "'delete everything of that type'. If this IS the object list, "
+                    "fix the spelling (server settings belong in group_vars, not a "
+                    "tenant file). If it is a tenant-local HELPER var whose name "
+                    "just happens to look object-ish, mark it with a leading "
+                    f"underscore: '_{key}'.")
+            continue
         if not isinstance(value, list):
-            # A tenant file's helper scalars (local_env, name-prefix vars, ...) are
-            # legitimately non-list and are skipped. A KNOWN object key carrying a
-            # non-list is operator error — dropping it would silently erase those
-            # objects from the desired state (and, under authoritative, off the
-            # realm), so it fails loud instead. `None` (an empty `users:` key)
-            # stays a skip: declaring nothing is not an error.
-            if value is not None and (
-                key in _FREEIPA_IDENTITY_ALIASES
-                or key.startswith(("freeipa_iam_", "freeipa_server_"))
-            ):
+            # A KNOWN object key carrying a non-list is operator error — dropping
+            # it would silently erase those objects from the desired state (and,
+            # under authoritative, off the realm), so it fails loud. `None` (an
+            # empty `users:` key) stays a skip: declaring nothing is not an error.
+            if value is not None:
                 raise AnsibleFilterError(
                     f"tenant file (tenant '{tenant or '(unset)'}'): key '{key}' must "
                     f"be a LIST of objects, got {type(value).__name__}. A single "
@@ -374,19 +426,6 @@ def _merge_identity_entry(entry: dict, result: dict) -> None:
                     "file (snapshot metadata from --tags export is skipped already)."
                 )
             continue
-        # CLOSED allow-list. An unknown LIST key used to fall through to a var of its
-        # own literal name: `freeipa_iam_usergroup` (one character short) minted a junk
-        # var while freeipa_iam_usergroups stayed at its [] default. Measured on the live
-        # tenant files that single typo drops 71 of 96 groups — past every breaker, and
-        # hard-deleted under freeipa_server_authoritative. Reject instead of guess.
-        if key not in _FREEIPA_IDENTITY_ALIASES and key not in _FREEIPA_KNOWN_OBJECT_VARS:
-            raise AnsibleFilterError(
-                f"tenant file (tenant '{tenant or '(unset)'}'): unknown key '{key}'. "
-                "A tenant file may only declare identity object lists. Check for a typo "
-                "(e.g. 'freeipa_iam_usergroup' vs 'freeipa_iam_usergroups') — an "
-                "unrecognised key used to be accepted silently, leaving the real list "
-                "empty, which a destructive reconcile reads as 'delete everything'. "
-                "Server settings belong in group_vars, not a tenant file.")
         target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
         result["objects"].setdefault(target, []).extend(value)
         if target == _FREEIPA_USERS_VAR:
