@@ -74,12 +74,12 @@ freeipa_server_dns_zones:
   - { name: "{{ dns_zone }}.", dynamic_update: true, allow_sync_ptr: false }
 
 freeipa_server_dns_records:
-  - { zone_name: 100.51.198.in-addr.arpa., records: [{record_name: '17', ptr_record: ["deva-idm-01.{{ dns_zone }}."]}] }
+  - { zone_name: 100.51.198.in-addr.arpa., records: [{record_name: '17', ptr_record: ["idm-01.{{ dns_zone }}."]}] }
   - zone_name: "{{ dns_zone }}."
     records:
       - { record_name: _kerberos, txt_record: ['"{{ dns_zone | upper }}"'] }
-      - { record_name: _ldap._tcp, srv_record: ["0 100 389 deva-idm-01.{{ dns_zone }}."] }
-      - { record_name: deva-idm-01, a_record: [198.51.100.17] }
+      - { record_name: _ldap._tcp, srv_record: ["0 100 389 idm-01.{{ dns_zone }}."] }
+      - { record_name: idm-01, a_record: [198.51.100.17] }
 
 freeipa_server_automember_rules:
   # rule name matches the hostgroup it feeds; the fqdn regex embeds the SAME header tokens

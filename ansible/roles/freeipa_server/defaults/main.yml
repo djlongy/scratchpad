@@ -211,7 +211,11 @@ freeipa_server_crypto_policy: ""                    # "" → report only; e.g. "
 # file behaves like any inventory YAML: a value can reference ANY other var the file defines
 # (native self-reference, e.g. name: "{{ hg_prefix }}-all") plus group_vars, and can pull a whole
 # list from a group_var. {{ env }} = inventory env; define your own scalar for a per-file variant.
-# Empty = legacy mode (set the lists directly in group_vars). Inventory sets "{{ inventory_dir }}/tenants".
+# Empty = legacy mode (set the lists directly in group_vars). Inventory sets
+# "{{ inventory_dir }}/tenants" — keep the directory OUT of any location Ansible auto-loads,
+# because nothing auto-loads these files (not group_vars/host_vars/vars_files): the role globs
+# this path and include_vars each file explicitly. Where playbooks sit in their own subdirectory,
+# "{{ playbook_dir }}/../tenants" keeps that visible in the value itself.
 # See tasks/load_tenants.yml + load_one_tenant.yml.
 freeipa_iam_tenants_dir: ""
 freeipa_iam_managed_group: "iam-managed-users"
