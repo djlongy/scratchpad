@@ -426,6 +426,18 @@ def _merge_identity_entry(entry: dict, result: dict) -> None:
                     "file (snapshot metadata from --tags export is skipped already)."
                 )
             continue
+        if not value:
+            # Declared-empty PLACEHOLDER (`dns_records: []`): a tenant file keeps
+            # the key for human layout symmetry without declaring anything. It
+            # contributes nothing AND must not create the merged key — an empty
+            # merged key would be set_fact'd by load_tenants.yml, which outranks
+            # inventory group_vars, so a placeholder could silently clobber an
+            # inventory-declared list with []. Objects merge by concatenation
+            # across tenants, so a placeholder never erases another tenant's
+            # objects either way; this makes it contribute exactly nothing in
+            # every mode. Estate-wide emptiness stays guarded downstream: the
+            # reconcile refuses an ALL-empty desired set (see reconcile.yml).
+            continue
         target = _FREEIPA_IDENTITY_ALIASES.get(key, key)
         result["objects"].setdefault(target, []).extend(value)
         if target == _FREEIPA_USERS_VAR:

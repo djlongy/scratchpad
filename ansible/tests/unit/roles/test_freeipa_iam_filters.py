@@ -310,6 +310,33 @@ def test_helper_keys_give_include_vars_flexibility(fp):
             [{"tenant": "beta", "usergroups": {"a": 1}}])
 
 
+def test_empty_list_is_a_placeholder_not_a_delete_instruction(fp):
+    """`dns_records: []` in one tenant file is layout symmetry, not semantics.
+
+    Objects merge by CONCATENATION, so a placeholder can never subtract another
+    tenant's objects. The sharper half: a placeholder must not even MINT the
+    merged key, because load_tenants.yml set_facts every merged key and set_fact
+    outranks inventory group_vars — an empty merged key would silently clobber
+    an inventory-declared list with []. Estate-wide emptiness is still refused
+    downstream by reconcile.yml's all-empty breaker; that guard is about the
+    whole desired state, not a file.
+    """
+    merged = fp.freeipa_iam_identity_merge([
+        {"tenant": "acme",
+         "freeipa_server_dns_records": [{"zone_name": "example.com", "name": "app",
+                                         "a_ip_address": "192.0.2.10"}]},
+        {"tenant": "beta",
+         "freeipa_server_dns_records": [],      # placeholder
+         "groups": []},                         # placeholder via short alias
+    ])
+    records = merged["objects"]["freeipa_server_dns_records"]
+    assert [r["name"] for r in records] == ["app"], (
+        "a placeholder [] must never subtract another tenant's objects")
+    assert "freeipa_iam_usergroups" not in merged["objects"], (
+        "a placeholder-only type must not mint the merged key — load_tenants "
+        "would set_fact it over inventory group_vars")
+
+
 def test_identity_merge_concatenates_rbac_overlay_across_tenants(fp):
     # freeipa_server_rbac_roles (WYSIWYG flat LIST) rides the tenant loader like any
     # other freeipa_* list key — each tenant contributes its own overlay slice.
