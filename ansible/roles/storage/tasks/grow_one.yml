@@ -10,7 +10,8 @@
 
 - name: "{{ vol.name }} | find parent disk of {{ _g_dev }}"
   become: true  # root: inspects block device
-  ansible.builtin.command: "lsblk -ndo PKNAME {{ _g_dev }}"
+  ansible.builtin.command:
+    argv: [lsblk, -ndo, PKNAME, "{{ _g_dev }}"]
   register: _g_pk
   changed_when: false
   failed_when: false
@@ -28,7 +29,8 @@
 
 - name: "{{ vol.name }} | grow partition {{ vol.partition_number }}"
   become: true  # root: growpart rewrites the partition table
-  ansible.builtin.command: "growpart /dev/{{ _g_disk_name }} {{ vol.partition_number }}"
+  ansible.builtin.command:
+    argv: [growpart, "/dev/{{ _g_disk_name }}", "{{ vol.partition_number }}"]
   register: _g_growpart
   changed_when: "'CHANGED' in _g_growpart.stdout"
   failed_when:
@@ -57,7 +59,8 @@
   # pvresize always reports "resized or updated" even on a no-op, so it is
   # not a reliable change signal; actual growth surfaces via lvextend below.
   become: true  # root: LVM pvresize
-  ansible.builtin.command: "pvresize {{ item }}"
+  ansible.builtin.command:
+    argv: [pvresize, "{{ item }}"]
   register: _g_pvresize
   changed_when: false
   loop: "{{ _g_vg_pvs if (_g_vg_pvs | length > 0) else ([vol._pv] | select | list) }}"
@@ -95,7 +98,8 @@
 # All only grow (lvextend refuses to shrink → rc 3/5 = no-op).
 - name: "{{ vol.name }} | extend logical volume (free-relative +{{ vol.size }})"
   become: true  # root: LVM lvextend
-  ansible.builtin.command: "lvextend -l +{{ vol.size }} {{ vol.vg }}/{{ vol.lv }}"
+  ansible.builtin.command:
+    argv: [lvextend, -l, "+{{ vol.size }}", "{{ vol.vg }}/{{ vol.lv }}"]
   register: _g_lvextend_free
   changed_when: _g_lvextend_free.rc == 0
   failed_when: _g_lvextend_free.rc not in [0, 3, 5]
@@ -106,7 +110,8 @@
 
 - name: "{{ vol.name }} | extend logical volume to {{ vol.size }}"
   become: true  # root: LVM lvextend
-  ansible.builtin.command: "lvextend -l {{ vol.size }} {{ vol.vg }}/{{ vol.lv }}"
+  ansible.builtin.command:
+    argv: [lvextend, -l, "{{ vol.size }}", "{{ vol.vg }}/{{ vol.lv }}"]
   register: _g_lvextend_vg
   changed_when: _g_lvextend_vg.rc == 0
   failed_when: _g_lvextend_vg.rc not in [0, 3, 5]
@@ -117,7 +122,8 @@
 
 - name: "{{ vol.name }} | extend logical volume to {{ vol.size }}"
   become: true  # root: LVM lvextend
-  ansible.builtin.command: "lvextend -L {{ vol.size }} {{ vol.vg }}/{{ vol.lv }}"
+  ansible.builtin.command:
+    argv: [lvextend, -L, "{{ vol.size }}", "{{ vol.vg }}/{{ vol.lv }}"]
   register: _g_lvextend_abs
   changed_when: _g_lvextend_abs.rc == 0
   failed_when: _g_lvextend_abs.rc not in [0, 3, 5]
@@ -159,10 +165,14 @@
 
 - name: "{{ vol.name }} | grow {{ vol.fstype }} filesystem"
   become: true  # root: xfs_growfs / resize2fs
-  ansible.builtin.command: >-
-    {{ storage_fs_grow[vol.fstype]
-       | replace('{mount}', vol.mount | default(''))
-       | replace('{dev}', vol._dm_dev | default('')) }}
+  ansible.builtin.command:
+    # Placeholders are substituted per argv element, so a mount path or device
+    # containing spaces stays one argument.
+    argv: >-
+      {{ storage_fs_grow[vol.fstype]
+         | map('replace', '{mount}', vol.mount | default(''))
+         | map('replace', '{dev}', vol._dm_dev | default(''))
+         | list }}
   register: _g_fs
   vars:
     _g_fs_out: "{{ (_g_fs.stdout | default('')) ~ (_g_fs.stderr | default('')) }}"

@@ -14,6 +14,13 @@ argument_specs:
         bypass the block phases entirely and are gated by
         C(storage_manage_nfs) / C(storage_manage_cifs).
     options:
+      storage_enabled:
+        type: bool
+        default: true
+        description: >-
+          Role enable gate. When false the role emits a skip-debug and runs no
+          phases; set it in host/group_vars to no-op the role on hosts a broad
+          play happens to target.
       storage_volumes:
         type: list
         elements: dict
@@ -161,7 +168,7 @@ argument_specs:
         default: false
         description: >-
           Allow a network mount point nested inside another declared mount
-          point (V9). Refused by default.
+          point. Refused by default.
       storage_cifs_credentials_dir:
         type: str
         default: /etc/cifs-credentials
@@ -173,7 +180,7 @@ argument_specs:
         elements: str
         default: [/, /boot, /etc, /usr, /var, /home]
         description: >-
-          Mount points a NETWORK volume may never claim (V7). Local volumes
+          Mount points a NETWORK volume may never claim. Local volumes
           are not subject to this list.
       storage_default_kind:
         type: str
@@ -216,3 +223,68 @@ argument_specs:
         description: >-
           Extra basename prefixes merged with storage_part_suffix_devices so
           new controller naming can be added without restating the built-ins.
+      storage_default_lvm:
+        type: bool
+        default: true
+        description: >-
+          Whether a declared local volume that does not say otherwise is built
+          as PV → VG → LV rather than a partition formatted directly.
+      storage_default_partition:
+        type: bool
+        default: true
+        description: >-
+          For LVM volumes that do not say otherwise, whether the PV is placed on
+          a GPT partition rather than on the whole raw disk. Plain (non-LVM)
+          volumes are always partitioned regardless.
+      storage_default_partition_number:
+        type: int
+        default: 1
+        description: >-
+          Partition number a declared volume creates or grows when it does not
+          name one — raise it to address an existing layout (e.g. 3 for sda3).
+      storage_default_fstype:
+        type: str
+        default: xfs
+        description: >-
+          Filesystem created on a declared volume when the volume does not name
+          one.
+      storage_default_size:
+        type: str
+        default: "100%FREE"
+        description: >-
+          Size a declared volume is created (and grown) to when it does not name
+          one. Accepts absolute values (40G, 512M) or the LVM percentage forms
+          (100%FREE, 50%VG); plain volumes take a bare percentage of the disk.
+      storage_default_opts:
+        type: str
+        default: "defaults,noatime,nofail,x-systemd.device-timeout=30"
+        description: >-
+          fstab mount options for a local volume that does not name its own.
+          C(nofail) is enforced by the mount phase regardless, so a missing disk
+          cannot leave the host stuck in emergency mode at boot.
+      storage_default_owner:
+        type: str
+        default: root
+        description: >-
+          Owner applied to a declared volume's mount point directory when the
+          volume does not name one.
+      storage_default_group:
+        type: str
+        default: root
+        description: >-
+          Group applied to a declared volume's mount point directory when the
+          volume does not name one.
+      storage_default_mode:
+        type: str
+        default: "0755"
+        description: >-
+          Permission mode applied to a declared volume's mount point directory
+          when the volume does not name one.
+      storage_packages:
+        type: dict
+        description: >-
+          Prerequisite packages keyed by ansible_os_family (RedHat / Debian /
+          Suse), installed by the packages phase; unknown families fall back to
+          the RedHat list. The nested C(nfs:) and C(cifs:) sub-maps are keyed the
+          same way and are installed only when a volume of that kind is declared
+          and its storage_manage_<kind> flag is true.

@@ -7,7 +7,7 @@ dependency:
 driver:
   name: docker
 platforms:
-  - name: alma9-storage
+  - name: rocky9-storage
     image: "geerlingguy/docker-rockylinux9-ansible:latest"
     command: ""
     volumes:
@@ -24,7 +24,7 @@ provisioner:
     ANSIBLE_BECOME_METHOD: su
   inventory:
     host_vars:
-      alma9-storage:
+      rocky9-storage:
         ansible_become_method: su
   playbooks:
     prepare: prepare.yml

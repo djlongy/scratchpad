@@ -3,24 +3,27 @@
 # The block-storage tools are installed only when a LOCAL volume is declared;
 # the NFS/CIFS clients only when a volume of that kind is declared AND its
 # storage_manage_<kind> flag is true.
+#
+# ansible_os_family is defaulted to '' so an ungathered run misses the map and
+# falls back to the RedHat package set rather than failing on an undefined fact.
 
 - name: Install storage prerequisite packages
   become: true  # root: package install
   ansible.builtin.package:
-    name: "{{ storage_packages[ansible_os_family] | default(storage_packages['RedHat']) }}"
+    name: "{{ storage_packages[ansible_os_family | default('')] | default(storage_packages['RedHat']) }}"
     state: present
   when: _storage_local_declared | bool
 
 - name: Install the NFS client packages
   become: true  # root: package install
   ansible.builtin.package:
-    name: "{{ storage_packages.nfs[ansible_os_family] | default(storage_packages.nfs['RedHat']) }}"
+    name: "{{ storage_packages.nfs[ansible_os_family | default('')] | default(storage_packages.nfs['RedHat']) }}"
     state: present
   when: _storage_net_active | selectattr('kind', 'equalto', 'nfs') | list | length > 0
 
 - name: Install the CIFS client packages
   become: true  # root: package install
   ansible.builtin.package:
-    name: "{{ storage_packages.cifs[ansible_os_family] | default(storage_packages.cifs['RedHat']) }}"
+    name: "{{ storage_packages.cifs[ansible_os_family | default('')] | default(storage_packages.cifs['RedHat']) }}"
     state: present
   when: _storage_net_active | selectattr('kind', 'equalto', 'cifs') | list | length > 0

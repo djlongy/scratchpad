@@ -2,253 +2,38 @@
 # storage/tasks/main.yml
 #
 # A no-tags run is a full idempotent reconcile:
-#   validate -> packages -> discover -> grow -> provision -> mount -> selinux
-#                                                         -> mount_net
+#   resolve -> validate -> packages -> discover -> grow -> provision -> mount -> selinux
+#                                                                   -> mount_net
 # Refinement tags narrow it (--tags grow / provision / mount / selinux);
-# discover always runs first because the acting phases depend on its facts,
-# and validate is tagged `always` so no tag selection can act on an
-# unvalidated declaration.
+# discover runs under every acting tag because those phases consume its facts.
 #
-# Volumes are split by `kind` before any phase runs: local volumes drive the
+# The resolve and validate imports carry the union of every phase tag below, so
+# selecting any phase normalises and validates the declaration first — no tag
+# selection can act on an unvalidated one — while a tag this role does not own
+# selects nothing here. Adding a phase tag means adding it to both imports;
+# tests/unit/roles/test_storage_validate.py enforces that.
+#
+# Volumes are split by `kind` before any phase acts: local volumes drive the
 # block stack (discover/grow/provision/mount), network volumes (nfs/cifs)
 # bypass it entirely and are only mounted.
 
-# ── Resolve the effective volume list ────────────────────────────────────
-# Precedence: storage_profile  >  storage_volumes  >  legacy `datavols`.
 - name: Skip storage (storage_enabled is false)
   ansible.builtin.debug:
     msg: "storage_enabled is false — skipping storage"
   when: not (storage_enabled | bool)
-  tags: [always]
+  tags: [storage, packages, discover, grow, provision, mount, selinux]
 
 - name: Configure storage
   when: storage_enabled | bool
   block:
 
-    # Fail with a validation-style message before Jinja's raw
-    # "dict object has no attribute" dump on a typo'd profile name.
-    - name: Assert storage_profile is a known profile when set
-      ansible.builtin.assert:
-        that: storage_profile in storage_profiles
-        fail_msg: >-
-          storage_profile '{{ storage_profile }}' is not defined in
-          storage_profiles. Known profiles:
-          {{ storage_profiles.keys() | list | join(', ') | default('(none — set storage_volumes instead)', true) }}.
-        quiet: true
-      when: storage_profile | length > 0
-      tags: [storage, always]
+    - name: Normalise the declared volume list
+      ansible.builtin.import_tasks: resolve.yml
+      tags: [storage, packages, discover, grow, provision, mount, selinux]
 
-    - name: Resolve effective volume list
-      ansible.builtin.set_fact:
-        _storage_input: >-
-          {{ storage_profiles[storage_profile]
-             if (storage_profile | length > 0)
-             else storage_volumes }}
-      tags: [storage, always]
-
-    - name: Map legacy datavols (deprecated alias) when no volumes/profile given
-      ansible.builtin.set_fact:
-        _storage_input: "{{ _storage_input + [_dv] }}"
-      vars:
-        _dv:
-          name: "{{ item.lv }}"
-          disk: auto
-          lvm: true
-          vg: "{{ item.vg }}"
-          lv: "{{ item.lv }}"
-          size: "{{ item.size | default(storage_default_size) }}"
-          mount: "{{ item.mount }}"
-          sefcontext: "{{ item.sefcontext | default('') }}"
-          provision: true
-          grow: true
-      loop: "{{ datavols | default([]) }}"
-      loop_control:
-        label: "{{ item.lv }}"
-      when:
-        - storage_profile | length == 0
-        - storage_volumes | length == 0
-        - datavols | default([]) | length > 0
-      tags: [storage, always]
-
-    - name: Warn on deprecated datavols usage
-      ansible.builtin.debug:
-        msg: >-
-          'datavols' is a deprecated alias for 'storage_volumes' and will be
-          removed. Migrate {{ datavols | map(attribute='lv') | list }} to
-          storage_volumes.
-      when:
-        - storage_volumes | length == 0
-        - datavols | default([]) | length > 0
-      tags: [storage, always]
-
-    # ── Apply per-volume defaults so every entry is fully populated ───────────
-    - name: Build per-volume default template
-      ansible.builtin.set_fact:
-        _storage_volume_defaults:
-          kind: "{{ storage_default_kind }}"
-          disk: ""
-          lvm: "{{ storage_default_lvm }}"
-          partition: "{{ storage_default_partition }}"
-          partition_number: "{{ storage_default_partition_number }}"
-          vg: ""
-          lv: ""
-          size: "{{ storage_default_size }}"
-          fstype: "{{ storage_default_fstype }}"
-          mount: ""
-          opts: "{{ storage_default_opts }}"
-          sefcontext: ""
-          provision: true
-          grow: true
-          owner: "{{ storage_default_owner }}"
-          group: "{{ storage_default_group }}"
-          mode: "{{ storage_default_mode }}"
-      tags: [storage, always]
-
-    # Network volumes carry no block fields at all — a separate template keeps
-    # lvm/vg/size/provision off them instead of defaulting values the mount
-    # phase would have to ignore.
-    - name: Build per-volume network default template
-      ansible.builtin.set_fact:
-        _storage_net_volume_defaults:
-          server: ""
-          export: ""
-          share: ""
-          mount: ""
-          sefcontext: ""
-          credentials_username: ""
-          credentials_password: ""
-          credentials_domain: ""
-          owner: "{{ storage_default_owner }}"
-          group: "{{ storage_default_group }}"
-          mode: "{{ storage_default_mode }}"
-      tags: [storage, always]
-
-    # Reset the accumulators FIRST — set_fact persists across plays for a host, so a
-    # 2nd storage invocation in one run (explicit storage play + baseline's storage
-    # phase) would append to the previous run's list and double every volume. Must
-    # live here (before normalise, which consumes _storage_input), NOT in
-    # discover.yml's reset block, which runs AFTER normalise.
-    - name: Reset the normalised-volume accumulators (leak across plays otherwise)
-      ansible.builtin.set_fact:
-        _storage_local_input: []
-        _storage_net_input: []
-        _storage_local_volumes: []
-        _storage_net_volumes: []
-      tags: [storage, always]
-
-    # An entry whose kind is neither local nor a network kind lands in NEITHER
-    # list, so nothing acts on it; validate.yml (V6) then fails naming it.
-    - name: Split declared volumes by kind
-      ansible.builtin.set_fact:
-        _storage_local_input: "{{ _storage_local_input + ([item] if _kind == 'local' else []) }}"
-        _storage_net_input: "{{ _storage_net_input + ([item | combine({'kind': _kind})] if _kind in storage_net_kinds else []) }}"
-      vars:
-        _kind: "{{ item.kind | default(storage_default_kind) }}"
-      loop: "{{ _storage_input }}"
-      loop_control:
-        label: "{{ item.name }} ({{ item.kind | default(storage_default_kind) }})"
-      tags: [storage, always]
-
-    - name: Normalise local volumes (defaults overridden by each entry)
-      ansible.builtin.set_fact:
-        _storage_local_volumes: "{{ _storage_local_volumes + [_storage_volume_defaults | combine(item)] }}"
-      loop: "{{ _storage_local_input }}"
-      loop_control:
-        label: "{{ item.name }}"
-      tags: [storage, always]
-
-    # no_log: the entry carries credentials_password for CIFS volumes, and a
-    # set_fact echoes its computed value at -vv.
-    - name: Normalise network volumes (defaults overridden by each entry)
-      ansible.builtin.set_fact:
-        _storage_net_volumes: "{{ _storage_net_volumes + [_entry | combine({'_src': _src})] }}"
-      vars:
-        _base: >-
-          {{ _storage_net_volume_defaults | combine({
-               'kind': item.kind,
-               'fstype': (storage_default_nfs_fstype if item.kind == 'nfs' else storage_default_cifs_fstype),
-               'opts': (storage_default_nfs_opts if item.kind == 'nfs' else storage_default_cifs_opts)}) }}
-        _entry: "{{ _base | combine(item) }}"
-        _src: >-
-          {{ (_entry.server ~ ':' ~ _entry.export) if item.kind == 'nfs'
-             else ('//' ~ _entry.server ~ '/' ~ _entry.share) }}
-      loop: "{{ _storage_net_input }}"
-      loop_control:
-        label: "{{ item.name }}"
-      no_log: true
-      tags: [storage, always]
-
-    # The effective list, local first — the order the block phases already
-    # consume. Cross-kind rules (V1 duplicate mounts, V9 nesting) read this.
-    - name: Combine the effective volume list
-      ansible.builtin.set_fact:
-        _storage_volumes: "{{ _storage_local_volumes + _storage_net_volumes }}"
-      no_log: true
-      tags: [storage, always]
-
-    - name: Show normalised volumes
-      ansible.builtin.debug:
-        var: _storage_local_volumes
-      when: storage_debug | bool
-      tags: [storage, always]
-
-    - name: Show normalised network volumes (credentials redacted)
-      ansible.builtin.debug:
-        msg: "{{ _storage_net_volumes | map('combine', {'credentials_password': 'REDACTED'}) | list }}"
-      when:
-        - storage_debug | bool
-        - _storage_net_volumes | length > 0
-      tags: [storage, always]
-
-    # ── Nothing-to-do short-circuit ──────────────────────────────────────────
-    # A host that declares no volumes is a legitimate, common case: the role runs
-    # unconditionally ahead of `baseline` in every playbook, and most hosts have no
-    # extra storage. Without this the empty list would still install parted/lvm2/
-    # xfsprogs and run a full device discovery + grow pass on every such host —
-    # work whose only possible outcome is "no volumes to act on". Every acting
-    # phase below is gated on it, so an undeclared host is a clean no-op.
-    - name: Decide whether any storage is declared for this host
-      ansible.builtin.set_fact:
-        _storage_declared: "{{ (_storage_volumes | default([]) | length) > 0 }}"
-        _storage_local_declared: "{{ (_storage_local_volumes | length) > 0 }}"
-        _storage_net_enabled_kinds: >-
-          {{ (['nfs'] if storage_manage_nfs | bool else [])
-             + (['cifs'] if storage_manage_cifs | bool else []) }}
-      tags: [storage, always]
-
-    # no_log: the entries carry credentials_password for CIFS volumes.
-    - name: Select the network volumes whose kind is enabled
-      ansible.builtin.set_fact:
-        _storage_net_active: "{{ _storage_net_volumes | selectattr('kind', 'in', _storage_net_enabled_kinds) | list }}"
-      no_log: true
-      tags: [storage, always]
-
-    - name: Report that no storage is declared (no-op)
-      ansible.builtin.debug:
-        msg: >-
-          No storage declared for {{ inventory_hostname }} — skipping packages,
-          discovery, grow, provision, mount and SELinux. Declare storage_volumes
-          (or storage_profile) to manage disks here.
-      when: not _storage_declared
-      tags: [storage, always]
-
-    - name: Report network volumes skipped because their kind is not enabled
-      ansible.builtin.debug:
-        msg: >-
-          Volume '{{ item.name }}' is kind {{ item.kind }} but
-          storage_manage_{{ item.kind }} is false — not mounting
-          {{ item.mount }}. Set storage_manage_{{ item.kind }}: true to enable it.
-      loop: "{{ _storage_net_volumes | rejectattr('kind', 'in', _storage_net_enabled_kinds) | list }}"
-      loop_control:
-        label: "{{ item.name }}"
-      tags: [storage, always]
-
-    # ── Validation (V1–V9) ───────────────────────────────────────────────────
-    # Tagged `always`: a declaration error must surface no matter which
-    # refinement tag was selected, and before any phase acts on it.
     - name: Validate the declared volume list
       ansible.builtin.import_tasks: validate.yml
-      tags: [storage, always]
+      tags: [storage, packages, discover, grow, provision, mount, selinux]
 
     # ── Phases ───────────────────────────────────────────────────────────────
     - name: Install prerequisite packages

@@ -15,8 +15,9 @@ storage_enabled: true
 # SAFETY MODEL
 # ────────────────────────────────────────────────────────────────────────
 #   grow       runs automatically; it is non-destructive (only enlarges).
-#   provision  CREATES/formats and is OPT-IN (storage_provision: true or
-#              --tags provision) AND refuses any disk with an existing
+#   provision  CREATES/formats and is OPT-IN: armed by storage_provision: true
+#              and nothing else (--tags provision only narrows an already-armed
+#              run to this phase). It also refuses any disk with an existing
 #              filesystem/partition signature (storage_require_fresh).
 # The disk backing / is always discovered at runtime and excluded from
 # both `auto` selection and provisioning.
@@ -76,7 +77,7 @@ storage_profiles: {}
 # ── Behaviour flags ─────────────────────────────────────────────────────
 storage_manage_packages: true      # install parted/lvm2/xfsprogs/... first
 storage_grow: true                 # run the (auto, non-destructive) grow pass
-storage_provision: false           # allow CREATE/format (opt-in)
+storage_provision: false           # arms CREATE/format (the only switch that does)
 storage_require_fresh: true        # provision refuses non-empty disks
 storage_manage_fstab: true         # write UUID + nofail fstab entries + mount
 storage_manage_selinux: true       # semanage/restorecon on EL

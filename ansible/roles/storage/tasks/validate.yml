@@ -1,17 +1,17 @@
 ---
-# storage/tasks/validate.yml — fail-fast declaration checks (V1–V12).
+# storage/tasks/validate.yml — fail-fast declaration checks.
 #
 # Runs on every invocation, before any acting phase, so a bad declaration can
-# never reach discover/provision/mount. V1–V7, V9–V12 are pure Jinja over the
-# declared list; only V8 touches the host, and only when network volumes are
-# actually enabled.
+# never reach discover/provision/mount. Every rule but the shadow check is pure
+# Jinja over the declared list; the shadow check touches the host, and only when
+# network volumes are actually enabled.
 #
 # The block-field / network-field rules read the RAW declared entries
 # (_storage_local_input / _storage_net_input), not the normalised ones — after
 # normalisation every field is present and "did the operator declare this?"
 # is no longer answerable.
 
-- name: Assert every volume declares a supported kind (V6)
+- name: Assert every volume declares a supported kind
   ansible.builtin.assert:
     that: _bad_kinds | length == 0
     fail_msg: >-
@@ -24,7 +24,7 @@
       {{ _storage_input | selectattr('kind', 'defined')
          | rejectattr('kind', 'in', storage_kinds) | list }}
 
-- name: Assert local volumes declare no network fields (V2)
+- name: Assert local volumes declare no network fields
   ansible.builtin.assert:
     that: _bad_fields | length == 0
     fail_msg: >-
@@ -38,7 +38,7 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Assert network volumes declare no block-device fields (V3)
+- name: Assert network volumes declare no block-device fields
   ansible.builtin.assert:
     that: _bad_fields | length == 0
     fail_msg: >-
@@ -54,7 +54,7 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Assert NFS volumes declare server and export (V4)
+- name: Assert NFS volumes declare server and export
   ansible.builtin.assert:
     that:
       - (item.server | default('') | trim | length) > 0
@@ -68,7 +68,7 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Assert CIFS volumes declare server and share (V4)
+- name: Assert CIFS volumes declare server and share
   ansible.builtin.assert:
     that:
       - (item.server | default('') | trim | length) > 0
@@ -84,7 +84,7 @@
 
 # A local volume may legitimately declare mount: '' (manage the block stack,
 # do not mount). A network volume that is not mounted does nothing at all.
-- name: Assert network volumes declare a mount point (V5)
+- name: Assert network volumes declare a mount point
   ansible.builtin.assert:
     that: (item.mount | default('') | trim | length) > 0
     fail_msg: >-
@@ -100,14 +100,13 @@
 # directory is only a hazard when the filesystem behind it is remote.
 # An unrecognised selector resolves to '' in discover.yml and then fails much later with
 # "disk selector 'X' matched no available blank disk" — which sends the operator hunting for
-# a missing disk when the real problem is a typo or an unsupported prefix. `by-id:` in
-# particular was documented for a long time but never implemented, so it failed in exactly
-# that misleading way. Fail here, naming the supported forms.
+# a missing disk when the real problem is a typo or an unsupported prefix (`by-id:` is the
+# usual one). Fail here, naming the supported forms.
 #
 # NOT trimmed: whitespace padding is rejected too. discover.yml matches selector prefixes
 # UNtrimmed (the by-size ambiguity assert included), so a padded value would resolve down one
 # path while skipping that guard. Rejecting it here keeps one reading of a selector.
-- name: Assert every disk selector uses a supported form (V10)
+- name: Assert every disk selector uses a supported form
   ansible.builtin.assert:
     that:
       - >-
@@ -147,12 +146,11 @@
   loop_control:
     label: "{{ item.name | default('?') }}"
 
-# V11 — one VG ↔ one local LVM volume. Discovery freezes _vg_exists once before
+# One VG ↔ one local LVM volume. Discovery freezes _vg_exists once before
 # provision, so two volumes both creating a NEW shared VG both pass the filter
 # and the second community.general.lvg(single PV) vgreduces the first PV out.
-# Multi-LV-per-VG is not supported; refuse the declaration here rather than
-# relying on a comment that claimed discovery made it unreachable.
-- name: Assert no two local LVM volumes share a volume group (V11)
+# Multi-LV-per-VG is not supported — refuse the declaration here.
+- name: Assert no two local LVM volumes share a volume group
   ansible.builtin.assert:
     that: (_vgs | select('equalto', item) | list | length) == 1
     fail_msg: >-
@@ -175,7 +173,7 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Assert network mount points are absolute and not OS directories (V7)
+- name: Assert network mount points are absolute and not OS directories
   ansible.builtin.assert:
     that:
       - item.mount | trim is match('^/')
@@ -191,7 +189,7 @@
   loop_control:
     label: "{{ item.name }}"
 
-- name: Assert no two volumes claim the same mount point (V1)
+- name: Assert no two volumes claim the same mount point
   ansible.builtin.assert:
     that: (_claimants | length) == 1
     fail_msg: >-
@@ -200,7 +198,8 @@
       (/data and /data/ are the same path).
     quiet: true
   vars:
-    # Strip trailing slashes (except root) so /data and /data/ collide — matches V9.
+    # Strip trailing slashes (except root) so /data and /data/ collide — this
+    # matches how the nesting rule below canonicalises mount points.
     # Build (name, canon_mount) pairs from volumes that declare a mount so names
     # never drift relative to a filtered mount list.
     _pairs: >-
@@ -220,7 +219,7 @@
 
 # Pairs (network mount, any declared mount). Nested mounts work in Linux but
 # hide the parent's contents and reorder on boot, so they are opt-in.
-- name: Assert network mount points are not nested inside another declared mount (V9)
+- name: Assert network mount points are not nested inside another declared mount
   ansible.builtin.assert:
     that: not ((_child != _parent) and (_child ~ '/').startswith(_parent ~ '/'))
     fail_msg: >-
@@ -242,12 +241,12 @@
     label: "{{ item.0 }} under {{ item.1 }}"
   when: not (storage_allow_nested_mounts | bool)
 
-# V12 — sefcontext is a local-filesystem SELinux mapping (semanage fcontext +
+# sefcontext is a local-filesystem SELinux mapping (semanage fcontext +
 # restorecon). Network mounts are labeled by the remote FS / nfs_t / cifs_t
-# machinery; declaring sefcontext on nfs/cifs was previously normalised then
-# silently ignored (selinux.yml only iterated local resolved volumes). Refuse
-# the declaration so the operator does not believe a label was applied.
-- name: Assert network volumes do not declare sefcontext (V12)
+# machinery, and selinux.yml only iterates local resolved volumes — a
+# sefcontext on an nfs/cifs entry would be accepted and then silently ignored.
+# Refuse the declaration so the operator does not believe a label was applied.
+- name: Assert network volumes do not declare sefcontext
   ansible.builtin.assert:
     that: (item.sefcontext | default('') | trim | length) == 0
     fail_msg: >-
@@ -261,11 +260,11 @@
   loop_control:
     label: "{{ item.name }}"
 
-# ── V8: runtime shadow check ─────────────────────────────────────────────
+# ── Runtime shadow check ─────────────────────────────────────────────────
 # Declared-list rules cannot see what is ALREADY mounted. Probe reality before
 # mounting anything: a mount point already serving a different source means the
 # declaration would clobber live storage.
-- name: Check network mount points for an existing foreign mount (V8)
+- name: Check network mount points for an existing foreign mount
   ansible.builtin.command:
     argv: [findmnt, --noheadings, --output, SOURCE, --mountpoint, "{{ item.1 }}"]
   register: _storage_shadow_probe
@@ -282,7 +281,7 @@
                _storage_net_active | map(attribute='_src')) | list }}
   when: _storage_net_active | length > 0
 
-- name: Assert no network mount point is shadowing a different source (V8)
+- name: Assert no network mount point is shadowing a different source
   ansible.builtin.assert:
     that: (_found | length == 0) or (_found == _declared)
     fail_msg: >-

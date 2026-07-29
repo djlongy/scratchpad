@@ -12,63 +12,57 @@
 #
 # blkid rc 2 means "nothing found" OR "could not open". Fail closed on a
 # missing/non-block path and on any blkid stderr before treating rc 2 as empty.
-- name: "{{ vol.name }} | assert {{ vol._disk }} is a block device"
-  become: true  # root: stat the raw device
-  ansible.builtin.command:
-    argv: [test, -b, "{{ vol._disk }}"]
-  changed_when: false
-  check_mode: false
+- name: "Fresh-disk preflight — {{ vol.name }}"
   when:
     - not (vol._vg_exists | default(false) | bool)
     - vol._disk != '__incomplete_lvm__'
+  block:
+    - name: "{{ vol.name }} | assert {{ vol._disk }} is a block device"
+      become: true  # root: stat the raw device
+      ansible.builtin.command:
+        argv: [test, -b, "{{ vol._disk }}"]
+      changed_when: false
+      check_mode: false
 
-- name: "{{ vol.name }} | probe {{ vol._disk }} for an existing signature"
-  become: true  # root: blkid -p opens the raw device
-  ansible.builtin.command: "blkid -p -o value -s TYPE {{ vol._disk }}"
-  register: _p_sig
-  changed_when: false
-  failed_when: false
-  check_mode: false
-  when:
-    - not (vol._vg_exists | default(false) | bool)
-    - vol._disk != '__incomplete_lvm__'
+    - name: "{{ vol.name }} | probe {{ vol._disk }} for an existing signature"
+      become: true  # root: blkid -p opens the raw device
+      ansible.builtin.command:
+        argv: [blkid, -p, -o, value, -s, TYPE, "{{ vol._disk }}"]
+      register: _p_sig
+      changed_when: false
+      failed_when: false
+      check_mode: false
 
-- name: "{{ vol.name }} | count existing partitions on {{ vol._disk }}"
-  become: true  # root: inspects the raw device
-  ansible.builtin.shell:
-    cmd: "set -o pipefail; lsblk -no NAME {{ vol._disk }} | tail -n +2 | wc -l"
-    executable: /bin/bash
-  register: _p_parts
-  changed_when: false
-  check_mode: false
-  when:
-    - not (vol._vg_exists | default(false) | bool)
-    - vol._disk != '__incomplete_lvm__'
+    - name: "{{ vol.name }} | count existing partitions on {{ vol._disk }}"
+      become: true  # root: inspects the raw device
+      ansible.builtin.shell:
+        cmd: "set -o pipefail; lsblk -no NAME {{ vol._disk }} | tail -n +2 | wc -l"
+        executable: /bin/bash
+      register: _p_parts
+      changed_when: false
+      check_mode: false
 
-- name: "{{ vol.name }} | assert {{ vol._disk }} is fresh"
-  ansible.builtin.assert:
-    that:
-      - _p_sig.rc == 2
-      - (_p_sig.stderr | default('') | trim | length) == 0
-      - (_p_parts.stdout | trim | int) == 0
-    fail_msg: >-
-      Refusing to provision {{ vol._disk }} on {{ inventory_hostname }} —
-      {% if (_p_sig.stderr | default('') | trim | length) > 0 -%}
-      blkid could not cleanly probe it (rc={{ _p_sig.rc }},
-      stderr='{{ _p_sig.stderr | trim }}'). An unreadable device is never
-      treated as empty.
-      {%- elif _p_sig.rc != 2 -%}
-      it is not empty (signature: '{{ _p_sig.stdout | default('') | trim }}',
-      partitions: {{ _p_parts.stdout | trim }}). Set storage_require_fresh:
-      false to override only after manual inspection.
-      {%- else -%}
-      it has {{ _p_parts.stdout | trim }} existing partition(s). Set
-      storage_require_fresh: false to override only after manual inspection.
-      {%- endif %}
-  when:
-    - storage_require_fresh | bool
-    - not (vol._vg_exists | default(false) | bool)
-    - vol._disk != '__incomplete_lvm__'
+    - name: "{{ vol.name }} | assert {{ vol._disk }} is fresh"
+      ansible.builtin.assert:
+        that:
+          - _p_sig.rc == 2
+          - (_p_sig.stderr | default('') | trim | length) == 0
+          - (_p_parts.stdout | trim | int) == 0
+        fail_msg: >-
+          Refusing to provision {{ vol._disk }} on {{ inventory_hostname }} —
+          {% if (_p_sig.stderr | default('') | trim | length) > 0 -%}
+          blkid could not cleanly probe it (rc={{ _p_sig.rc }},
+          stderr='{{ _p_sig.stderr | trim }}'). An unreadable device is never
+          treated as empty.
+          {%- elif _p_sig.rc != 2 -%}
+          it is not empty (signature: '{{ _p_sig.stdout | default('') | trim }}',
+          partitions: {{ _p_parts.stdout | trim }}). Set storage_require_fresh:
+          false to override only after manual inspection.
+          {%- else -%}
+          it has {{ _p_parts.stdout | trim }} existing partition(s). Set
+          storage_require_fresh: false to override only after manual inspection.
+          {%- endif %}
+      when: storage_require_fresh | bool
 
 # ── Build the stack ──────────────────────────────────────────────────────
 # Partition + VG create are NEW-disk only. An existing VG must never be handed

@@ -1,36 +1,16 @@
 # storage
 
-Universal, hardware/name-agnostic disk role. Provisions, grows, formats, and
-mounts **LVM or plain** storage on **any** Linux host — VM, bare metal, or
-cloud image — regardless of disk size or device naming (`sda` / `nvme0n1` /
-`vda` / `mmcblk0`). The same declarative list also mounts **NFS and CIFS**
-network volumes.
-
 ## TL;DR
 
-**Most common: provision fresh data disks, picked by size, formatted `xfs`.**
-Pin each volume to its disk with `by-size:` rather than `auto` — `auto` takes
-the first blank disk in kernel enumeration order, which is not stable across
-reboots, controllers, or clouds.
-
-```yaml
-# group_vars/<group>.yml
-storage_provision: true
-storage_profile: app-node
-storage_profiles:
-  app-node:
-    - {name: opt,  disk: "by-size:50G", vg: vg_opt,  lv: lv_opt,  fstype: xfs, mount: /opt}
-    - {name: data, disk: "by-size:20G", vg: vg_data, lv: lv_data, fstype: xfs, mount: /data}
-```
+Provisions, grows, formats, and mounts **LVM or plain** storage on any Linux
+host — VM, bare metal, or cloud image — regardless of disk size or device
+naming (`sda` / `nvme0n1` / `vda` / `mmcblk0`), and mounts **NFS and CIFS**
+volumes from the same declarative list. Growing is automatic and
+non-destructive; creating and formatting is opt-in.
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=<group> --tags provision  # opt-in, fresh disks
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=<group> --tags grow       # resize existing
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=<group>
 ```
-
-Growing is the other half: `--tags grow` rescans, then runs growpart →
-pvresize → lvextend → fs grow. It is automatic and non-destructive, so it
-runs on every no-tags reconcile; provisioning is always opt-in.
 
 ## Requirements
 
@@ -40,544 +20,258 @@ Install collections before running (repo `requirements.yml`, or ad-hoc):
 
 | Collection | When | Used for |
 |---|---|---|
-| `community.general` | When `storage_provision` | disk partitioning + LVM + filesystem creation (`parted`/`lvg`/`lvol`/`filesystem`) |
-| `community.general` | When `storage_manage_selinux` | SELinux fcontext (`sefcontext`) |
-| `ansible.posix` | When `storage_manage_fstab` | mount management (`mount`), local and network |
+| `community.general` | When `storage_provision` | Partitioning, LVM, and filesystem creation (`parted` / `lvg` / `lvol` / `filesystem`) |
+| `community.general` | When `storage_manage_selinux` | SELinux file contexts (`sefcontext`) |
+| `ansible.posix` | When `storage_manage_fstab` | Mount and fstab management (`mount`), local and network |
 
 ## Key variables
 
-Full list: `defaults/main.yml`. Contract: `meta/argument_specs.yml`.
+Full list: `defaults/main.yml`. Contract, including the per-volume field
+schema for `storage_volumes` entries: `meta/argument_specs.yml`.
 
-**Required** = value must be correct for a successful run (defaults often work).
-**Optional** = safe to leave default / empty; phase stays off or uses built-ins.
+**Required** = value must be correct for a successful run (defaults often exist).
+**Optional** = safe to leave default / empty.
+**When X** = required only if that feature is on.
 
 | Req | Variable | Default | Purpose |
 |---|---|---|---|
-| **Required** | `storage_volumes` | `[]` | Declarative volume list (or resolve one from `storage_profiles` via `storage_profile`) — empty means nothing to do |
-| Optional | `storage_profile` / `storage_profiles` | `""` / `{}` | Named preset selection — see [Storage profiles](#storage-profiles); the catalog lives in `playbooks/group_vars/all/storage.yml` |
-| Optional | `storage_manage_packages` | `true` | Install `parted`/`lvm2`/`xfsprogs`/etc. before acting |
-| Optional | `storage_grow` | `true` | Run the automatic, non-destructive grow pass |
-| Optional | `storage_provision` | `false` | Allow opt-in provisioning (create/format) |
-| Optional | `storage_require_fresh` | `true` | Provisioning refuses disks with an existing signature |
-| Optional | `storage_manage_fstab` | `true` | Manage UUID + `nofail` fstab entries and mount |
-| Optional | `storage_manage_selinux` | `true` | Apply SELinux fcontext + restorecon on EL |
-| Optional | `storage_debug` | `false` | Emit discovery/provisioning-plan debug output |
-| Optional | `storage_part_suffix_devices` | `[nvme, mmcblk, loop, nbd]` | Basename prefixes that use `p` before the partition number (`nvme0n1p1` vs `sda1`) |
-| Optional | `storage_part_suffix_devices_extra` | `[]` | Append more prefixes without restating the built-in list |
-| **Required for NFS** | `storage_manage_nfs` | `false` | Mount declared `kind: nfs` volumes — without it they are skipped, not failed |
-| **Required for CIFS** | `storage_manage_cifs` | `false` | Mount declared `kind: cifs` volumes — without it they are skipped, not failed |
-| Optional | `storage_allow_nested_mounts` | `false` | Allow a network mount nested inside another declared mount (`/data` + `/data/sub`) |
+| **Required** | `storage_volumes` | `[]` | Declarative volume list driving every phase — empty means nothing to do |
+| Optional | `storage_profile` / `storage_profiles` | `""` / `{}` | Select a named preset from a catalogue instead of declaring `storage_volumes` inline |
+| Optional | `storage_provision` | `false` | Arms creation and formatting — the only switch that does |
+| Optional | `storage_require_fresh` | `true` | Provisioning refuses a disk carrying an existing filesystem or partition signature |
+| When NFS | `storage_manage_nfs` | `false` | Mount declared `kind: nfs` volumes — without it they are skipped, not failed |
+| When CIFS | `storage_manage_cifs` | `false` | Mount declared `kind: cifs` volumes — without it they are skipped, not failed |
 | Optional | `storage_cifs_credentials_dir` | `/etc/cifs-credentials` | Root-owned `0700` directory holding one `0600` credentials file per CIFS volume |
-| Optional | `storage_net_protected_mounts` | `[/, /boot, /etc, /usr, /var, /home]` | Mount points a **network** volume may never claim |
-| Optional | `storage_default_nfs_fstype` / `storage_default_cifs_fstype` | `nfs4` / `cifs` | `fstype` applied per kind when an entry omits it |
-| Optional | `storage_default_nfs_opts` / `storage_default_cifs_opts` | see `defaults/main.yml` | `opts` applied per kind when an entry omits it (`_netdev` + `nofail` are always appended) |
-
-### Disk selectors
-
-Every local volume resolves its `disk` field to a concrete device during the
-read-only `discover` phase. **Prefer `by-size:`** — it is stable across reboots
-and re-imaging, and it is the only selector that stays correct when a template
-grows a new disk or the controller renumbers.
-
-| Selector | Example | Matches on | Use when |
-|---|---|---|---|
-| `by-size:` | `by-size:50G` | Disk capacity, rounded to GiB | **Default choice.** Disks differ in size — the normal case for a VM built from a template |
-| `by-serial:` | `by-serial:VB1a2b3c4d` | `lsblk` serial | Two blank disks share a size |
-| `by-wwn:` | `by-wwn:0x5000c500a1b2c3d4` | `lsblk` WWN | SAN / multipath, or the serial is not exposed |
-| explicit path | `/dev/sdb`, `/dev/disk/by-id/…` | The path as given | Bare metal with fixed cabling, or you need a `by-id`/`by-path` alias |
-| `auto` | `auto` | First blank non-root disk | Single data disk only — enumeration order is **not stable** |
-
-Omit `disk` entirely on a grow-only LVM volume: once the VG exists the volume
-is located through it, and the selector is not consulted at all.
-
-**`by-size:` accepts both size conventions.** Hypervisors and clouds disagree
-on what a "50G disk" is, so `by-size:50G` matches a disk whose rounded GiB
-equals *either* 50 GiB (binary, 53,687,091,200 B) *or* 50 GB (decimal,
-50,000,000,000 B ≈ 47 GiB). You do not need to know which convention the
-platform used.
-
-**An ambiguous pin is a hard failure, not a coin flip.** If two *blank* disks
-match the pinned size, the role stops and names them rather than risk building
-on the wrong one:
-
-```
-Volume 'data' pins disk by-size:50G but 2 blank disks match (sdb, sdc).
-Disambiguate with by-serial:/by-wwn: or an explicit /dev path.
-```
-
-The check is skipped once the volume's VG exists — adoption never writes to a
-disk, so ambiguity is harmless at that point.
-
-**Sizing the LV is a separate field.** `disk:` chooses the *device*; `size:`
-chooses how much of the VG the *logical volume* takes (`100%FREE` by default).
-`by-size:50G` with `size: 100%FREE` means "find the 50G disk, then give the LV
-all of it".
-
-### Network volume fields
-
-Set `kind: nfs` or `kind: cifs` on an entry in `storage_volumes`. Network
-volumes are mount-only: they never enter discovery, grow or provisioning, and
-must declare no block-device field.
-
-| Field | Kind | Purpose |
-|---|---|---|
-| `server` | both | NFS/SMB server hostname or IP |
-| `export` | nfs | Export path on the server |
-| `share` | cifs | SMB share name |
-| `mount` | both | Mount point — **required** (a network volume that is not mounted does nothing) |
-| `fstype` | both | `nfs` \| `nfs4` (default `nfs4`), `cifs` (default) |
-| `opts` | both | Mount options; `_netdev` and `nofail` are force-appended |
-| `credentials_username` / `credentials_password` / `credentials_domain` | cifs | Written to `0600 root:root` `<credentials_dir>/<name>.cred`; supply the password from Vault via inventory |
-| `owner` / `group` / `mode` | both | Applied to the mount-point directory **before** it is mounted over |
-
-### Extending partition device naming
-
-Linux names partitions two ways:
-
-| Disk basename | Partition 1 |
-|---|---|
-| `sda`, `vda`, `xvda`, … | `sda1` (bare number) |
-| `nvme0n1`, `mmcblk0`, `loop0`, `nbd0`, … | `nvme0n1p1` (`p` + number) |
-
-Discovery builds `_part_dev` from that rule. If a new controller needs the
-`p` form, **do not fork the role** — set inventory vars:
-
-```yaml
-# Append only (preferred)
-storage_part_suffix_devices_extra:
-  - mynewctrl
-
-# Or replace the full list
-storage_part_suffix_devices:
-  - nvme
-  - mmcblk
-  - loop
-  - nbd
-  - mynewctrl
-```
-
-## Storage profiles
-
-A profile is a **named, reusable `storage_volumes` list**. Instead of repeating
-the same disk layout on every host, declare each layout once in a catalog and
-have each host pick one by name. This is the recommended way to drive the role
-once you have more than a couple of hosts.
-
-```yaml
-storage_profiles:          # the catalog — one key per named layout
-  <profile-name>:
-    - {name: …, disk: "by-size:…", …}
-storage_profile: <profile-name>   # the selection — one per host or group
-```
-
-**Resolution order** is `storage_profile` → `storage_volumes` → legacy
-`datavols`. A non-empty `storage_profile` wins outright: `storage_volumes` is
-ignored, not merged. Leave `storage_profile` empty (`""`, the default) to use
-`storage_volumes` verbatim.
-
-### Where the catalog lives
-
-Put the catalog somewhere every host can see it and the selection next to the
-host or group it applies to:
-
-| What | Where | Why |
-|---|---|---|
-| `storage_profiles` (the catalog) | `playbooks/group_vars/all/storage.yml` | Written once, visible everywhere |
-| `storage_profile` (the selection) | `group_vars/<group>.yml` or `host_vars/<host>.yml` | One line per host/group |
-
-### A catalog
-
-```yaml
-# playbooks/group_vars/all/storage.yml
----
-storage_profiles:
-
-  # Single 50G data disk — the common application node.
-  app-node:
-    - name: opt
-      disk: "by-size:50G"
-      lvm: true
-      vg: vg_opt
-      lv: lv_opt
-      size: "100%FREE"
-      fstype: xfs
-      mount: /opt
-
-  # Two disks, distinguished by size — no serials needed.
-  db-node:
-    - {name: data, disk: "by-size:100G", vg: vg_data, lv: lv_data, size: "100%FREE", fstype: xfs, mount: /var/lib/pgsql}
-    - {name: wal,  disk: "by-size:20G",  vg: vg_wal,  lv: lv_wal,  size: "100%FREE", fstype: xfs, mount: /var/lib/pgsql/wal}
-
-  # Same size twice — by-size alone would be ambiguous, so pin the serials.
-  log-node:
-    - {name: log01, disk: "by-serial:VB1a2b3c4d", vg: vg_log01, lv: lv_log01, fstype: xfs, mount: /var/log/app01}
-    - {name: log02, disk: "by-serial:VB5e6f7a8b", vg: vg_log02, lv: lv_log02, fstype: xfs, mount: /var/log/app02}
-
-  # One disk carved into two LVs, plus an NFS share in the same list.
-  worker:
-    - {name: opt,   disk: "by-size:80G", vg: vg_app, lv: lv_opt,   size: 40G,       fstype: xfs, mount: /opt}
-    - {name: cache, vg: vg_app,          lv: lv_cache, size: "100%FREE",            fstype: xfs, mount: /var/cache/app}
-    - {name: shared, kind: nfs, server: nas-01.example.internal, export: /export/shared, mount: /shared}
-```
-
-The second entry of `worker` omits `disk` deliberately: it is a second LV in a
-VG the first entry already created, so it is located through `vg_app` and needs
-no selector.
-
-### Selecting one
-
-```yaml
-# group_vars/app_servers.yml
-storage_profile: app-node
-storage_provision: true        # required — provisioning is opt-in
-
-# host_vars/db01.example.com.yml
-storage_profile: db-node       # this host overrides the group
-```
-
-```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=app_servers --tags provision
-```
-
-Override the selection for a one-off run without editing inventory:
-
-```bash
-ansible-playbook … -e storage_profile=db-node --tags provision
-```
-
-### Notes
-
-- **An unknown profile name is a hard failure.** `storage_profiles[storage_profile]`
-  is looked up with no fallback, so a typo fails the play with an undefined-key
-  error rather than silently doing nothing. That is deliberate — a silent no-op
-  on a provisioning run looks identical to success.
-- Every field except `name` is optional; anything omitted falls back to the
-  `storage_default_*` values in `defaults/main.yml` (`lvm: true`,
-  `partition: true`, `fstype: xfs`, `size: 100%FREE`, …). The examples above
-  spell out `fstype: xfs` for clarity even though it is already the default.
-- A profile is a plain list, so network volumes (`kind: nfs` / `kind: cifs`)
-  belong in it too — see `worker` above.
-- Profiles are resolved before validation, so all rules V1–V10 apply to the
-  resolved list exactly as if it had been written into `storage_volumes`.
 
 ## Minimum configuration
 
 ```yaml
 # group_vars/storage_hosts.yml
 ---
-# Required — a volume list, or a profile name that resolves to one
-storage_provision: true
+# Required — one entry per volume; every field except `name` has a default
 storage_volumes:
   - name: data
-    disk: "by-size:50G"
+    disk: auto
     vg: vg_data
     lv: lv_data
-    fstype: xfs
-    mount: /data
+    mount: /srv/data
+
+  - name: archive
+    kind: nfs
+    server: nas.example.internal
+    export: /export/archive
+    mount: /srv/archive
+
+  - name: media
+    kind: cifs
+    server: files.example.internal
+    share: media
+    mount: /srv/media
+    credentials_username: svc-storage
+    credentials_password: "{{ vault_storage_cifs_password }}"
+
+# When creating volumes — this example creates the local stack
+storage_provision: true
+
+# When network volumes are declared — one gate per kind
+storage_manage_nfs: true
+storage_manage_cifs: true
 ```
+
 ## Usage
 
 ```yaml
-- hosts: workers
-  become: true
+- name: Manage storage
+  hosts: storage_hosts
   roles:
     - role: storage
-      vars:
-        storage_provision: true
-        storage_volumes:
-          - name: opt
-            disk: "by-size:50G"
-            vg: vg_data
-            lv: lv_opt
-            fstype: xfs
-            mount: /opt
+      tags: [storage]
 ```
+
+The role escalates privilege on the individual tasks that need root, so the
+play carries no `become`.
+
+Run:
 
 ```bash
-ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=workers
+export ANSIBLE_VAULT_PASSWORD=$(cat ~/secrets/vault-password.txt)
+ansible-playbook -i inventories/<env>/hosts.yml playbooks/ops_storage.yml -e storage_target=storage_hosts
 ```
-
-Network volumes live in the same list:
-
-```yaml
-- hosts: stroom
-  roles:
-    - role: storage
-      vars:
-        storage_manage_nfs: true
-        storage_manage_cifs: true
-        storage_volumes:
-          - name: stroom-index          # local — kind defaults to 'local'
-            disk: "by-size:200G"
-            vg: vg_stroom
-            lv: lv_index
-            fstype: xfs
-            mount: /stroomdata/stroom-index-p00
-
-          - name: stroom-data
-            kind: nfs
-            server: nas-01.example.internal
-            export: /mnt/user/stroom-data
-            mount: /stroomdata/stroom-data-p00
-            opts: "hard,noatime,x-systemd.mount-timeout=30"
-
-          - name: media-archive
-            kind: cifs
-            server: nas-02.example.internal
-            share: archive
-            mount: /mnt/archive
-            opts: "vers=3.1.1,uid=0,gid=0,file_mode=0640,dir_mode=0750"
-            credentials_username: svc-example
-            credentials_password: "{{ vault_storage_cifs_password }}"
-```
-
-Each entry in `storage_volumes` describes a volume end-to-end; the full
-field schema is in `meta/argument_specs.yml`.
 
 ## Preconditions
 
-- On RHEL with RHSM, the base package repos `storage_manage_packages` relies
-  on (`parted`, `lvm2`, `xfsprogs`, `cloud-utils-growpart`, …) are
-  subscription-gated — running this role before the host is registered fails
-  the install. Register the host first, pre-bake the tools into the
-  template, or set `storage_manage_packages: false`.
-- Network volumes need the export/share to already exist on the server and
-  the host to be permitted by its export ACL — this role mounts, it does not
-  create shares or open firewall paths.
+- The prerequisite packages (`parted`, `lvm2`, `xfsprogs`, `e2fsprogs`, the
+  growpart utility, SELinux policy tools) must be installable. Where the base
+  repositories are entitlement-gated, register the host first, pre-bake the
+  tools into the image, or set `storage_manage_packages: false`.
+- Network volumes need the export or share to already exist on the server, and
+  the host to be permitted by its access controls — this role mounts, it does
+  not create shares or open network paths.
+- Provisioning on a host whose `/` is not a block device (container overlayfs,
+  a dataset-backed root) requires every volume to name an explicit
+  `disk: /dev/...` — see **Behaviour**.
 
 ## Behaviour
 
-- Grow is automatic and non-destructive — it only enlarges existing stacks
-  after the underlying disk grew. **xfs** filesystem grow (`xfs_growfs`) needs
-  a live mount point: if the path is not mounted (e.g. `nofail` boot skip),
-  LV/PV extension still runs and the FS grow is **skipped with a warning**
-  rather than aborting the play before the mount phase. Re-run after mount
-  (or the next converge) finishes the FS grow. **ext4** grows by device and
-  does not need the mount. Commands come from `storage_fs_grow` in role vars.
-- Provision is opt-in (`storage_provision: true` or `--tags provision`)
-  **and** FRESH-guarded (`storage_require_fresh`, default `true`): it
-  refuses any disk with an existing filesystem or partition signature.
-  FRESH requires a real block device (`test -b`) and a clean blkid probe
-  (rc 2 with empty stderr) — an unreadable path is never treated as empty.
-- The disk backing `/` is discovered at runtime and excluded from `auto`
-  selection and from provisioning. On a **block-backed** root, discovery
-  **fails closed** if no root disk can be identified (an empty list would
-  silently disable root protection). On a root that is not a block device —
-  overlayfs in a container, a ZFS dataset — there is no OS disk to name, so
-  the role **degrades loudly** instead of aborting: see
-  [When the root disk cannot be named](#when-the-root-disk-cannot-be-named).
-- A declared `mount` with no filesystem on the device **fails the play** — it is
-  never skipped with a warning. `provision: false` means "adopt an existing
-  filesystem", not "this volume is optional". See
-  [Declared mounts are promises](#declared-mounts-are-promises-not-preferences)
-  for the failure modes and the blast radius. After a successful mount,
-  `owner` / `group` / `mode` are re-applied on the live filesystem root so the
-  first provision run sets them (not only a second converge).
-- A no-tags run is a full idempotent reconcile
-  (`validate → packages → discover → grow → provision → mount → mount_net →
-  selinux`); the `discover` phase (read-only device discovery + selector
-  resolution) always runs regardless of tags, because every other phase
-  depends on its facts.
-- **Validation runs on every invocation, under the `always` tag**, before any
-  phase acts — a declaration error surfaces whichever refinement tag was
-  selected. Rules V1–V7 and V9–V12 are pure checks over the declared list; V8
-  probes the host with `findmnt` and only when network volumes are enabled.
+**Phases and ordering**
+
+- A no-tags run is a full idempotent reconcile:
+  `resolve → validate → packages → discover → grow → provision → mount →
+  mount_net → selinux`. Normalisation and validation carry every phase tag, so
+  they run before any phase acts whichever tag selected it; `discover`
+  (read-only device discovery and selector resolution) runs under every acting
+  tag, because the other phases consume its facts.
+- **The declaration is validated before anything acts**, failing fast with a
+  message naming the offending volume(s): `kind` is one of `local` / `nfs` /
+  `cifs`; local volumes declare no network fields and network volumes no
+  block-device fields; `nfs` requires `server` + `export` and `cifs` requires
+  `server` + `share`; every network volume declares a `mount`; no two volumes
+  claim the same mount point; and each `disk` selector uses a supported,
+  unpadded form (`auto`, `/dev/...`, `by-size:`, `by-serial:`, `by-wwn:`).
+- **Network mount points are constrained further**: absolute, never one of
+  `storage_net_protected_mounts`, never nested inside another declared mount
+  unless `storage_allow_nested_mounts` is `true`, never already serving a
+  different source (probed with `findmnt`), and never carrying `sefcontext` —
+  host-side file contexts are local-only. That protected list applies to
+  network volumes only; `/var` and its children are legitimate local mount
+  points.
+- **No two local LVM volumes may share a `vg`.** `discover` computes volume
+  group existence once, before `provision` runs, so two volumes creating the
+  *same new* group both see "absent" and both pass the provision filter. The
+  second `lvg` call is then given a single-PV list and reduces the first
+  volume's PV back out of the group. The role refuses the declaration rather
+  than relying on that collision being unreachable.
+
+**Grow and provision**
+
+- **Grow is automatic and non-destructive** — it only enlarges an existing
+  stack after the underlying disk grew (rescan → growpart → pvresize →
+  lvextend → filesystem grow). `xfs` grow needs a live mount point: when the
+  path is not mounted, LV and PV extension still run and the filesystem grow
+  is **skipped with a warning** rather than aborting the play before the mount
+  phase — re-run afterwards to finish it. `ext4` grows by device and does not
+  need the mount.
+- **Provisioning is armed by `storage_provision: true` and nothing else**, and
+  is FRESH-guarded (`storage_require_fresh`, default `true`): it refuses any
+  disk carrying an existing filesystem or partition signature. FRESH requires
+  a real block device (`test -b`) and a clean signature probe — an unreadable
+  path is never treated as empty.
+
+**Root protection**
+
+- The disk backing `/` is discovered at runtime. Three guards derive from it
+  and from nothing else: `auto` rejects it, the `by-size:` / `by-serial:` /
+  `by-wwn:` catalogue rejects it before matching, and the role refuses to
+  create data volumes in a volume group whose PVs sit on it.
+- On a block-backed root, discovery **fails closed** when no root disk can be
+  identified. An empty list would turn all three guards into no-ops that still
+  report success, so it is treated as an error rather than waved through.
+- On a root that is not a block device there is no OS disk to name, so the
+  role **degrades loudly**: it prints a warning at default verbosity naming
+  the three guards as inert, and refuses implicit disk selection (`auto`,
+  empty, `by-size:`, `by-serial:`, `by-wwn:`) for any volume that would be
+  provisioned — those selectors pick from a pool that could not exclude the OS
+  disk. An explicit `disk: /dev/...` is still allowed: that is the operator
+  naming the device, and it is the escape hatch that keeps the role usable on
+  such hosts. Read-only work is untouched — the refusal is gated on
+  `storage_provision`, so discover, grow, and mount keep working.
+
+**Mounting local volumes**
+
+- **A declared `mount` with no filesystem fails the play** — it is never
+  skipped with a warning. Per-volume `provision` does not mean "this volume is
+  optional"; it selects who creates the filesystem. `provision: true` lets the
+  role build the PV/VG/LV and run `mkfs`, so a missing filesystem means the
+  role-level `storage_provision` opt-in was never passed. `provision: false`
+  means adopt a filesystem created elsewhere, so a missing filesystem means
+  the adoption target is not there — wrong disk matched, disk swapped, volume
+  group not activated. Both are errors; the failure message names which.
+- The assertion exists because the mount phase creates the mount-point
+  directory **before** it probes for a filesystem UUID. Without it, an
+  unformatted device leaves an empty directory on the root filesystem, nothing
+  mounts over it, the play reports success, and the service writes its data to
+  the OS disk — surfacing weeks later as a full root volume with every run
+  green in between.
+- **That failure aborts the host.** Every phase runs inside one `block:` with
+  no `rescue:`, so volumes later in the same list never mount even when they
+  are healthy (the mount loop expands all iterations before the first failure
+  lands), and `mount_net` and `selinux` do not run at all. The empty
+  mount-point directory is left behind. The effect is order-sensitive — a bad
+  volume at the end of the list lets the earlier ones mount — so a partial
+  mount set is not meaningful; fix and re-run. Recovery is either
+  `storage_provision: true` for a stack that needs creating or finishing, or
+  correcting the disk selector / attaching the right disk for an adopt-only
+  volume.
+- After a successful mount, `owner` / `group` / `mode` are re-applied on the
+  live filesystem root, so the first provisioning run sets them rather than
+  only a second converge.
+
+**Network volumes**
+
 - **Network volumes bypass the block layer entirely.** The list is split by
-  `kind` before any phase runs: `discover` / `grow` / `provision` / `mount` /
+  `kind` before any phase runs: `discover`, `grow`, `provision`, `mount`, and
   `selinux` see local volumes only.
-- **Network kinds are opt-in per kind.** A declared `nfs`/`cifs` volume whose
-  `storage_manage_<kind>` flag is `false` is skipped with a message naming the
-  flag — it is never a failure, so a host can carry the declaration ahead of
-  the server being ready.
+- **Network kinds are opt-in per kind.** A declared `nfs` / `cifs` volume
+  whose `storage_manage_<kind>` flag is `false` is skipped with a message
+  naming the flag — never a failure, so a host can carry the declaration ahead
+  of the server being ready.
 - `_netdev` and `nofail` are force-appended to every network mount: without
-  `_netdev` systemd may order the mount before the network is up and hang
-  boot. Option strings are de-duplicated and sorted so `ansible.posix.mount`
-  does not rewrite `/etc/fstab` on every run.
-- **CIFS passwords never reach `/etc/fstab`** (it is world-readable). They are
-  written to `<storage_cifs_credentials_dir>/<name>.cred`, mode `0600`
+  `_netdev`, systemd may order the mount before the network is up and hang
+  boot. Option strings are de-duplicated and sorted so the mount module does
+  not rewrite `/etc/fstab` on every run.
+- **CIFS passwords never reach `/etc/fstab`**, which is world-readable. They
+  are written to `<storage_cifs_credentials_dir>/<name>.cred`, mode `0600`
   `root:root`, and referenced by `credentials=<path>`; any operator-supplied
-  `credentials=` option is dropped in favour of the managed one.
-- `hard` is the default NFS mount option: an audit/archive mount should stall
-  when the server goes away rather than silently truncate writes.
-- Mount-point ownership (`owner`/`group`/`mode`) is applied to a network
-  volume's directory only while it is still empty; once the remote filesystem
-  is mounted, ownership belongs to the server.
-- The protected-mount list (`storage_net_protected_mounts`) constrains
-  **network** volumes only. `/var` and `/var/lib/dirsrv` are legitimate local
-  mount points in the estate profile catalogue.
+  `credentials=` option is dropped in favour of the managed one. Supply the
+  password from a secret store through inventory, never inline.
+- `hard` is the default NFS mount option: an archive or audit mount should
+  stall when the server goes away rather than silently truncate writes.
+- Mount-point `owner` / `group` / `mode` are applied to a network volume's
+  directory only while it is still empty; once the remote filesystem is
+  mounted, ownership belongs to the server.
+- Each network mount is read back with `findmnt` and asserted to be serving
+  the declared source.
+
+**Device selection**
+
 - `disk: auto` picks the first blank non-root disk in kernel enumeration
-  order, but that order is **not stable** across reboots, controllers, or
-  clouds. With two or more blank disks where placement matters, pin a
+  order, and that order is **not stable** across reboots, controllers, or
+  cloud platforms. With two or more blank disks where placement matters, pin a
   stable selector (`by-size:`, `by-serial:`, `by-wwn:`, or an explicit
-  `/dev/...` path) instead of `auto`.
-
-## Validation rules
-
-Every rule fails fast with a message naming the offending volume(s).
-
-| # | Rule |
-|---|---|
-| V1 | No two volumes claim the same mount point — local and network checked together |
-| V2 | A `local` volume declares no `server` / `export` / `share` / `credentials_*` |
-| V3 | An `nfs`/`cifs` volume declares no `disk` / `lvm` / `vg` / `lv` / `size` / `partition` / `partition_number` / `provision: true` |
-| V4 | `nfs` requires `server` + `export`; `cifs` requires `server` + `share` |
-| V5 | `mount` is required and non-empty on network volumes |
-| V6 | `kind` is one of `local`, `nfs`, `cifs` |
-| V7 | A network `mount` is an absolute path and not in `storage_net_protected_mounts` |
-| V8 | Runtime shadow check — a network mount point already serving a **different** source is refused rather than clobbered |
-| V9 | A network `mount` is not nested inside another declared `mount` unless `storage_allow_nested_mounts: true` |
-| V10 | A `disk` selector uses a supported form (`auto`, `/dev/...`, `by-size:`, `by-serial:`, `by-wwn:`) with a non-empty payload, and carries no whitespace padding |
-| V11 | No two **local LVM** volumes share a `vg` — this role provisions one VG per volume (1 VG ↔ 1 LV) |
-| V12 | An `nfs`/`cifs` volume does **not** declare `sefcontext` — host-side fcontext/restorecon is local-only |
-
-Also enforced outside the V-table (same fail-fast spirit):
-
-| Check | Where | Rule |
-|---|---|---|
-| Known profile | `main.yml` | `storage_profile` must be a key of `storage_profiles` (no raw Jinja attribute error) |
-| Root disk discovered | `discover.yml` | On a block-backed `/`, at least one disk must be identified — empty list fail-closes rather than disabling root protection |
-| Implicit selection needs root protection | `discover.yml` | When `/` is not block-backed and provisioning is armed, `auto` / `by-*` selectors are refused; an explicit `/dev/...` path is still allowed |
-| Unique resolved disk | `discover.yml` | No two local volumes resolve to the same non-sentinel `_disk` (covers explicit `/dev/` collisions) |
-| FRESH is a real block device | `provision_one.yml` | `test -b` before blkid; blkid stderr is never treated as "empty" |
-
-### Why V11 exists
-
-`discover` computes `_vg_exists` **once**, before `provision` runs. Two volumes
-that both create the *same new* VG therefore both see "VG absent" and both pass
-the provision filter. The second `community.general.lvg` call is given a
-single-PV `pvs:` list, and the pinned collection version has no
-`remove_extra_pvs` toggle — so it `vgreduce`s the first volume's PV straight
-back out of the VG. V11 refuses the declaration instead of relying on
-discovery's frozen state to make the collision unreachable.
-
-## When the root disk cannot be named
-
-Root protection means exactly one thing: the role can **name** the disk(s)
-carrying `/`. Three separate guards are derived from that one list and nothing
-else:
-
-| Guard | How it uses the root-disk list |
-|---|---|
-| `auto` / blank candidate pool | rejects any disk in the list |
-| `by-size:` / `by-serial:` / `by-wwn:` catalogue | same rejection, before matching |
-| Refusal to **create** data volumes in the OS root VG | root VGs are the VGs whose PVs sit on those disks |
-
-If the list is empty, all three become no-ops **and report success** — the
-failure mode is fail-open, not fail-closed. So an unnameable root cannot simply
-be waved through.
-
-`discover` classifies the root as `block` or not by resolving `findmnt -n -o
-SOURCE /` and testing it with `test -b`. Overlayfs (containers), ZFS datasets
-and any other non-block root land in the second class by design — there is no
-OS block device to exclude — and set `_storage_root_protection: false`.
-
-What changes for that run:
-
-- A **warning is printed at default verbosity** (not behind `storage_debug`)
-  naming all three guards as inert.
-- **Implicit disk selection is refused** — `auto`, `''`, `by-size:`,
-  `by-serial:`, `by-wwn:` — for any volume that would be provisioned. Those
-  selectors pick from a pool that could not exclude the OS disk, and a
-  privileged container sees the host's disks, so either could hand
-  provisioning the OS disk to wipe.
-- An explicit `disk: /dev/...` is **still allowed**. That is the operator
-  naming the device, and it is the escape hatch: the role remains usable on
-  container and ZFS-root hosts by pinning each volume's device.
-- **Read-only work is untouched.** The refusal is gated on `storage_provision`,
-  so `discover`, `grow` and `mount` keep working on an unnameable root.
-
-To provision on such a host, either give every volume an explicit `/dev/...`
-path or leave `storage_provision: false` and provision elsewhere.
-
-## Declared mounts are promises, not preferences
-
-A volume with a non-empty `mount` is a statement that **there must be a mounted
-filesystem at that path**. If the device carries no filesystem when the `mount`
-phase reaches it, the role **fails the play** — it does not warn and continue.
-
-The distinction that matters is what `provision` means. It is not "is this
-volume optional"; it selects **who creates the filesystem**:
-
-| | Meaning | No filesystem present means |
-|---|---|---|
-| `provision: true` | the role may create the PV/VG/LV and run `mkfs` | the role-level opt-in (`storage_provision`) was never passed |
-| `provision: false` | **adopt** a filesystem created elsewhere (kickstart, installer, an earlier build) | the adoption target is missing — wrong disk matched, disk swapped, VG not activated |
-
-Both are errors, so both fail. The failure message names which case it is.
-
-### What the failure prevents
-
-`mount_one.yml` creates the mount-point **directory before** it probes for a
-filesystem UUID. Without the assert, the sequence on an unformatted device was:
-`/data` is created on the **root** filesystem → nothing mounts over it → the
-play reports success → the service starts and writes its data to the OS disk.
-That surfaces weeks later as a full root volume, with every run green in
-between.
-
-### Blast radius — verified, not assumed
-
-`tasks/main.yml` wraps every phase in a single `block:` with **no `rescue:`**,
-so this failure aborts the host and skips everything after it. Measured on a
-loop-backed LVM fixture (EL9, one LV with `xfs`, one LV deliberately
-unformatted):
-
-- Volumes **later in the same `storage_volumes` list never mount**, even
-  healthy ones. `mount.yml` expands all `include_tasks` loop iterations before
-  the first failure lands, and a good volume declared after a bad one was
-  confirmed unmounted.
-- `mount_net` (NFS/CIFS) and `selinux` **do not run at all** — phases with
-  nothing to do with the broken local volume.
-- The empty mount-point directory is still left behind on the root filesystem.
-
-**This is order-sensitive.** A bad volume at the end of the list lets the
-earlier ones mount; the same volume first blocks all of them. Do not read a
-partial mount set as meaningful — re-run after fixing.
-
-**Recovery:** pass `storage_provision: true` for a stack that needs creating or
-finishing, or fix the disk selector / attach the right disk for an adopt-only
-volume. Both are named in the failure message.
-
-### How "has a filesystem" is decided for LVM
-
-Filesystem presence on a logical volume is probed with
-`blkid -p -o value -s TYPE /dev/<vg>/<lv>` during `discover`, and the result
-feeds `_exists` and the complete-stack short-circuit.
-
-**Do not replace this with a membership test against `_storage_fs_devices`.**
-That list is built from `lsblk -pbJ` level-0/1 nodes, which name logical volumes
-`/dev/mapper/<vg>-<lv>`; this role addresses them as `/dev/<vg>/<lv>` because
-the device-mapper form doubles literal hyphens (`vg-data/lv-main` →
-`/dev/mapper/vg--data-lv--main`). The two naming conventions never intersect, so
-such a test is **permanently false**: every LVM volume reads as incomplete, the
-complete-stack filter stops working, and `provision` re-enters on every
-converge. Confirmed against live `lsblk` output — LVs appear only as
-`/dev/mapper/...` rows.
-
-The probe also carries `check_mode: false`; without it a `--check` run skips the
-command and every LVM volume reads as unformatted.
-
-## Pairing with server roles
-
-This role is **client only**. Export/share creation is the server role:
-
-| Client (`storage`) | Server role | Server field → client field |
-|---|---|---|
-| `kind: nfs` | `nfs_server` | export `path` → `export`; host → `server` |
-| `kind: cifs` | `cifs_server` | share `name` → `share`; host → `server`; Samba user → `credentials_*` |
-
-Enable the matching gate (`storage_manage_nfs` / `storage_manage_cifs`). Specialised
-clients still exist for other patterns (`nfs_home_client`, autofs `nfs_client`,
-legacy `smb`).
+  `/dev/...` path) instead.
+- Partition names are derived from the disk basename: `sda` → `sda1`, but
+  `nvme0n1` → `nvme0n1p1`. The basename prefixes that take the `p` form are
+  listed in `storage_part_suffix_devices`; add a new controller through
+  `storage_part_suffix_devices_extra` rather than forking the role.
 
 ## Out of scope
 
-Network-filesystem features this role deliberately **does not support** —
-declare them elsewhere or extend the role first:
-
+- Creating exports, shares, export ACLs, or network paths — this role is a
+  client only.
 - iSCSI, multipath, and any other block-over-network transport.
-- SMB1/NT1, and `sec=krb5` (Kerberised) NFS (server may offer krb5p for
-  per-user exports; this client path is `sec=sys` static mounts).
+- SMB1/NT1, and Kerberised (`sec=krb5`) NFS — the client path is static
+  `sec=sys` mounts.
 - autofs / automounter maps — mounts are static fstab entries.
-- Per-user CIFS credentials — one machine credential per volume, `root`-owned.
-- Creating exports/shares, export ACLs, or firewall paths — use `nfs_server` /
-  `cifs_server`.
+- Per-user CIFS credentials — one machine credential per volume, root-owned.
+- Disk encryption, software RAID, and backups.
+
+## Expected result
+
+- Every declared local volume has its block stack present, a filesystem
+  created or adopted, and is mounted at its declared path.
+- Each local mount point has exactly one `/etc/fstab` entry, keyed by `UUID=`
+  and carrying `nofail`; network mounts additionally carry `_netdev`.
+- Verify: `findmnt <mount>` for the live mount, `findmnt --fstab <mount>` for
+  the persistent entry.
+
+## Tag safety
+
+- `--tags provision` does **not** arm provisioning. Provisioning is armed by
+  `storage_provision: true`; the tag narrows an already-armed run to the
+  provision phase. Selecting the tag without the variable runs the phase and
+  skips every task inside it.
+- `discover` runs under `grow`, `provision`, `mount`, and `selinux` as well as
+  its own tag — those phases consume its facts and cannot run without it.
+- Normalisation and validation are tagged with the union of every phase tag, so
+  no tag selection can act on an unvalidated declaration — and a tag this role
+  does not own selects nothing from it.

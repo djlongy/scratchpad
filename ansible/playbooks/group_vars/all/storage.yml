@@ -1,0 +1,106 @@
+---
+# ── Storage profile catalog ──────────────────────────────────────────────────
+# Named presets for roles/storage. Inventories and hosts only SELECT a profile:
+#
+#   storage_profile: app_50g
+#   storage_provision: true    # when first-time create is intended
+#
+# Do NOT redefine storage_profiles in inventory — host/group list vars replace
+# (not merge) this dict and would drop every other named profile.
+#
+# Resolution (roles/storage):
+#   storage_profiles[storage_profile]  if storage_profile is set
+#   else storage_volumes
+#
+# Pin every data volume with a selector (by-size / by-serial / by-wwn) rather
+# than `auto` on any guest with more than one blank disk: `auto` takes the first
+# blank non-root disk in kernel enumeration order, which is not stable across
+# reboots, controllers, or clouds.
+#
+# Schema: roles/storage/defaults/main.yml (storage_volumes entry fields).
+# Contract: roles/storage/meta/argument_specs.yml.
+
+storage_profiles:
+
+  # Grow-only /var on the OS disk. No data disk, nothing is ever created — the
+  # partition already exists, so provision is off and only the grow pass runs.
+  sys_var:
+    - name: var
+      lvm: true
+      vg: sysvg
+      lv: lv_var
+      mount: /var
+      partition_number: 3
+      provision: false
+      grow: true
+
+  # Single second disk, unpinned. Only safe when the guest has exactly one
+  # blank disk — see the note above.
+  app_auto:
+    - name: opt
+      disk: auto
+      lvm: true
+      vg: vg_data
+      lv: lv_opt
+      size: "100%FREE"
+      fstype: xfs
+      mount: /opt
+      sefcontext: usr_t
+      provision: true
+      grow: true
+
+  # The same volume pinned by exact size — the form to prefer.
+  app_50g:
+    - name: opt
+      disk: "by-size:50G"
+      lvm: true
+      vg: vg_data
+      lv: lv_opt
+      size: "100%FREE"
+      fstype: xfs
+      mount: /opt
+      sefcontext: usr_t
+      provision: true
+      grow: true
+
+  # Two data disks on one guest. Two volumes of the SAME size cannot both be
+  # pinned by-size, so the second is pinned by serial — mixing selectors within
+  # a profile is expected, not a smell.
+  app_dual:
+    - name: opt
+      disk: "by-size:50G"
+      lvm: true
+      vg: vg_opt
+      lv: lv_opt
+      size: "100%FREE"
+      fstype: xfs
+      mount: /opt
+      sefcontext: usr_t
+      provision: true
+      grow: true
+    - name: data
+      disk: "by-serial:0123456789abcdef"
+      lvm: true
+      vg: vg_data
+      lv: lv_data
+      size: "100%FREE"
+      fstype: xfs
+      mount: /data
+      owner: svc-app
+      group: svc-app
+      mode: "0750"
+      provision: true
+      grow: true
+
+  # Plain (non-LVM) disk formatted directly on its partition, pinned by WWN.
+  # Nothing here is growable beyond the partition, so grow stays on but has no
+  # LVM layer to extend.
+  scratch_plain:
+    - name: scratch
+      disk: "by-wwn:0x5000c500a1b2c3d4"
+      lvm: false
+      fstype: ext4
+      mount: /scratch
+      opts: "defaults,nofail,noatime"
+      provision: true
+      grow: true

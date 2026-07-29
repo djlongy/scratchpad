@@ -26,4 +26,11 @@ galaxy_info:
     - filesystem
     - mount
 
+# Collections this role calls (mirrors the README Requirements table).
+# Install them from the repo requirements.yml, or ad-hoc:
+#   ansible-galaxy collection install -r requirements.yml
+#
+#   community.general  When storage_provision      parted / lvg / lvol / filesystem
+#   community.general  When storage_manage_selinux sefcontext
+#   ansible.posix      When storage_manage_fstab   mount (local and network)
 dependencies: []

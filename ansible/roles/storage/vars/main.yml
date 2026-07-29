@@ -4,13 +4,14 @@
 # Partition device-name prefixes (nvme → nvme0n1p1 vs sda → sda1) live in
 # defaults as storage_part_suffix_devices / _extra so inventory can extend them.
 
-# Filesystem grow commands by fstype. Substituted in grow_one.yml:
+# Filesystem grow commands by fstype, one argv element per list item.
+# grow_one.yml substitutes these placeholders inside each element:
 #   {mount} → vol.mount   (xfs_growfs needs a live mount point)
 #   {dev}   → vol._dm_dev (resize2fs grows by device, works unmounted)
 # Add a key here to support another fstype without forking grow_one.yml.
 storage_fs_grow:
-  xfs: "xfs_growfs {mount}"
-  ext4: "resize2fs {dev}"
+  xfs: [xfs_growfs, "{mount}"]
+  ext4: [resize2fs, "{dev}"]
 
 # changed_when for grow_one.yml:
 #   - if fstype is in storage_fs_grow_noop_token: changed when that token is ABSENT
@@ -24,7 +25,7 @@ storage_fs_grow_changed_token:
   xfs: "data blocks changed"
 
 # Volume kinds. Network kinds bypass the block phases entirely; anything not
-# listed here is rejected by validate.yml (V6) before any phase acts.
+# listed here is rejected by validate.yml before any phase acts.
 storage_net_kinds:
   - nfs
   - cifs
@@ -41,7 +42,7 @@ storage_net_forced_opts:
   - nofail
 
 # Block-stack fields a network volume must never declare, and network fields a
-# local volume must never declare (validate.yml V2/V3).
+# local volume must never declare (enforced in validate.yml).
 storage_block_only_fields:
   - disk
   - lvm

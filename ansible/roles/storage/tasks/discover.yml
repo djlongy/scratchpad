@@ -386,8 +386,8 @@
 
 # by-size matches BOTH size conventions: '50G' is accepted as 50 GiB (binary,
 # human_to_bytes) AND as 50 GB (decimal, 50e9 B ≈ 47 GiB) — hypervisors and
-# clouds disagree on which a "50G disk" is, and a convention mismatch used to
-# make the selector silently match nothing.
+# clouds disagree on which a "50G disk" is, and a convention mismatch would
+# otherwise make the selector silently match nothing.
 # by-size safety: refuse an AMBIGUOUS pin — two BLANK disks matching the pinned
 # size means the role could build on the wrong one. Disambiguate with
 # by-serial:/by-wwn: or an explicit /dev path. (Skipped once the VG exists —
@@ -435,7 +435,7 @@
     _vg_exists: "{{ (item.lvm | bool) and (item.vg in _storage_existing_vgs) }}"
     _lv_exists: "{{ (item.lvm | bool) and ((item.vg ~ '/' ~ item.lv) in _storage_existing_lvs) }}"
     _existing_pv: "{{ (_storage_pv_map | selectattr('vg', 'equalto', item.vg) | map(attribute='pv') | list | first) | default('') }}"
-    # NOT trimmed, deliberately — validate.yml's V10 rejects a whitespace-padded selector
+    # NOT trimmed, deliberately — validate.yml rejects a whitespace-padded selector
     # outright, so nothing padded reaches here. Trimming at this point instead would let a
     # padded 'by-size:' slip past the by-size ambiguity assert above, which matches the
     # UNtrimmed '^by-size:' prefix and would silently skip its two-blank-disks check.
@@ -511,8 +511,8 @@
     # whose name contains '-'. The /dev/<vg>/<lv> symlink LVM creates needs no escaping and
     # is equivalent for every consumer here (mkfs, mount, resize2fs).
     _dm_dev: "{{ ('/dev/' ~ item.vg ~ '/' ~ item.lv) if (item.lvm | bool) else _part_dev }}"
-    # Complete stack requires a filesystem, not just an LV. An LV without a FS used to
-    # count as _exists, so provision skipped and mount only debug'd — green incomplete.
+    # Complete stack requires a filesystem, not just an LV. Counting a bare LV as
+    # _exists would skip provision and leave mount debug-only — green but incomplete.
     _exists: >-
       {{ (_lvm_complete | bool)
          if (item.lvm | bool)

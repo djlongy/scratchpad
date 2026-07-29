@@ -18,7 +18,8 @@
 
 - name: "{{ vol.name }} | resolve filesystem UUID"
   become: true  # root: blkid reads the device
-  ansible.builtin.command: "blkid -s UUID -o value {{ _m_dev }}"
+  ansible.builtin.command:
+    argv: [blkid, -s, UUID, -o, value, "{{ _m_dev }}"]
   register: _m_uuid
   changed_when: false
   failed_when: false
@@ -52,13 +53,6 @@
 - name: "{{ vol.name }} | manage mount + fstab"
   when: _m_uuid.stdout | trim | length > 0
   block:
-    - name: "{{ vol.name }} | remove legacy device-name fstab entries for {{ vol.mount }}"
-      become: true  # root: edits /etc/fstab
-      ansible.builtin.lineinfile:
-        path: /etc/fstab
-        regexp: "^/dev/\\S+\\s+{{ vol.mount | regex_escape }}\\s+"
-        state: absent
-
     - name: "{{ vol.name }} | mount {{ vol.mount }} by UUID (nofail)"
       become: true  # root: mounts filesystem + writes /etc/fstab
       ansible.posix.mount:
