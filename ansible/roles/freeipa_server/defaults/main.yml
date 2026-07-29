@@ -416,7 +416,13 @@ freeipa_iam_per_item_apply: false
 
 # Scope marker for object pruning under authoritative — only objects whose NAME contains this
 # substring are deletion-eligible (the matrix sets '<tenant>-<environment>'). Blank = object pruning
-# deletes NOTHING and is skipped (fail-safe — never considers the whole realm).
+# deletes NOTHING and is skipped (fail-safe — never considers the whole realm) — with ONE
+# exception: in TENANTS-DIR mode the GROUP deleter treats a blank scope as
+# marker-scope: any iam-managed-groups member no longer declared in ANY tenant file is
+# deleted on converge. That is positive ownership evidence (the role enrolled it), the
+# unified load sees every tenant by construction, and the empty-desired breaker still
+# refuses a hollow load. Set a scope to narrow a staged vacate; legacy (group_vars) mode
+# keeps blank = nothing, because a multi-slice realm's marker holds the union of slices.
 freeipa_iam_reconcile_scope: ""
 
 # WHOLE-REALM prune — the match-everything override of reconcile_scope (delete ALL undeclared managed

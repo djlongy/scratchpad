@@ -1350,14 +1350,26 @@
       {{ _freeipa_iam_managed_groups_show.stdout_lines | default([]) | map('trim')
          | select('match', '^member: cn=')
          | map('regex_replace', '^member: cn=([^,]+),.*', '\1') | list }}
-    # '' matches everything (reconcile_all); '(?!)' never matches (blank scope, fail-safe);
-    # otherwise the scope marker as a literal substring — regex_escape so a marker
-    # containing '.' or '+' cannot silently widen the match.
-    # Match-all requires BOTH switches — belt and braces with the assert above, so that
-    # even if this task is ever reached without it the widening cannot happen silently.
+    # '' matches everything; '(?!)' never matches; otherwise the scope marker as a
+    # literal substring — regex_escape so a marker containing '.' or '+' cannot
+    # silently widen the match. Match-all is reached two ways:
+    #   * reconcile_all AND confirm — both switches, belt and braces with the assert
+    #     above, so even if this task is ever reached without it the widening cannot
+    #     happen silently;
+    #   * TENANTS-DIR MODE with a blank scope (2026/07/29, operator decision): the
+    #     candidates are already (marker container − declared − shields), i.e. only
+    #     groups THIS ROLE created and then un-declared — positive ownership evidence.
+    #     In the unified model one run assembles EVERY tenant, so "enrolled but not
+    #     declared" is decidable and the name fence adds nothing. A set scope still
+    #     narrows (staged vacate). LEGACY mode keeps blank = delete NOTHING: a
+    #     multi-slice realm's marker container holds the UNION of all slices, and a
+    #     slice's run must not delete the others' groups. The empty-desired breaker
+    #     above still refuses a hollow load before this widening can matter.
     _freeipa_iam_group_scope_re: >-
-      {{ '' if ((freeipa_iam_reconcile_all | default(false) | bool)
-                and (freeipa_iam_reconcile_all_confirm | default(false) | bool))
+      {{ '' if (((freeipa_iam_reconcile_all | default(false) | bool)
+                 and (freeipa_iam_reconcile_all_confirm | default(false) | bool))
+                or ((freeipa_iam_tenants_dir | default('') | length > 0)
+                    and ((freeipa_iam_reconcile_scope | default('')) | length == 0)))
          else ((freeipa_iam_reconcile_scope | regex_escape)
                if ((freeipa_iam_reconcile_scope | default('')) | length > 0)
                else '(?!)') }}

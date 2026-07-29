@@ -457,7 +457,10 @@ argument_specs:
         description: >-
           Name-substring scope marker for object pruning under authoritative — governs
           BOTH the orphan reconcile and the group-existence deleter. Blank = object
-          pruning deletes nothing (fail-safe); user archival is marker-based and not
+          pruning deletes nothing (fail-safe), EXCEPT the group deleter in tenants-dir
+          mode, where blank means marker-scope — iam-managed-groups members no longer
+          declared in any tenant file are deleted (positive ownership evidence; the
+          unified load sees every tenant). User archival is marker-based and not
           scope-gated.
       freeipa_iam_reconcile_all:
         type: bool

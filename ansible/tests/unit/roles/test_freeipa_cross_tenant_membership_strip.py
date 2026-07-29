@@ -212,3 +212,33 @@ def test_FIXED_eviction_covers_the_memberless_group_and_spares_outofband(fp):
         "managed dropper must be evicted from the memberless declared group; "
         "nwn-admins keeps long (still desired) and svc-backup (unmanaged) is "
         "never touched")
+
+
+# ── group-deleter scope: marker-scope default in tenants-dir mode ─────────────
+
+def _scope_re(**vars_in):
+    """Replay the REAL `_freeipa_iam_group_scope_re` expression from tasks/iam.yml."""
+    import yaml as _yaml
+    tasks = _yaml.safe_load((ROLE / "tasks" / "iam.yml").read_text(encoding="utf-8"))
+    task = next(t for t in tasks
+                if "Build declarative group delete list" in (t.get("name") or ""))
+    expr = task["vars"]["_freeipa_iam_group_scope_re"]
+    base = {"freeipa_iam_tenants_dir": "", "freeipa_iam_reconcile_scope": "",
+            "freeipa_iam_reconcile_all": False, "freeipa_iam_reconcile_all_confirm": False}
+    base.update(vars_in)
+    return render(expr, base).strip()
+
+
+def test_group_deleter_scope_quadrant():
+    """Tenants-dir mode + blank scope = marker-scope (match-all: the candidate
+    set is already container − declared − shields, positive ownership evidence,
+    and the unified load sees every tenant). Legacy + blank keeps the
+    multi-slice fail-safe (match-nothing). A set scope narrows in both modes;
+    reconcile_all still needs its confirm to widen."""
+    assert _scope_re(freeipa_iam_tenants_dir="/repo/tenants") == ""          # marker-scope
+    assert _scope_re() == "(?!)"                                             # legacy fail-safe
+    assert _scope_re(freeipa_iam_tenants_dir="/repo/tenants",
+                     freeipa_iam_reconcile_scope="gamma") == "gamma"         # staged vacate
+    assert _scope_re(freeipa_iam_reconcile_all=True) == "(?!)"               # no confirm, no widen
+    assert _scope_re(freeipa_iam_reconcile_all=True,
+                     freeipa_iam_reconcile_all_confirm=True) == ""           # ceremony still works
