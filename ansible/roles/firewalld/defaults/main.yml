@@ -7,8 +7,8 @@
 
 # ── Service lifecycle ────────────────────────────────────────────────────────
 
-# Set to false to skip the entire role (useful for hosts where firewalld is
-# managed externally, or for canary debugging).
+# Set to false to skip the entire role — for hosts whose firewall is managed
+# outside this automation.
 firewalld_enabled: true
 
 # State for the firewalld systemd unit. Valid: started | stopped | restarted.

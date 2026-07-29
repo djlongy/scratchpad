@@ -89,7 +89,7 @@
       {%- endfor -%}
       {{ out }}
 
-# ── R3b: the operator's own NIC must be classified out of a drop default ─────
+# ── The operator's own NIC must be classified out of a drop default ──────────
 - name: Determine the interface carrying this SSH session
   ansible.builtin.set_fact:
     _fw_ssh_local_ip: >-
@@ -368,7 +368,7 @@
       unset_zone={{ _fw_nm_unset_zone | default([]) }}. Fix the NM connection
       zones or switch to source-based zoning.
 
-# ── R3d: zone drifting must be off (leaks around a restrictive default) ───────
+# ── Zone drifting must be off (it leaks around a restrictive default) ────────
 - name: Read /etc/firewalld/firewalld.conf
   become: true  # root: reads firewalld's main config
   ansible.builtin.slurp:

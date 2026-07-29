@@ -1,12 +1,12 @@
 ---
 # Pre-flight contract checks. Fail BEFORE rewriting permanent zone XML so a
 # bad inventory never lands a half-applied drop-default ruleset. Runnable
-# standalone (playbooks/test_firewalld_source_drop.yml calls this file via
-# tasks_from), so every fact it consumes is computed here, not upstream.
+# standalone via tasks_from, so every fact it consumes is computed here,
+# not upstream.
 
 # FIRST, before anything reads these. Each is documented as a list, and each is
-# routinely supplied through Jinja from another var (see group_vars/fwtest.yml,
-# where firewalld_source_zone_bindings is an expression) — so a typo that renders
+# routinely supplied through Jinja from another var — an inventory group may
+# build firewalld_source_zone_bindings as an expression — so a typo that renders
 # a STRING is a live possibility, not a hypothetical.
 #
 # It has to be checked HERE, on the raw inventory value. Everything downstream
