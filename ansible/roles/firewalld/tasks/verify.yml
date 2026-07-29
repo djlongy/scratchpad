@@ -129,6 +129,171 @@
   loop_control:
     label: "{{ item.interface }} in {{ item.zone }}"
 
+# ── Managed-zone surface: permanent state vs the inventory contract ──────────
+#
+# Sources and interfaces are compared above. Everything ELSE templates/zone.xml.j2
+# writes — services, ports, protocols, source-ports, icmp-blocks, target,
+# masquerade, forward, icmp-block-inversion — was never looked at, so permanent
+# state added by hand (a stray port, an extra service, masquerade) would pass this
+# phase with failed=0 while the zone plainly did not match inventory.
+#
+# ONLY zones listed in firewalld_zones are compared. Built-in zones this role
+# does not manage (a stock `public`, or a `drop` used as the default) carry state
+# the inventory contract says nothing about, and asserting on them would fail
+# every host that has one.
+
+- name: Read permanent configuration of each managed zone
+  become: true  # root: firewall-cmd
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --zone={{ item.name }} --list-all
+  register: _firewalld_zone_all
+  changed_when: false
+  # A zone that is missing or unparseable exits non-zero. Let it through here so
+  # the next task can fail with a message that names the zone, rather than the
+  # raw command error.
+  failed_when: false
+  check_mode: false  # read-only; must run under --check so asserts have data
+  loop: "{{ firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: firewalld_zones | length > 0
+
+- name: Assert every managed zone exists in the permanent configuration
+  when: firewalld_zones | length > 0
+  vars:
+    _res: >-
+      {{ _firewalld_zone_all.results | default([])
+         | selectattr('item.name', 'equalto', item.name)
+         | first
+         | default({}) }}
+  ansible.builtin.assert:
+    that:
+      - (_res.rc | default(1)) == 0
+    fail_msg: >-
+      Managed zone {{ item.name }} is absent from the permanent configuration
+      (firewall-cmd --permanent --zone={{ item.name }} --list-all exited
+      {{ _res.rc | default('n/a') }}: {{ _res.stderr | default('') | trim }}).
+      zones.yml renders /etc/firewalld/zones/{{ item.name }}.xml every run, so the
+      file was removed after templating or firewalld cannot parse it.
+  loop: "{{ firewalld_zones }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# `--list-all` prints one "key: values" line per attribute, so one command per
+# zone covers the whole surface instead of seven round trips. Only the first
+# colon splits: every key here is single-line. (`rich rules:` can wrap onto
+# further lines, but validate.yml refuses a non-empty rich_rules on a managed
+# zone, so a managed zone never has any — and this map never reads that key.)
+- name: Parse the permanent zone configuration into a comparable map
+  when: firewalld_zones | length > 0
+  ansible.builtin.set_fact:
+    _firewalld_permanent_zone_state: >-
+      {% set out = {} %}
+      {%- for r in (_firewalld_zone_all.results | default([])) -%}
+      {%- set attrs = {} -%}
+      {%- for line in (r.stdout_lines | default([])) -%}
+      {%- set l = line | trim -%}
+      {%- if ':' in l -%}
+      {%- set key = l.split(':', 1)[0] | trim -%}
+      {%- set value = l.split(':', 1)[1] | trim -%}
+      {%- set _ = attrs.update({key: value}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set _ = out.update({r.item.name: attrs}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+# Expected values are read from firewalld_zones with the SAME expressions
+# templates/zone.xml.j2 uses (plain `| default(...)`, not `default(..., true)`),
+# so this comparison cannot drift from what the role actually writes. A zone dict
+# that would crash the template crashes zones.yml first, long before verify runs.
+#
+# Two writers legitimately add to a zone the template did not put there, and both
+# are folded in here or every host that uses them would false-positive:
+#   * main.yml opens `protocol: icmp` permanently on the EFFECTIVE default zone
+#     when firewalld_allow_icmp — only matters when the default zone is managed;
+#   * legacy_rules.yml opens firewall_rules ports in firewalld_default_zone
+#     (falling back to `public`) — same condition.
+- name: Compute the expected permanent zone state from inventory
+  when: firewalld_zones | length > 0
+  ansible.builtin.set_fact:
+    _firewalld_expected_zone_state: >-
+      {% set out = {} %}
+      {%- set icmp_zone = (_firewalld_verify_default.stdout | trim)
+                          if (firewalld_allow_icmp | bool) else '' -%}
+      {%- set legacy_zone = (firewalld_default_zone
+                             if (firewalld_default_zone | length > 0) else 'public')
+                            if (firewall_rules | length > 0) else '' -%}
+      {%- set legacy_ports = [] -%}
+      {%- for r in firewall_rules -%}
+      {%- set _ = legacy_ports.append((r.port ~ '/' ~ r.protocol) if (r is mapping)
+                                      else (r.split('/')[0] ~ '/' ~ r.split('/')[1])) -%}
+      {%- endfor -%}
+      {%- for z in firewalld_zones -%}
+      {%- set ports = [] -%}
+      {%- for p in z.ports | default([]) -%}
+      {%- set _ = ports.append(p.port ~ '/' ~ p.protocol) -%}
+      {%- endfor -%}
+      {%- set source_ports = [] -%}
+      {%- for p in z.source_ports | default([]) -%}
+      {%- set _ = source_ports.append(p.port ~ '/' ~ p.protocol) -%}
+      {%- endfor -%}
+      {%- set _ = out.update({z.name: {
+            'services': z.services | default([]) | map('string') | list,
+            'ports': (ports + (legacy_ports if z.name == legacy_zone else [])) | unique | list,
+            'protocols': ((z.protocols | default([]) | map('string') | list)
+                          + (['icmp'] if z.name == icmp_zone else [])) | unique | list,
+            'source-ports': source_ports,
+            'icmp-blocks': z.icmp_blocks | default([]) | map('string') | list,
+            'target': z.target | default('default'),
+            'masquerade': 'yes' if (z.masquerade | default(false)) else 'no',
+            'forward': 'yes' if (z.forward | default(false)) else 'no',
+            'icmp-block-inversion': 'yes' if (z.icmp_block_inversion | default(false)) else 'no',
+          }}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+# ONE task for every attribute of every zone, deliberately: a looped assert runs
+# all its items and reports each in results[], so a zone carrying several
+# injected elements names all of them in a single failure. Splitting the list
+# attributes and the scalar ones into two tasks would stop the play at the first
+# and hide the rest.
+- name: Assert permanent zone attributes match inventory
+  when: firewalld_zones | length > 0
+  vars:
+    _fw_scalars: [target, masquerade, forward, icmp-block-inversion]
+    _zone: "{{ item.0.name }}"
+    _attr: "{{ item.1 }}"
+    _expected_raw: "{{ _firewalld_expected_zone_state[_zone][_attr] }}"
+    _actual_raw: "{{ _firewalld_permanent_zone_state[_zone][_attr] | default('') }}"
+    # Scalars compare as one-element lists so extra/missing is one code path.
+    _expected: "{{ [_expected_raw] if _attr in _fw_scalars else _expected_raw }}"
+    _actual: "{{ [_actual_raw] if _attr in _fw_scalars else (_actual_raw | split) }}"
+    _missing: "{{ _expected | difference(_actual) }}"
+    _extra: "{{ _actual | difference(_expected) }}"
+  ansible.builtin.assert:
+    that:
+      - _missing | length == 0
+      - _extra | length == 0
+    fail_msg: >-
+      {% if _attr in _fw_scalars -%}
+      Permanent zone {{ _zone }} has {{ _attr }}={{ _actual_raw | default('(unset)', true) }}
+      but inventory declares {{ _expected_raw }}.
+      {%- else -%}
+      Permanent zone {{ _zone }} does not match inventory on {{ _attr }}:
+      {%- if _extra | length > 0 %} UNEXPECTED on the host {{ _extra }};{% endif %}
+      {%- if _missing | length > 0 %} MISSING from the host {{ _missing }};{% endif %}
+      inventory declares {{ _expected }}, the host has {{ _actual }}.
+      {%- endif %}
+      Fix firewalld_zones for zone {{ _zone }}, or remove the state added outside
+      this role — the next apply re-templates the zone and would wipe it silently.
+  loop: >-
+    {{ firewalld_zones | product(['services', 'ports', 'protocols', 'source-ports',
+                                  'icmp-blocks', 'target', 'masquerade', 'forward',
+                                  'icmp-block-inversion']) | list }}
+  loop_control:
+    label: "{{ item.0.name }}/{{ item.1 }}"
+
 - name: Report firewalld verify summary
   ansible.builtin.debug:
     msg:
@@ -136,4 +301,5 @@
       - "active_zones={{ _firewalld_active_zones.stdout_lines | default([]) }}"
       - "source_bindings={{ firewalld_source_zone_bindings | length }}"
       - "interface_bindings={{ firewalld_interface_zone_bindings | length }}"
+      - "managed_zones_compared={{ firewalld_zones | map(attribute='name') | list }}"
       - "interface_audit={{ _firewalld_interface_audit | default('(interface_audit phase not run)') }}"

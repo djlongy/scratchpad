@@ -1,7 +1,7 @@
 ---
 # Back-compat shim for the legacy `firewall_rules` variable.
 #
-# Accepts two formats (both used historically in this repo):
+# Accepts two formats:
 #
 #   firewall_rules:
 #     - "22/tcp/ssh"                                      # string
@@ -12,11 +12,11 @@
 #
 # REFUSED ON A RESTRICTIVE DEFAULT. Opening a port in the DEFAULT zone is only as narrow as
 # that zone: under `drop` the default zone is where every unclassified NIC lands, so a legacy
-# rule becomes a world-facing hole on exactly the hosts meant to be most closed. Proven live
-# on fwtest-01 — a legacy 31000/tcp was reachable from an unclassified source on an
+# rule becomes a world-facing hole on exactly the hosts meant to be most closed. Live-proven
+# on a multi-NIC test host — a legacy port was reachable from an unclassified source on an
 # unrouted data plane, while a control port on the same host was dropped:
-#     192.0.2.92:31000 -> OPEN               (legacy firewall_rules port)
-#     192.0.2.92:31002 -> BLOCKED/REFUSED    (control)
+#     <host>:<legacy-port>   -> OPEN               (opened by legacy firewall_rules)
+#     <host>:<control-port>  -> BLOCKED/REFUSED    (control, not in firewall_rules)
 # It is also invisible afterwards: `drop` is a built-in, so it is normally absent from
 # firewalld_zones, which means this role never re-templates it, verify.yml never inspects it,
 # and cleanup.yml can never remove it. The rule's `service`/comment field is used only as a

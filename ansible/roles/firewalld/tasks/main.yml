@@ -8,15 +8,16 @@
 #
 # Order:
 #   1. validate inventory contract (exclusive CIDRs, drop+ssh safety)
-#   2. install + service XML + zone XML (atomic sources/ifaces)
-#   3. audit interface→zone classification
-#   4. ARM the revert guard (snapshots /etc/firewalld) — before any reload
-#   5. reload (handlers) — permanent state already complete
-#   6. reconcile runtime bindings (idempotent; belt-and-suspenders)
-#   7. RE-ARM the guard so the switch gets a full timer budget
-#   8. set default zone LAST (drop only after sources exist)
-#   9. prove a fresh SSH connection, then disarm
-#  10. verify permanent state matches inventory
+#   2. install firewalld and start the service
+#   3. audit interface→zone classification (read-only, before any write)
+#   4. ARM the revert guard (snapshots /etc/firewalld) — before the first write
+#   5. service XML + zone XML (atomic sources/ifaces), prune orphans
+#   6. reload (handlers) — permanent state already complete
+#   7. reconcile runtime bindings (idempotent; belt-and-suspenders)
+#   8. RE-ARM the guard so the switch gets a full timer budget
+#   9. set default zone LAST (drop only after sources exist)
+#  10. prove a fresh SSH connection, then disarm
+#  11. verify permanent state matches inventory
 #
 # Runtime phases are gated on `firewalld_daemon_expected_up` (vars/main.yml):
 # firewalld_service_state=stopped is a documented config-only mode where the
@@ -62,56 +63,75 @@
       ansible.builtin.import_tasks: validate.yml
       tags: [always]
 
+    # include_tasks is dynamic: tags on the include only select the include
+    # statement. Under `--tags firewalld` the children would otherwise be
+    # filtered out (untagged), so zone XML never re-templates and source
+    # bindings never reconcile. `apply.tags` stamps every child so a
+    # tag-isolated run actually writes permanent state. import_tasks (validate)
+    # already propagates tags — includes need apply.
     - name: Install firewalld and start the service
-      ansible.builtin.include_tasks: install.yml
+      ansible.builtin.include_tasks:
+        file: install.yml
+        apply:
+          tags: [install, firewalld]
       tags: [install, firewalld]
 
-    - name: Render custom service XML definitions
-      ansible.builtin.include_tasks: services.yml
-      tags: [services, firewalld]
-
-    - name: Render custom zone XML definitions (sources/interfaces inlined)
-      ansible.builtin.include_tasks: zones.yml
-      tags: [zones, firewalld]
-
-    - name: Remove orphaned service/zone XML definitions
-      ansible.builtin.include_tasks: cleanup.yml
-      when:
-        - firewalld_services_remove | length > 0
-          or firewalld_zones_remove | length > 0
-      tags: [cleanup, firewalld]
-
     # Audit interface→zone classification (NICs in the default zone, NM-owned
-    # binds, zone drifting) BEFORE the risky window, so a silent lockout path
-    # fails here rather than after drop takes effect. Needs a live daemon: with
-    # firewalld stopped every --get-zone-of-interface fails, every NIC looks
-    # unbound, and the lockout gate would fire on nothing.
+    # binds, zone drifting) BEFORE anything is written, so a silent lockout path
+    # fails while permanent state is still the operator's own. Needs a live
+    # daemon: with firewalld stopped every --get-zone-of-interface fails, every
+    # NIC looks unbound, and the lockout gate would fire on nothing.
     - name: Audit interface-to-zone bindings
-      ansible.builtin.include_tasks: interface_audit.yml
+      ansible.builtin.include_tasks:
+        file: interface_audit.yml
+        apply:
+          tags: [interface_audit, firewalld]
       when: firewalld_daemon_expected_up | bool
       tags: [interface_audit, firewalld]
 
     # ── Risky window opens here ──────────────────────────────────────────────
-    # Arm the revert guard BEFORE the first reload. The guard snapshots
-    # /etc/firewalld, so its revert restores the zone XML this window is about to
-    # rewrite — including on a host whose default was ALREADY drop/block, where
-    # rolling the default zone back on its own recovers nothing.
+    # Arm the revert guard before the FIRST permanent write, not merely before
+    # the reload: the snapshot is what the revert extracts, so it has to capture
+    # zone XML as it was BEFORE this run re-templates it. Arming after the XML
+    # phases would snapshot the new state and the revert would restore the very
+    # change it exists to undo. This also covers the case the default-zone
+    # rollback cannot: a host whose default was ALREADY drop/block.
     #
     # The tag list is shared by anchor with the re-arm and the disarm below.
     # Arming under a tag set that does not also disarm would leave a live timer
     # to revert a good change minutes later — `--skip-tags guard` must take out
-    # all three or none. One list, three sites.
-    #
-    # Deliberately NOT widened to the risky phase tags: these are dynamic
-    # includes, so tags here only decide whether the include expands, never
-    # whether its children run (see the import_tasks note on validate above).
-    # Phase tags would be decoration. The reachable gap `--skip-tags guard`
-    # leaves — guard skipped while default_zone still runs under `--tags
-    # firewalld` — is closed by the fail-closed assert in default_zone.yml.
-    - name: Arm the lockout revert guard (covers the reload window)
-      ansible.builtin.include_tasks: guard_arm.yml
+    # all three or none. One list, three sites. apply.tags stamps include children.
+    - name: Arm the lockout revert guard (covers every permanent write)
+      ansible.builtin.include_tasks:
+        file: guard_arm.yml
+        apply:
+          tags: &fw_guard_tags [guard, firewalld]
       when: firewalld_daemon_expected_up | bool
-      tags: &fw_guard_tags [guard, firewalld]
+      tags: *fw_guard_tags
+
+    - name: Render custom service XML definitions
+      ansible.builtin.include_tasks:
+        file: services.yml
+        apply:
+          tags: [services, firewalld]
+      tags: [services, firewalld]
+
+    - name: Render custom zone XML definitions (sources/interfaces inlined)
+      ansible.builtin.include_tasks:
+        file: zones.yml
+        apply:
+          tags: [zones, firewalld]
+      tags: [zones, firewalld]
+
+    - name: Remove orphaned service/zone XML definitions
+      ansible.builtin.include_tasks:
+        file: cleanup.yml
+        apply:
+          tags: [cleanup, firewalld]
+      when:
+        - firewalld_services_remove | length > 0
+          or firewalld_zones_remove | length > 0
+      tags: [cleanup, firewalld]
 
     # Flush here: zone XML already contains sources/interfaces, so reload
     # cannot drop the SSH path for default=drop hosts.
@@ -123,14 +143,20 @@
     # elements; repairs drift if someone hand-edited permanent state.
     # Still runs AFTER reload so zones exist as named objects.
     - name: Reconcile source CIDRs to zones (L3)
-      ansible.builtin.include_tasks: bindings_sources.yml
+      ansible.builtin.include_tasks:
+        file: bindings_sources.yml
+        apply:
+          tags: [bindings, firewalld]
       when:
         - firewalld_daemon_expected_up | bool
         - firewalld_source_zone_bindings | length > 0
       tags: [bindings, firewalld]
 
     - name: Reconcile interfaces to zones (L2 — use sparingly)
-      ansible.builtin.include_tasks: bindings_interfaces.yml
+      ansible.builtin.include_tasks:
+        file: bindings_interfaces.yml
+        apply:
+          tags: [bindings, firewalld]
       when:
         - firewalld_daemon_expected_up | bool
         - firewalld_interface_zone_bindings | length > 0
@@ -140,7 +166,10 @@
     # because it ends in meta: reset_connection, which cannot carry a `when:` — see
     # bindings_reload.yml for why the reconnect is needed at all.
     - name: Reload firewalld after runtime binding reconcile
-      ansible.builtin.include_tasks: bindings_reload.yml
+      ansible.builtin.include_tasks:
+        file: bindings_reload.yml
+        apply:
+          tags: [bindings, reload, firewalld]
       when:
         - firewalld_daemon_expected_up | bool
         - firewalld_reload | bool
@@ -153,7 +182,10 @@
     # from the first arm, or the revert would restore post-reload state, i.e. the
     # very change the guard exists to undo.
     - name: Re-arm the lockout revert guard (full budget for the switch)
-      ansible.builtin.include_tasks: guard_arm.yml
+      ansible.builtin.include_tasks:
+        file: guard_arm.yml
+        apply:
+          tags: *fw_guard_tags
       when: firewalld_daemon_expected_up | bool
       tags: *fw_guard_tags
 
@@ -161,7 +193,10 @@
     # safe only once source-activated zones are permanent AND the revert guard
     # is proven pending (asserted inside default_zone.yml).
     - name: Set the default zone
-      ansible.builtin.include_tasks: default_zone.yml
+      ansible.builtin.include_tasks:
+        file: default_zone.yml
+        apply:
+          tags: [default_zone, firewalld]
       when:
         - firewalld_daemon_expected_up | bool
         - firewalld_default_zone | length > 0
@@ -201,18 +236,27 @@
     # inside cannot itself be gated by 'when'. Shares the arm's tag list so no tag
     # selection can arm without disarming.
     - name: Disarm the lockout revert guard (after fresh-connection proof)
-      ansible.builtin.include_tasks: guard_disarm.yml
+      ansible.builtin.include_tasks:
+        file: guard_disarm.yml
+        apply:
+          tags: *fw_guard_tags
       when: _firewalld_guard_active | default(false) | bool
       tags: *fw_guard_tags
 
     - name: Apply legacy firewall_rules (back-compat)
-      ansible.builtin.include_tasks: legacy_rules.yml
+      ansible.builtin.include_tasks:
+        file: legacy_rules.yml
+        apply:
+          tags: [legacy_rules, firewalld]
       when:
         - firewalld_daemon_expected_up | bool
         - firewall_rules | length > 0
       tags: [legacy_rules, firewalld]
 
     - name: Verify permanent firewalld state matches inventory
-      ansible.builtin.include_tasks: verify.yml
+      ansible.builtin.include_tasks:
+        file: verify.yml
+        apply:
+          tags: [verify, firewalld]
       when: firewalld_daemon_expected_up | bool
       tags: [verify, firewalld]

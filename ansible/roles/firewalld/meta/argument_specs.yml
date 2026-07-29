@@ -23,6 +23,13 @@ argument_specs:
         description: "Default zone for unclassified traffic. Empty string = leave unchanged."
         type: str
         default: ""
+      firewalld_allow_icmp:
+        description: >-
+          Keep ICMP (ping) answerable on the default zone even when that zone is
+          drop/block, so reachability probes still work without opening any
+          TCP/UDP port. False black-holes ICMP on unclassified traffic.
+        type: bool
+        default: true
       firewalld_reload:
         description: "Reload firewalld after XML changes."
         type: bool
@@ -47,6 +54,31 @@ argument_specs:
         description: "Seconds the revert timer waits before restoring the pre-change default zone."
         type: int
         default: 180
+      firewalld_lockout_guard_snapshot:
+        description: >-
+          Path the revert guard writes its tar.gz of the pre-change permanent
+          firewalld config (/etc/firewalld) to, and restores from if the timer
+          fires. Deliberately under /run so a reboot discards it — a host that
+          has rebooted is already past the risky window. This archive is what
+          lets the guard recover a host whose default zone was drop/block
+          before the run.
+        type: str
+        default: /run/firewalld-lockout-guard.tar.gz
+      firewall_rules:
+        description: >-
+          LEGACY, unprefixed, back-compat only — kept so historical inventory
+          still parses; new code declares ports on a zone via firewalld_zones
+          and binds sources via firewalld_source_zone_bindings. Accepts
+          "PORT/PROTO/COMMENT" strings or {port, protocol, service} dicts and
+          opens each port in firewalld_default_zone (falling back to "public"
+          when that is unset); the service/comment field is only a loop label
+          and is discarded. REFUSED — the role fails the play — when the
+          effective default zone is drop or block, because the default zone is
+          where every unclassified interface lands, and a built-in zone is
+          never re-templated, verified, or cleaned up by this role.
+        type: list
+        elements: raw
+        default: []
       firewalld_packages:
         description: "Packages to install."
         type: list
@@ -81,9 +113,11 @@ argument_specs:
           zone:
             type: str
             required: true
+            description: Zone the matching traffic is classified into.
           source:
             type: str
             required: true
+            description: Source CIDR or address bound to that zone.
       firewalld_interface_zone_bindings:
         description: "Interface -> zone bindings (L2 segregation; use sparingly)."
         type: list
@@ -93,11 +127,8 @@ argument_specs:
           zone:
             type: str
             required: true
+            description: Zone the interface's traffic is classified into.
           interface:
             type: str
             required: true
-      firewall_rules:
-        description: "Legacy variable, kept for back-compat. Accepts string or dict form."
-        type: list
-        elements: raw
-        default: []
+            description: Kernel interface name bound to that zone.

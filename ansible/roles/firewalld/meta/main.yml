@@ -1,7 +1,14 @@
 ---
+# Collections this role requires (mirrored in README.md "Requirements" and the
+# repo requirements.yml). Listed as comments, not `dependencies:` — role
+# dependencies are roles, and Galaxy does not install collections from here.
+#   ansible.posix     — always: firewalld module (runtime binds, ICMP, legacy rules)
+#   ansible.utils     — always: in_any_network test (controller-containment check)
+#   community.general — when firewalld_services_remove / firewalld_zones_remove
+#                       is set: dict_kv filter in the cleanup phase
 galaxy_info:
   role_name: firewalld
-  author: example
+  author: longy
   description: >-
     Manages firewalld via XML templates for services and zones, plus runtime
     source/interface-to-zone bindings. Multi-distro (EL + Debian families).

@@ -21,8 +21,8 @@ firewalld_service_enabled: true
 # firewalld-managed default unchanged.
 firewalld_default_zone: ""
 
-# Allow ICMP (ping) on the default zone even when it is "drop". Default
-# is on so reachability probes work without opening TCP/UDP. Set false to fully
+# Allow ICMP (ping) on the default zone even when it is "drop". Defaults on so
+# reachability probes keep working without opening TCP/UDP. Set false to fully
 # black-hole ICMP on unclassified traffic.
 firewalld_allow_icmp: true
 
@@ -73,8 +73,8 @@ firewalld_lockout_guard_snapshot: /run/firewalld-lockout-guard.tar.gz
 # available to bind in a zone.
 #
 # Schema:
-#   - name: harbor                       # filename: <name>.xml — REQUIRED
-#     short: "Harbor Registry"           # display name shown in firewall-cmd --info-service
+#   - name: registry                     # filename: <name>.xml — REQUIRED
+#     short: "Container Registry"        # display name shown in firewall-cmd --info-service
 #     description: "Container registry"  # longer description
 #     ports:                             # list of port openings
 #       - { port: 80,  protocol: tcp }
@@ -103,7 +103,7 @@ firewalld_services_remove: []
 #     short: "DMZ Ingress"
 #     description: "Public-facing services"
 #     target: default                    # default | ACCEPT | DROP | %%REJECT%%
-#     services: [ssh, http, https, harbor]   # service names (built-in or custom)
+#     services: [ssh, http, https, registry] # service names (built-in or custom)
 #     ports: []                          # ad-hoc port opens (same shape as service ports)
 #     protocols: []                      # raw IP protocols
 #     source_ports: []
@@ -113,8 +113,8 @@ firewalld_services_remove: []
 #     forward: false                     # intra-zone forwarding (firewalld 0.9+)
 #     sources: []                        # CIDRs bound at zone-creation time (also see firewalld_source_zone_bindings)
 #     # rich_rules is NOT SUPPORTED — validate.yml rejects a non-empty list. Zone XML wants
-#     # structured <rule> child elements, not rich-language strings, so the old renderer
-#     # emitted an unloadable zone file (under a drop default, that strands SSH).
+#     # structured <rule> child elements, not rich-language strings, so a rich-language
+#     # string renders an unloadable zone file (under a drop default, that strands SSH).
 #     # Scope access by CIDR the way this role intends instead: put the services/ports on a
 #     # zone and bind the source with firewalld_source_zone_bindings. For a rule with no
 #     # equivalent, apply it out of band via ansible.posix.firewalld (rich_rule:,
@@ -135,16 +135,16 @@ firewalld_zones_remove: []
 
 # Bind source CIDRs to zones (L3 segregation pattern — preferred).
 # Schema:
-#   - { zone: mgmt, source: 192.168.10.0/24 }
-#   - { zone: app,  source: 192.168.40.0/24 }
+#   - { zone: mgmt, source: 192.0.2.0/24 }
+#   - { zone: app,  source: 198.51.100.0/24 }
 firewalld_source_zone_bindings: []
 
 # Bind physical/virtual interfaces to zones (L2 segregation — use only if you
 # have a real reason: dedicated storage NIC, PCI passthrough, etc.).
 # Schema:
 #   - { zone: storage, interface: ens224 }
-# For the PRIMARY NIC, do NOT hardcode the name (it varies by distro and hypervisor:
-# eth0 / ens192 / ens160…). Use the fleet-wide derived var instead:
+# For the PRIMARY NIC, do NOT hardcode the name — it varies by distro and by
+# virtual NIC model (eth0 / ens192 / ens160…). Use the fleet-wide derived var:
 #   - { zone: internal, interface: "{{ primary_interface }}" }
 # (primary_interface is defined in playbooks/group_vars/all/all.yml.)
 # Do NOT interface-bind the primary NIC to "mgmt" for leaf hosts — use source
@@ -153,18 +153,21 @@ firewalld_interface_zone_bindings: []
 
 # ── Back-compat: legacy firewall_rules variable ──────────────────────────────
 #
-# Accepts two formats (both used historically in this repo):
+# Accepts two formats:
 #
 #   firewall_rules:
 #     - "22/tcp/ssh"                     # string: "PORT/PROTO/COMMENT"
-#     - "5000-5100/tcp/elasticsearch"    # ranges supported
+#     - "5000-5100/tcp/search"           # ranges supported
 #
 #   firewall_rules:
 #     - { port: 22, protocol: tcp, service: ssh }      # dict form
 #
 # Rules are opened in `firewalld_default_zone` (falls back to "public" if the
-# default is unset). This path is kept ONLY for compatibility — new code should
-# prefer firewalld_services + firewalld_zones.
+# default is unset), and are REFUSED when that zone is drop/block — the default
+# zone is where every unclassified NIC lands, and a built-in zone is never
+# re-templated, verified, or cleaned up by this role. Declare the ports on a
+# zone (firewalld_zones) and bind the sources allowed to reach them
+# (firewalld_source_zone_bindings) instead.
 firewall_rules: []
 
 # ── Package management ───────────────────────────────────────────────────────

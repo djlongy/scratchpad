@@ -4,6 +4,45 @@
 # standalone (playbooks/test_firewalld_source_drop.yml calls this file via
 # tasks_from), so every fact it consumes is computed here, not upstream.
 
+# FIRST, before anything reads these. Each is documented as a list, and each is
+# routinely supplied through Jinja from another var (see group_vars/fwtest.yml,
+# where firewalld_source_zone_bindings is an expression) — so a typo that renders
+# a STRING is a live possibility, not a hypothetical.
+#
+# It has to be checked HERE, on the raw inventory value. Everything downstream
+# consumes these through builders whose results go through set_fact, and set_fact
+# hands back a real list whatever went in: with firewalld_zones set to the string
+# "not-a-list", the _firewalld_ssh_zones builder iterates its CHARACTERS, finds no
+# services on any of them, and yields []. A type check placed after that point
+# cannot fail — it inspects the coerced result, never the input. Worse, the empty
+# result silently means "no zone opens ssh", which is a claim about the firewall
+# rather than a report about the inventory.
+- name: Assert the firewalld list contracts are lists
+  vars:
+    _fw_list_vars:
+      firewalld_zones: "{{ firewalld_zones }}"
+      firewalld_zones_remove: "{{ firewalld_zones_remove }}"
+      firewalld_services: "{{ firewalld_services }}"
+      firewalld_services_remove: "{{ firewalld_services_remove }}"
+      firewalld_source_zone_bindings: "{{ firewalld_source_zone_bindings }}"
+      firewalld_interface_zone_bindings: "{{ firewalld_interface_zone_bindings }}"
+      firewall_rules: "{{ firewall_rules }}"
+  ansible.builtin.assert:
+    that:
+      - item.value is not string
+      - item.value is not mapping
+      - item.value is sequence
+    fail_msg: >-
+      {{ item.key }} must be a list, but it is a
+      {{ item.value | type_debug }} ({{ item.value }}). Every consumer of this
+      variable iterates it, so a string is silently walked one CHARACTER at a time
+      and the run then reports on a contract nobody wrote. Check the inventory
+      value — most often a Jinja expression that rendered a scalar.
+    quiet: true
+  loop: "{{ _fw_list_vars | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Validate firewalld_source_zone_bindings schema
   ansible.builtin.assert:
     that:
@@ -88,8 +127,8 @@
     label: "{{ item }}"
 
 # rich_rules cannot be rendered into zone XML from rich-LANGUAGE strings (zone XML wants
-# structured <rule> children — see the note in templates/zone.xml.j2). The template used to
-# emit them as text content, producing a zone file firewalld cannot parse; that zone then
+# structured <rule> children — see the note in templates/zone.xml.j2). Emitting them as
+# text content produces a zone file firewalld cannot parse; that zone then
 # fails to load and, under a drop default, strands SSH. Fail here instead — a loud stop
 # before anything is written beats an unloadable zone discovered at the next reload.
 - name: Reject rich_rules — not renderable into zone XML
@@ -114,8 +153,8 @@
 
 # ── Shared safety facts (consumed by the checks below and by later phases) ───
 
-# LIVE default zone. The lockout gates below used to key off the INVENTORY default
-# alone, which silently disarmed them in a real and dangerous case: a host already
+# LIVE default zone. The lockout gates below must not key off the INVENTORY default
+# alone, which would silently disarm them in a real and dangerous case: a host already
 # running default=drop while firewalld_default_zone is "" (the default — "leave the
 # default zone unchanged"). The run would then re-template zone XML and reload with
 # NO ssh-path assert and NO controller-containment assert, because inventory said
@@ -278,19 +317,6 @@
       {{ (_firewalld_controller_ip | length > 0)
          and (_firewalld_ssh_source_cidrs | length > 0)
          and (_firewalld_controller_ip is ansible.utils.in_any_network(_firewalld_ssh_source_cidrs)) }}
-
-# set_fact coerces these builders back to lists even with jinja2_native off, so
-# the gates hold. Fail loud if one ever renders as a string — the signal a
-# builder was moved to a context that does not coerce.
-- name: Assert ssh-zone detection produced a list
-  ansible.builtin.assert:
-    that:
-      - _firewalld_ssh_zones is not string
-      - _firewalld_ssh_zones is sequence
-    fail_msg: >-
-      _firewalld_ssh_zones rendered as a string, not a list — the ssh-path gates
-      cannot be trusted. Build it via set_fact (which coerces) or enable
-      jinja2_native.
 
 # The revert timer must leave headroom for the post-switch connection probe
 # (wait_for_connection timeout = seconds-60), or the probe races its own revert.

@@ -7,8 +7,9 @@
 # rewrites the zone file with the dangling `<service>` stripped, saves the original as
 # `<zone>.xml.old`, and thereby RESURRECTS a zone file this role had just deleted. The play
 # reported both removals as `changed` and the zone came back, still active. Removing the zone
-# first means there is no reference left to dangle. (Live-proven on fwtest-01: zone
-# `fwfeat` + service `p3custom` removed together survived; the zone alone removed cleanly.)
+# first means there is no reference left to dangle. (Live-proven on a multi-NIC test host: a
+# zone and the custom service it referenced, removed together, saw the zone come back; the
+# same zone removed on its own removed cleanly.)
 - name: Remove orphaned firewalld zone XML files
   become: true  # root: removes files under /etc/firewalld/zones/
   ansible.builtin.file:
@@ -31,10 +32,10 @@
 
 # Deleting a file is not proof the object is gone, so confirm the files really are absent.
 # This is deliberately a FILE check, not a `firewall-cmd --get-zones` check: main.yml runs this
-# phase BEFORE the handler flush, so the daemon still serves the old zone here and a live query
-# would fail on every run. The resurrection described above also happens AT reload, i.e. after
-# this point — catching that needs a post-reload check, which is tracked in .agent/PENDING.md
-# rather than bolted on here where it cannot work.
+# phase BEFORE the handler flush, so the daemon still serves the pre-removal zone here and a
+# live query would fail on every run. The resurrection described above also happens AT reload,
+# i.e. after this point — catching that needs a separate post-reload check, not one bolted on
+# here where it cannot work.
 - name: Confirm removed zone/service XML files are absent on disk
   become: true  # root: stat under /etc/firewalld/
   ansible.builtin.stat:

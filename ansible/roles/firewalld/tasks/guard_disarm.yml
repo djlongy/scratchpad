@@ -16,10 +16,10 @@
     timeout: "{{ [(firewalld_lockout_guard_seconds | int) - 60, 30] | max }}"
 
 # rc 5 = "Unit not loaded" — the transient timer already fired and vanished, which is a
-# legitimate outcome, not a failure. Anything else IS a failure: `failed_when: false` here
-# used to swallow a timer that refused to stop, and a still-armed guard reverts the default
-# zone minutes later — undoing a GOOD change with no signal in the play output. The
-# verification below is the real assurance; this just stops hiding the error.
+# legitimate outcome, not a failure. Anything else IS a failure and must surface: a timer
+# that refuses to stop leaves a still-armed guard, which reverts the default zone minutes
+# later — undoing a GOOD change with no signal in the play output. The verification below
+# is the real assurance; this task simply must not mask the error.
 - name: Disarm the revert timer (fresh connection proven)
   become: true  # root: systemctl stops the transient guard timer
   ansible.builtin.command: systemctl stop firewalld-lockout-guard.timer

@@ -4,10 +4,10 @@
 # that will not survive an NM restart, is surfaced before drop takes effect.
 # Read-only: every command is changed_when:false + check_mode:false.
 
-# Restrictive-default flag must match validate.yml: inventory OR live.
-# Inventory-only used to disarm this audit when the host was already at
-# drop/block while firewalld_default_zone was "" ("leave unchanged") —
-# the exact blind spot validate.yml already fixed for the pre-flight gates.
+# Restrictive-default flag must match validate.yml: inventory OR live. The live
+# half is load-bearing on its own — a host already sitting at drop/block while
+# firewalld_default_zone is "" ("leave unchanged") is still locked down, and an
+# inventory-only test would disarm this audit on exactly those hosts.
 # Re-probe live/offline so tag isolation (--tags interface_audit) still holds.
 - name: Query the live default zone for the interface audit
   become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
@@ -74,7 +74,7 @@
   register: _fw_iface_zone
   changed_when: false
   check_mode: false
-  failed_when: false  # rc!=0 / "no zone" for an iface with no zone is expected
+  failed_when: false  # rc!=0 / "no zone" for an unbound iface is expected
   loop: "{{ _fw_audit_ifaces }}"
   loop_control:
     label: "{{ item }}"
@@ -102,12 +102,12 @@
 # SSH_CONNECTION is unreadable (no ssh env under some become/fact-gathering
 # combinations) — never a preference.
 #
-# This precedence used to be inverted: via_local was computed and then discarded
-# whenever ansible_default_ipv4.interface was defined, which — because main.yml
-# self-heals the network fact subset — is effectively always. On a multi-homed
-# host whose admin session arrives on a NIC other than the default-route NIC,
-# every gate below audited the wrong interface and could pass while the
-# operator's real NIC fell to drop.
+# The precedence below is load-bearing. ansible_default_ipv4.interface is
+# effectively always defined (main.yml self-heals the network fact subset), so
+# preferring it would discard via_local on every run. On a multi-homed host whose
+# admin session arrives on a NIC other than the default-route NIC, every gate
+# below would then audit the wrong interface and could pass while the operator's
+# real NIC falls to drop.
 - name: Resolve the SSH ingress interface (SSH session first, else default route)
   ansible.builtin.set_fact:
     _fw_ssh_iface: >-
@@ -141,11 +141,57 @@
           | selectattr('interface', 'equalto', _fw_ssh_iface)
           | map(attribute='zone') | first | default('')) if (_fw_ssh_iface | length > 0) else '' }}
 
+# `--get-zone-of-interface` cannot answer "is this NIC explicitly bound?". It
+# reports a zone NAME either way: for a NIC bound to that zone, and for one that
+# merely inherits the current default. Probed on a two-NIC and a three-NIC host,
+# both at default=drop: an unbound NIC and a NIC permanently bound to another
+# zone BOTH answered `drop` (the bound one because NetworkManager had pulled it
+# back at runtime). Only the PERMANENT interface lists distinguish the two.
+#
+# This matters because an inheriting NIC follows the default wherever it goes.
+# With a non-restrictive live default and inventory switching to drop, the NIC
+# reports the live default's name, matches no restrictive zone, and the gate
+# below skips — then the switch parks it in drop.
+- name: List every permanently defined zone
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: firewall-cmd --permanent --get-zones
+  register: _fw_perm_zones
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: _fw_ssh_iface | length > 0
+
+- name: List permanently bound interfaces per zone
+  become: true  # root: firewall-cmd talks to firewalld over privileged D-Bus
+  ansible.builtin.command: >-
+    firewall-cmd --permanent --zone={{ item }} --list-interfaces
+  register: _fw_perm_ifaces
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  loop: >-
+    {{ (_fw_perm_zones.stdout | default('') | split)
+       if ((_fw_perm_zones.rc | default(1)) == 0) else [] }}
+  loop_control:
+    label: "{{ item }}"
+  when: _fw_ssh_iface | length > 0
+
+- name: Decide whether the SSH ingress NIC is explicitly bound or inherits
+  ansible.builtin.set_fact:
+    # Fail CLOSED: when the probe could not run (no zones resolved, firewalld
+    # unreachable) treat the NIC as inheriting, so the gate errs toward warning.
+    _fw_ssh_iface_explicit: >-
+      {{ (_fw_perm_ifaces.results | default([])
+          | selectattr('rc', 'defined') | selectattr('rc', 'equalto', 0)
+          | map(attribute='stdout') | map('default', '', true)
+          | map('split') | flatten | list) is contains(_fw_ssh_iface) }}
+
 # Empty zone inherits the current default (and, pre-switch, the inventory
 # drop/block target after default_zone). Explicit zone equals a *restrictive*
 # name only — inventory drop|block and/or live drop|block. Never compare to a
-# non-restrictive inventory value (false fail: inventory=public, live=drop,
-# iface in public matched inventory alone under the old check).
+# non-restrictive inventory value: with inventory=public and live=drop, a NIC
+# explicitly bound to public would match the inventory value and be reported as
+# falling to a restrictive default (false fail).
 - name: Classify whether the SSH ingress NIC falls onto a restrictive default
   ansible.builtin.set_fact:
     _fw_ssh_falls_to_restrictive_default: >-
@@ -157,6 +203,13 @@
          or (
            (_fw_audit_live_default_name in ['drop', 'block'])
            and (_fw_ssh_iface_zone == _fw_audit_live_default_name)
+         )
+         or (
+           not (_fw_ssh_iface_explicit | default(false) | bool)
+           and (
+             (firewalld_default_zone in ['drop', 'block'])
+             or (_fw_audit_live_default_name in ['drop', 'block'])
+           )
          ) }}
 
 # Fail only when lockdown is on, the NIC falls onto that restrictive default,
@@ -186,7 +239,7 @@
     msg: >-
       The interface carrying this SSH session ({{ _fw_ssh_iface }}) resolves to
       the restrictive default zone '{{ _fw_audit_restrictive_default }}'
-      (iface zone='{{ _fw_ssh_iface_zone | default('') or '(no zone→inherit)' }}',
+      (iface zone='{{ _fw_ssh_iface_zone | default('') or '(unbound→inherit)' }}',
       inventory default='{{ firewalld_default_zone | default('') or '(unset)' }}')
       and no source binding covers this controller
       ({{ _firewalld_controller_ip | default('unknown') }}). The operator's packet
