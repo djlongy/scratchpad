@@ -26,7 +26,6 @@
       firewalld_services_remove: "{{ firewalld_services_remove }}"
       firewalld_source_zone_bindings: "{{ firewalld_source_zone_bindings }}"
       firewalld_interface_zone_bindings: "{{ firewalld_interface_zone_bindings }}"
-      firewall_rules: "{{ firewall_rules }}"
   ansible.builtin.assert:
     that:
       - item.value is not string

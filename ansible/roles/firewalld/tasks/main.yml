@@ -243,16 +243,6 @@
       when: _firewalld_guard_active | default(false) | bool
       tags: *fw_guard_tags
 
-    - name: Apply legacy firewall_rules (back-compat)
-      ansible.builtin.include_tasks:
-        file: legacy_rules.yml
-        apply:
-          tags: [legacy_rules, firewalld]
-      when:
-        - firewalld_daemon_expected_up | bool
-        - firewall_rules | length > 0
-      tags: [legacy_rules, firewalld]
-
     - name: Verify permanent firewalld state matches inventory
       ansible.builtin.include_tasks:
         file: verify.yml

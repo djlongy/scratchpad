@@ -132,7 +132,6 @@ def test_every_runtime_phase_is_gated_in_config_only_mode() -> None:
         "Reload firewalld after runtime binding reconcile",
         "Re-arm the lockout revert guard (full budget for the switch)",
         "Set the default zone",
-        "Apply legacy firewall_rules (back-compat)",
         "Verify permanent firewalld state matches inventory",
     }
     for entry in main_block():
@@ -620,7 +619,7 @@ def _parse(list_all_by_zone: dict[str, str]) -> dict[str, Any]:
 
 
 def _expected(zones: list[dict[str, Any]], *, default_zone: str = "",
-              allow_icmp: bool = False, firewall_rules: list[Any] | None = None,
+              allow_icmp: bool = False,
               live_default: str = "drop") -> dict[str, Any]:
     """Replay verify.yml's own inventory-side expectation builder."""
     return render(
@@ -632,7 +631,6 @@ def _expected(zones: list[dict[str, Any]], *, default_zone: str = "",
             "firewalld_zones": zones,
             "firewalld_default_zone": default_zone,
             "firewalld_allow_icmp": allow_icmp,
-            "firewall_rules": firewall_rules or [],
             "_firewalld_verify_default": {"stdout": live_default},
         },
     )
@@ -859,31 +857,6 @@ def test_icmp_is_not_expected_on_a_zone_that_is_not_the_default() -> None:
     assert result["_extra"] == ["icmp"]
 
 
-@pytest.mark.parametrize("rules", [
-    [{"port": 31000, "protocol": "tcp"}],
-    ["31000/tcp/probe"],
-])
-def test_legacy_firewall_rules_ports_on_a_managed_default_zone_are_allowed(
-    rules: list[Any],
-) -> None:
-    """legacy_rules.yml opens firewall_rules in firewalld_default_zone, in both
-    the dict and the "PORT/PROTO/COMMENT" string form. Same reasoning as icmp."""
-    zone = {"name": "mgmt", "services": ["ssh"], "protocols": ["icmp"]}
-    listing = LIST_ALL_CLEAN.replace("  ports: ", "  ports: 31000/tcp")
-    result = _drift(zone, "ports", listing,
-                    default_zone="mgmt", firewall_rules=rules)
-    assert result["passed"]
-
-
-def test_legacy_ports_are_not_allowed_on_a_non_default_zone() -> None:
-    zone = {"name": "access", "services": ["ssh"]}
-    listing = LIST_ALL_CLEAN.replace("  ports: ", "  ports: 31000/tcp")
-    result = _drift(zone, "ports", listing, default_zone="mgmt",
-                    firewall_rules=[{"port": 31000, "protocol": "tcp"}])
-    assert not result["passed"]
-    assert result["_extra"] == ["31000/tcp"]
-
-
 # ── I: the list-type guard must be reachable ────────────────────────────────
 #
 # validate.yml used to assert `_firewalld_ssh_zones is not string` AFTER the
@@ -942,7 +915,6 @@ def test_list_contract_guard_covers_every_documented_list_var() -> None:
         "firewalld_services_remove",
         "firewalld_source_zone_bindings",
         "firewalld_interface_zone_bindings",
-        "firewall_rules",
     }
 
 

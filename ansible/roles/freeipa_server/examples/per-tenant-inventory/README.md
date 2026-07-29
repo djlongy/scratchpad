@@ -24,7 +24,9 @@ read **every** `tenants/*.yml`, flatten them into the native `freeipa_iam_*` lis
 each user/group with its owning `tenant` (and `shared`). Seeing all tenants in one run is what
 lets a single declarative reconcile manage membership of even a **shared/built-in** group
 correctly — `acme.dave` is declared once with `[acme-admins, admins]`, and the run reconciles
-both his tenant group and the global `admins` (owned in `global.yml`) together.
+both his tenant group and the global `admins` (owned in `global.yml`) together. The ownership
+stamp itself is metadata: no phase reads it, so `shared: true` records intent and does not
+isolate a tenant or exempt its objects from the prune.
 
 Each file may carry a tenant's **whole** config — users, groups, hostgroups, HBAC rules, sudo
 rules, roles, automember, DNS records, … Every tenant file here uses the **native root keys
@@ -173,7 +175,7 @@ Verify on the primary:
 ```bash
 ipa user-show acme.dave --all          # Member of group: acme-admins, admins
 ipa group-show globex-admins           # Member users: globex.dave
-ipa dnsrecord-find ipa.dev.globex.au.  # _kerberos / _ldap._tcp / deva-idm-01
+ipa dnsrecord-find ipa.dev.globex.example.  # _kerberos / _ldap._tcp / idm-01
 # RBAC overlay, merged across tenant files (cross-tenant grant included):
 ipa group-show role-globex-dev-observer       # Member users: globex.dave, acme.dave
 ipa group-show ug-acme-dev-docker-operators   # Member groups: role-acme-dev-platform-admin

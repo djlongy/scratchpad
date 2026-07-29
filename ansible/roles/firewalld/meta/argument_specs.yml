@@ -4,7 +4,6 @@ argument_specs:
     short_description: "Configure firewalld via XML templates and runtime bindings"
     description:
       - "Installs firewalld, renders custom service/zone XML, applies source/interface bindings."
-      - "Back-compat: accepts the legacy `firewall_rules` variable in both string and dict shapes."
     options:
       firewalld_enabled:
         description: "Master toggle. Set false to skip the role entirely."
@@ -64,21 +63,6 @@ argument_specs:
           before the run.
         type: str
         default: /run/firewalld-lockout-guard.tar.gz
-      firewall_rules:
-        description: >-
-          LEGACY, unprefixed, back-compat only — kept so historical inventory
-          still parses; new code declares ports on a zone via firewalld_zones
-          and binds sources via firewalld_source_zone_bindings. Accepts
-          "PORT/PROTO/COMMENT" strings or {port, protocol, service} dicts and
-          opens each port in firewalld_default_zone (falling back to "public"
-          when that is unset); the service/comment field is only a loop label
-          and is discarded. REFUSED — the role fails the play — when the
-          effective default zone is drop or block, because the default zone is
-          where every unclassified interface lands, and a built-in zone is
-          never re-templated, verified, or cleaned up by this role.
-        type: list
-        elements: raw
-        default: []
       firewalld_packages:
         description: "Packages to install."
         type: list

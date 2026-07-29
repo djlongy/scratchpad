@@ -54,7 +54,6 @@ for zones, services, and bindings: `meta/argument_specs.yml`.
 | Optional | `firewalld_strict_interface_audit` | `false` | Turn interface-audit warnings (NetworkManager-owned binds, unset NM zone) into hard failures |
 | Optional | `firewalld_allow_no_ssh` | `false` | Permit a `drop`/`block` default with no ssh-opening activated zone. Dangerous — out-of-band-managed hosts only |
 | Optional | `firewalld_skip_controller_check` | `false` | Skip the pre-flight assert that this controller's own IP falls inside an ssh source CIDR |
-| Optional | `firewall_rules` | `[]` | Legacy back-compat list; refused outright on a restrictive default zone |
 
 ## Minimum configuration
 
@@ -223,16 +222,6 @@ runtime. Every runtime interaction — readiness probe, interface audit, reload
 handler, binding reconcile, default-zone switch, lockout guard, verification —
 is gated on `firewalld_daemon_expected_up` (`vars/main.yml`). To skip the role
 entirely instead, set `firewalld_enabled: false`.
-
-### Legacy `firewall_rules`
-
-`firewall_rules` is accepted for transitional callers only; entries open in
-`firewalld_default_zone`, falling back to `public` when it is unset. It is
-**refused outright on a restrictive default**: the default zone is where every
-unclassified NIC lands, so the rule becomes a broadly reachable hole on exactly
-the hosts meant to be most closed, and a built-in default zone is never
-re-templated, verified, or cleaned up by this role. Declare the ports on a zone
-and bind the sources allowed to reach them instead.
 
 ### Idempotency notes
 

@@ -208,12 +208,10 @@
 # so this comparison cannot drift from what the role actually writes. A zone dict
 # that would crash the template crashes zones.yml first, long before verify runs.
 #
-# Two writers legitimately add to a zone the template did not put there, and both
-# are folded in here or every host that uses them would false-positive:
-#   * main.yml opens `protocol: icmp` permanently on the EFFECTIVE default zone
-#     when firewalld_allow_icmp — only matters when the default zone is managed;
-#   * legacy_rules.yml opens firewall_rules ports in firewalld_default_zone
-#     (falling back to `public`) — same condition.
+# One writer legitimately adds to a zone the template did not put there, and it
+# is folded in here or every host that uses it would false-positive: main.yml
+# opens `protocol: icmp` permanently on the EFFECTIVE default zone when
+# firewalld_allow_icmp — only matters when the default zone is managed.
 - name: Compute the expected permanent zone state from inventory
   when: firewalld_zones | length > 0
   ansible.builtin.set_fact:
@@ -221,14 +219,6 @@
       {% set out = {} %}
       {%- set icmp_zone = (_firewalld_verify_default.stdout | trim)
                           if (firewalld_allow_icmp | bool) else '' -%}
-      {%- set legacy_zone = (firewalld_default_zone
-                             if (firewalld_default_zone | length > 0) else 'public')
-                            if (firewall_rules | length > 0) else '' -%}
-      {%- set legacy_ports = [] -%}
-      {%- for r in firewall_rules -%}
-      {%- set _ = legacy_ports.append((r.port ~ '/' ~ r.protocol) if (r is mapping)
-                                      else (r.split('/')[0] ~ '/' ~ r.split('/')[1])) -%}
-      {%- endfor -%}
       {%- for z in firewalld_zones -%}
       {%- set ports = [] -%}
       {%- for p in z.ports | default([]) -%}
@@ -240,7 +230,7 @@
       {%- endfor -%}
       {%- set _ = out.update({z.name: {
             'services': z.services | default([]) | map('string') | list,
-            'ports': (ports + (legacy_ports if z.name == legacy_zone else [])) | unique | list,
+            'ports': ports,
             'protocols': ((z.protocols | default([]) | map('string') | list)
                           + (['icmp'] if z.name == icmp_zone else [])) | unique | list,
             'source-ports': source_ports,
