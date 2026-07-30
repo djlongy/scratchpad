@@ -1,0 +1,183 @@
+---
+# roles/os_sbom/defaults/main.yml
+# OS-level SBOM generation + upload.
+#
+# Product-agnostic contract (estate rule):
+#   Role = mechanism (install a scanner binary, catalog packages, POST an SBOM).
+#   Inventory / CI = policy (which package repo, which upload endpoint, credentials).
+# Do not put product hostnames, vendor path layouts, or vendor default credentials here.
+
+# Role enable gate — set false in host/group_vars to no-op this role
+os_sbom_enabled: true
+
+# ── Generator binary ──────────────────────────────────────────────────────────
+# Version pin and install layout only. Where the package is fetched from is inventory.
+os_sbom_syft_version: "1.20.0"
+os_sbom_syft_install_dir: "/usr/local/bin"
+os_sbom_syft_bin: "{{ os_sbom_syft_install_dir }}/syft"
+os_sbom_syft_arch_map:
+  x86_64: amd64
+  amd64: amd64
+  aarch64: arm64
+  arm64: arm64
+os_sbom_syft_arch: >-
+  {{ os_sbom_syft_arch_map[ansible_architecture | default('x86_64')]
+     | default('amd64') }}
+
+# package format: tar.gz (default) | zip | rpm
+#   tar.gz / zip → extract binary into os_sbom_syft_install_dir
+#   rpm          → local package manager install (EL)
+os_sbom_syft_package_format: "tar.gz"
+# rpm only: skip GPG signature verification on the downloaded package.
+os_sbom_syft_rpm_disable_gpg_check: false
+
+# ── Package repo (policy — inventory/CI must set base + repo) ─────────────────
+# Base URL of the package repository (no trailing slash). Empty until inventory sets it.
+os_sbom_repo_base_url: "{{ lookup('env', 'REPO_BASE_URL') | default('', true) }}"
+# Repository key/name under that base.
+os_sbom_repo: "{{ lookup('env', 'REPO_NAME') | default('', true) }}"
+# Object path inside the repo (no leading slash). Inventory supplies the layout.
+os_sbom_syft_repo_path: ""
+# Full URL. When empty, built as {{ base }}/{{ repo }}/{{ path }} after policy is set.
+os_sbom_syft_download_url: ""
+
+# Repo auth — env first; never ship a default password.
+os_sbom_repo_user: "{{ lookup('env', 'REPO_USER') | default('', true) }}"
+os_sbom_repo_password: >-
+  {{ lookup('env', 'REPO_TOKEN')
+     | default(lookup('env', 'REPO_PASSWORD') | default('', true), true) }}
+# basic  → url_username + url_password
+# bearer → Authorization: Bearer <token> (password field holds the token)
+# none   → anonymous download; no credentials required
+os_sbom_repo_auth: "basic"
+os_sbom_syft_download_timeout: 180
+# Optional pin: "sha256:<hex>". Empty = trust TLS + repo integrity headers only.
+os_sbom_syft_checksum: ""
+
+# Cataloger selection (Syft 1.x directory scans).
+# --override-default-catalogers replaces the source default ("directory" includes
+# file digest/metadata catalogers that explode component counts and lack purls).
+# "os" → rpm/dpkg/apk/… package DBs only. Empty → do not pass the flag.
+os_sbom_override_default_catalogers: "os"
+# Extra --select-catalogers expressions after the base set (e.g. "-file").
+# Empty → omit the flag. Syft warns that 'file' can reattach to the default
+# selection; "-file" keeps the BOM package-only.
+os_sbom_select_catalogers: "-file"
+
+# Paths excluded when scanning more than package DBs (container/runtime noise).
+os_sbom_exclude_paths:
+  - "./proc/**"
+  - "./sys/**"
+  - "./dev/**"
+  - "./run/**"
+  - "./tmp/**"
+  - "./var/tmp/**"
+  - "./var/lib/docker/**"
+  - "./var/lib/containerd/**"
+  - "./var/lib/containers/**"
+  - "./var/lib/rancher/**"
+
+# Where the SBOM lands on the target host (mode 0600 after write).
+os_sbom_remote_dir: "/var/tmp/os-sbom"
+os_sbom_remote_file: "{{ os_sbom_remote_dir }}/{{ inventory_hostname }}.cdx.json"
+os_sbom_format: "cyclonedx-json"
+
+# Keep the remote file after a successful upload.
+os_sbom_keep_remote: false
+
+# ── SBOM project model (multi-tenant × multi-env, inventory-driven) ───────────
+# Identity tokens — map from estate inventory (tenancy, env) or override per
+# inventory/group/host. Never hardcode tenant or env names in the role.
+#
+# Default consumer hierarchy (empty path segments are dropped at resolve time):
+#   root   (optional)  os-hosts/<tenancy>                 : portfolio
+#   parent             os-hosts/<tenancy>/<env>           : portfolio
+#   project (child)    os/<tenancy>/<env>/<hostname>      : <os_release|date|fixed>
+#
+# Tenant A staging: os-hosts/acme → os-hosts/acme/staging → os/acme/staging/vault-01
+# Tenant B prod:    os-hosts/globex → os-hosts/globex/prod → os/globex/prod/app-01
+#
+# Full name overrides (non-empty) win over *_name_parts. Inventory can also
+# replace the part lists entirely for a different org scheme.
+
+os_sbom_tenancy: "{{ tenancy | default('', true) }}"
+os_sbom_env: "{{ env | default('', true) }}"
+os_sbom_host: "{{ inventory_hostname }}"
+os_sbom_name_separator: "/"
+
+# Host (leaf) project — empty name → join project_name_parts
+os_sbom_project_name: ""
+os_sbom_project_name_parts:
+  - "os"
+  - "{{ os_sbom_tenancy }}"
+  - "{{ os_sbom_env }}"
+  - "{{ os_sbom_host }}"
+
+# version_mode: os_release | date | fixed
+os_sbom_version_mode: "os_release"
+os_sbom_project_version_fixed: "current"
+os_sbom_project_version: >-
+  {%- if os_sbom_version_mode == 'date' -%}
+  {{ ansible_date_time.date }}
+  {%- elif os_sbom_version_mode == 'fixed' -%}
+  {{ os_sbom_project_version_fixed }}
+  {%- else -%}
+  {{ ansible_distribution }}-{{ ansible_distribution_version }}
+  {%- endif -%}
+
+# Env portfolio under the tenant (or estate) root
+os_sbom_parent_enabled: true
+os_sbom_parent_name: ""
+os_sbom_parent_name_parts:
+  - "os-hosts"
+  - "{{ os_sbom_tenancy }}"
+  - "{{ os_sbom_env }}"
+os_sbom_parent_version: "portfolio"
+os_sbom_parent_classifier: "PLATFORM"
+
+# Tenant (or estate-wide) root portfolio — parent of the env portfolio.
+# Disable for a flat env-only tree; set parts to ["os-hosts"] only when
+# tenancy is unused estate-wide.
+os_sbom_root_enabled: true
+os_sbom_root_name: ""
+os_sbom_root_name_parts:
+  - "os-hosts"
+  - "{{ os_sbom_tenancy }}"
+os_sbom_root_version: "portfolio"
+os_sbom_root_classifier: "PLATFORM"
+
+os_sbom_is_latest: true
+
+# Tags: templates rendered then empty values dropped (e.g. tenancy: when unset).
+os_sbom_tags:
+  - "os-host"
+  - "tenancy:{{ os_sbom_tenancy }}"
+  - "env:{{ os_sbom_env }}"
+  - "{{ ansible_distribution | default('linux') | lower }}"
+
+os_sbom_parent_tags:
+  - "os-host"
+  - "portfolio"
+  - "tenancy:{{ os_sbom_tenancy }}"
+  - "env:{{ os_sbom_env }}"
+
+os_sbom_root_tags:
+  - "os-host"
+  - "portfolio"
+  - "tenancy:{{ os_sbom_tenancy }}"
+
+# ── Upload consumer (policy — inventory/CI must set URL + key) ────────────────
+# HTTP API that accepts a CycloneDX BOM (estate default is set in inventory).
+os_sbom_upload_enabled: true
+os_sbom_upload_url: "{{ lookup('env', 'OS_SBOM_UPLOAD_URL') | default('', true) }}"
+os_sbom_upload_api_key: "{{ lookup('env', 'OS_SBOM_UPLOAD_API_KEY') | default('', true) }}"
+os_sbom_auto_create: true
+
+# Hosts that should never be scanned even if in the play.
+os_sbom_skip_os_families:
+  - "FreeBSD"
+  - "Darwin"
+  - "Windows"
+  - "VMkernel"
+
+os_sbom_require_linux: true

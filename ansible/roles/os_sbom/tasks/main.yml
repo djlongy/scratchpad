@@ -1,0 +1,58 @@
+---
+# roles/os_sbom/tasks/main.yml
+# Tags: always | install | scan | upload | os_sbom
+
+- name: Skip os_sbom (os_sbom_enabled is false)
+  ansible.builtin.debug:
+    msg: "os_sbom_enabled is false — skipping os_sbom on {{ inventory_hostname }}"
+  when: not (os_sbom_enabled | bool)
+  tags: [always]
+
+- name: Generate OS SBOM and upload to Dependency-Track
+  when: os_sbom_enabled | bool
+  tags: [os_sbom]
+  block:
+
+    # The OS gate, the version mode and the tags all read gathered facts, so a
+    # play with gather_facts: false must collect them here or fail obscurely.
+    - name: Gather facts when the play did not
+      ansible.builtin.setup:
+      when: ansible_system is not defined
+      tags: [always, os_sbom]
+
+    - name: Skip non-Linux hosts
+      ansible.builtin.debug:
+        msg: >-
+          Skipping {{ inventory_hostname }} —
+          ansible_system={{ ansible_system | default('unknown') }},
+          ansible_os_family={{ ansible_os_family | default('unknown') }}
+      when: >-
+        (os_sbom_require_linux | bool and
+         (ansible_system | default('') | lower) != 'linux')
+        or (ansible_os_family | default('') in (os_sbom_skip_os_families | default([])))
+      tags: [always, os_sbom]
+
+    - name: Run OS SBOM pipeline on Linux hosts
+      when:
+        - not (os_sbom_require_linux | bool) or
+          ((ansible_system | default('') | lower) == 'linux')
+        - (ansible_os_family | default('')) not in (os_sbom_skip_os_families | default([]))
+      tags: [os_sbom]
+      block:
+
+        - name: Resolve multi-tenant project model from inventory
+          ansible.builtin.include_tasks: resolve_project_model.yml
+          tags: [always, os_sbom, scan, upload]
+
+        - name: Install Syft binary
+          ansible.builtin.include_tasks: install.yml
+          tags: [install, os_sbom]
+
+        - name: Catalog OS packages into CycloneDX SBOM
+          ansible.builtin.include_tasks: scan.yml
+          tags: [scan, os_sbom]
+
+        - name: Upload SBOM to Dependency-Track
+          ansible.builtin.include_tasks: upload.yml
+          when: os_sbom_upload_enabled | bool
+          tags: [upload, os_sbom]

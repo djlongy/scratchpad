@@ -1,0 +1,140 @@
+---
+# Resolve multi-tenant × multi-env project names + tags from inventory policy.
+#
+# Precedence per layer:
+#   1. Full name override (os_sbom_{project,parent,root}_name) if non-empty
+#   2. Join of *_name_parts after trim, dropping empty segments
+#
+# Tags: each entry is rendered as a string; empty / bare "key:" values dropped.
+
+- name: Join project name parts (drop empty segments)
+  ansible.builtin.set_fact:
+    os_sbom_project_name: >-
+      {{
+        (
+          (os_sbom_project_name | default('') | trim)
+          if (os_sbom_project_name | default('') | trim | length) > 0
+          else (
+            os_sbom_project_name_parts | default([])
+            | map('string') | map('trim')
+            | reject('equalto', '')
+            | list
+            | join(os_sbom_name_separator | default('/'))
+          )
+        )
+      }}
+  tags: [always, os_sbom, scan, upload]
+
+- name: Join parent portfolio name parts
+  ansible.builtin.set_fact:
+    os_sbom_parent_name: >-
+      {{
+        (
+          (os_sbom_parent_name | default('') | trim)
+          if (os_sbom_parent_name | default('') | trim | length) > 0
+          else (
+            os_sbom_parent_name_parts | default([])
+            | map('string') | map('trim')
+            | reject('equalto', '')
+            | list
+            | join(os_sbom_name_separator | default('/'))
+          )
+        )
+      }}
+  tags: [always, os_sbom, scan, upload]
+
+- name: Join root portfolio name parts
+  ansible.builtin.set_fact:
+    os_sbom_root_name: >-
+      {{
+        (
+          (os_sbom_root_name | default('') | trim)
+          if (os_sbom_root_name | default('') | trim | length) > 0
+          else (
+            os_sbom_root_name_parts | default([])
+            | map('string') | map('trim')
+            | reject('equalto', '')
+            | list
+            | join(os_sbom_name_separator | default('/'))
+          )
+        )
+      }}
+  tags: [always, os_sbom, scan, upload]
+
+- name: Assert resolved host project name is non-empty
+  ansible.builtin.assert:
+    that:
+      - (os_sbom_project_name | default('') | length) > 0
+    fail_msg: >-
+      os_sbom_project_name resolved empty. Set os_sbom_project_name or
+      os_sbom_project_name_parts (and identity vars os_sbom_env /
+      os_sbom_host / optional os_sbom_tenancy) in inventory.
+  tags: [always, os_sbom, scan, upload]
+
+- name: Assert parent name when parent portfolio is enabled
+  ansible.builtin.assert:
+    that:
+      - (os_sbom_parent_name | default('') | length) > 0
+    fail_msg: >-
+      os_sbom_parent_enabled is true but parent name is empty.
+      Set os_sbom_parent_name or os_sbom_parent_name_parts.
+  when: os_sbom_parent_enabled | bool
+  tags: [always, os_sbom, scan, upload]
+
+- name: Assert root name when root portfolio is enabled
+  ansible.builtin.assert:
+    that:
+      - (os_sbom_root_name | default('') | length) > 0
+    fail_msg: >-
+      os_sbom_root_enabled is true but root name is empty.
+      Set os_sbom_root_name or os_sbom_root_name_parts (or set
+      os_sbom_root_enabled: false for a flat env-only tree).
+  when: os_sbom_root_enabled | bool
+  tags: [always, os_sbom, scan, upload]
+
+- name: Build host project tag list (drop empty / bare-prefix tags)
+  ansible.builtin.set_fact:
+    os_sbom_tags_resolved: >-
+      {{
+        os_sbom_tags | default([])
+        | map('string') | map('trim')
+        | reject('equalto', '')
+        | reject('match', '^[a-zA-Z0-9_.-]+:$')
+        | list
+      }}
+  tags: [always, os_sbom, scan, upload]
+
+- name: Build parent portfolio tag list
+  ansible.builtin.set_fact:
+    os_sbom_parent_tags_resolved: >-
+      {{
+        os_sbom_parent_tags | default([])
+        | map('string') | map('trim')
+        | reject('equalto', '')
+        | reject('match', '^[a-zA-Z0-9_.-]+:$')
+        | list
+      }}
+  tags: [always, os_sbom, scan, upload]
+
+- name: Build root portfolio tag list
+  ansible.builtin.set_fact:
+    os_sbom_root_tags_resolved: >-
+      {{
+        os_sbom_root_tags | default([])
+        | map('string') | map('trim')
+        | reject('equalto', '')
+        | reject('match', '^[a-zA-Z0-9_.-]+:$')
+        | list
+      }}
+  tags: [always, os_sbom, scan, upload]
+
+- name: Report resolved SBOM project model
+  ansible.builtin.debug:
+    msg: >-
+      project={{ os_sbom_project_name }}:{{ os_sbom_project_version | trim }}
+      parent={{ os_sbom_parent_name if (os_sbom_parent_enabled | bool) else 'none' }}
+      root={{ os_sbom_root_name if (os_sbom_root_enabled | bool) else 'none' }}
+      tenancy={{ os_sbom_tenancy | default('') | default('(none)', true) }}
+      env={{ os_sbom_env }}
+      tags={{ os_sbom_tags_resolved | join(',') }}
+  tags: [always, os_sbom, scan, upload]

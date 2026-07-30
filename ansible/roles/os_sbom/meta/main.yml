@@ -1,0 +1,24 @@
+---
+galaxy_info:
+  role_name: os_sbom
+  author: longy
+  description: >-
+    Generate an OS-package CycloneDX SBOM on Linux hosts and upload it to a
+    configured consumer, grouped under a per-environment parent project.
+    Package-repo and upload endpoints are inventory policy, not role defaults.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: ["8", "9"]
+    - name: Ubuntu
+      versions: ["all"]
+    - name: Debian
+      versions: ["all"]
+  galaxy_tags:
+    - sbom
+    - syft
+    - cyclonedx
+    - security
+    - supplychain
+dependencies: []

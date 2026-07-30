@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BACKUP_DIR="{{ dtrack_backup_dir }}"
+DATA_DIR="{{ dtrack_data_dir }}"
+RETENTION_DAYS="{{ dtrack_backup_retention_days }}"
+LOG_TAG="[dtrack-backup]"
+
+log() {
+  printf '%s %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$LOG_TAG" "$*"
+}
+
+log "Starting Dependency-Track backup run"
+install -d -m 0750 "$BACKUP_DIR"
+
+TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
+DUMP_FILE="$BACKUP_DIR/dtrack-pg-${TIMESTAMP}.sql.gz"
+
+log "Dumping PostgreSQL database via docker exec"
+docker exec dtrack-postgresql pg_dump -U {{ dtrack_pg_username }} {{ dtrack_pg_database }} \
+  | gzip > "$DUMP_FILE"
+
+if [[ ! -s "$DUMP_FILE" ]]; then
+  log "ERROR: database dump is empty or failed"
+  rm -f "$DUMP_FILE"
+  exit 1
+fi
+
+log "Backing up API server data directory"
+tar czf "$BACKUP_DIR/dtrack-data-${TIMESTAMP}.tar.gz" \
+  -C "$DATA_DIR" apiserver 2>/dev/null || log "WARN: apiserver data backup failed (may be empty)"
+
+cat > "$BACKUP_DIR/metadata.txt" <<META
+generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+pg_dump=${DUMP_FILE##*/}
+data_archive=dtrack-data-${TIMESTAMP}.tar.gz
+dtrack_version={{ dtrack_version }}
+META
+chmod 0600 "$BACKUP_DIR/metadata.txt"
+
+log "Pruning backups older than ${RETENTION_DAYS} days"
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'dtrack-pg-*.sql.gz' -mtime +${RETENTION_DAYS} -delete
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'dtrack-data-*.tar.gz' -mtime +${RETENTION_DAYS} -delete
+
+log "Backup run completed"

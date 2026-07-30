@@ -1,0 +1,237 @@
+---
+# Upload the host CycloneDX SBOM to the configured SBOM consumer (controller-side).
+#
+# Hierarchy (resolved in resolve_project_model.yml):
+#   root   (optional)  os-hosts/<tenancy>              : portfolio
+#   parent             os-hosts/<tenancy>/<env>        : portfolio
+#   project            os/<tenancy>/<env>/<hostname>   : <version>
+#
+# BOM autoCreate only creates the child. Root + parent are ensured first.
+# Nested parent→root uses project lookup UUID when the consumer supports it.
+
+- name: Require upload URL and API key
+  ansible.builtin.assert:
+    that:
+      - (os_sbom_upload_api_key | default('') | length) > 0
+      - (os_sbom_upload_url | default('') | length) > 0
+    fail_msg: >-
+      os_sbom upload needs os_sbom_upload_url and os_sbom_upload_api_key
+      (export OS_SBOM_UPLOAD_URL / OS_SBOM_UPLOAD_API_KEY, or set them in inventory).
+  tags: [upload, os_sbom]
+
+# ── Tag object lists (consumer expects [{name: …}, …]) ────────────────────────
+- name: Reset portfolio tag object lists
+  ansible.builtin.set_fact:
+    os_sbom_root_tag_objects: []
+    os_sbom_parent_tag_objects: []
+    os_sbom_project_tags: []
+  tags: [upload, os_sbom]
+
+- name: Build root portfolio tag objects
+  ansible.builtin.set_fact:
+    os_sbom_root_tag_objects: "{{ os_sbom_root_tag_objects + [{'name': item}] }}"
+  loop: "{{ os_sbom_root_tags_resolved | default([]) }}"
+  when: (item | default('') | length) > 0
+  tags: [upload, os_sbom]
+
+- name: Build parent portfolio tag objects
+  ansible.builtin.set_fact:
+    os_sbom_parent_tag_objects: "{{ os_sbom_parent_tag_objects + [{'name': item}] }}"
+  loop: "{{ os_sbom_parent_tags_resolved | default([]) }}"
+  when: (item | default('') | length) > 0
+  tags: [upload, os_sbom]
+
+- name: Build host project tag objects
+  ansible.builtin.set_fact:
+    os_sbom_project_tags: "{{ os_sbom_project_tags + [{'name': item}] }}"
+  loop: "{{ os_sbom_tags_resolved | default(os_sbom_tags | default([])) }}"
+  when: (item | default('') | length) > 0
+  tags: [upload, os_sbom]
+
+# ── Ensure root portfolio (tenant-wide) ───────────────────────────────────────
+- name: Ensure root portfolio project exists
+  when:
+    - os_sbom_root_enabled | bool
+    - os_sbom_auto_create | bool
+    - (os_sbom_root_name | default('') | length) > 0
+  ansible.builtin.uri:
+    url: "{{ os_sbom_upload_url | trim }}/api/v1/project"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ os_sbom_upload_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body: >-
+      {{
+        {
+          'name': os_sbom_root_name,
+          'version': os_sbom_root_version,
+          'classifier': (os_sbom_root_classifier | default('PLATFORM')),
+          'active': true
+        }
+        | combine(
+            {'tags': os_sbom_root_tag_objects}
+            if (os_sbom_root_tag_objects | default([]) | length) > 0 else {}
+          )
+      }}
+    status_code: [200, 201, 409]
+    return_content: true
+  become: false
+  delegate_to: localhost
+  register: os_sbom_root_ensure
+  failed_when: >-
+    os_sbom_root_ensure.status not in [200, 201, 409]
+    and 'already exists' not in (os_sbom_root_ensure.content | default('') | lower)
+  no_log: true
+  tags: [upload, os_sbom]
+
+- name: Look up root portfolio UUID for parent nesting
+  when:
+    - os_sbom_root_enabled | bool
+    - os_sbom_parent_enabled | bool
+    - os_sbom_auto_create | bool
+    - (os_sbom_root_name | default('') | length) > 0
+  ansible.builtin.uri:
+    url: "{{ os_sbom_upload_url | trim }}/api/v1/project/lookup?name={{ os_sbom_root_name | urlencode }}&version={{ os_sbom_root_version | urlencode }}"
+    method: GET
+    headers:
+      X-Api-Key: "{{ os_sbom_upload_api_key }}"
+    status_code: [200]
+    return_content: true
+  become: false
+  delegate_to: localhost
+  register: os_sbom_root_lookup
+  failed_when: false
+  no_log: true
+  tags: [upload, os_sbom]
+
+- name: Capture root portfolio UUID
+  ansible.builtin.set_fact:
+    os_sbom_root_uuid: >-
+      {{
+        os_sbom_root_lookup.json.uuid
+        if (os_sbom_root_lookup is defined
+            and (os_sbom_root_lookup.status | default(0)) == 200
+            and (os_sbom_root_lookup.json.uuid | default('') | length) > 0)
+        else ''
+      }}
+  when:
+    - os_sbom_root_enabled | bool
+    - os_sbom_parent_enabled | bool
+  tags: [upload, os_sbom]
+
+# ── Ensure env parent portfolio (under root when UUID known) ──────────────────
+- name: Ensure parent portfolio project exists
+  when:
+    - os_sbom_parent_enabled | bool
+    - os_sbom_auto_create | bool
+    - (os_sbom_parent_name | default('') | length) > 0
+  ansible.builtin.uri:
+    url: "{{ os_sbom_upload_url | trim }}/api/v1/project"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ os_sbom_upload_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body: >-
+      {{
+        {
+          'name': os_sbom_parent_name,
+          'version': os_sbom_parent_version,
+          'classifier': (os_sbom_parent_classifier | default('PLATFORM')),
+          'active': true
+        }
+        | combine(
+            {'tags': os_sbom_parent_tag_objects}
+            if (os_sbom_parent_tag_objects | default([]) | length) > 0 else {}
+          )
+        | combine(
+            {'parent': {'uuid': os_sbom_root_uuid}}
+            if (
+              (os_sbom_root_enabled | bool)
+              and (os_sbom_root_uuid | default('') | length) > 0
+            ) else {}
+          )
+      }}
+    status_code: [200, 201, 409]
+    return_content: true
+  become: false
+  delegate_to: localhost
+  register: os_sbom_parent_ensure
+  failed_when: >-
+    os_sbom_parent_ensure.status not in [200, 201, 409]
+    and 'already exists' not in (os_sbom_parent_ensure.content | default('') | lower)
+  no_log: true
+  tags: [upload, os_sbom]
+
+# ── Slurp + BOM submit ────────────────────────────────────────────────────────
+- name: Slurp remote SBOM (base64) for BOM field
+  ansible.builtin.slurp:
+    src: "{{ os_sbom_remote_file }}"
+  become: true
+  register: os_sbom_slurp
+  tags: [upload, os_sbom]
+
+# Dependency-Track BomSubmitRequest field is isLatestProjectVersion (not isLatest).
+- name: Build BOM submit payload
+  ansible.builtin.set_fact:
+    os_sbom_upload_payload: >-
+      {{
+        {
+          'projectName': os_sbom_project_name,
+          'projectVersion': (os_sbom_project_version | trim),
+          'autoCreate': (os_sbom_auto_create | bool),
+          'isLatestProjectVersion': (os_sbom_is_latest | bool),
+          'bom': os_sbom_slurp.content
+        }
+        | combine(
+            {
+              'parentName': os_sbom_parent_name,
+              'parentVersion': os_sbom_parent_version
+            }
+            if (os_sbom_parent_enabled | bool) else {}
+          )
+        | combine(
+            {'projectTags': os_sbom_project_tags}
+            if (os_sbom_project_tags | default([]) | length) > 0 else {}
+          )
+      }}
+  no_log: true
+  tags: [upload, os_sbom]
+
+- name: Upload BOM to consumer API
+  ansible.builtin.uri:
+    url: "{{ os_sbom_upload_url | trim }}/api/v1/bom"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ os_sbom_upload_api_key }}"
+      Content-Type: application/json
+    body_format: json
+    body: "{{ os_sbom_upload_payload }}"
+    status_code: [200, 201]
+    return_content: true
+  become: false
+  delegate_to: localhost
+  run_once: false
+  register: os_sbom_upload_result
+  no_log: true
+  tags: [upload, os_sbom]
+
+- name: Report BOM upload
+  ansible.builtin.debug:
+    msg: >-
+      Uploaded {{ os_sbom_project_name }}:{{ os_sbom_project_version | trim }}
+      → {{ os_sbom_upload_url }}
+      (parent={{ os_sbom_parent_name if (os_sbom_parent_enabled | bool) else 'none' }},
+      root={{ os_sbom_root_name if (os_sbom_root_enabled | bool) else 'none' }},
+      tags={{ os_sbom_tags_resolved | default(os_sbom_tags) | join(',') }},
+      token={{ os_sbom_upload_result.json.token | default(os_sbom_upload_result.status) }})
+  tags: [upload, os_sbom]
+
+- name: Remove remote SBOM after successful upload
+  ansible.builtin.file:
+    path: "{{ os_sbom_remote_file }}"
+    state: absent
+  become: true
+  when: not (os_sbom_keep_remote | bool)
+  tags: [upload, os_sbom]

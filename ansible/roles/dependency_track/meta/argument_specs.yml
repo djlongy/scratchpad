@@ -1,0 +1,143 @@
+---
+argument_specs:
+  main:
+    short_description: "Deploy Dependency-Track (API + frontend + PostgreSQL) on Docker Compose"
+    description:
+      - >-
+        Deploys Dependency-Track API server, frontend, and bundled PostgreSQL as a
+        Docker Compose stack managed by a systemd unit, with a nightly PostgreSQL
+        backup cron.
+      - >-
+        Public variables use the short dtrack_* prefix (estate convention). The role
+        ships no default database password — supply dtrack_pg_password from Vault in
+        inventory.
+    options:
+      dependency_track_enabled:
+        type: bool
+        default: true
+        description: Role enable gate. When false the role is a no-op.
+
+      dtrack_version:
+        type: str
+        default: "4.13.6"
+        description: API server and frontend image tag.
+
+      dtrack_apiserver_port:
+        type: int
+        default: 8080
+        description: Host port for the Dependency-Track API server.
+
+      dtrack_frontend_port:
+        type: int
+        default: 8081
+        description: Host port for the Dependency-Track frontend.
+
+      dtrack_data_dir:
+        type: str
+        default: "/opt/dtrack"
+        description: Install root for compose file and volume data.
+
+      dtrack_pg_version:
+        type: str
+        default: "16"
+        description: Bundled PostgreSQL major version (image tag major).
+
+      dtrack_pg_database:
+        type: str
+        default: "dtrack"
+        description: PostgreSQL database name.
+
+      dtrack_pg_username:
+        type: str
+        default: "dtrack"
+        description: PostgreSQL username.
+
+      dtrack_pg_password:
+        type: str
+        required: true
+        description: >-
+          PostgreSQL password. No default — the role asserts a non-empty value.
+          Supply it from Vault in inventory.
+
+      dtrack_api_base_url:
+        type: str
+        default: ""
+        description: >-
+          Public base URL of the API server, used by the frontend from the
+          browser. Required — the role asserts a non-empty value.
+
+      dtrack_readiness_timeout:
+        type: int
+        default: 300
+        description: >-
+          Seconds to wait for the API server to accept connections and answer
+          /api/version after a restart. First boot runs the schema migration.
+
+      dtrack_backup_dir:
+        type: str
+        default: "/opt/backups/dtrack"
+        description: Directory for nightly PostgreSQL dumps.
+
+      dtrack_backup_retention_days:
+        type: int
+        default: 14
+        description: Age in days after which backup files are pruned.
+
+      dtrack_backup_minute:
+        type: str
+        default: "30"
+        description: Cron minute field for the nightly backup job.
+
+      dtrack_backup_hour:
+        type: str
+        default: "2"
+        description: Cron hour field for the nightly backup job.
+
+      dtrack_oidc_enabled:
+        type: bool
+        default: false
+        description: >-
+          Enable OIDC single sign-on on both the API server and the frontend.
+          The IdP application must already exist.
+
+      dtrack_oidc_issuer:
+        type: str
+        default: ""
+        description: >-
+          OIDC issuer URL of the Dependency-Track application. Required when
+          dtrack_oidc_enabled is true.
+
+      dtrack_oidc_client_id:
+        type: str
+        default: "dependency-track"
+        description: OIDC client ID registered with the IdP.
+
+      dtrack_oidc_username_claim:
+        type: str
+        default: "preferred_username"
+        description: Claim carrying the username.
+
+      dtrack_oidc_teams_claim:
+        type: str
+        default: "groups"
+        description: Claim carrying team/group membership.
+
+      dtrack_oidc_user_provisioning:
+        type: bool
+        default: true
+        description: Create Dependency-Track users automatically on first OIDC login.
+
+      dtrack_oidc_team_synchronization:
+        type: bool
+        default: true
+        description: Synchronise team membership from the teams claim on each login.
+
+      dtrack_oidc_scope:
+        type: str
+        default: "openid profile email groups"
+        description: Scopes the frontend requests during the OIDC flow.
+
+      dtrack_oidc_flow:
+        type: str
+        default: "code"
+        description: OIDC flow the frontend uses.

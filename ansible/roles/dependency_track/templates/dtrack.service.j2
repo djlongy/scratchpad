@@ -1,0 +1,16 @@
+[Unit]
+Description=Dependency-Track
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory={{ dtrack_data_dir }}
+ExecStart=/usr/bin/docker compose -p dtrack up
+ExecStop=/usr/bin/docker compose -p dtrack down
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

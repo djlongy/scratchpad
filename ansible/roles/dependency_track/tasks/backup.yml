@@ -1,0 +1,36 @@
+---
+- name: Ensure /root/scripts directory exists
+  become: true  # root: creates /root/scripts
+  ansible.builtin.file:
+    path: /root/scripts
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Ensure Dependency-Track backup directory exists
+  become: true  # root: creates the backup dir
+  ansible.builtin.file:
+    path: "{{ dtrack_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Install Dependency-Track backup script
+  become: true  # root: writes the backup script to /root/scripts
+  ansible.builtin.template:
+    src: dtrack-backup.sh.j2
+    dest: /root/scripts/dtrack-backup.sh
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Ensure Dependency-Track backup cron job exists
+  become: true  # root: manages root's crontab
+  ansible.builtin.cron:
+    name: Dependency-Track backup
+    user: root
+    minute: "{{ dtrack_backup_minute }}"
+    hour: "{{ dtrack_backup_hour }}"
+    job: "/root/scripts/dtrack-backup.sh >> /var/log/dtrack-backup.log 2>&1"

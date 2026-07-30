@@ -1,0 +1,40 @@
+---
+# ops_os_sbom.yml
+# OS-level SBOM (Syft) across Linux hosts → an SBOM consumer (Dependency-Track).
+#
+# Multi-tenant × multi-env project layout (inventory identity: tenancy, env):
+#   os-hosts/<tenancy>                         (root portfolio)
+#     └── os-hosts/<tenancy>/<env>             (env portfolio)
+#           ├── os/<tenancy>/<env>/<host-a>
+#           └── os/<tenancy>/<env>/<host-b>
+#
+# Path parts and enable flags are role defaults; override per inventory for
+# alternate org schemes (see roles/os_sbom/README.md).
+#
+# Repo/upload endpoints are inventory policy; only secrets belong in the
+# environment (never commit them):
+#   export REPO_USER=…           # package-repo user (omit for os_sbom_repo_auth: none)
+#   export REPO_TOKEN=…          # package-repo token/password
+#   export OS_SBOM_UPLOAD_API_KEY=…   # SBOM consumer API key
+#
+# Tags:
+#   os_sbom  — full pipeline (default)
+#   install  — ensure Syft binary only
+#   scan     — generate CycloneDX only
+#   upload   — push existing remote SBOM to the consumer
+#
+# Examples:
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/ops_os_sbom.yml
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/ops_os_sbom.yml \
+#     --tags scan -e os_sbom_upload_enabled=false
+
+- name: Generate OS SBOMs and upload to the SBOM consumer
+  hosts: all:!localhost
+  gather_facts: true
+  # No play-level become — the role escalates only the tasks that need root.
+  serial: "{{ os_sbom_serial | default('20%') }}"
+  any_errors_fatal: false
+  ignore_unreachable: true
+  roles:
+    - role: os_sbom
+      tags: [os_sbom, install, scan, upload]

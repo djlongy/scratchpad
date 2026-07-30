@@ -1,0 +1,24 @@
+---
+# dependency_track.yml
+# Dependency-Track (API server + frontend + PostgreSQL) as a Docker Compose
+# stack managed by systemd, with optional OIDC SSO and a nightly backup cron.
+#
+# Requires Docker + the Compose plugin on the target (apply the docker role
+# first). Required inventory: dtrack_pg_password (from a secret store) and
+# dtrack_api_base_url — see roles/dependency_track/README.md.
+#
+# Tags:
+#   install  — deploy/converge the stack (waits for the API to answer)
+#   backup   — backup script + cron only
+#
+# Examples:
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/dependency_track.yml
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/dependency_track.yml --tags backup
+
+- name: Deploy Dependency-Track
+  hosts: dependency_track
+  gather_facts: true
+  # No play-level become — the role escalates only the tasks that need root.
+  roles:
+    - role: dependency_track
+      tags: [dependency_track, install, backup]

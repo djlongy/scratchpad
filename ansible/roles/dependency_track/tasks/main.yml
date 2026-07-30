@@ -1,0 +1,22 @@
+---
+# roles/dependency_track/tasks/main.yml
+# Phase orchestrator — imports each phase file and applies its tag.
+# A no-tag run executes all phases in order (refinement model, not enablement).
+
+- name: Skip dependency_track (dependency_track_enabled is false)
+  ansible.builtin.debug:
+    msg: "dependency_track_enabled is false — skipping dependency_track"
+  when: not (dependency_track_enabled | bool)
+  tags: [always]
+
+- name: Configure dependency_track
+  when: dependency_track_enabled | bool
+  block:
+
+    - name: Import install phase
+      ansible.builtin.import_tasks: install.yml
+      tags: [install]
+
+    - name: Import backup phase
+      ansible.builtin.import_tasks: backup.yml
+      tags: [backup]

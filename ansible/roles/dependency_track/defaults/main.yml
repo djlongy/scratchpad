@@ -1,0 +1,40 @@
+---
+# Role enable gate — set false in host/group_vars to no-op this role
+dependency_track_enabled: true
+
+# roles/dependency_track/defaults/main.yml
+# Behavioural defaults for Dependency-Track. `dtrack_*` var prefix retained
+# (documented short prefix) to keep parity with the rest of the estate.
+
+dtrack_version: "4.13.6"
+dtrack_apiserver_port: 8080
+dtrack_frontend_port: 8081
+dtrack_data_dir: "/opt/dtrack"
+dtrack_pg_version: "16"
+dtrack_pg_database: "dtrack"
+dtrack_pg_username: "dtrack"
+# No default — the role asserts this is set. Supply from Vault in inventory.
+dtrack_pg_password: ""
+dtrack_backup_dir: "/opt/backups/dtrack"
+dtrack_backup_retention_days: 14
+dtrack_backup_minute: "30"
+dtrack_backup_hour: "2"
+
+# Public URL browsers use to reach the API server. The frontend is served to
+# the browser, so this must be externally resolvable, not a container name.
+dtrack_api_base_url: ""
+
+# Seconds to wait for the API server to answer /api/version. First boot runs
+# the schema migration, which is slow.
+dtrack_readiness_timeout: 300
+
+# OIDC SSO — off by default; the IdP application must already exist.
+dtrack_oidc_enabled: false
+dtrack_oidc_issuer: ""
+dtrack_oidc_client_id: "dependency-track"
+dtrack_oidc_username_claim: "preferred_username"
+dtrack_oidc_teams_claim: "groups"
+dtrack_oidc_user_provisioning: true
+dtrack_oidc_team_synchronization: true
+dtrack_oidc_scope: "openid profile email groups"
+dtrack_oidc_flow: "code"

@@ -1,0 +1,146 @@
+---
+# Install a pinned SBOM generator binary from the configured package repo
+# (rpm / tar.gz / zip). Repo URL + credentials are inventory/CI policy.
+
+- name: Ensure remote SBOM work directory exists
+  ansible.builtin.file:
+    path: "{{ os_sbom_remote_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  become: true  # root-owned work dir for package DB reads + private SBOM files
+
+- name: Check whether generator binary already exists
+  ansible.builtin.stat:
+    path: "{{ os_sbom_syft_bin }}"
+  register: os_sbom_syft_stat
+  become: false  # world-readable path probe
+  tags: [install, os_sbom]
+
+- name: Report installed generator version
+  ansible.builtin.command:
+    argv:
+      - "{{ os_sbom_syft_bin }}"
+      - version
+  register: os_sbom_syft_version_check
+  changed_when: false
+  failed_when: false
+  become: false
+  when: os_sbom_syft_stat.stat.exists | default(false)
+  tags: [install, os_sbom]
+
+- name: Install generator when missing or version-mismatched
+  when: >-
+    not (os_sbom_syft_stat.stat.exists | default(false))
+    or (os_sbom_syft_version not in (os_sbom_syft_version_check.stdout | default('')))
+  become: true  # write binary into install dir (or package manager install)
+  block:
+
+    - name: Resolve download URL from repo policy when not set explicitly
+      ansible.builtin.set_fact:
+        os_sbom_syft_download_url: >-
+          {{ os_sbom_repo_base_url }}/{{ os_sbom_repo }}/{{ os_sbom_syft_repo_path }}
+      when: >-
+        (os_sbom_syft_download_url | default('') | length) == 0
+        and (os_sbom_repo_base_url | default('') | length) > 0
+        and (os_sbom_repo | default('') | length) > 0
+        and (os_sbom_syft_repo_path | default('') | length) > 0
+
+    - name: Require package-repo policy and credentials
+      ansible.builtin.assert:
+        that:
+          - (os_sbom_syft_download_url | default('') | length) > 0
+          - >-
+            (os_sbom_repo_auth | default('basic')) == 'none'
+            or (os_sbom_repo_password | default('') | length) > 0
+        fail_msg: >-
+          os_sbom install needs a package-repo download URL, and credentials
+          unless the repo is anonymous. Set the repo policy
+          (os_sbom_repo_base_url, os_sbom_repo, os_sbom_syft_repo_path) or
+          os_sbom_syft_download_url in inventory group_vars, and export
+          REPO_TOKEN (optional REPO_USER) — or set os_sbom_repo_auth: none
+          for a public/anonymous repo.
+
+    - name: Create temporary extract directory for generator package
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: os-sbom-
+      register: os_sbom_syft_tmpdir
+
+    - name: Resolve local package filename
+      ansible.builtin.set_fact:
+        os_sbom_syft_local_pkg: "{{ os_sbom_syft_tmpdir.path }}/pkg.{{ os_sbom_syft_package_format }}"
+
+    - name: Download generator package from repo (basic auth)
+      when: (os_sbom_repo_auth | default('basic')) == 'basic'
+      ansible.builtin.get_url:
+        url: "{{ os_sbom_syft_download_url }}"
+        dest: "{{ os_sbom_syft_local_pkg }}"
+        mode: "0644"
+        timeout: "{{ os_sbom_syft_download_timeout | int }}"
+        force_basic_auth: true
+        url_username: "{{ os_sbom_repo_user }}"
+        url_password: "{{ os_sbom_repo_password }}"
+        checksum: "{{ os_sbom_syft_checksum | default(omit, true) }}"
+      no_log: true  # credentials in module args
+
+    - name: Download generator package from repo (Bearer token)
+      when: (os_sbom_repo_auth | default('basic')) == 'bearer'
+      ansible.builtin.get_url:
+        url: "{{ os_sbom_syft_download_url }}"
+        dest: "{{ os_sbom_syft_local_pkg }}"
+        mode: "0644"
+        timeout: "{{ os_sbom_syft_download_timeout | int }}"
+        headers:
+          Authorization: "Bearer {{ os_sbom_repo_password }}"
+        checksum: "{{ os_sbom_syft_checksum | default(omit, true) }}"
+      no_log: true  # token in headers
+
+    - name: Download generator package from repo (anonymous)
+      when: (os_sbom_repo_auth | default('basic')) == 'none'
+      ansible.builtin.get_url:
+        url: "{{ os_sbom_syft_download_url }}"
+        dest: "{{ os_sbom_syft_local_pkg }}"
+        mode: "0644"
+        timeout: "{{ os_sbom_syft_download_timeout | int }}"
+        checksum: "{{ os_sbom_syft_checksum | default(omit, true) }}"
+
+    - name: Install generator from tar.gz / zip archive
+      when: (os_sbom_syft_package_format | lower) in ['tar.gz', 'tgz', 'zip']
+      block:
+
+        - name: Extract generator binary from archive
+          ansible.builtin.unarchive:
+            src: "{{ os_sbom_syft_local_pkg }}"
+            dest: "{{ os_sbom_syft_tmpdir.path }}"
+            remote_src: true
+            extra_opts: "{{ ['syft'] if (os_sbom_syft_package_format | lower) != 'zip' else [] }}"
+
+        - name: Install generator into {{ os_sbom_syft_install_dir }}
+          ansible.builtin.copy:
+            src: "{{ os_sbom_syft_tmpdir.path }}/syft"
+            dest: "{{ os_sbom_syft_bin }}"
+            mode: "0755"
+            remote_src: true
+
+    - name: Install generator from RPM
+      when: (os_sbom_syft_package_format | lower) == 'rpm'
+      ansible.builtin.dnf:
+        name: "{{ os_sbom_syft_local_pkg }}"
+        state: present
+        disable_gpg_check: "{{ os_sbom_syft_rpm_disable_gpg_check | bool }}"
+
+    - name: Reject unsupported package format
+      when: >-
+        (os_sbom_syft_package_format | lower)
+        not in ['tar.gz', 'tgz', 'zip', 'rpm']
+      ansible.builtin.fail:
+        msg: >-
+          Unsupported os_sbom_syft_package_format={{ os_sbom_syft_package_format }}.
+          Use tar.gz, zip, or rpm.
+
+    - name: Remove temporary package directory
+      ansible.builtin.file:
+        path: "{{ os_sbom_syft_tmpdir.path }}"
+        state: absent

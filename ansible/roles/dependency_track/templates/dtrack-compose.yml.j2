@@ -1,0 +1,57 @@
+services:
+  dtrack-postgresql:
+    image: postgres:{{ dtrack_pg_version }}
+    container_name: dtrack-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "{{ dtrack_pg_database }}"
+      POSTGRES_USER: "{{ dtrack_pg_username }}"
+      POSTGRES_PASSWORD: "{{ dtrack_pg_password }}"
+    volumes:
+      - "{{ dtrack_data_dir }}/postgresql:/var/lib/postgresql/data"
+
+  dtrack-apiserver:
+    image: dependencytrack/apiserver:{{ dtrack_version }}
+    container_name: dtrack-apiserver
+    restart: unless-stopped
+    depends_on:
+      - dtrack-postgresql
+    ports:
+      - "{{ dtrack_apiserver_port }}:8080"
+    environment:
+      ALPINE_DATABASE_MODE: external
+      ALPINE_DATABASE_URL: "jdbc:postgresql://dtrack-postgresql:5432/{{ dtrack_pg_database }}"
+      ALPINE_DATABASE_DRIVER: org.postgresql.Driver
+      ALPINE_DATABASE_USERNAME: "{{ dtrack_pg_username }}"
+      ALPINE_DATABASE_PASSWORD: "{{ dtrack_pg_password }}"
+{% if dtrack_oidc_enabled | bool %}
+      # OIDC SSO
+      ALPINE_OIDC_ENABLED: "true"
+      ALPINE_OIDC_ISSUER: "{{ dtrack_oidc_issuer }}"
+      ALPINE_OIDC_CLIENT_ID: "{{ dtrack_oidc_client_id }}"
+      ALPINE_OIDC_USERNAME_CLAIM: "{{ dtrack_oidc_username_claim }}"
+      ALPINE_OIDC_TEAMS_CLAIM: "{{ dtrack_oidc_teams_claim }}"
+      ALPINE_OIDC_USER_PROVISIONING: "{{ dtrack_oidc_user_provisioning | bool | ternary('true', 'false') }}"
+      ALPINE_OIDC_TEAM_SYNCHRONIZATION: "{{ dtrack_oidc_team_synchronization | bool | ternary('true', 'false') }}"
+{% else %}
+      ALPINE_OIDC_ENABLED: "false"
+{% endif %}
+    volumes:
+      - "{{ dtrack_data_dir }}/apiserver:/data"
+
+  dtrack-frontend:
+    image: dependencytrack/frontend:{{ dtrack_version }}
+    container_name: dtrack-frontend
+    restart: unless-stopped
+    depends_on:
+      - dtrack-apiserver
+    ports:
+      - "{{ dtrack_frontend_port }}:8080"
+    environment:
+      API_BASE_URL: "{{ dtrack_api_base_url }}"
+{% if dtrack_oidc_enabled | bool %}
+      OIDC_ISSUER: "{{ dtrack_oidc_issuer }}"
+      OIDC_CLIENT_ID: "{{ dtrack_oidc_client_id }}"
+      OIDC_SCOPE: "{{ dtrack_oidc_scope }}"
+      OIDC_FLOW: "{{ dtrack_oidc_flow }}"
+{% endif %}

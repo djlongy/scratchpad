@@ -1,0 +1,90 @@
+---
+- name: Assert required Dependency-Track variables are set
+  ansible.builtin.assert:
+    that:
+      - dtrack_pg_password | default('', true) | length > 0
+    fail_msg: >-
+      dtrack_pg_password is empty. Set it in inventory group_vars from Vault —
+      the role ships no default credential.
+    quiet: true
+
+- name: Assert the Dependency-Track API base URL is set
+  ansible.builtin.assert:
+    that:
+      - dtrack_api_base_url | default('', true) | length > 0
+    fail_msg: >-
+      dtrack_api_base_url is empty. Set it to the URL browsers use to reach the
+      API server (the frontend calls it from the browser, not from the host).
+    quiet: true
+
+- name: Assert OIDC settings are complete when OIDC is enabled
+  ansible.builtin.assert:
+    that:
+      - dtrack_oidc_issuer | default('', true) | length > 0
+    fail_msg: >-
+      dtrack_oidc_enabled is true but dtrack_oidc_issuer is empty. Set it to the
+      IdP issuer URL of the Dependency-Track application, or set
+      dtrack_oidc_enabled to false.
+    quiet: true
+  when: dtrack_oidc_enabled | bool
+
+- name: Create Dependency-Track data directories
+  become: true  # root: creates data dirs under a system path
+  ansible.builtin.file:
+    path: "{{ dtrack_data_dir }}/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - apiserver
+    - postgresql
+
+- name: Deploy Dependency-Track docker-compose file
+  become: true  # root: writes docker-compose.yml under the data dir
+  ansible.builtin.template:
+    src: dtrack-compose.yml.j2
+    dest: "{{ dtrack_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: '0600'  # contains the PostgreSQL password
+  diff: false  # would print the PostgreSQL password
+  notify: Restart dtrack
+
+- name: Deploy Dependency-Track systemd service
+  become: true  # root: writes the unit file to /etc/systemd/system
+  ansible.builtin.template:
+    src: dtrack.service.j2
+    dest: /etc/systemd/system/dtrack.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart dtrack
+
+- name: Enable and start Dependency-Track service
+  become: true  # root: manages the dtrack systemd unit
+  ansible.builtin.systemd:
+    name: dtrack
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending Dependency-Track restarts before the readiness check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Dependency-Track API server port to open
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ dtrack_apiserver_port }}"
+    timeout: "{{ dtrack_readiness_timeout }}"
+
+- name: Wait for the Dependency-Track API to answer
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dtrack_apiserver_port }}/api/version"
+    method: GET
+    status_code: 200
+  register: _dtrack_version_probe
+  retries: "{{ (dtrack_readiness_timeout | int / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+  until: _dtrack_version_probe is succeeded
+  changed_when: false

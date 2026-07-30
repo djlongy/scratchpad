@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  role_name: dependency_track
+  author: longy
+  description: >-
+    Dependency-Track (API server + frontend + PostgreSQL) on Docker Compose +
+    systemd, with optional OIDC SSO and a nightly PostgreSQL backup cron.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+  galaxy_tags:
+    - dependencytrack
+    - sbom
+    - security
+    - docker
+dependencies: []
+
+# Collections used by this role (install via repo requirements.yml):
+#   none beyond ansible.builtin

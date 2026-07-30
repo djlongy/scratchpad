@@ -1,0 +1,139 @@
+---
+argument_specs:
+  main:
+    short_description: OS-level SBOM generation + upload.
+    description:
+      - Installs a pinned package-catalog binary when missing, catalogs OS packages
+        into a CycloneDX JSON SBOM, and uploads it to a configured consumer under a
+        multi-tenant, multi-environment project hierarchy. Estate endpoints and
+        identity (tenancy, env) live in inventory — not role defaults.
+    options:
+      os_sbom_enabled:
+        type: bool
+        default: true
+        description: Skip the role when false.
+      os_sbom_syft_version:
+        type: str
+        default: "1.20.0"
+        description: Generator release version (no leading v).
+      os_sbom_repo_base_url:
+        type: str
+        required: false
+        description: Package repo base URL (inventory policy; no trailing slash).
+      os_sbom_repo:
+        type: str
+        required: false
+        description: Package repo key/name (inventory policy).
+      os_sbom_syft_package_format:
+        type: str
+        default: "tar.gz"
+        description: "Package format: tar.gz | zip | rpm."
+      os_sbom_syft_rpm_disable_gpg_check:
+        type: bool
+        default: false
+        description: >-
+          RPM format only: skip GPG signature verification of the downloaded
+          package. Leave false unless the repo serves unsigned packages.
+      os_sbom_repo_user:
+        type: str
+        required: false
+        description: Repo username (REPO_USER).
+      os_sbom_repo_password:
+        type: str
+        required: false
+        description: Repo token/password (REPO_TOKEN).
+      os_sbom_repo_auth:
+        type: str
+        default: "basic"
+        choices: ["basic", "bearer", "none"]
+        description: >-
+          Download authentication: basic (username + password), bearer
+          (password field holds the token), or none for an anonymous repo.
+      os_sbom_override_default_catalogers:
+        type: str
+        default: "os"
+        description: >-
+          Base cataloger set for directory scans (Syft --override-default-catalogers).
+          Use "os" for OS package DBs only; empty omits the flag.
+      os_sbom_select_catalogers:
+        type: str
+        default: "-file"
+        description: >-
+          Extra cataloger select expressions (Syft --select-catalogers).
+          Default "-file" prevents file catalogers from reattaching.
+      os_sbom_upload_enabled:
+        type: bool
+        default: true
+        description: Upload the SBOM after generation.
+      os_sbom_upload_url:
+        type: str
+        required: false
+        description: SBOM consumer API base URL (inventory/CI policy).
+      os_sbom_upload_api_key:
+        type: str
+        required: false
+        description: SBOM consumer API key.
+      os_sbom_tenancy:
+        type: str
+        required: false
+        description: >-
+          Tenant / org identity token (default maps from inventory tenancy).
+          Used in path parts; empty segments are dropped.
+      os_sbom_env:
+        type: str
+        required: false
+        description: Environment identity token (default maps from inventory env).
+      os_sbom_host:
+        type: str
+        required: false
+        description: Host identity token (default inventory_hostname).
+      os_sbom_project_name:
+        type: str
+        required: false
+        description: >-
+          Full host project name override. Empty → join os_sbom_project_name_parts.
+      os_sbom_project_name_parts:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          Path segments for the host project (empty segments dropped).
+          Default os / <tenancy> / <env> / <host>.
+      os_sbom_parent_enabled:
+        type: bool
+        default: true
+        description: Nest host projects under an env portfolio parent.
+      os_sbom_parent_name:
+        type: str
+        required: false
+        description: Full parent name override. Empty → join parent_name_parts.
+      os_sbom_parent_name_parts:
+        type: list
+        elements: str
+        required: false
+        description: Path segments for the env portfolio parent.
+      os_sbom_root_enabled:
+        type: bool
+        default: true
+        description: Ensure a tenant-wide root portfolio above the env parent.
+      os_sbom_root_name:
+        type: str
+        required: false
+        description: Full root name override. Empty → join root_name_parts.
+      os_sbom_root_name_parts:
+        type: list
+        elements: str
+        required: false
+        description: Path segments for the tenant root portfolio.
+      os_sbom_version_mode:
+        type: str
+        default: "os_release"
+        description: "How to set projectVersion: os_release | date | fixed."
+      os_sbom_is_latest:
+        type: bool
+        default: true
+        description: Mark the uploaded version as latest at the consumer.
+      os_sbom_keep_remote:
+        type: bool
+        default: false
+        description: Leave the remote SBOM file after a successful upload.

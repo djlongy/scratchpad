@@ -1,0 +1,76 @@
+---
+# Run Syft against the host OS package databases → CycloneDX JSON.
+
+- name: Reset Syft exclude argv
+  ansible.builtin.set_fact:
+    os_sbom_exclude_argv: []
+  tags: [scan, os_sbom]
+
+- name: Build --exclude pairs for Syft
+  ansible.builtin.set_fact:
+    os_sbom_exclude_argv: "{{ os_sbom_exclude_argv + ['--exclude', item] }}"
+  loop: "{{ os_sbom_exclude_paths | default([]) }}"
+  tags: [scan, os_sbom]
+
+- name: Build Syft argv
+  ansible.builtin.set_fact:
+    # Directory default catalogers include file-* (tens of thousands of FILE
+    # components with no purl). Override to "os" package DBs, then optionally
+    # refine with select expressions (defaults: -file).
+    os_sbom_syft_argv: >-
+      {{
+        [os_sbom_syft_bin, 'scan', '/']
+        + (
+            ['--override-default-catalogers', os_sbom_override_default_catalogers]
+            if (os_sbom_override_default_catalogers | default('') | length) > 0
+            else []
+          )
+        + (
+            ['--select-catalogers', os_sbom_select_catalogers]
+            if (os_sbom_select_catalogers | default('') | length) > 0
+            else []
+          )
+        + (os_sbom_exclude_argv | default([]))
+        + [
+            '--source-name', os_sbom_project_name,
+            '--source-version', (os_sbom_project_version | trim),
+            '-o', (os_sbom_format ~ '=' ~ os_sbom_remote_file)
+          ]
+      }}
+  tags: [scan, os_sbom]
+
+- name: Generate OS package SBOM with Syft
+  ansible.builtin.command:
+    argv: "{{ os_sbom_syft_argv }}"
+  become: true  # package DB files (rpm/dpkg) need root on hardened hosts
+  register: os_sbom_scan_result
+  changed_when: true
+  tags: [scan, os_sbom]
+
+- name: Assert SBOM file was written
+  ansible.builtin.stat:
+    path: "{{ os_sbom_remote_file }}"
+  register: os_sbom_file_stat
+  become: true
+  tags: [scan, os_sbom]
+
+- name: Fail when Syft produced no SBOM file
+  ansible.builtin.assert:
+    that:
+      - os_sbom_file_stat.stat.exists | default(false)
+      - (os_sbom_file_stat.stat.size | default(0) | int) > 64
+    fail_msg: >-
+      Syft did not write a usable SBOM at {{ os_sbom_remote_file }}
+      (rc={{ os_sbom_scan_result.rc | default('n/a') }}).
+      stdout: {{ os_sbom_scan_result.stdout | default('') | truncate(400) }}
+      stderr: {{ os_sbom_scan_result.stderr | default('') | truncate(400) }}
+  tags: [scan, os_sbom]
+
+- name: Report SBOM generation
+  ansible.builtin.debug:
+    msg: >-
+      SBOM ready for {{ inventory_hostname }}:
+      project={{ os_sbom_project_name }}:{{ os_sbom_project_version | trim }}
+      size={{ os_sbom_file_stat.stat.size }} bytes
+      path={{ os_sbom_remote_file }}
+  tags: [scan, os_sbom]
