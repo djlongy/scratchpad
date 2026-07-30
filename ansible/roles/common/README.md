@@ -22,8 +22,7 @@ Install collections before running (repo `requirements.yml`, or ad-hoc):
 |---|---|---|
 | `community.hashi_vault` | When `ensure_secrets` reads/writes Vault | `vault_kv2_get` / `vault_kv2_write` |
 | `community.general` | When `generate_passphrase` runs | `random_words` lookup |
-| `community.general` | When `mounts` or `update_hostname` runs | LVM (`filesystem`/`lvg`/`lvol`), SELinux context (`sefcontext`), `timezone` |
-| `ansible.posix` | When `mounts` runs | `mount` |
+| `community.general` | When `update_hostname` runs | `timezone` |
 
 ## Key variables
 
@@ -65,7 +64,6 @@ standalone invocation.
 | `audit_logging` / `audit_accumulate` | Audit log helpers |
 | `fapolicyd` | fapolicyd config |
 | `loggers/*` | Log shipping per backend (rsyslog, splunk, fluentd, …) |
-| `mounts` | Create LVM-backed mounts from a host's non-boot disks |
 | `update_disks` | Extend the root partition (Debian) |
 | `update_hostname` | Set hostname, `/etc/hosts`, and timezone |
 
