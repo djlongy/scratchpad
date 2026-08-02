@@ -5,10 +5,14 @@
 # validator non-interactively, and asserts the verdicts. Run on a RHEL box with
 # openssl + nss-tools. Cleans up everything. Usage: sudo ./test-harness.sh [VALIDATOR]
 set -uo pipefail
-VALIDATOR="${1:-./validate-freeipa-p12.sh}"
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+VALIDATOR="${1:-$HERE/validate-freeipa-p12.sh}"
+# Absolute before the cd below, or every run resolves the validator inside $T.
+[[ "$VALIDATOR" == /* ]] || VALIDATOR="$PWD/$VALIDATOR"
 PW="test123"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-cd "$T"
+# Guarded: without -e a failed cd would scatter fixtures across the caller's cwd.
+cd "$T" || exit 1
 pass=0; fail=0
 ok(){ echo "  PASS: $1"; pass=$((pass+1)); }
 no(){ echo "  FAIL: $1"; fail=$((fail+1)); }
