@@ -1,0 +1,29 @@
+---
+# Example inventory policy for roles/os_sbom.
+# Copy to os_sbom.yml (or merge into all/main.yml) and set real endpoints.
+#
+# Identity comes from this inventory (see all/main.yml):
+#   tenancy, env  →  project path segments
+# Default hierarchy:
+#   root   os-hosts/<tenancy>
+#   parent os-hosts/<tenancy>/<env>
+#   child  os/<tenancy>/<env>/<hostname>
+# With tenancy=example env=prod host=bastion-01:
+#   os-hosts/example → os-hosts/example/prod → os/example/prod/bastion-01
+
+# Package repo that serves the generator tarball/zip/rpm (not public internet).
+os_sbom_repo_base_url: "https://packages.example.com/artifactory"
+os_sbom_repo: "generic-tools"
+os_sbom_syft_repo_path: >-
+  anchore/syft/releases/download/v{{ os_sbom_syft_version }}/syft_{{ os_sbom_syft_version }}_linux_{{ os_sbom_syft_arch }}.{{ os_sbom_syft_package_format }}
+os_sbom_syft_download_url: >-
+  {{ os_sbom_repo_base_url }}/{{ os_sbom_repo }}/{{ os_sbom_syft_repo_path }}
+
+# SBOM consumer API (CycloneDX BOM upload). No trailing slash.
+os_sbom_upload_url: "https://sbom-api.example.com"
+
+# Secrets stay in the environment — never commit values:
+#   export REPO_USER=…
+#   export REPO_TOKEN=…
+#   export OS_SBOM_UPLOAD_API_KEY=…
+# Anonymous package repo: set os_sbom_repo_auth: none
