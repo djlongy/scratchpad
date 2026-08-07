@@ -42,3 +42,11 @@
   ansible.builtin.command: rndc reconfig
   changed_when: true
   become: true  # rndc needs the root-owned /etc/rndc.key
+
+# The chain file is only served once httpd re-reads its config. httpd_chain.yml flushes
+# this handler before asserting the served chain, so the assert never tests stale state.
+- name: Restart httpd for the FreeIPA chain
+  ansible.builtin.systemd:
+    name: httpd
+    state: restarted
+  become: true  # root: restarts the IPA web front end

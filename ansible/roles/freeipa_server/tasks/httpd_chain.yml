@@ -1,0 +1,154 @@
+---
+# roles/freeipa_server/tasks/httpd_chain.yml
+# Serve the intermediate chain from httpd when the realm CA is externally signed.
+#
+# WHY THIS IS ITS OWN PHASE (and not part of reparent):
+# reparent_ca_apply.yml builds this file from freeipa_reparent_external_cert_files — the
+# STAGED certs that only exist during a reparent run. A REPLICA inherits an already-signed
+# CA and correctly skips reparent, so it never gets the chain file: it serves only the leaf
+# and clients fall back to SSLCACertificateFile (/etc/ipa/ca.crt), whose FIRST cert is the
+# retained OLD self-signed CA. The browser then renders a two-level hierarchy with a
+# self-signed root and the deployment looks unchained even though the CA is correct.
+# Observed live 2026-08-07: the primary served leaf -> IPA CA -> issuing CA -> root, and
+# its replica served leaf -> self-signed IPA CA, from the same realm.
+#
+# This phase therefore derives the chain from what is ALREADY on the host — the Dogtag
+# signing cert and /etc/ipa/ca.crt — so it converges on any IPA server, primary or replica,
+# and is a no-op on a genuinely self-signed realm.
+#
+# The ROOT is deliberately not sent: clients must independently trust it.
+
+- name: HTTPD chain | Check whether this host runs the Dogtag CA
+  ansible.builtin.stat:
+    path: /etc/pki/pki-tomcat/alias
+  register: _freeipa_httpd_chain_ca_db
+  become: true
+
+- name: HTTPD chain | Build the intermediate chain from on-host material
+  when: _freeipa_httpd_chain_ca_db.stat.exists
+  become: true  # root: reads the NSS DB, writes under /var/lib/ipa and /etc/httpd
+  block:
+    # The AUTHORITATIVE current CA cert is the one in the NSS DB. /etc/ipa/ca.crt is a
+    # BUNDLE whose first entry is usually the retained old self-signed CA, so selecting
+    # "the IPA CA" from it by position picks the wrong certificate — the same trap that
+    # makes `openssl x509 -in /etc/ipa/ca.crt` report a chained realm as self-signed.
+    - name: HTTPD chain | Assemble httpd-chain.crt (IPA CA + its issuer)
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          from cryptography import x509
+          from cryptography.hazmat.primitives import serialization
+
+          out = Path("/var/lib/ipa/certs/httpd-chain.crt")
+
+          def load_all(raw: bytes):
+              certs = []
+              for part in raw.split(b"-----BEGIN CERTIFICATE-----")[1:]:
+                  pem = b"-----BEGIN CERTIFICATE-----" + part
+                  if b"-----END CERTIFICATE-----" in pem:
+                      certs.append(x509.load_pem_x509_certificate(pem))
+              return certs
+
+          # Current signing cert straight out of Dogtag.
+          ca_pem = subprocess.run(
+              ["certutil", "-L", "-d", "/etc/pki/pki-tomcat/alias",
+               "-n", "caSigningCert cert-pki-ca", "-a"],
+              capture_output=True, check=True).stdout
+          ca = x509.load_pem_x509_certificate(ca_pem)
+
+          if ca.issuer == ca.subject:
+              print("SELF-SIGNED: no intermediate chain to serve")
+              sys.exit(0)
+
+          pool = load_all(Path("/etc/ipa/ca.crt").read_bytes())
+          issuer = next((c for c in pool
+                         if c.subject == ca.issuer and c.subject != c.issuer), None)
+          if issuer is None:
+              raise SystemExit(
+                  "issuer %r not found in /etc/ipa/ca.crt — cannot build the chain"
+                  % (ca.issuer.rfc4514_string(),))
+
+          want = (ca.public_bytes(serialization.Encoding.PEM)
+                  + issuer.public_bytes(serialization.Encoding.PEM))
+          if out.is_file() and out.read_bytes() == want:
+              print("UNCHANGED")
+              sys.exit(0)
+          out.write_bytes(want)
+          out.chmod(0o644)
+          print("WROTE %s" % out)
+          PY
+      register: _freeipa_httpd_chain_build
+      changed_when: "'WROTE' in _freeipa_httpd_chain_build.stdout"
+
+    - name: HTTPD chain | Point httpd at the chain
+      ansible.builtin.copy:
+        dest: /etc/httpd/conf.d/ipa-httpd-chain.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by roles/freeipa_server (tasks/httpd_chain.yml).
+          # Leaf remains SSLCertificateFile=/var/lib/ipa/certs/httpd.crt (certmonger).
+          # Intermediates: the realm CA + the external issuing CA that signed it.
+          # The ROOT is not sent — clients must independently trust it.
+          SSLCertificateChainFile /var/lib/ipa/certs/httpd-chain.crt
+      when: "'SELF-SIGNED' not in _freeipa_httpd_chain_build.stdout"
+      notify: Restart httpd for the FreeIPA chain
+
+    # A self-signed realm must not keep a stale directive pointing at a chain file that
+    # no longer describes reality (e.g. after a CA rollback).
+    - name: HTTPD chain | Remove the directive on a self-signed realm
+      ansible.builtin.file:
+        path: /etc/httpd/conf.d/ipa-httpd-chain.conf
+        state: absent
+      when: "'SELF-SIGNED' in _freeipa_httpd_chain_build.stdout"
+      notify: Restart httpd for the FreeIPA chain
+
+    # ── Verify what is actually PRESENTED, not what was written ─────────────
+    # Writing the file and asserting the file are the same claim. The only thing a client
+    # sees is the chain on the wire, and that is where this defect hid: the CA was
+    # correctly signed, ca.crt held every certificate, and the server still presented a
+    # bare leaf. Flush handlers first so httpd is already serving the new config.
+    - name: HTTPD chain | Flush the httpd restart before verifying
+      ansible.builtin.meta: flush_handlers
+
+    # Read the subjects straight out of s_client's own "Certificate chain" block. The
+    # obvious alternative — piping the PEMs through `crl2pkcs7 | pkcs7 -print_certs
+    # -noout` — SILENTLY PRINTS NOTHING on OpenSSL 3.x (-noout suppresses the subject
+    # lines too, not just the encoded certs), so the probe returns [] on a host serving a
+    # perfect chain and this assert fails closed for the wrong reason. Confirmed against
+    # openssl 3.x on the live servers 2026-08-07.
+    - name: HTTPD chain | Read the chain this host actually serves
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -o pipefail
+          echo | openssl s_client -connect 127.0.0.1:443 \
+            -servername {{ freeipa_server_fqdn }} 2>/dev/null \
+            | sed -n '/^Certificate chain/,/^---/p' \
+            | grep -E '^ *[0-9]+ s:' || true
+      register: _freeipa_httpd_chain_served
+      changed_when: false
+      when: "'SELF-SIGNED' not in _freeipa_httpd_chain_build.stdout"
+
+    - name: HTTPD chain | Assert the served chain includes the issuing CA
+      ansible.builtin.assert:
+        that:
+          - (_freeipa_httpd_chain_served.stdout_lines | default([]) | length) >= 3
+        fail_msg: >-
+          {{ inventory_hostname }} presents an INCOMPLETE certificate chain on 443:
+          {{ _freeipa_httpd_chain_served.stdout_lines | default(['(nothing)']) }}.
+          The realm CA is externally signed, so the leaf, the realm CA and its issuing CA
+          must all be sent. Clients that do not already hold the intermediate will build a
+          chain ending at the RETAINED SELF-SIGNED CA from SSLCACertificateFile
+          (/etc/ipa/ca.crt) and report the deployment as self-signed — which is how this
+          went unnoticed on a replica whose CA was correctly signed all along.
+        success_msg: >-
+          Serving {{ _freeipa_httpd_chain_served.stdout_lines | length }} certificates
+          (leaf + realm CA + issuing CA).
+        quiet: true
+      when: "'SELF-SIGNED' not in _freeipa_httpd_chain_build.stdout"

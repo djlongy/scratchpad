@@ -83,6 +83,14 @@
         - freeipa_server_ca_mode != 'ca-less'
       tags: [certs, ca]
 
+    # Serve the intermediate chain when the realm CA is externally signed. Runs on EVERY
+    # server, not just the primary: a replica inherits a signed CA but skips reparent, so
+    # it would otherwise serve only the leaf and appear self-signed to clients. Derives
+    # the chain from on-host material, so it is a no-op on a self-signed realm.
+    - name: Serve the httpd intermediate chain when the CA is externally signed
+      ansible.builtin.import_tasks: httpd_chain.yml
+      tags: [certs, ca, httpd_chain]
+
     # IPA admin credentials for every freeipa.ansible_freeipa module task, injected once
     # per phase file via module_defaults. `default(omit)` matters: module_defaults are
     # templated for EVERY task in the file, including those running before the phase's
