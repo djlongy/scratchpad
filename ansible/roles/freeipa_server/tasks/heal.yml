@@ -66,24 +66,93 @@
 # mutating the system; a successful UNINSTALL empties it. State present WITHOUT
 # /etc/ipa/default.conf = a previous install aborted part-way (or the config was
 # deleted). Installing on top yields a half-install — fail fast instead.
+# BOTH sysrestore trees matter. /var/lib/ipa is the SERVER one; /var/lib/ipa-client is
+# written by the client enrolment that a REPLICA install performs first. Checking only the
+# server path misses the nastier case, because leftover CLIENT state is SILENT rather than
+# loud: upstream ipareplica wraps its client join AND its preparation step in one block
+#   when: not (result_ipareplica_test.client_already_configured is defined or ...)
+# and stale /var/lib/ipa-client/sysrestore makes that test report client_already_configured.
+# The join is then skipped, /etc/ipa/default.conf is never written, and the run dies later
+# in ipareplica_prepare with "AttributeError: 'Env' object has no attribute 'realm'" —
+# an error that points nowhere near the real cause. Observed live 2026-08-07 across four
+# failed replica attempts; `ipa-client-install --uninstall` did NOT clear it.
 - name: Heal | Look for leftover installer state from an aborted install
   ansible.builtin.find:
-    paths: /var/lib/ipa/sysrestore
+    paths: "{{ item }}"
     file_type: file
+  loop:
+    - /var/lib/ipa/sysrestore
+    - /var/lib/ipa-client/sysrestore
   register: _freeipa_heal_sysrestore
   when: not _freeipa_heal_configured.stat.exists
+
+# ── Opt-in remediation ──────────────────────────────────────────────────────
+# Same gate as the httpd/PKI self-heal below: default is fail-fast (an operator decides),
+# freeipa_server_heal_enabled=true makes the role clean up and continue.
+#
+# This is SAFE to automate precisely because it is gated on `not default.conf.exists`:
+# with no /etc/ipa/default.conf the host is, by definition, neither an IPA server nor an
+# enrolled client, so a sysrestore tree here holds nothing recoverable — it is the residue
+# of a run that already aborted. The uninstall commands run first anyway, so anything
+# genuinely restorable is restored before the trees are emptied.
+- name: Heal | Clean up aborted-install residue (opt-in)
+  when:
+    - not _freeipa_heal_configured.stat.exists
+    - freeipa_server_heal_enabled | bool
+    - (_freeipa_heal_sysrestore.results | default([])
+       | map(attribute='files') | map('default', [], true)
+       | map('length') | sum) > 0
+  become: true  # root: uninstall + remove installer state under /var/lib
+  block:
+    - name: Heal | Run both uninstallers before clearing state
+      ansible.builtin.shell:
+        cmd: |
+          ipa-server-install --uninstall -U >/dev/null 2>&1 || true
+          ipa-client-install --uninstall -U >/dev/null 2>&1 || true
+          exit 0
+        executable: /bin/bash
+      changed_when: true
+
+    # ipa-client-install --uninstall does NOT empty its own sysrestore tree, which is the
+    # whole reason this task exists — leftover CLIENT state makes upstream ipareplica skip
+    # its client join silently (see the comment on the find task above).
+    - name: Heal | Remove leftover installer state from both sysrestore trees
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/ipa/sysrestore
+        - /var/lib/ipa-client/sysrestore
+        - /etc/ipa/default.conf
+        - /etc/krb5.keytab
+
+    - name: Heal | Re-check installer state after cleanup
+      ansible.builtin.find:
+        paths: "{{ item }}"
+        file_type: file
+      loop:
+        - /var/lib/ipa/sysrestore
+        - /var/lib/ipa-client/sysrestore
+      register: _freeipa_heal_sysrestore
 
 - name: Heal | Fail fast on a partial/aborted FreeIPA install
   ansible.builtin.assert:
     that:
-      - (_freeipa_heal_sysrestore.files | default([]) | length) == 0
+      - (_freeipa_heal_sysrestore.results | default([])
+         | map(attribute='files') | map('default', [], true)
+         | map('length') | sum) == 0
     fail_msg: >-
-      This host has leftover FreeIPA installer state (/var/lib/ipa/sysrestore)
-      but no /etc/ipa/default.conf — a previous ipa-server-install aborted
-      part-way (or the install was manually gutted). Refusing to install on top
-      of it. Clean up first on the host:
-      `ipa-server-install --uninstall -U`, verify /var/lib/ipa/sysrestore is
-      empty, then re-run this role for a fresh install.
+      This host has leftover FreeIPA installer state (/var/lib/ipa/sysrestore or
+      /var/lib/ipa-client/sysrestore) but no /etc/ipa/default.conf — a previous
+      install aborted part-way (or the install was manually gutted). Refusing to
+      install on top of it: leftover CLIENT state makes upstream ipareplica skip
+      its own client join and fail later with a misleading
+      "'Env' object has no attribute 'realm'".
+      FIX: re-run with -e freeipa_server_heal_enabled=true and this role will
+      uninstall and clear both sysrestore trees for you. To do it by hand:
+      `ipa-server-install --uninstall -U; ipa-client-install --uninstall -U`,
+      then REMOVE both /var/lib/ipa/sysrestore and /var/lib/ipa-client/sysrestore
+      (uninstall does NOT empty the client one), and re-run.
     quiet: true
   when: not _freeipa_heal_configured.stat.exists
 

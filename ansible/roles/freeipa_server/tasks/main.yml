@@ -36,10 +36,18 @@
       when: ansible_os_family is not defined
       tags: [always]
 
+    # Tagged `install` as well as `preflight` for the SAME reason the aborted-install
+    # guard below is:
+    # install DEPENDS on this phase, so the tag must not be able to exclude it. preflight
+    # owns the system hostname and the /etc/hosts entry for this host's IPA FQDN, plus the
+    # replica-direction reachability asserts. A `--tags install` run without it hands the
+    # upstream installer a host that cannot resolve its own FQDN, which fails deep inside
+    # ipaserver with an EMPTY msg and the real cause only in /var/log/ipaserver-install.log
+    # ("Name <fqdn> does not have any address"). Cost a live debugging cycle 2026-08-07.
     - name: Run FreeIPA dependency-ordering preflight guards
       ansible.builtin.import_tasks: preflight.yml
       become: true
-      tags: [preflight]
+      tags: [preflight, install]
 
     # Aborted-install guard + opt-in self-heal, BEFORE the upstream include. The
     # import is UNGATED because the fail-fast guard inside (leftover sysrestore

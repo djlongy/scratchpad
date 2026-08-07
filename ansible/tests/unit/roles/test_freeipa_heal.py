@@ -47,8 +47,11 @@ def test_heal_repair_is_opt_in_but_the_aborted_install_guard_always_runs() -> No
     assert "freeipa_server_heal_enabled: false" in DEFAULTS.read_text()
     assert "freeipa_server_heal_enabled" in ARG_SPECS.read_text()
 
+    # flatten(): main.yml wraps every phase in one `block:`, so the heal import is
+    # nested, not top-level. Scanning only top-level tasks raises StopIteration and
+    # the assertions below never run.
     heal_import = next(
-        t for t in yaml.safe_load(main_text())
+        t for t in flatten(yaml.safe_load(main_text()))
         if t.get("ansible.builtin.import_tasks") == "heal.yml"
     )
     # UNGATED import: the fail-fast guard must run even with heal disabled, so

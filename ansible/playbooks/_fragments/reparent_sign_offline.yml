@@ -1,0 +1,115 @@
+---
+# _fragments/reparent_sign_offline.yml — sign a FreeIPA CA CSR off the offline-ca
+# escrow issuing key, on the control node.
+#
+# ══ WHY NOT VAULT ══════════════════════════════════════════════════════════════
+# Vault's <mount>/root/sign-intermediate RE-ENCODES the subject: FreeIPA emits its CSR
+# subject as UTF8String, Vault returns it as PrintableString. FreeIPA then rejects the
+# cert — `ipa-cacert-manage` reports the chain as "incomplete: missing certificate with
+# subject '<issuing CA DN>'", which is misleading because that certificate IS present.
+# The give-away is the returned cert's AKI: it comes back equal to its own SKI instead of
+# the issuing CA's SKI, so `openssl verify -partial_chain` fails with
+# "error 20: unable to get local issuer certificate".
+#
+# `openssl x509 -req` copies the CSR subject DER byte-for-byte, which is what FreeIPA
+# requires. Live-proven on freeipatest 2026-07-24, and re-confirmed on mgt 2026-08-07
+# when the Vault path produced an unchainable cert for a realm on the internal tree.
+#
+# ══ INPUTS ═════════════════════════════════════════════════════════════════════
+#   _sign_csr_in     — path to the FreeIPA CSR (control node)
+#   _sign_cert_out   — path to write the signed IPA CA cert
+#   _sign_chain_out  — path to write the EXTERNAL chain (issuing + root, NO IPA leaf)
+#   _sign_work_dir   — scratch dir for the staged issuing material
+# Escrow vars, supplied by the CONSUMER (this repo ships no CA material):
+#   pki_issuing_ca_cert / pki_issuing_ca_key / pki_root_ca_cert
+# Hold them in an ansible-vault encrypted group_vars file. See
+# ansible/docs/offline-root-vault-freeipa.md.
+#
+# Every task is control-node work: delegate_to localhost, run_once, become false.
+
+- name: Reparent sign | Assert the offline-ca escrow has issuing cert + key
+  ansible.builtin.assert:
+    that:
+      - pki_issuing_ca_cert is defined and (pki_issuing_ca_cert | length) > 0
+      - pki_issuing_ca_key is defined and (pki_issuing_ca_key | length) > 0
+      - pki_root_ca_cert is defined and (pki_root_ca_cert | length) > 0
+    fail_msg: >-
+      Reparent signing needs the offline-ca escrow (pki_issuing_ca_cert/key +
+      pki_root_ca_cert) — supply them from an ansible-vault encrypted group_vars
+      file. See ansible/docs/offline-root-vault-freeipa.md.
+    quiet: true
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Reparent sign | Stage offline issuing CA material on the control node
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ item.dest }}"
+    mode: "0600"
+  loop:
+    - {content: "{{ pki_issuing_ca_cert | trim }}\n", dest: "{{ _sign_work_dir }}/.issuing.crt"}
+    - {content: "{{ pki_issuing_ca_key | trim }}\n", dest: "{{ _sign_work_dir }}/.issuing.key"}
+    - {content: "{{ pki_root_ca_cert | trim }}\n", dest: "{{ _sign_work_dir }}/.root.crt"}
+  loop_control:
+    label: "{{ item.dest | basename }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: Reparent sign | Sign the CSR with openssl (preserve UTF8 subject DER)
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      ext=$(mktemp)
+      trap 'rm -f "$ext"' EXIT
+      cat >"$ext" <<'EOF'
+      basicConstraints=critical,CA:TRUE,pathlen:0
+      keyUsage=critical,keyCertSign,cRLSign
+      EOF
+      openssl x509 -req \
+        -in "{{ _sign_csr_in }}" \
+        -CA "{{ _sign_work_dir }}/.issuing.crt" \
+        -CAkey "{{ _sign_work_dir }}/.issuing.key" \
+        -CAcreateserial \
+        -days 3650 \
+        -sha256 \
+        -extfile "$ext" \
+        -out "{{ _sign_cert_out }}"
+      # EXTERNAL chain for FreeIPA: issuing CA then root. The IPA leaf is passed
+      # separately via its own --external-cert-file and must NOT be repeated here.
+      {
+        cat -- "{{ _sign_work_dir }}/.issuing.crt"
+        printf '\n'
+        cat -- "{{ _sign_work_dir }}/.root.crt"
+        printf '\n'
+      } > "{{ _sign_chain_out }}"
+      # FreeIPA's check is encoding-sensitive: assert the subject DER survived intact.
+      python3 - <<'PY'
+      from pathlib import Path
+      from cryptography import x509
+      csr = x509.load_pem_x509_csr(Path("{{ _sign_csr_in }}").read_bytes())
+      cert = x509.load_pem_x509_certificate(Path("{{ _sign_cert_out }}").read_bytes())
+      if csr.subject.public_bytes() != cert.subject.public_bytes():
+          raise SystemExit("subject DER mismatch CSR vs signed cert")
+      print("subject DER match OK")
+      PY
+      openssl verify -CAfile "{{ _sign_work_dir }}/.root.crt" \
+        -untrusted "{{ _sign_work_dir }}/.issuing.crt" \
+        "{{ _sign_cert_out }}"
+    chdir: "{{ _sign_work_dir }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: true
+
+# The issuing private key must not outlive the signing step on the control node.
+- name: Reparent sign | Wipe the staged issuing private key
+  ansible.builtin.file:
+    path: "{{ _sign_work_dir }}/.issuing.key"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true

@@ -130,6 +130,86 @@
     - not (freeipa_server_is_primary | bool)
     - not _freeipa_server_configured.stat.exists
 
+# ── Replica prerequisites in the REVERSE direction (primary → replica) ───────
+# The wait_for above only proves replica → primary. ipa-replica-install's conncheck also
+# requires the PRIMARY to resolve and reach the REPLICA, and neither of those is created
+# by the install. Unchecked, both surface late as an opaque
+#   "Connection check failed! See /var/log/ipareplica-conncheck.log"
+# with the real cause only in that log ON the replica. Asserting here fails in seconds,
+# on the controller, with the exact remediation. Live-proven necessary 2026-08-07: a
+# replica join failed on both of these in turn.
+- name: Preflight | Resolve this replica's FQDN from the primary
+  ansible.builtin.command:
+    argv: [dig, +short, +time=3, +tries=1, "{{ freeipa_server_fqdn }}", A]
+  delegate_to: "{{ freeipa_server_primary_host_name }}"
+  become: false
+  changed_when: false
+  failed_when: false
+  register: _freeipa_replica_fqdn_lookup
+  when:
+    - not (freeipa_server_is_primary | bool)
+    - not _freeipa_server_configured.stat.exists
+
+- name: Preflight | Assert the primary resolves this replica to its inventory address
+  ansible.builtin.assert:
+    that:
+      - (_freeipa_replica_fqdn_lookup.stdout | default('') | trim) == ansible_host
+    fail_msg: >-
+      The primary ({{ freeipa_server_primary_host_name }}) resolves
+      {{ freeipa_server_fqdn }} to
+      '{{ _freeipa_replica_fqdn_lookup.stdout | default('') | trim | default('NOTHING', true) }}'
+      but inventory says {{ ansible_host }}. ipa-replica-install's conncheck will fail
+      with "Port check failed! Unable to resolve host name". The realm zone is
+      dynamic_update:false, so an enrolling host cannot self-register — declare an A
+      record for this host in freeipa_server_dns_records under the realm zone
+      ({{ freeipa_server_domain }}.) and apply it on the PRIMARY with
+      `--tags dns --limit {{ freeipa_server_primary_host_name }}`.
+      NOTE `ipa host-del <fqdn> --updatedns` REMOVES that record — re-apply --tags dns
+      after any such cleanup.
+    quiet: true
+  when:
+    - not (freeipa_server_is_primary | bool)
+    - not _freeipa_server_configured.stat.exists
+
+# Port reachability cannot be probed before install (nothing is listening yet), so assert
+# the FIREWALL CONTRACT instead — that is knowable now and is the thing that is missing on
+# a freshly provisioned guest, which allows only ssh/cockpit/dhcpv6 until the estate
+# firewalld role has run.
+# Deliberately simple: list the services of every ACTIVE zone. If the estate firewalld
+# contract has been applied this host will expose freeipa-ldap somewhere; a fresh guest
+# will not expose it anywhere. Resolving which specific zone the primary's source maps to
+# is more fragile than the signal is worth, and firewalld is not guaranteed to be running
+# at all on a bare guest — hence the `|| true`.
+- name: Preflight | Read the firewalld services active on this replica
+  ansible.builtin.shell:
+    cmd: firewall-cmd --list-all-zones 2>/dev/null | grep -E '^\s+services:' || true
+    executable: /bin/bash
+  become: true  # root: firewall-cmd queries need privilege
+  changed_when: false
+  failed_when: false
+  register: _freeipa_replica_fw_services
+  when:
+    - not (freeipa_server_is_primary | bool)
+    - not _freeipa_server_configured.stat.exists
+
+- name: Preflight | Assert the replica's firewall admits FreeIPA from the primary
+  ansible.builtin.assert:
+    that:
+      - "'freeipa-ldap' in (_freeipa_replica_fw_services.stdout | default(''))"
+    fail_msg: >-
+      This replica's firewalld does not admit freeipa-ldap from the primary
+      ({{ freeipa_server_primary_ip }}); it currently allows:
+      '{{ _freeipa_replica_fw_services.stdout | default('') | trim }}'.
+      A freshly provisioned guest allows only ssh/cockpit/dhcpv6 —
+      freeipa_server_setup_firewalld is false estate-wide because the firewalld role owns
+      the contract. Apply it BEFORE the replica install (not merely before any DNS
+      cutover): run whichever playbook applies your firewalld contract, limited to
+      {{ inventory_hostname }}.
+    quiet: true
+  when:
+    - not (freeipa_server_is_primary | bool)
+    - not _freeipa_server_configured.stat.exists
+
 - name: Assert external CA cert files are provided when ca_mode is external-ca
   ansible.builtin.assert:
     that:
