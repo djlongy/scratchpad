@@ -20,6 +20,9 @@ readonly DEFAULT_INSTALL_DIR="${HOME}/.vscode-server"
 readonly DEFAULT_BIND_ADDR="127.0.0.1"
 readonly DEFAULT_PORT="8000"
 readonly DEFAULT_SERVER_ARCH="linux-x64"
+readonly VSCODE_GIT_REPO="https://github.com/microsoft/vscode.git"
+readonly DEFAULT_TAG_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/vscode-airgap"
+readonly DEFAULT_TAG_CACHE_TTL="86400"   # 24h — tags don't change often enough to justify refetching every run
 
 # ── Defaults (overridable by env, then by flags) ────────────────────────────
 MODE="${MODE:-}"
@@ -34,12 +37,16 @@ TOKEN="${TOKEN:-}"
 EXTENSIONS="${EXTENSIONS:-}"
 EXTENSIONS_FILE="${EXTENSIONS_FILE:-}"
 BUNDLE_PATH="${BUNDLE_PATH:-}"
-ACTION="install"          # install (default) | tunnel | status | emit-ssh-config
+ACTION="install"          # install (default) | tunnel | status | emit-ssh-config | list-versions
 START_AFTER_INSTALL=0     # serve-web only starts if --serve-web is also given
 DOWNLOAD_ONLY=0
 FORCE=0
 WITH_SERVE_WEB=0          # --serve-web: also fetch+optionally start code serve-web
 WITH_CLI=0                # implied by --serve-web or --tunnel
+LIST_VERSIONS="${LIST_VERSIONS:-0}"
+LIST_FORMAT="text"        # text|json, for --list-versions
+TAG_CACHE_DIR="${TAG_CACHE_DIR:-$DEFAULT_TAG_CACHE_DIR}"
+TAG_CACHE_TTL="${TAG_CACHE_TTL:-$DEFAULT_TAG_CACHE_TTL}"
 
 # HTTP(S)_PROXY / NO_PROXY are read straight from the environment by curl
 # and by Python's urllib (extension queries); nothing here bypasses them.
@@ -76,6 +83,7 @@ USAGE
   vscode-airgap.sh --mode offline  [options]   # air-gapped host: install from a bundle
   vscode-airgap.sh --emit-ssh-config [--install-dir DIR]
   vscode-airgap.sh --status [--install-dir DIR]
+  vscode-airgap.sh --list-versions [--format text|json] [--refresh]
   vscode-airgap.sh --help
 
 MODES
@@ -109,17 +117,45 @@ MODES
 OPTIONS (env var equivalents in parentheses)
   --mode MODE             online|bundle|offline (MODE)
   --channel CHANNEL       stable|insider, default stable (CHANNEL)
-  --version VERSION       Semver, e.g. 1.96.2. Only meaningful together with
-                          --commit — see docs/reference/download-urls.md for
-                          why Microsoft doesn't expose a semver->commit API
-                          for historical releases. (VERSION)
-  --commit COMMIT         40-char git commit hash to pin exactly. Overrides
-                          latest resolution when set; also switches
+  --version VERSION       Exact stable semver to pin, e.g. 1.96.2 (a
+                          leading 'v' is accepted and stripped: v1.96.2
+                          works too). Resolved to its commit via
+                          microsoft/vscode's git tags (ground truth,
+                          verified live 2026-08-18 — Microsoft's own APIs
+                          don't expose a semver->commit map; see
+                          docs/reference/download-urls.md), then confirmed
+                          reachable on Microsoft's CDN before use — an old
+                          version whose tag exists but whose CDN artifact
+                          has been pruned fails loudly rather than
+                          silently falling back to latest. A 2-component
+                          version (e.g. 1.96) resolves to the newest
+                          matching patch release if unambiguous. insider
+                          channel is not supported for --version (only
+                          stable has tagged releases in the sense this
+                          resolves) — use --commit instead. Ignored if
+                          --commit is also set. See --list-versions.
+                          (VERSION)
+  --commit COMMIT         40-char git commit hash to pin exactly. WINS over
+                          --version when both are set. Also switches
                           checksum verification to self-computed sha256
                           (Microsoft's /api/update/*/latest checksum
                           endpoint only serves the CURRENT latest build per
                           platform, confirmed live — it 204s for an older
                           commit). (COMMIT)
+  --list-versions         Print every stable VS Code release with its
+                          resolved commit, newest first (standalone — no
+                          --mode required). The CDN column is derived from
+                          a cached availability boundary (see --refresh),
+                          not a live check per row — the authoritative
+                          check happens when you actually pick a version
+                          with --version. With --bundle-path, prints the
+                          single version already staged in that bundle
+                          instead of hitting the network. (LIST_VERSIONS=1)
+  --format text|json      Output format for --list-versions. Default text.
+  --refresh               Force-refetch the git tag cache (also implies
+                          --force for artifact downloads). Tag list is
+                          cached at ~/.cache/vscode-airgap/ with a 24h TTL
+                          by default (TAG_CACHE_TTL, seconds).
   --arch ARCH             The REMOTE Linux host's architecture, for the
                           Remote-SSH server artifact:
                           linux-x64 (default, mandatory support) |
@@ -201,6 +237,15 @@ EXAMPLES
   # Optional secondary path: serve-web instead of / alongside Remote-SSH
   ./vscode-airgap.sh --mode online --serve-web
 
+  # Match an already-running remote server instead of always fetching latest:
+  # 1. On the remote, find its exact commit (no network needed):
+  #      ./vscode-airgap.sh --status
+  #      # or: cat ~/.vscode-server/bin/*/product.json
+  # 2. On a connected host, see what semver that commit corresponds to and
+  #    pick a version explicitly instead of re-resolving "latest" every run:
+  ./vscode-airgap.sh --list-versions | head -20
+  ./vscode-airgap.sh --mode bundle --version 1.96.2 --bundle-path ./v1.96.2.tar.gz
+
 LIMITATIONS — READ THIS BEFORE CHOOSING --tunnel OR --serve-web
   Microsoft's Remote Tunnels (`code tunnel`) are NOT air-gap compatible.
   The CLI authenticates against github.com/login.microsoftonline.com and
@@ -250,15 +295,23 @@ while [ $# -gt 0 ]; do
     --tunnel) ACTION="tunnel"; WITH_CLI=1; shift ;;
     --status) ACTION="status"; shift ;;
     --emit-ssh-config) ACTION="emit-ssh-config"; shift ;;
+    --list-versions) ACTION="list-versions"; shift ;;
+    --format) LIST_FORMAT="$2"; shift 2 ;;
     --force) FORCE=1; shift ;;
+    --refresh) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 
-# --status / --emit-ssh-config are standalone queries and never touch
-# MODE/CHANNEL/network — skip those checks for them entirely.
-if [ "$ACTION" = "status" ] || [ "$ACTION" = "emit-ssh-config" ]; then
+[ "$LIST_VERSIONS" = "1" ] && ACTION="list-versions"
+case "$LIST_FORMAT" in text|json) ;; *) die "invalid --format '$LIST_FORMAT' (text|json)" ;; esac
+
+# --status / --emit-ssh-config / --list-versions are standalone queries
+# that never require --mode. --list-versions is NOT network-free like the
+# other two (unless --bundle-path is given) — see the dependency block
+# below for its own, narrower requirements.
+if [ "$ACTION" = "status" ] || [ "$ACTION" = "emit-ssh-config" ] || [ "$ACTION" = "list-versions" ]; then
   STANDALONE_ACTION=1
 else
   STANDALONE_ACTION=0
@@ -269,12 +322,24 @@ fi
 
 # ── Dependency check ─────────────────────────────────────────────────────
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
-if [ "$STANDALONE_ACTION" -eq 0 ]; then
+if [ "$ACTION" = "status" ] || [ "$ACTION" = "emit-ssh-config" ]; then
+  : # genuinely zero deps beyond bash/coreutils, by design
+elif [ "$ACTION" = "list-versions" ]; then
+  if [ -z "$BUNDLE_PATH" ]; then
+    require_cmd git
+    require_cmd curl
+    require_cmd python3
+  fi
+else
   for c in tar sha256sum; do
     command -v "$c" >/dev/null 2>&1 || command -v "${c/sha256sum/shasum}" >/dev/null 2>&1 || die "required command not found: $c"
   done
   [ "$MODE" != "offline" ] && require_cmd curl
   if [ "$MODE" != "offline" ] && { [ -n "$EXTENSIONS" ] || [ -n "$EXTENSIONS_FILE" ]; }; then
+    require_cmd python3
+  fi
+  if [ "$MODE" != "offline" ] && [ -n "$VERSION" ] && [ -z "$COMMIT" ]; then
+    require_cmd git
     require_cmd python3
   fi
 fi
@@ -436,6 +501,269 @@ resolve_commit_via_commits_api() {
   first="$(printf '%s' "$commits_json" | tr -d '[]" ' | cut -d',' -f1)"
   [ -n "$first" ] || die "could not parse a commit from the commits API response"
   echo "$first"
+}
+
+# ── Semver -> commit resolution (git tags, ground truth) ─────────────────
+# Verified live 2026-08-18 (see docs/reference/download-urls.md): neither
+# /api/commits (a 200-entry rolling window, no semver attached) nor
+# /api/releases/<channel> (semver list, NO commit attached) nor
+# /api/update/<segment>/<channel>/<baseline> (an UPDATE-CHECK endpoint —
+# always describes "what's newer than baseline", 204s when baseline IS
+# latest; passing an OLDER commit does NOT return that commit's own info,
+# it returns the SAME "here's the current latest" payload every time)
+# gives a semver->commit map. microsoft/vscode's git tags do: `git
+# ls-remote --tags` returns bare-semver tag names (NO "v" prefix — e.g.
+# refs/tags/1.32.0, not v1.32.0) whose SHA is independently confirmed to
+# equal the commit the CDN serves for that release (cross-checked against
+# /api/update's "latest" commit for 1.133.0 — exact match). Only STABLE
+# releases are tagged this way; insider builds track main continuously
+# and aren't semver-tagged, so --version only supports channel=stable.
+#
+# git existing != CDN existing, though: Microsoft prunes old CDN artifacts
+# (confirmed live: every server-linux-x64/linux-x64/win32-x64-user build
+# older than 1.34.0 404s, including the 1.32.0 the operator asked about
+# by name — 1.34.0 is the current floor). So resolution is two-stage:
+# tags give the commit, a live HEAD request against the CDN confirms it's
+# actually fetchable before this tool ever offers or uses it.
+
+tag_cache_file() {
+  [ "$CHANNEL" = "stable" ] || die "--version / --list-versions only supports channel=stable (insider builds aren't semver-tagged in microsoft/vscode — see docs/reference/download-urls.md; use --commit for insider)"
+  mkdir -p "$TAG_CACHE_DIR"
+  echo "$TAG_CACHE_DIR/tags-stable.tsv"
+}
+
+# Rebuilds the cache unconditionally: fetches every microsoft/vscode tag,
+# resolves version->commit (peeled/annotated tags win over the lightweight
+# tag SHA when both exist for the same version), binary-searches the live
+# CDN for the oldest version whose server-linux-x64 artifact still
+# resolves (8-10 HEAD requests, not one per version), and writes it all to
+# the cache file atomically. git and curl both honour HTTPS_PROXY/
+# HTTP_PROXY/NO_PROXY natively (git via its own libcurl-equivalent
+# transport, confirmed live by pointing HTTPS_PROXY at a black hole and
+# watching it fail to connect rather than silently going direct).
+refresh_tag_cache() {
+  local cache_file="$1"
+  log "refreshing the microsoft/vscode tag cache (git ls-remote --tags, one network round trip)"
+  local raw_file
+  raw_file="$(mktemp)"
+  if ! git ls-remote --tags "$VSCODE_GIT_REPO" > "$raw_file" 2>&1; then
+    local err
+    err="$(cat "$raw_file")"
+    rm -f "$raw_file"
+    die "git ls-remote failed against $VSCODE_GIT_REPO (check network/proxy — HTTPS_PROXY=${HTTPS_PROXY:-unset}): $err"
+  fi
+  local tmp
+  tmp="$(mktemp)"
+  python3 - "$tmp" "$raw_file" "$UPDATE_HOST" <<'PYEOF'
+import re, sys, urllib.request, urllib.error
+
+out_path = sys.argv[1]
+raw_path = sys.argv[2]
+update_host = sys.argv[3]
+with open(raw_path) as f:
+    raw = f.read()
+
+pat = re.compile(r'^([0-9a-f]{40})\trefs/tags/(\d+\.\d+\.\d+)(\^\{\})?$', re.MULTILINE)
+versions = {}
+for sha, ver, peeled in pat.findall(raw):
+    if not peeled:
+        versions.setdefault(ver, sha)
+for sha, ver, peeled in pat.findall(raw):
+    if peeled:
+        versions[ver] = sha  # dereferenced annotated tag always wins
+
+def semver_key(v):
+    return tuple(int(x) for x in v.split("."))
+
+ordered = sorted(versions.keys(), key=semver_key, reverse=True)
+candidates = [v for v in ordered if semver_key(v) >= (1, 0, 0)]
+
+def cdn_ok(commit):
+    url = f"{update_host}/commit:{commit}/server-linux-x64/stable"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            return r.status == 200
+    except urllib.error.HTTPError:
+        return False
+    except Exception as e:
+        sys.stderr.write(f"[tag cache] CDN probe failed (network issue, not a 404): {e}\n")
+        return False
+
+# Binary search the ok/not-ok boundary. Assumes monotonic pruning (oldest
+# pruned first) — true in every spot check done during development
+# (2026-08-18): 1.34.0 ok, 1.33.1/1.33.0/1.32.0 all 404, everything from
+# 1.34.0 through 1.133.0 (latest) ok. Re-verified fresh on every refresh
+# rather than hardcoded, in case Microsoft's retention window moves.
+if candidates and cdn_ok(versions[candidates[0]]):
+    lo, hi = 0, len(candidates) - 1
+    if not cdn_ok(versions[candidates[hi]]):
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if cdn_ok(versions[candidates[mid]]):
+                lo = mid
+            else:
+                hi = mid
+        boundary = candidates[lo]
+    else:
+        boundary = candidates[hi]  # everything checked is still available
+else:
+    boundary = None  # even "latest" failed the probe — network issue, not a real boundary
+
+import time
+with open(out_path, "w") as f:
+    f.write(f"# fetched_at={int(time.time())} boundary={boundary or 'unknown'} channel=stable\n")
+    for v in ordered:
+        f.write(f"{v}\t{versions[v]}\n")
+
+sys.stderr.write(f"[tag cache] {len(ordered)} versions, CDN floor (server-linux-x64): {boundary or 'could not determine'}\n")
+PYEOF
+  rm -f "$raw_file"
+  [ -s "$tmp" ] || { rm -f "$tmp"; die "tag cache refresh produced an empty file"; }
+  mv -f "$tmp" "$cache_file"
+  log "tag cache written: $cache_file"
+}
+
+ensure_tag_cache() {
+  local cache_file
+  cache_file="$(tag_cache_file)"
+  local need_refresh=0
+  if [ "$FORCE" -eq 1 ] || [ ! -f "$cache_file" ]; then
+    need_refresh=1
+  else
+    local age now mtime
+    now="$(date +%s)"
+    mtime="$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)"
+    age=$((now - mtime))
+    if [ "$age" -gt "$TAG_CACHE_TTL" ]; then
+      need_refresh=1
+    fi
+  fi
+  [ "$need_refresh" -eq 1 ] && refresh_tag_cache "$cache_file"
+  echo "$cache_file"
+}
+
+tag_cache_boundary() {
+  local cache_file="$1"
+  head -1 "$cache_file" | sed -n 's/.*boundary=\([^ ]*\).*/\1/p'
+}
+
+# resolve_version_to_commit <version-input> — normalizes (strips a leading
+# v/V), matches against the tag cache (exact X.Y.Z, or an unambiguous X.Y
+# prefix), then does a LIVE HEAD check against the CDN (never trusts the
+# cache's own boundary line for this — that's only for --list-versions'
+# display column) before returning. Dies with a clear, actionable message
+# on no-match, ambiguous-match, or CDN-unreachable — never silently falls
+# back to latest.
+resolve_version_to_commit() {
+  local input="$1"
+  local norm="${input#v}"
+  norm="${norm#V}"
+  local cache_file
+  cache_file="$(ensure_tag_cache)"
+
+  local exact
+  exact="$(awk -F'\t' -v v="$norm" '$1==v{print $2; found=1} END{if(!found) exit 1}' "$cache_file")"
+  if [ -z "$exact" ]; then
+    local dots
+    dots="$(printf '%s' "$norm" | tr -cd '.' | wc -c | tr -d ' ')"
+    if [ "$dots" -eq 1 ]; then
+      local matches
+      matches="$(awk -F'\t' -v p="$norm." 'index($1,p)==1{print $1}' "$cache_file")"
+      local count
+      count="$(printf '%s\n' "$matches" | grep -c . || true)"
+      if [ "$count" -eq 1 ]; then
+        norm="$matches"
+        exact="$(awk -F'\t' -v v="$norm" '$1==v{print $2}' "$cache_file")"
+      elif [ "$count" -gt 1 ]; then
+        die "--version '$input' is ambiguous — matches: $(printf '%s' "$matches" | tr '\n' ' ') — pass an exact X.Y.Z"
+      fi
+    fi
+  fi
+  [ -n "$exact" ] || die "--version '$input' not found in microsoft/vscode's stable tags (${cache_file}). Run '$SELF --list-versions' to see what's available, or pass --refresh if you expect a very recent release to appear."
+
+  log "checking CDN availability for $norm (commit ${exact:0:12}...)"
+  local http_code
+  http_code="$(curl -sI -L -m 20 -o /dev/null -w '%{http_code}' "$UPDATE_HOST/commit:$exact/server-linux-x64/stable" 2>/dev/null || echo 000)"
+  case "$http_code" in
+    200|302) : ;;
+    *) die "version $norm's server-linux-x64 artifact is no longer on Microsoft's CDN (checked live, http=$http_code, commit ${exact:0:12}...). Microsoft prunes old builds — as of this tool's last live check, 1.34.0 is the oldest stable release still hosted; anything older (including 1.32.0) is gone. Run '$SELF --list-versions' to see what's actually fetchable, or use --commit if you have another source for the artifact." ;;
+  esac
+
+  VERSION="$norm"  # normalize the global so filenames/manifest use the canonical form
+  echo "$exact"
+}
+
+# ── list-versions ──────────────────────────────────────────────────────
+run_list_versions() {
+  if [ -n "$BUNDLE_PATH" ]; then
+    [ -f "$BUNDLE_PATH" ] || die "bundle not found: $BUNDLE_PATH"
+    local tmp
+    tmp="$(mktemp -d)"
+    # `-O` streams one member to stdout without extracting the (possibly
+    # many-hundred-MB) rest of the bundle — but the member name has to
+    # match exactly, and the bundle's own tar entries are stored as
+    # "./versions.json" (leading "./", from
+    # `tar -C "$stage_dir" -czf "$BUNDLE_PATH" .` in run_bundle) — found
+    # live, asking tar for the bare name "versions.json" silently matched
+    # nothing and this branch always errored. Try both forms.
+    ( tar -O -xzf "$BUNDLE_PATH" ./versions.json 2>/dev/null \
+      || tar -O -xzf "$BUNDLE_PATH" versions.json 2>/dev/null ) > "$tmp/versions.json"
+    [ -s "$tmp/versions.json" ] || { rm -rf "$tmp"; die "bundle has no versions.json: $BUNDLE_PATH"; }
+    local ver commit
+    ver="$(json_field "$tmp/versions.json" vscode_version)"
+    commit="$(json_field "$tmp/versions.json" commit)"
+    rm -rf "$tmp"
+    if [ "$LIST_FORMAT" = "json" ]; then
+      printf '[{"version":"%s","commit":"%s","source":"bundle:%s"}]\n' "$ver" "$commit" "$BUNDLE_PATH"
+    else
+      printf '%-11s %-42s %s\n' "VERSION" "COMMIT" "SOURCE"
+      printf '%-11s %-42s %s\n' "$ver" "$commit" "$(basename "$BUNDLE_PATH")"
+    fi
+    return
+  fi
+
+  local cache_file
+  cache_file="$(ensure_tag_cache)"
+  local boundary
+  boundary="$(tag_cache_boundary "$cache_file")"
+  local total
+  total="$(grep -c $'\t' "$cache_file" || true)"
+  log "$total stable versions cached; CDN floor (server-linux-x64, as of last refresh): ${boundary:-unknown}"
+
+  if [ "$LIST_FORMAT" = "json" ]; then
+    python3 -c '
+import json, sys
+boundary = sys.argv[1]
+def semver_key(v):
+    return tuple(int(x) for x in v.split("."))
+rows = []
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    v, c = line.split("\t")
+    ok = boundary != "unknown" and semver_key(v) >= semver_key(boundary)
+    rows.append({"version": v, "commit": c, "cdn": "ok" if ok else "missing"})
+print(json.dumps(rows, indent=2))
+' "${boundary:-unknown}" < "$cache_file"
+  else
+    printf '%-11s %-42s %s\n' "VERSION" "COMMIT" "CDN"
+    python3 -c '
+import sys
+boundary = sys.argv[1]
+def semver_key(v):
+    return tuple(int(x) for x in v.split("."))
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line or line.startswith("#"):
+        continue
+    v, c = line.split("\t")
+    ok = boundary != "unknown" and semver_key(v) >= semver_key(boundary)
+    status = "ok" if ok else "missing"
+    print(f"{v:<11} {c:<42} {status}")
+' "${boundary:-unknown}" < "$cache_file"
+    log "CDN column is derived from the cached floor (${boundary:-unknown}), not a live check per row — pass --refresh to re-derive it, or --version <ver> to get an authoritative live check for one version."
+  fi
 }
 
 # download_checksummed_artifact <platform-segment> <dest-file>
@@ -993,7 +1321,14 @@ run_status() {
   if [ -n "$commit" ] && [ -d "$INSTALL_DIR/bin/$commit" ]; then
     echo "server dir  : $INSTALL_DIR/bin/$commit (present)"
   fi
+  # `&&` as the LAST command of a function under `set -e` propagates a
+  # false test as the whole script's exit code — found live: a
+  # Remote-SSH-only install (no serve-web token, the common case now
+  # that Remote-SSH is primary) made a successful `--status` query exit
+  # 1. Explicit `return 0` so no trailing check here (now or added later)
+  # can ever be mistaken for a failed status query.
   [ -f "$INSTALL_DIR/serve-web.token" ] && echo "token file  : $INSTALL_DIR/serve-web.token (present, not shown)"
+  return 0
 }
 
 # ── emit-ssh-config ────────────────────────────────────────────────────
@@ -1080,6 +1415,35 @@ fi
 if [ "$ACTION" = "emit-ssh-config" ]; then
   run_emit_ssh_config
   exit 0
+fi
+if [ "$ACTION" = "list-versions" ]; then
+  run_list_versions
+  exit 0
+fi
+
+# --version -> --commit resolution happens once, here, before any download
+# logic runs — everything downstream (self-computed sha256 for a
+# non-latest pin, the manifest, filenames) already only ever looks at
+# COMMIT, so resolving VERSION into it up front means no other function
+# needs to know the difference.
+#
+# --commit wins when both are set (documented contract) — and that MUST
+# include clearing a stale --version, not just skipping resolution. Found
+# live: leaving a user-supplied --version untouched here let it leak into
+# resolve_version_for_commit()'s "if VERSION is already set, trust it"
+# shortcut later, producing a real mismatch — commit a5b50095...
+# (actually 1.133.0) downloaded correctly, but the Windows installer got
+# named VSCodeUserSetup-x64-1.32.0.exe because --version 1.32.0 was also
+# passed and never cleared. Clearing VERSION here forces that later
+# function back onto its normal path: ask /api/update for the real
+# semver of whatever commit actually got used.
+if [ -n "$VERSION" ] && [ -n "$COMMIT" ]; then
+  warn "both --version ($VERSION) and --commit are set — --commit wins," \
+       "--version is ignored entirely (not just for resolution)"
+  VERSION=""
+elif [ -n "$VERSION" ] && [ "$MODE" != "offline" ]; then
+  COMMIT="$(resolve_version_to_commit "$VERSION")"
+  log "resolved --version $VERSION -> commit ${COMMIT:0:12}..."
 fi
 
 log "mode=$MODE channel=$CHANNEL remote_arch=$ARCH install_dir=$INSTALL_DIR"

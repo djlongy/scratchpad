@@ -37,13 +37,18 @@ export NO_PROXY=localhost,127.0.0.1,.internal.example
 ./bin/vscode-airgap.sh --mode online
 ```
 
-## 3. Pin an exact commit + bundle a set of extensions
+## 3. Pin an exact commit (or semver) + bundle a set of extensions
 
 ```bash
 ./bin/vscode-airgap.sh --mode online \
   --commit a5b500951314efd502d07465bd138dfbd714a960 \
   --extensions-file team-extensions.txt \
   --extensions ms-python.python
+
+# or pin by semver instead — resolved through microsoft/vscode's git tags
+# and confirmed live against the CDN before use (see --list-versions below)
+./bin/vscode-airgap.sh --mode online --version 1.96.2 \
+  --extensions-file team-extensions.txt
 ```
 
 `--extensions-file` is a newline-delimited list of `publisher.name` IDs
@@ -51,6 +56,22 @@ export NO_PROXY=localhost,127.0.0.1,.internal.example
 (comma list), duplicates deduped. Each is resolved to the newest version
 whose declared VS Code engine range accepts the bundled version — not a
 stale pin. See `docs/reference/download-urls.md` for exactly how.
+
+## 3b. List pinnable versions
+
+```bash
+./bin/vscode-airgap.sh --list-versions
+./bin/vscode-airgap.sh --list-versions --format json
+./bin/vscode-airgap.sh --list-versions --refresh   # force a fresh git fetch + CDN re-check
+```
+
+Standalone — no `--mode` needed. Newest first, with a CDN-availability
+column derived from a cached boundary (Microsoft prunes old builds off
+the CDN; `--refresh` re-derives the boundary live). The column is
+informational — `--version <ver>` always does its own fresh,
+authoritative check before ever using a resolved commit. Requires `git`,
+`curl`, and `python3`; fails fast and clearly with no network rather than
+hanging (verified live under `docker run --network none`).
 
 ## 4. Real Remote Tunnels (needs internet + a Microsoft/GitHub account)
 

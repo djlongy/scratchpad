@@ -23,6 +23,10 @@ to work air-gapped.
 
 # Print ssh_config / settings.json templates for realm + OTP, port 22 only
 ./bin/vscode-airgap.sh --emit-ssh-config
+
+# Match an already-running remote instead of always grabbing latest:
+./bin/vscode-airgap.sh --list-versions | head -20
+./bin/vscode-airgap.sh --mode bundle --version 1.96.2 --bundle-path ./v1.96.2.tar.gz
 ```
 
 ## Why this exists
@@ -52,9 +56,11 @@ Full reasoning: [`docs/designs/vscode-airgap-tunnels.md`](docs/designs/vscode-ai
 
 - `bash`, `curl` (online/bundle only), `tar`, `sha256sum`/`shasum`.
   `python3` is required on the online/bundle side when resolving
-  extensions (engine-compatible version selection); `openssl` is used if
-  present for the optional serve-web token, with a pure-shell fallback.
-  The offline install path was tested with **none** of curl/python3/openssl
+  extensions or a `--version` pin; `git` is additionally required for
+  `--version`/`--list-versions` (semver→commit resolution via
+  `microsoft/vscode`'s tags). `openssl` is used if present for the
+  optional serve-web token, with a pure-shell fallback. The offline
+  install path was tested with **none** of curl/python3/openssl/git
   present, under `docker run --network none`.
 - Air-gapped target: Linux x86_64 (mandatory support) — arm64/armhf/Alpine
   also supported via `--arch`.
@@ -75,8 +81,11 @@ Full reasoning: [`docs/designs/vscode-airgap-tunnels.md`](docs/designs/vscode-ai
 - [`docs/reference/download-urls.md`](docs/reference/download-urls.md) —
   every Microsoft/Marketplace endpoint this uses, verified live, plus a
   field-name gotcha that silently produced a wrong filename until caught,
-  and the corrected record on checksum availability (Microsoft publishes
-  more than v1 of this tool's docs claimed).
+  the corrected record on checksum availability, and how `--version`
+  resolves semver to a commit via `microsoft/vscode`'s own git tags
+  (Microsoft's APIs don't expose that map — checked four candidates
+  live, including one that hangs server-side, before finding the one
+  that actually works).
 - [`docs/designs/vscode-airgap-tunnels.md`](docs/designs/vscode-airgap-tunnels.md)
   — why Remote-SSH is primary (v2) and `serve-web` isn't (was primary in
   v1 — operator feedback corrected that), alternatives considered.
@@ -101,8 +110,17 @@ extracts to the exact directory layout Remote-SSH expects
 `bin/code-server` executable); Microsoft-published sha256 checksums
 resolve correctly for every artifact family; extension engine-matching
 picks the newest compatible version and rejects garbage IDs loudly;
-`--status`/`--emit-ssh-config` work standalone with zero network. Several
-real bugs were found and fixed by actually running it rather than by
-lint — see `.agent/LESSONS_LEARNED.md` for the full list, including a
-JSON field-name mixup and an architecture-mismatch bug that only showed
-up when `--serve-web` tried to exec a binary built for the wrong CPU.
+`--status`/`--emit-ssh-config` work standalone with zero network;
+`--version` resolves a real historical semver (e.g. `1.96.2`) to its
+commit and downloads it end to end, rejects a pruned-from-the-CDN
+version (`1.32.0`) with a clear error instead of silently substituting
+latest, rejects an unknown/ambiguous version, and correctly loses to
+`--commit` when both are set (including in the output filename — see
+lessons below); `--list-versions` works standalone (text/json, live or
+from a bundle) and fails fast with no network rather than hanging.
+Several real bugs were found and fixed by actually running it rather
+than by lint — see `.agent/LESSONS_LEARNED.md` for the full list,
+including a JSON field-name mixup, an architecture-mismatch bug that
+only showed up when `--serve-web` tried to exec a binary built for the
+wrong CPU, and a stale `--version` string leaking into a filename even
+after `--commit` had already "won."

@@ -6,6 +6,35 @@ connects over the port that's already open (22) without ever trying to
 download anything. See `docs/runbooks/remote-ssh-realm-otp.md` for the
 SSH/VS Code settings side once the bits are staged.
 
+## 0. Matching an already-running remote server (don't always grab latest)
+
+If you're re-testing against a remote that's already staged with an older
+build, re-resolving "latest" every run just churns downloads for nothing
+and can leave the client ahead of what's actually running. Pin instead:
+
+```bash
+# On the remote (works even fully offline — no network involved):
+./bin/vscode-airgap.sh --status
+# or directly:
+cat ~/.vscode-server/bin/*/product.json | python3 -c \
+  'import json,sys; d=json.load(sys.stdin); print(d["commit"], d["version"])'
+
+# On a connected host: see what's pinnable, then pin it explicitly
+./bin/vscode-airgap.sh --list-versions | head -20
+./bin/vscode-airgap.sh --mode bundle --version 1.96.2 --bundle-path ./v1.96.2.tar.gz
+```
+
+`--version` accepts an exact `X.Y.Z` (a leading `v` is fine —
+`v1.96.2` also works) and resolves it through `microsoft/vscode`'s git
+tags, then confirms live that the artifact is still on Microsoft's CDN
+before using it — Microsoft prunes old builds, so an old-but-real tag can
+still fail with a clear error rather than silently substituting latest.
+See `docs/reference/download-urls.md` for exactly how this resolves and
+what "1.32.0 doesn't work" actually means (that specific version was the
+worked example during development — its tag is real, its CDN artifact is
+gone). `--list-versions` lists everything that's resolvable, newest first,
+with a CDN-availability column (`--refresh` to force a fresh check).
+
 ## 1. On a host WITH internet: build the bundle
 
 ```bash
@@ -13,12 +42,19 @@ SSH/VS Code settings side once the bits are staged.
   --commit a5b500951314efd502d07465bd138dfbd714a960 \
   --bundle-path ./vscode-bundle.tar.gz \
   --extensions-file team-extensions.txt
+
+# or, equivalently and more readably, pin by version instead of commit:
+./bin/vscode-airgap.sh --mode bundle --version 1.96.2 \
+  --bundle-path ./vscode-bundle.tar.gz --extensions-file team-extensions.txt
 ```
 
-Pinning `--commit` makes the bundle reproducible — rerunning later with
-the same commit produces the same downloads (self-computed sha256, since
-Microsoft's checksum endpoint only serves the current latest per
-platform — see `docs/reference/download-urls.md`).
+Pinning `--commit` (or `--version`, which resolves to a commit before
+anything else happens) makes the bundle reproducible — rerunning later
+with the same commit produces the same downloads (self-computed sha256
+for anything but the current latest, since Microsoft's checksum endpoint
+only serves that — see `docs/reference/download-urls.md`). `--commit`
+wins if both are set; `--version` is ignored entirely in that case, not
+just for resolution — it never leaks into a filename or the manifest.
 
 Output tarball contains:
 
@@ -126,3 +162,8 @@ serve-web bound to `127.0.0.1` and avoids exposing it network-wide).
   on startup (fails silently offline, server still starts) — see
   `docs/reference/download-urls.md`. That call comes from Microsoft's
   own binary, not from anything this script does.
+- `./bin/vscode-airgap.sh --list-versions --bundle-path <bundle>` works
+  fully offline too — reads the single version/commit already staged in
+  that bundle's `versions.json`, no network attempted. `--list-versions`
+  without `--bundle-path` genuinely needs network (git + CDN checks) and
+  refuses honestly rather than hanging when there isn't any.

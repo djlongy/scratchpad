@@ -161,23 +161,81 @@ is the single most load-bearing detail in the whole tool: get this
 directory wrong and Remote-SSH falls back to trying a download, which is
 exactly the failure mode air-gapping is meant to prevent.
 
-## Semver → commit: also a gap
+## Semver → commit: solved (2026-08-18) via microsoft/vscode git tags
 
-There is no public `update.code.visualstudio.com` endpoint that maps an
-arbitrary historical semver (e.g. `1.96.2`) to its commit hash for the
-CLI/server artifact family. The desktop `/api/update/*/latest` endpoint
-gives you `version` + `commit` together, but only for whatever is
-*currently* latest — not for picking an older release on demand.
+**Previously documented as a hard gap with no resolution. Investigated
+live and solved — see `--version`/`--list-versions` in `--help`.**
 
-Practical options, in order of reliability:
-1. **Pin by commit** (`--commit <40-hex>`). This is what the script
-   actually resolves to and downloads by; a version string alone is
-   informational.
-2. Look up the commit for a known historical version from VS Code's own
-   release notes (`https://code.visualstudio.com/updates/vX_Y`) or the
-   `microsoft/vscode` git tags, and pass it via `--commit`.
-3. Use `--version latest` (the default) and let the script resolve the
-   channel's current commit via the commits API above.
+Three Microsoft-hosted candidates were tried first and each ruled out for
+a specific, verified reason:
+
+| Endpoint | What it returns | Why it doesn't solve this |
+|---|---|---|
+| `GET /api/commits/<channel>/server-linux-x64` | JSON array of 200 commit hashes, newest first, **no semver attached** | Fixed 200-entry rolling window — no version info per entry, and doesn't reach far enough back for older pins anyway |
+| `GET /api/releases/stable` | JSON array of 361 semver strings, newest first, back to `0.2.0` — **no commit attached** | Pure version list; can confirm a version *existed* but not its commit |
+| `GET /api/releases/insider` | — | **Hangs indefinitely server-side** — confirmed reproducible with both HTTP/2 and forced HTTP/1.1, TLS handshake completes, request sent, zero bytes ever received, eventual client timeout. Not a client bug. This is why `--version` is stable-channel only. |
+| `GET /api/update/<segment>/<channel>/<commit>` | `200` + JSON describing the **latest** release, or `204` if `<commit>` already IS latest | **Not a historical lookup at all** — verified by passing two different old commits as the baseline and getting back the *identical* "here's what's newer than you" payload both times, describing current latest either way. It's an update-check endpoint, full stop. |
+
+**What actually works: `git ls-remote --tags https://github.com/microsoft/vscode.git`.**
+Returns every tag; the ones that matter match `refs/tags/<X.Y.Z>` —
+**bare semver, no `v` prefix** (`refs/tags/1.32.0`, not `refs/tags/v1.32.0`
+— a real trap if you assume the common GitHub convention). 343 tags
+`>= 1.0.0` as of 2026-08-18. Cross-verified: the tag `1.133.0`'s commit
+(`a5b50095...`) is byte-identical to what `/api/update/server-linux-x64/
+stable/latest` independently reports as the current release's commit —
+git tags are ground truth here, not a guess.
+
+**Peeled (annotated) tags matter.** 54 of the 343 tags are annotated —
+`git ls-remote` emits both the tag object's own SHA (`refs/tags/1.55.0`)
+and, on the following line, the dereferenced commit it actually points
+to (`refs/tags/1.55.0^{}`). The `^{}` line is the one that matches what
+the CDN serves; the resolver in `bin/vscode-airgap.sh` always prefers it
+when both exist for the same version.
+
+**Git tag existing ≠ CDN artifact existing — verified by binary search,
+not assumed.** Microsoft prunes old builds off the CDN. Bisecting all 334
+stable tags `>= 1.0.0` against a live HEAD check of `commit:<sha>/
+server-linux-x64/stable` (8 requests, not 334) found a clean boundary:
+
+```
+1.34.0   http=302  (oldest version still hosted, as of 2026-08-18)
+1.33.1   http=404
+1.33.0   http=404
+1.32.0   http=404   <- the operator's specific example: confirmed gone
+1.32.3   http=404
+1.31.0   http=404
+```
+
+Spot-checked mid-age versions (all `ok`, per the task's explicit ask):
+`1.85.0`, `1.90.0`, `1.96.2`, `1.100.0` — all `302` as of this check. The
+same commit family (`linux-x64` desktop, `win32-x64-user`) was confirmed
+available at the `1.34.0` floor too — the boundary is consistent across
+the whole platform set for a given commit, not per-artifact.
+
+**Why `1.32.0` specifically is not fetchable:** its tag is real
+(`507312a3e3b34b084b467dfd983263bc7c9d87e0`) and resolves correctly —
+the *git history* exists. What doesn't exist any more is Microsoft's CDN
+copy of the server/client binaries for that build. This tool reports that
+distinction explicitly (`--version 1.32.0` fails with an error naming the
+current floor) rather than silently substituting latest.
+
+**Design:**
+1. `git ls-remote --tags` is the resolver (one round trip, honours
+   `HTTPS_PROXY`/`HTTP_PROXY` — verified live by pointing it at a dead
+   proxy and watching `git` fail to connect through it rather than
+   silently going direct).
+2. Cached at `~/.cache/vscode-airgap/tags-stable.tsv` with a 24h TTL
+   (`TAG_CACHE_TTL`, seconds) — `--refresh` forces a refetch. The CDN
+   floor is re-derived (fresh binary search) on every cache refresh
+   rather than hardcoded, in case Microsoft's retention window moves.
+3. `--list-versions`' CDN column is **derived from the cached floor**,
+   not a live check per row (334 HEAD requests just to print a table
+   would be slow and rude to Microsoft's CDN). `--version <ver>` always
+   does a **fresh, authoritative** live HEAD check before ever using a
+   resolved commit — the cached column is informational only and can
+   never cause a stale "ok" to silently proceed to a real 404.
+4. Never invented: every mapping traces to a real git tag SHA, confirmed
+   live against the CDN before use.
 
 ## Extension install gap (found in live testing, 2026-08-17)
 
