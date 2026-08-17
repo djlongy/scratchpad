@@ -435,6 +435,17 @@ remote_ssh_server_segment() {
     *) die "no classic Remote-SSH server artifact for arch '$ARCH'" ;;
   esac
 }
+# CLI tarball Remote-SSH's exec-server handshake waits for at
+# ~/.vscode-server/vscode-cli-<commit>.tar.gz. That is cli-alpine-x64 on
+# linux-x64 remotes — not the builder's LOCAL_ARCH CLI (which is for
+# --serve-web / --tunnel only).
+remote_ssh_cli_segment() {
+  case "$ARCH" in
+    linux-x64|alpine-x64) echo "cli-alpine-x64" ;;
+    linux-arm64|alpine-arm64) echo "cli-alpine-arm64" ;;
+    *) echo "" ;;
+  esac
+}
 cli_platform_segment() {
   case "$LOCAL_ARCH" in
     linux-x64) echo "cli-linux-x64" ;;
@@ -1033,7 +1044,33 @@ stage_artifacts() {
   win_src="$(printf '%s' "$win_meta" | sed -n 2p)"
   rm -f "${win_file}.commit"
 
-  # -- Optional: CLI (--serve-web / --tunnel) and server-web (--serve-web) --
+  # -- Mandatory for Remote-SSH handshake: keep the original CLI archive --
+  # Remote-SSH (useExecServer default true, and some classic-path builds)
+  # polls ~/.vscode-server/vscode-cli-<commit>.tar.gz + a sibling .done
+  # marker. Extracting into ~/.vscode-server/cli is not enough.
+  local rssh_cli_sha="" rssh_cli_src=""
+  local rssh_cli_seg
+  rssh_cli_seg="$(remote_ssh_cli_segment)"
+  if [ -n "$rssh_cli_seg" ]; then
+    local rssh_cli_meta
+    local rssh_cli_file="$stage_dir/cli-alpine-x64.tar.gz"
+    # Keep the filename Remote-SSH-shaped even if the segment is arm64.
+    if [ "$rssh_cli_seg" != "cli-alpine-x64" ]; then
+      rssh_cli_file="$stage_dir/${rssh_cli_seg}.tar.gz"
+    fi
+    rssh_cli_meta="$(download_checksummed_artifact "$rssh_cli_seg" "$rssh_cli_file")"
+    rssh_cli_sha="$(printf '%s' "$rssh_cli_meta" | sed -n 1p)"
+    rssh_cli_src="$(printf '%s' "$rssh_cli_meta" | sed -n 2p)"
+    rm -f "${rssh_cli_file}.commit"
+    # Offline install also looks for the historical ./cli.tar.gz name.
+    if [ ! -f "$stage_dir/cli.tar.gz" ]; then
+      cp -f "$rssh_cli_file" "$stage_dir/cli.tar.gz"
+    fi
+  else
+    warn "no Remote-SSH CLI segment for --arch $ARCH — handshake archive will not be bundled"
+  fi
+
+  # -- Optional: builder-local CLI (--serve-web / --tunnel) and server-web --
   local cli_sha="" cli_src="" srvweb_sha="" srvweb_src=""
   if [ "$WITH_CLI" -eq 1 ]; then
     local cli_seg cli_meta
@@ -1079,6 +1116,7 @@ stage_artifacts() {
   write_manifest "$stage_dir" "$commit" "$version" \
     "$srv_sha" "$srv_src" "$lin_sha" "$lin_src" "$win_sha" "$win_src" \
     "$cli_sha" "$cli_src" "$srvweb_sha" "$srvweb_src" "$(basename "$win_file")" \
+    "$rssh_cli_sha" "$rssh_cli_src" \
     "${ext_results[@]:-}"
 }
 
@@ -1105,7 +1143,8 @@ write_manifest() {
   local srv_sha="$4" srv_src="$5" lin_sha="$6" lin_src="$7" win_sha="$8" win_src="$9"
   shift 9
   local cli_sha="$1" cli_src="$2" srvweb_sha="$3" srvweb_src="$4" win_file_name="$5"
-  shift 5
+  local rssh_cli_sha="$6" rssh_cli_src="$7"
+  shift 7
   local ext_results=("$@")
 
   local manifest="$stage_dir/versions.json"
@@ -1132,6 +1171,13 @@ write_manifest() {
       printf '  "cli_sha256_source": "%s",\n' "$cli_src"
     else
       printf '  "cli_artifact": null,\n'
+    fi
+    if [ -n "$rssh_cli_sha" ]; then
+      printf '  "remote_ssh_cli_artifact": "cli-alpine-x64.tar.gz",\n'
+      printf '  "remote_ssh_cli_sha256": "%s",\n' "$rssh_cli_sha"
+      printf '  "remote_ssh_cli_sha256_source": "%s",\n' "$rssh_cli_src"
+    else
+      printf '  "remote_ssh_cli_artifact": null,\n'
     fi
     if [ -n "$srvweb_sha" ]; then
       printf '  "server_web_artifact": "server-web.tar.gz",\n'
@@ -1198,6 +1244,7 @@ run_offline() {
   verify_artifact_sha "$_STAGE_DIR" client_linux_artifact client_linux_sha256 || die "sha256 mismatch on the Linux client artifact — refusing to install"
   verify_artifact_sha "$_STAGE_DIR" client_windows_artifact client_windows_sha256 || die "sha256 mismatch on the Windows client artifact — refusing to install"
   verify_artifact_sha "$_STAGE_DIR" cli_artifact cli_sha256 || true
+  verify_artifact_sha "$_STAGE_DIR" remote_ssh_cli_artifact remote_ssh_cli_sha256 || true
   verify_artifact_sha "$_STAGE_DIR" server_web_artifact server_web_sha256 || true
   log "all bundled artifacts sha256-verified against versions.json"
 
@@ -1269,7 +1316,7 @@ install_from_stage() {
   log "  Linux:   tar -xzf vscode-linux-x64.tar.gz && ./VSCode-linux-x64/bin/code"
   log "  Windows: run VSCodeUserSetup-x64-*.exe (per-user, no admin rights needed)"
 
-  # Optional CLI (for --serve-web / --tunnel)
+  # Optional CLI extract (for --serve-web / --tunnel)
   local cli_bin=""
   if [ -f "$stage_dir/cli.tar.gz" ]; then
     mkdir -p "$INSTALL_DIR/cli"
@@ -1277,6 +1324,27 @@ install_from_stage() {
     tar -C "$INSTALL_DIR/cli" -xzf "$stage_dir/cli.tar.gz"
     cli_bin="$(find "$INSTALL_DIR/cli" -maxdepth 1 -type f -name 'code' | head -1)"
     [ -n "$cli_bin" ] && chmod +x "$cli_bin"
+  fi
+
+  # Remote-SSH handshake archive. Prefer the alpine CLI tarball Remote-SSH
+  # actually requests; fall back to cli.tar.gz only when that is the alpine
+  # artifact (no --serve-web local-arch overwrite).
+  local handshake_src=""
+  if [ -f "$stage_dir/cli-alpine-x64.tar.gz" ]; then
+    handshake_src="$stage_dir/cli-alpine-x64.tar.gz"
+  elif [ -f "$stage_dir/cli-alpine-arm64.tar.gz" ]; then
+    handshake_src="$stage_dir/cli-alpine-arm64.tar.gz"
+  elif [ -f "$stage_dir/cli.tar.gz" ] && [ "$WITH_CLI" -eq 0 ]; then
+    handshake_src="$stage_dir/cli.tar.gz"
+  fi
+  if [ -n "$handshake_src" ]; then
+    [ -s "$handshake_src" ] || die "Remote-SSH CLI archive is empty: $handshake_src"
+    local remote_cli_archive="$INSTALL_DIR/vscode-cli-${commit}.tar.gz"
+    log "staging CLI archive for Remote-SSH bootstrap at $remote_cli_archive"
+    cp -f "$handshake_src" "$remote_cli_archive"
+    chmod 640 "$remote_cli_archive" 2>/dev/null || chmod 600 "$remote_cli_archive"
+    : > "${remote_cli_archive}.done"
+    chmod 640 "${remote_cli_archive}.done" 2>/dev/null || chmod 600 "${remote_cli_archive}.done"
   fi
   if [ -f "$stage_dir/server-web.tar.gz" ]; then
     mkdir -p "$INSTALL_DIR/server-web"
@@ -1426,11 +1494,13 @@ Host airgapped-host
     GSSAPIDelegateCredentials yes
     PubkeyAuthentication no
 
-    # ControlMaster multiplexing can swallow or misroute the
-    # keyboard-interactive OTP prompt on later connections that reuse the
-    # master — turn it off for this host.
-    ControlMaster no
-    ControlPath none
+    # After the first OTP, reuse that TCP session. A second independent
+    # SSH in the same 30s TOTP window is denied (FreeIPA anti-replay).
+    # Windows OpenSSH ignores ControlMaster — pair this with
+    # remote.SSH.useLocalServer=true. mkdir -p ~/.ssh/sockets
+    ControlMaster auto
+    ControlPath ~/.ssh/sockets/%r@%h-%p
+    ControlPersist 600
 
     # No ProxyJump / extra listeners — only port 22 on this host is open.
     # ProxyJump bastion.example.realm   # <- do NOT add unless your network
@@ -1446,8 +1516,8 @@ write_settings_json_example() {
   "remote.SSH.showLoginTerminal": true,
   "// showLoginTerminal": "Reveals the terminal for every SSH command Remote-SSH runs, so the GSSAPI/OTP keyboard-interactive prompt is actually visible instead of silently hanging in a background process.",
 
-  "remote.SSH.useLocalServer": false,
-  "// useLocalServer": "Disables the shared-connection-across-windows multiplexing mode. That mode authenticates once and reuses the connection — fine for a password, unreliable for a keyboard-interactive OTP prompt that needs a live terminal on every distinct auth. Costs you more frequent OTP entry; buys you prompts that actually work.",
+  "remote.SSH.useLocalServer": true,
+  "// useLocalServer": "Reuses one SSH session across Remote-SSH's extra channels. Required for FreeIPA/realm OTP: TOTP is anti-replay inside the 30s window, so a second unauthenticated channel is denied. Windows OpenSSH has no ControlMaster — this setting is the Windows-safe mux. First connect still needs showLoginTerminal for the OTP prompt.",
 
   "remote.SSH.remotePlatform": { "airgapped-host": "linux" },
   "// remotePlatform": "Skips a remote OS-detection round trip. The extension's own docs note this setting becomes closer to required once useLocalServer is disabled (as above) — set both together. Replace 'airgapped-host' with your actual Host alias from ssh-config.example.",

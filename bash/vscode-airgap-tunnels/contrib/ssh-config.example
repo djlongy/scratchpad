@@ -19,11 +19,13 @@ Host airgapped-host
     GSSAPIDelegateCredentials yes
     PubkeyAuthentication no
 
-    # ControlMaster multiplexing can swallow or misroute the
-    # keyboard-interactive OTP prompt on later connections that reuse the
-    # master — turn it off for this host.
-    ControlMaster no
-    ControlPath none
+    # After the first OTP, reuse that TCP session. A second independent
+    # SSH in the same 30s TOTP window is denied (FreeIPA anti-replay).
+    # Windows OpenSSH ignores ControlMaster — pair this with
+    # remote.SSH.useLocalServer=true. mkdir -p ~/.ssh/sockets
+    ControlMaster auto
+    ControlPath ~/.ssh/sockets/%r@%h-%p
+    ControlPersist 600
 
     # No ProxyJump / extra listeners — only port 22 on this host is open.
     # ProxyJump bastion.example.realm   # <- do NOT add unless your network

@@ -66,8 +66,9 @@ PreferredAuthentications gssapi-with-mic,keyboard-interactive,password
 GSSAPIAuthentication yes
 GSSAPIDelegateCredentials yes
 PubkeyAuthentication no
-ControlMaster no
-ControlPath none
+ControlMaster auto
+ControlPath ~/.ssh/sockets/%r@%h-%p
+ControlPersist 600
 ```
 
 - **Realm first, OTP as the interactive fallback.** `gssapi-with-mic`
@@ -80,12 +81,11 @@ ControlPath none
   selection lives entirely in `ssh_config`/`sshd_config` — Remote-SSH
   just shells out to (or reimplements, on Windows) a normal SSH client
   using whatever config you give it.
-- **`ControlMaster no` / `ControlPath none`.** SSH connection
-  multiplexing authenticates once on the master connection and reuses it
-  silently for everything after. That's fine for a password; it's a
-  known source of "the OTP prompt never appeared" reports for
-  keyboard-interactive, because later multiplexed sessions don't get
-  their own interactive prompt. Turn it off for hosts that need OTP.
+- **`ControlMaster auto`.** Remote-SSH opens more than one SSH channel.
+  FreeIPA TOTP is anti-replay inside the current 30s window, so a second
+  unauthenticated channel is denied. Multiplex after the first success.
+  Windows OpenSSH does not implement ControlMaster — use
+  `remote.SSH.useLocalServer: true` there. `mkdir -p ~/.ssh/sockets`.
 - **No `ProxyJump`, no extra ports.** Only port 22 is open on the target
   — the example file says so explicitly and comments out where a
   `ProxyJump` would go, so it's obvious if one gets added by mistake
@@ -100,8 +100,8 @@ current descriptions pulled from the extension's own manifest:
 | Setting | Value | Why |
 |---|---|---|
 | `remote.SSH.showLoginTerminal` | `true` | "Always reveal the SSH login terminal." Without this, the keyboard-interactive OTP prompt can run in a background process with no visible terminal to type into. |
-| `remote.SSH.useLocalServer` | `false` | Default `true` means "a single connection shared between windows... reduces the number of times a password needs to be entered." That connection-reuse model is exactly what breaks a live OTP prompt on later operations — turning it off costs more frequent OTP entry but every entry gets an actual live prompt. |
-| `remote.SSH.remotePlatform` | `{"<host>": "linux"}` | Skips a remote OS-detection round trip. The extension's own description says this "will soon be required when `useLocalServer` is disabled" — set both together. |
+| `remote.SSH.useLocalServer` | `true` | Reuses one SSH session for Remote-SSH's extra channels. Required for OTP: the second channel otherwise resubmits the same TOTP and is denied. This is the Windows-safe mux (Win32-OpenSSH has no ControlMaster). First connect still needs `showLoginTerminal`. |
+| `remote.SSH.remotePlatform` | `{"<host>": "linux"}` | Skips a remote OS-detection round trip. Keep it set even with `useLocalServer` on. |
 | `remote.SSH.lockfilesInTmp` | `true` | Keeps lockfiles in `/tmp` instead of inside the server's own folder — matters if home is NFS/distributed and has locking quirks. Harmless otherwise. |
 | `remote.SSH.useExecServer` | `false` | **Found live, not assumed:** defaults to `true` in the current extension and switches connection bootstrapping to what the extension's own description calls only "a new bootstrapping mode... can be toggled off in the event of connection issues." Turned off here so the connection goes through the classic, well-documented bootstrap path this tool's pre-staged `~/.vscode-server/bin/<commit>/` layout is actually proven against, rather than a newer, less-documented alternative. |
 | `remote.SSH.connectTimeout` | `30` | Default is 15s. A realm+OTP login (ticket check + waiting on a human to type a code) routinely takes longer than a bare key-based connect. |

@@ -4,8 +4,8 @@
   "remote.SSH.showLoginTerminal": true,
   "// showLoginTerminal": "Reveals the terminal for every SSH command Remote-SSH runs, so the GSSAPI/OTP keyboard-interactive prompt is actually visible instead of silently hanging in a background process.",
 
-  "remote.SSH.useLocalServer": false,
-  "// useLocalServer": "Disables the shared-connection-across-windows multiplexing mode. That mode authenticates once and reuses the connection — fine for a password, unreliable for a keyboard-interactive OTP prompt that needs a live terminal on every distinct auth. Costs you more frequent OTP entry; buys you prompts that actually work.",
+  "remote.SSH.useLocalServer": true,
+  "// useLocalServer": "Reuses one SSH session across Remote-SSH's extra channels. Required for FreeIPA/realm OTP: TOTP is anti-replay inside the 30s window, so a second unauthenticated channel is denied. Windows OpenSSH has no ControlMaster — this setting is the Windows-safe mux. First connect still needs showLoginTerminal for the OTP prompt.",
 
   "remote.SSH.remotePlatform": { "airgapped-host": "linux" },
   "// remotePlatform": "Skips a remote OS-detection round trip. The extension's own docs note this setting becomes closer to required once useLocalServer is disabled (as above) — set both together. Replace 'airgapped-host' with your actual Host alias from ssh-config.example.",
