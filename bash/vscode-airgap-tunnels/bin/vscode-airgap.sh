@@ -131,8 +131,9 @@ OPTIONS (env var equivalents in parentheses)
                           version whose tag exists but whose CDN artifact
                           has been pruned fails loudly rather than
                           silently falling back to latest. A 2-component
-                          version (e.g. 1.96) resolves to the newest
-                          matching patch release if unambiguous. insider
+                          version (e.g. 1.96 or 1.33) picks the newest
+                          matching patch tag, then a live CDN HEAD.
+                          insider
                           channel is not supported for --version (only
                           stable has tagged releases in the sense this
                           resolves) — use --commit instead. Ignored if
@@ -634,6 +635,23 @@ PYEOF
   log "tag cache written: $cache_file"
 }
 
+file_mtime() {
+  # Portable epoch mtime. Never mix BSD `stat -f` into the same || chain as
+  # GNU stat: on RHEL/coreutils, `-f` is `--file-system`, not a format, and
+  # a failed/empty capture plus `set -u` + uninitialized `local` vars was
+  # blowing up `$((now - mtime))` (reported on RHEL at this helper's old site).
+  local path="${1:-}" ts=""
+  [ -n "$path" ] && [ -e "$path" ] || { echo 0; return 0; }
+  ts="$(stat -c %Y "$path" 2>/dev/null || true)"
+  if [ -z "$ts" ]; then
+    ts="$(stat -f %m "$path" 2>/dev/null || true)"
+  fi
+  case "$ts" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo "$ts" ;;
+  esac
+}
+
 ensure_tag_cache() {
   local cache_file
   cache_file="$(tag_cache_file)"
@@ -641,11 +659,20 @@ ensure_tag_cache() {
   if [ "$FORCE" -eq 1 ] || [ ! -f "$cache_file" ]; then
     need_refresh=1
   else
-    local age now mtime
-    now="$(date +%s)"
-    mtime="$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null || echo 0)"
-    age=$((now - mtime))
-    if [ "$age" -gt "$TAG_CACHE_TTL" ]; then
+    # Init every local — bash `local x` leaves x unset, and `set -u` then
+    # trips on $((now - mtime)) / comparisons on RHEL bash 4.x.
+    local now=0 mtime=0 age=0 ttl=0
+    now="$(date +%s 2>/dev/null || echo 0)"
+    mtime="$(file_mtime "$cache_file")"
+    ttl="${TAG_CACHE_TTL:-86400}"
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
+    case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+    case "$ttl" in ''|*[!0-9]*) ttl=86400 ;; esac
+    if [ "$now" -gt 0 ] && [ "$mtime" -gt 0 ]; then
+      age=$((now - mtime))
+      [ "$age" -lt 0 ] && age=0
+      [ "$age" -gt "$ttl" ] && need_refresh=1
+    else
       need_refresh=1
     fi
   fi
@@ -659,12 +686,12 @@ tag_cache_boundary() {
 }
 
 # resolve_version_to_commit <version-input> — normalizes (strips a leading
-# v/V), matches against the tag cache (exact X.Y.Z, or an unambiguous X.Y
-# prefix), then does a LIVE HEAD check against the CDN (never trusts the
-# cache's own boundary line for this — that's only for --list-versions'
-# display column) before returning. Dies with a clear, actionable message
-# on no-match, ambiguous-match, or CDN-unreachable — never silently falls
-# back to latest.
+# v/V), matches against the tag cache (exact X.Y.Z, or an X.Y prefix —
+# the newest matching X.Y.Z tag wins, no "ambiguous" error), then does a
+# LIVE HEAD check against the CDN (never trusts the cache's own boundary
+# line for this — that's only for --list-versions' display column)
+# before returning. Dies with a clear, actionable message on no-match or
+# CDN-unreachable — never silently falls back to latest.
 resolve_version_to_commit() {
   local input="$1"
   local norm="${input#v}"
@@ -672,21 +699,23 @@ resolve_version_to_commit() {
   local cache_file
   cache_file="$(ensure_tag_cache)"
 
-  local exact
-  exact="$(awk -F'\t' -v v="$norm" '$1==v{print $2; found=1} END{if(!found) exit 1}' "$cache_file")"
+  # awk used to `exit 1` on no exact match; under `set -e` that aborted
+  # the script BEFORE the X.Y → newest X.Y.Z fallback — so `--version 1.33`
+  # never got a chance to become 1.33.1. Swallow the miss and branch.
+  local exact=""
+  exact="$(awk -F'\t' -v v="$norm" '$1==v{print $2; exit}' "$cache_file" || true)"
   if [ -z "$exact" ]; then
     local dots
     dots="$(printf '%s' "$norm" | tr -cd '.' | wc -c | tr -d ' ')"
     if [ "$dots" -eq 1 ]; then
-      local matches
-      matches="$(awk -F'\t' -v p="$norm." 'index($1,p)==1{print $1}' "$cache_file")"
-      local count
-      count="$(printf '%s\n' "$matches" | grep -c . || true)"
-      if [ "$count" -eq 1 ]; then
-        norm="$matches"
-        exact="$(awk -F'\t' -v v="$norm" '$1==v{print $2}' "$cache_file")"
-      elif [ "$count" -gt 1 ]; then
-        die "--version '$input' is ambiguous — matches: $(printf '%s' "$matches" | tr '\n' ' ') — pass an exact X.Y.Z"
+      # Cache is newest-first. Take the newest X.Y.Z (do not error as
+      # "ambiguous" — that's what made --version 1.33 unusable).
+      local best=""
+      best="$(awk -F'\t' -v p="$norm." 'index($1,p)==1{print $1; exit}' "$cache_file" || true)"
+      if [ -n "$best" ]; then
+        log "--version $input -> newest matching tag $best"
+        norm="$best"
+        exact="$(awk -F'\t' -v v="$norm" '$1==v{print $2; exit}' "$cache_file" || true)"
       fi
     fi
   fi

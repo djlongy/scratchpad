@@ -112,12 +112,14 @@ resolve correctly for every artifact family; extension engine-matching
 picks the newest compatible version and rejects garbage IDs loudly;
 `--status`/`--emit-ssh-config` work standalone with zero network;
 `--version` resolves a real historical semver (e.g. `1.96.2`) to its
-commit and downloads it end to end, rejects a pruned-from-the-CDN
-version (`1.32.0`) with a clear error instead of silently substituting
-latest, rejects an unknown/ambiguous version, and correctly loses to
-`--commit` when both are set (including in the output filename — see
-lessons below); `--list-versions` works standalone (text/json, live or
-from a bundle) and fails fast with no network rather than hanging.
+commit and downloads it end to end, a 2-component version (`1.33`)
+resolves to its newest matching patch tag then loudly fails the CDN
+check rather than silently substituting latest (`1.33.x` is below the
+current `1.34.0` floor), rejects an unknown version outright, and
+correctly loses to `--commit` when both are set (including in the
+output filename — see lessons below); `--list-versions` works
+standalone (text/json, live or from a bundle) and fails fast with no
+network rather than hanging.
 Several real bugs were found and fixed by actually running it rather
 than by lint — see `.agent/LESSONS_LEARNED.md` for the full list,
 including a JSON field-name mixup, an architecture-mismatch bug that
