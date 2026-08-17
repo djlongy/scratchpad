@@ -1,0 +1,30 @@
+# Example ~/.ssh/config entry for an air-gapped Remote-SSH host with realm
+# (GSSAPI/Kerberos) authentication AND a keyboard-interactive OTP factor,
+# through port 22 only. See docs/runbooks/remote-ssh-realm-otp.md.
+#
+# Replace airgapped-host / airgapped-host.example.realm with your actual
+# hostname before use.
+
+Host airgapped-host
+    HostName airgapped-host.example.realm
+    User youruser
+    Port 22
+
+    # Realm first, OTP as the interactive fallback. Pubkey is NOT the only
+    # method and is not required — omit it entirely if your policy forbids
+    # keys on this host, or leave it last as a convenience for hosts where
+    # it's also allowed.
+    PreferredAuthentications gssapi-with-mic,keyboard-interactive,password
+    GSSAPIAuthentication yes
+    GSSAPIDelegateCredentials yes
+    PubkeyAuthentication no
+
+    # ControlMaster multiplexing can swallow or misroute the
+    # keyboard-interactive OTP prompt on later connections that reuse the
+    # master — turn it off for this host.
+    ControlMaster no
+    ControlPath none
+
+    # No ProxyJump / extra listeners — only port 22 on this host is open.
+    # ProxyJump bastion.example.realm   # <- do NOT add unless your network
+                                         #    actually requires a jump host.

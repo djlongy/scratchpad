@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# vscode-airgap.sh — download, bundle, and install VS Code Server for
-# air-gapped / offline networks, with an honest fallback to Microsoft's
-# Remote Tunnels for the online case.
+# vscode-airgap.sh — stage a Remote-SSH connection to an air-gapped Linux
+# host: pre-install the exact VS Code Server commit at ~/.vscode-server so
+# the client never needs to download it, plus matching client installers
+# (Linux + Windows) so Help > About reports the same commit. Also supports
+# Microsoft's Remote Tunnels and `code serve-web` as secondary, online-only
+# / optional paths.
 #
 # See docs/reference/download-urls.md for the exact endpoints this uses,
-# docs/runbooks/ for online-vs-airgap walkthroughs, and
+# docs/runbooks/ for online-vs-airgap and realm+OTP SSH walkthroughs, and
 # docs/designs/vscode-airgap-tunnels.md for why it's built this way.
 set -euo pipefail
 
@@ -12,29 +15,34 @@ set -euo pipefail
 SELF="$(basename "$0")"
 readonly SELF
 readonly UPDATE_HOST="https://update.code.visualstudio.com"
+readonly MARKETPLACE_HOST="https://marketplace.visualstudio.com"
 readonly DEFAULT_INSTALL_DIR="${HOME}/.vscode-server"
 readonly DEFAULT_BIND_ADDR="127.0.0.1"
 readonly DEFAULT_PORT="8000"
+readonly DEFAULT_SERVER_ARCH="linux-x64"
 
 # ── Defaults (overridable by env, then by flags) ────────────────────────────
 MODE="${MODE:-}"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
 COMMIT="${COMMIT:-}"
-ARCH="${ARCH:-}"
+ARCH="${ARCH:-}"                       # remote Linux SSH host's arch (server-side)
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 BIND_ADDR="${BIND_ADDR:-$DEFAULT_BIND_ADDR}"
 PORT="${PORT:-$DEFAULT_PORT}"
 TOKEN="${TOKEN:-}"
 EXTENSIONS="${EXTENSIONS:-}"
+EXTENSIONS_FILE="${EXTENSIONS_FILE:-}"
 BUNDLE_PATH="${BUNDLE_PATH:-}"
-ACTION="install"          # install (default) | download | tunnel | status
-START_AFTER_INSTALL=1
+ACTION="install"          # install (default) | tunnel | status | emit-ssh-config
+START_AFTER_INSTALL=0     # serve-web only starts if --serve-web is also given
 DOWNLOAD_ONLY=0
 FORCE=0
+WITH_SERVE_WEB=0          # --serve-web: also fetch+optionally start code serve-web
+WITH_CLI=0                # implied by --serve-web or --tunnel
 
-# HTTP(S)_PROXY / NO_PROXY are read straight from the environment by curl;
-# we only need to surface what we're honouring in --help and logs.
+# HTTP(S)_PROXY / NO_PROXY are read straight from the environment by curl
+# and by Python's urllib (extension queries); nothing here bypasses them.
 
 # ── Logging (never echo secrets) ─────────────────────────────────────────
 log()  { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -51,114 +59,174 @@ cleanup_stage_dir() { [ -n "$_STAGE_DIR" ] && rm -rf "$_STAGE_DIR"; }
 # ── Help ─────────────────────────────────────────────────────────────────
 usage() {
   cat <<'EOF'
-vscode-airgap.sh — VS Code Server for air-gapped / offline networks
+vscode-airgap.sh — stage VS Code Remote-SSH for an air-gapped Linux host
+
+Primary path: pre-install the exact VS Code Server commit at
+~/.vscode-server/bin/<commit>/ on the air-gapped host so the Remote-SSH
+extension finds a matching install and never tries to download one over
+the wire, plus matching Linux/Windows client installers so an operator's
+laptop reports the same commit under Help > About. Connects over plain
+SSH port 22 with realm (GSSAPI/Kerberos) + OTP auth — see
+docs/runbooks/remote-ssh-realm-otp.md. `code serve-web` and Remote Tunnels
+are supported as secondary, opt-in paths (--serve-web / --tunnel).
 
 USAGE
   vscode-airgap.sh --mode online   [options]   # internet-connected host
   vscode-airgap.sh --mode bundle   [options]   # internet-connected host: pack a bundle
   vscode-airgap.sh --mode offline  [options]   # air-gapped host: install from a bundle
+  vscode-airgap.sh --emit-ssh-config [--install-dir DIR]
+  vscode-airgap.sh --status [--install-dir DIR]
   vscode-airgap.sh --help
 
 MODES
-  online    Resolve latest (or pinned) commit, download the VS Code CLI and
-            server-web tarballs directly from Microsoft's CDN, install, and
-            (unless --download-only) start `code serve-web` bound to
-            BIND_ADDR:PORT. Also the only mode that supports --tunnel.
+  online    Resolve latest (or pinned) commit, download server-linux-<arch>
+            (Remote-SSH server, mandatory), the Linux x64 desktop tarball
+            and the Windows x64 User Setup (client installers, mandatory —
+            both are needed so at least one operator platform's Help >
+            About commit matches the staged server), any --extensions /
+            --extensions-file, install the server at
+            INSTALL_DIR/bin/<commit>/ (the real path Remote-SSH itself
+            uses when INSTALL_DIR is left at its ~/.vscode-server
+            default), and stage the client installers + extension VSIX
+            files for the operator to pick up. Add --serve-web to also
+            fetch+start `code serve-web`, or --tunnel for real Remote
+            Tunnels (internet-only, see LIMITATIONS).
   bundle    Same download step as online, but instead of installing, packs
             everything into a single tarball (BUNDLE_PATH) with a
             versions.json manifest (commit, version, arch, channel, date,
-            sha256 of every artifact). Run this on a machine with internet
-            access, then carry the tarball across the air gap.
+            sha256 of every artifact — Microsoft-published where available,
+            self-computed otherwise, both recorded distinctly). Run this on
+            a machine with internet access, then carry the tarball across
+            the air gap.
   offline   Installs from a bundle tarball with ZERO outbound network calls.
             Refuses to run if BUNDLE_PATH is missing, and verifies every
             artifact's sha256 against the bundle's own versions.json before
-            extracting anything. Starts `code serve-web`; --tunnel is
-            rejected in this mode (Remote Tunnels needs Microsoft's relay,
-            see LIMITATIONS below).
+            extracting anything. Installs the server at
+            INSTALL_DIR/bin/<commit>/ and stages client installers +
+            extensions for the operator. --tunnel is rejected in this mode
+            (Remote Tunnels needs Microsoft's relay — see LIMITATIONS).
 
 OPTIONS (env var equivalents in parentheses)
-  --mode MODE            online|bundle|offline (MODE)
-  --channel CHANNEL      stable|insider, default stable (CHANNEL)
-  --version VERSION      Semver, e.g. 1.96.2. Only meaningful together with
+  --mode MODE             online|bundle|offline (MODE)
+  --channel CHANNEL       stable|insider, default stable (CHANNEL)
+  --version VERSION       Semver, e.g. 1.96.2. Only meaningful together with
                           --commit — see docs/reference/download-urls.md for
                           why Microsoft doesn't expose a semver->commit API
                           for historical releases. (VERSION)
-  --commit COMMIT        40-char git commit hash to pin exactly. Overrides
-                          --version/latest resolution when set. (COMMIT)
-  --arch ARCH             linux-x64|linux-arm64|linux-armhf|alpine-x64|
-                          alpine-arm64|darwin-x64|darwin-arm64
-                          Auto-detected from uname if omitted. (ARCH)
-  --install-dir DIR       Default: ~/.vscode-server (INSTALL_DIR)
+  --commit COMMIT         40-char git commit hash to pin exactly. Overrides
+                          latest resolution when set; also switches
+                          checksum verification to self-computed sha256
+                          (Microsoft's /api/update/*/latest checksum
+                          endpoint only serves the CURRENT latest build per
+                          platform, confirmed live — it 204s for an older
+                          commit). (COMMIT)
+  --arch ARCH             The REMOTE Linux host's architecture, for the
+                          Remote-SSH server artifact:
+                          linux-x64 (default, mandatory support) |
+                          linux-arm64 | linux-armhf | alpine-x64 |
+                          alpine-arm64 | auto (detect from the arch running
+                          this script instead — only useful for the
+                          secondary --serve-web-on-this-host path). Does
+                          NOT affect the client installers, which are
+                          always Linux x64 + Windows x64 regardless of
+                          --arch. (ARCH)
+  --install-dir DIR       Default: ~/.vscode-server — deliberately the
+                          SAME path Remote-SSH uses on its own. Leave it at
+                          the default on the actual air-gapped host/user
+                          Remote-SSH will connect as; override only for
+                          testing. (INSTALL_DIR)
   --bundle-path PATH      Bundle tarball: output path (mode=bundle) or
                           input path (mode=offline). (BUNDLE_PATH)
+  --extensions LIST       Comma-separated publisher.name IDs. (EXTENSIONS)
+  --extensions-file PATH  Newline-delimited publisher.name IDs, UTF-8,
+                          '#' comments and blank lines ignored. Unioned
+                          with --extensions (duplicates deduped).
+                          (EXTENSIONS_FILE)
+                          For each ID: queries the Marketplace gallery for
+                          every published version, prefers a linux-x64
+                          target-platform build when one exists (falls back
+                          to the platform-universal build), and picks the
+                          NEWEST version whose `engines.vscode` range
+                          accepts the bundled VS Code version (the commit's
+                          own version, e.g. 1.133.0) — not an old pin. If
+                          the query fails outright, falls back to the
+                          simple /latest/vspackage endpoint and records
+                          that fallback in versions.json (engine
+                          compatibility unverified in that case).
+  --serve-web             Also fetch the CLI + server-web artifacts and, on
+                          install, start `code serve-web` bound to
+                          BIND_ADDR:PORT. Secondary path — see LIMITATIONS.
+  --tunnel                Also fetch the CLI and, after install, run
+                          `code tunnel` instead of installing Remote-SSH's
+                          server. online mode only — see LIMITATIONS.
   --bind ADDR             serve-web bind address, default 127.0.0.1.
-                          Use 0.0.0.0 only inside a network you trust —
-                          this process has no TLS of its own. (BIND_ADDR)
+                          (BIND_ADDR)
   --port PORT             serve-web port, default 8000 (PORT)
-  --token TOKEN           Connection token for serve-web. If omitted, one is
-                          generated and written to
-                          INSTALL_DIR/serve-web.token (chmod 600) — never
-                          printed to stdout/stderr. Pass TOKEN=none to run
-                          --without-connection-token (LAN-only, no auth —
-                          only ever do this behind another access control
-                          layer). (TOKEN)
-  --extensions LIST       Comma-separated publisher.name IDs to fetch as
-                          .vsix from the Marketplace gallery API (online/
-                          bundle modes only). Staged at
-                          INSTALL_DIR/extensions-to-install on install —
-                          `code --install-extension` does not reliably
-                          target a separately-extracted server-web tree
-                          (verified live; see download-urls.md), so these
-                          are installed via the Web UI's Extensions view
-                          -> "Install from VSIX..." instead. (EXTENSIONS)
+  --token TOKEN           serve-web connection token; TOKEN=none runs
+                          --without-connection-token. See --serve-web.
+                          (TOKEN)
   --download-only         Fetch/verify artifacts but do not install/start.
-  --tunnel                After install, run `code tunnel` instead of
-                          `code serve-web`. online mode only — see
-                          LIMITATIONS.
   --status                Print install state for INSTALL_DIR and exit.
+                          Standalone — no MODE/network/curl required.
+  --emit-ssh-config       Write ssh-config.example and settings.json.example
+                          into INSTALL_DIR (or --install-dir) and exit.
+                          Standalone — no MODE/network required. See
+                          docs/runbooks/remote-ssh-realm-otp.md.
   --force                 Re-download even if a matching cached artifact
-                          (by sha256) already exists.
+                          already exists.
   -h, --help              This text.
 
 PROXY
-  HTTPS_PROXY / HTTP_PROXY / NO_PROXY are honoured for every download (curl
-  reads them natively; nothing in this script bypasses them). Set them
-  before invoking online/bundle mode if your network requires an egress
-  proxy.
+  HTTPS_PROXY / HTTP_PROXY / NO_PROXY are honoured for every download —
+  curl reads them natively, and the extension-query helper (Python's
+  urllib) picks up the same standard env vars.
 
 EXAMPLES
-  # Online side: latest stable, straight install + start on localhost:8000
-  ./vscode-airgap.sh --mode online
+  # Online side: latest stable, install Remote-SSH server + both client
+  # installers into ~/.vscode-server, with two extensions from a file
+  ./vscode-airgap.sh --mode online --extensions-file team-extensions.txt
 
-  # Online side: pin an exact commit, build a portable bundle with one extension
+  # Online side: pin an exact commit, build a portable bundle
   COMMIT=a5b500951314efd502d07465bd138dfbd714a960 \
     ./vscode-airgap.sh --mode bundle --bundle-path ./vscode-bundle.tar.gz \
     --extensions ms-python.python
 
-  # Carry vscode-bundle.tar.gz across the air gap, then on the isolated host:
-  ./vscode-airgap.sh --mode offline --bundle-path ./vscode-bundle.tar.gz \
-    --bind 0.0.0.0 --port 8000
+  # Carry vscode-bundle.tar.gz to the air-gapped host, log in as the SAME
+  # user Remote-SSH will connect as, then:
+  ./vscode-airgap.sh --mode offline --bundle-path ./vscode-bundle.tar.gz
 
-  # Client side, same LAN: SSH port-forward instead of exposing the port
-  ssh -L 8000:localhost:8000 user@airgapped-host
-  # then browse http://localhost:8000 and paste the token from
-  # INSTALL_DIR/serve-web.token on the server
+  # Print the ssh_config / settings.json templates for realm+OTP, port 22 only
+  ./vscode-airgap.sh --emit-ssh-config
 
-LIMITATIONS — READ THIS BEFORE CHOOSING --tunnel
+  # Optional secondary path: serve-web instead of / alongside Remote-SSH
+  ./vscode-airgap.sh --mode online --serve-web
+
+LIMITATIONS — READ THIS BEFORE CHOOSING --tunnel OR --serve-web
   Microsoft's Remote Tunnels (`code tunnel`) are NOT air-gap compatible.
   The CLI authenticates against github.com/login.microsoftonline.com and
   then keeps a persistent outbound connection to Microsoft's tunnel relay
-  (global.rel.tunnels.api.visualstudio.com and friends) for the lifetime of
-  the tunnel — there is no offline or self-hosted relay mode. If your
-  network can reach the internet but you still want tunnels, use
-  `--mode online --tunnel`. If it can't, this script refuses --tunnel in
-  offline mode and falls back to `code serve-web`, which:
-    - binds directly to a LAN address (BIND_ADDR:PORT) with no external
-      dependency once the bundle is installed, and
-    - is what this script installs and starts by default in every mode.
-  The client reaches serve-web either directly (if BIND_ADDR is
-  LAN-reachable) or via an SSH local port-forward (recommended — keeps
-  serve-web itself bound to 127.0.0.1 and avoids exposing it network-wide).
+  for the lifetime of the tunnel — there is no offline or self-hosted
+  relay mode. Online mode only; offline mode refuses --tunnel outright.
+
+  `code serve-web` works air-gapped (no relay involved) but is now the
+  SECONDARY path — the primary answer to "a client can connect to an
+  air-gapped VS Code Server" is Remote-SSH over the port that's already
+  open (22), which is what --mode online/offline do by default. Pass
+  --serve-web only if you specifically want the browser-based path too.
+
+  There is no VS Code setting that means "never attempt any server
+  download, ever" — verified live against the Remote-SSH extension's own
+  current package.json (2026-08-17): `remote.SSH.allowLocalServerDownload`
+  only controls a client-downloads-and-scps FALLBACK path, not the initial
+  attempt. The actual fail-closed mechanism is what this script does:
+  pre-stage the exact matching commit at ~/.vscode-server/bin/<commit>/
+  BEFORE the first connection, so Remote-SSH's own "is a valid server
+  already installed" check finds one and skips downloading entirely. See
+  docs/runbooks/remote-ssh-realm-otp.md for the full settings rationale,
+  including `remote.SSH.useExecServer: false` (verified live: this
+  defaults to true in the current extension and switches to a newer,
+  less-documented bootstrapping mode — turned off here so the connection
+  uses the classic, well-understood path that matches what gets staged).
 EOF
 }
 
@@ -176,18 +244,24 @@ while [ $# -gt 0 ]; do
     --port) PORT="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
     --extensions) EXTENSIONS="$2"; shift 2 ;;
+    --extensions-file) EXTENSIONS_FILE="$2"; shift 2 ;;
+    --serve-web) WITH_SERVE_WEB=1; WITH_CLI=1; START_AFTER_INSTALL=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; START_AFTER_INSTALL=0; shift ;;
-    --tunnel) ACTION="tunnel"; shift ;;
+    --tunnel) ACTION="tunnel"; WITH_CLI=1; shift ;;
     --status) ACTION="status"; shift ;;
+    --emit-ssh-config) ACTION="emit-ssh-config"; shift ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 
-# --status is a standalone query against an existing INSTALL_DIR and never
-# touches MODE/CHANNEL — skip those checks for it entirely.
-if [ "$ACTION" != "status" ]; then
+# --status / --emit-ssh-config are standalone queries and never touch
+# MODE/CHANNEL/network — skip those checks for them entirely.
+if [ "$ACTION" = "status" ] || [ "$ACTION" = "emit-ssh-config" ]; then
+  STANDALONE_ACTION=1
+else
+  STANDALONE_ACTION=0
   [ -n "$MODE" ] || { usage; die "MODE / --mode is required (online|bundle|offline)"; }
   case "$MODE" in online|bundle|offline) ;; *) die "invalid --mode '$MODE' (online|bundle|offline)" ;; esac
   case "$CHANNEL" in stable|insider) ;; *) die "invalid --channel '$CHANNEL' (stable|insider)" ;; esac
@@ -195,11 +269,14 @@ fi
 
 # ── Dependency check ─────────────────────────────────────────────────────
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
-if [ "$ACTION" != "status" ]; then
+if [ "$STANDALONE_ACTION" -eq 0 ]; then
   for c in tar sha256sum; do
     command -v "$c" >/dev/null 2>&1 || command -v "${c/sha256sum/shasum}" >/dev/null 2>&1 || die "required command not found: $c"
   done
   [ "$MODE" != "offline" ] && require_cmd curl
+  if [ "$MODE" != "offline" ] && { [ -n "$EXTENSIONS" ] || [ -n "$EXTENSIONS_FILE" ]; }; then
+    require_cmd python3
+  fi
 fi
 
 sha256_of() {
@@ -211,15 +288,19 @@ sha256_of() {
   fi
 }
 
-# ── Arch auto-detect ─────────────────────────────────────────────────────
-detect_arch() {
-  [ -n "$ARCH" ] && { echo "$ARCH"; return; }
+# ── Arch handling ─────────────────────────────────────────────────────────
+# NOTE: unlike v1, ARCH here means the REMOTE Linux host's arch, not the
+# arch of the machine running this script — this build/bundle step very
+# often runs on a different machine (an operator's laptop, a jump host)
+# than the air-gapped target. Default is the mandatory linux-x64, not an
+# auto-detected uname. Pass --arch auto to opt into uname-based detection
+# (only meaningful for the secondary --serve-web-on-this-host path).
+detect_arch_from_uname() {
   local os_name kernel_arch
   os_name="$(uname -s)"
   kernel_arch="$(uname -m)"
   case "$os_name" in
     Linux)
-      # Alpine/musl needs the alpine-* artifact family; everything else (glibc) uses linux-*.
       if [ -f /etc/alpine-release ]; then
         case "$kernel_arch" in
           x86_64) echo "alpine-x64" ;;
@@ -242,15 +323,43 @@ detect_arch() {
         *) die "unsupported Darwin arch: $kernel_arch" ;;
       esac
       ;;
-    *) die "unsupported OS: $os_name (this tool targets Linux server hosts; darwin-* is for running the client CLI locally)" ;;
+    *) die "unsupported OS for --arch auto: $os_name" ;;
   esac
 }
-ARCH="$(detect_arch)"
+if [ "$STANDALONE_ACTION" -eq 0 ]; then
+  if [ -z "$ARCH" ]; then
+    ARCH="$DEFAULT_SERVER_ARCH"
+  elif [ "$ARCH" = "auto" ]; then
+    ARCH="$(detect_arch_from_uname)"
+  fi
+fi
 
-# cli-<arch> / server-<arch>[-web] path segments per update.code.visualstudio.com's
-# naming (verified live 2026-08-17 — see docs/reference/download-urls.md).
-cli_platform_segment() {
+# LOCAL_ARCH is a DELIBERATELY SEPARATE concern from ARCH. ARCH is the
+# REMOTE Linux host's arch (mandatory artifacts: server-linux-<ARCH>,
+# always fixed at linux-x64 by default regardless of what machine is
+# running this script). --serve-web/--tunnel instead run CLI/server-web
+# ON THIS MACHINE, which is very often a different arch — found live
+# (2026-08-17): building on an arm64 Colima host with ARCH defaulted to
+# linux-x64 downloaded an x86_64 `code` binary, which then failed under
+# Rosetta with "failed to open elf at /lib64/ld-linux-x86-64.so.2" the
+# moment serve-web tried to exec it. LOCAL_ARCH always auto-detects from
+# uname (equivalent to v1's old default) since these artifacts must match
+# the host actually executing them.
+LOCAL_ARCH="$(detect_arch_from_uname 2>/dev/null || true)"
+
+# Platform-segment names per update.code.visualstudio.com's naming
+# (verified live 2026-08-17 — see docs/reference/download-urls.md).
+remote_ssh_server_segment() {
   case "$ARCH" in
+    linux-x64) echo "server-linux-x64" ;;
+    linux-arm64) echo "server-linux-arm64" ;;
+    linux-armhf) echo "server-linux-armhf" ;;
+    alpine-x64) echo "server-linux-alpine" ;;
+    *) die "no classic Remote-SSH server artifact for arch '$ARCH'" ;;
+  esac
+}
+cli_platform_segment() {
+  case "$LOCAL_ARCH" in
     linux-x64) echo "cli-linux-x64" ;;
     linux-arm64) echo "cli-linux-arm64" ;;
     linux-armhf) echo "cli-linux-armhf" ;;
@@ -258,32 +367,69 @@ cli_platform_segment() {
     alpine-arm64) echo "cli-alpine-arm64" ;;
     darwin-x64) echo "cli-darwin-x64" ;;
     darwin-arm64) echo "cli-darwin-arm64" ;;
-    *) die "no CLI artifact mapping for arch '$ARCH'" ;;
+    *) die "no CLI artifact mapping for local arch '$LOCAL_ARCH'" ;;
   esac
 }
 server_web_platform_segment() {
-  case "$ARCH" in
+  case "$LOCAL_ARCH" in
     linux-x64) echo "server-linux-x64-web" ;;
     linux-arm64) echo "server-linux-arm64-web" ;;
     linux-armhf) echo "server-linux-armhf-web" ;;
     alpine-x64) echo "server-linux-alpine-web" ;;
-    *) die "no server-web artifact for arch '$ARCH' (server-web ships for glibc/musl x64/arm64 Linux only; darwin/armhf have no server build — they are client-only architectures)" ;;
+    *) die "no server-web artifact for local arch '$LOCAL_ARCH'" ;;
   esac
 }
+readonly DESKTOP_LINUX_SEGMENT="linux-x64"      # always fetched, fixed
+readonly DESKTOP_WINDOWS_SEGMENT="win32-x64-user"  # always fetched, fixed
 
-# ── Commit resolution (online/bundle only) ──────────────────────────────
-resolve_commit() {
-  [ -n "$COMMIT" ] && { echo "$COMMIT"; return; }
-  if [ -n "$VERSION" ]; then
-    warn "VERSION='$VERSION' set without COMMIT: Microsoft does not publish a" \
-         "semver->commit lookup API for historical cli/server builds (only the" \
-         "desktop /api/update/*/latest endpoint carries both, and only for the" \
-         "current latest release). Falling back to the latest '$CHANNEL' commit;" \
-         "if you need an exact pin, pass --commit instead. See" \
-         "docs/reference/download-urls.md."
+# ── Checksummed artifact resolution ──────────────────────────────────────
+# Prefer Microsoft's own /api/update/<segment>/<channel>/latest endpoint —
+# verified live 2026-08-17 it returns {url, version, commit, sha256hash}
+# for every platform segment this script uses (cli-*, server-*, server-*
+# -web, linux-x64 desktop, win32-x64-user), correcting v1's docs which
+# claimed no checksum existed for the cli/server-web family — that was
+# true only of the naive commit:/<segment>/<channel> redirect URL, not of
+# this endpoint. Only usable for "latest" (confirmed live: passing an
+# older commit in place of "latest" 204s — it's an update-check endpoint,
+# not a historical-commit lookup), so an explicit --commit pin falls back
+# to constructing the direct URL and self-computing sha256 instead.
+#
+# On success, prints three lines: url, commit, sha256 (sha256 may be
+# empty for the --commit-pinned fallback path — caller then self-computes
+# after downloading).
+resolve_artifact_meta() {
+  local seg="$1"
+  if [ -n "$COMMIT" ]; then
+    printf '%s\n%s\n%s\n' "$UPDATE_HOST/commit:$COMMIT/$seg/$CHANNEL" "$COMMIT" ""
+    return
   fi
-  log "resolving latest '$CHANNEL' commit for server-linux-x64 (the commit is" \
-      "shared across all platform artifacts within a channel)"
+  local json http_code
+  json="$(curl -fsSL -m 20 -w '\n%{http_code}' "$UPDATE_HOST/api/update/$seg/$CHANNEL/latest" 2>/dev/null)" || json=""
+  http_code="$(printf '%s' "$json" | tail -1)"
+  json="$(printf '%s' "$json" | sed '$d')"
+  if [ "$http_code" != "200" ] || [ -z "$json" ]; then
+    warn "no /api/update metadata for '$seg' (http=$http_code) — falling back to commit resolution + self-computed sha256"
+    local c
+    c="$(resolve_commit_via_commits_api)"
+    printf '%s\n%s\n%s\n' "$UPDATE_HOST/commit:$c/$seg/$CHANNEL" "$c" ""
+    return
+  fi
+  python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+print(d["url"])
+print(d["version"])
+print(d.get("sha256hash",""))
+' <<<"$json" 2>/dev/null || {
+    warn "could not parse /api/update response for '$seg' — falling back"
+    local c
+    c="$(resolve_commit_via_commits_api)"
+    printf '%s\n%s\n%s\n' "$UPDATE_HOST/commit:$c/$seg/$CHANNEL" "$c" ""
+  }
+}
+
+resolve_commit_via_commits_api() {
+  if [ -n "$COMMIT" ]; then echo "$COMMIT"; return; fi
   local commits_json first
   commits_json="$(curl -fsSL -m 20 "$UPDATE_HOST/api/commits/$CHANNEL/server-linux-x64")" \
     || die "failed to reach $UPDATE_HOST (check network/proxy — HTTPS_PROXY=${HTTPS_PROXY:-unset})"
@@ -292,105 +438,330 @@ resolve_commit() {
   echo "$first"
 }
 
-# ── Download helpers ─────────────────────────────────────────────────────
-# download_artifact <commit> <platform-segment> <dest-file>
-# Follows the commit: redirect (Microsoft's CDN issues a 302 to the real
-# blob URL), honouring HTTPS_PROXY/HTTP_PROXY/NO_PROXY from the environment
-# via curl's native proxy handling.
-download_artifact() {
-  local commit="$1" seg="$2" dest="$3"
-  local url="$UPDATE_HOST/commit:$commit/$seg/$CHANNEL"
-  log "downloading $seg (commit ${commit:0:12}...) -> $dest"
-  curl -fSL -sS --retry 3 --retry-connrefused -m 300 -o "$dest" "$url" \
-    || die "download failed for $seg from $url"
-  [ -s "$dest" ] || die "downloaded file is empty: $dest"
+# download_checksummed_artifact <platform-segment> <dest-file>
+# Fetches via resolve_artifact_meta, downloads, and verifies/records a
+# sha256 — Microsoft's own when available, self-computed otherwise (both
+# distinguished in the returned checksum-source line so the manifest is
+# honest about which kind it is).
+# Prints two lines on success: sha256, checksum_source (microsoft|self)
+download_checksummed_artifact() {
+  local seg="$1" dest="$2"
+  local meta url commit sha_ms
+  meta="$(resolve_artifact_meta "$seg")"
+  url="$(printf '%s' "$meta" | sed -n 1p)"
+  commit="$(printf '%s' "$meta" | sed -n 2p)"
+  sha_ms="$(printf '%s' "$meta" | sed -n 3p)"
+  if [ "$FORCE" -eq 1 ] || [ ! -f "$dest" ]; then
+    log "downloading $seg (commit ${commit:0:12}...) -> $dest"
+    curl -fSL -sS --retry 3 --retry-connrefused -m 600 -o "$dest" "$url" \
+      || die "download failed for $seg from $url"
+    [ -s "$dest" ] || die "downloaded file is empty: $dest"
+  fi
+  local sha_got
+  sha_got="$(sha256_of "$dest")"
+  if [ -n "$sha_ms" ]; then
+    [ "$sha_got" = "$sha_ms" ] || die "sha256 mismatch for $seg: Microsoft published $sha_ms, got $sha_got — download is corrupt, refusing to continue"
+    printf '%s\nmicrosoft\n' "$sha_got"
+  else
+    printf '%s\nself\n' "$sha_got"
+  fi
+  # side channel: RESOLVED_COMMIT / RESOLVED_VERSION for the caller
+  echo "$commit" > "${dest}.commit"
 }
 
-# ── Extensions (Marketplace gallery API — direct .vsix, no `ext install`) ──
-download_extension() {
-  local ext_id="$1" dest_dir="$2"
+# ── Extensions ────────────────────────────────────────────────────────────
+# Newline-delimited file -> comma list, '#' comments and blanks stripped.
+read_extensions_file() {
+  local f="$1"
+  [ -f "$f" ] || die "--extensions-file not found: $f"
+  grep -v '^[[:space:]]*#' "$f" | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# pick_and_download_extension <pub.name> <target_vscode_version> <dest_dir>
+# Prints JSON on stdout describing what was selected (captured by caller):
+# {"id":..., "version":..., "target_platform":..., "engine":..., "method":...}
+pick_and_download_extension() {
+  local ext_id="$1" target_version="$2" dest_dir="$3"
   local pub name
   pub="${ext_id%%.*}"
   name="${ext_id#*.}"
   [ -n "$pub" ] && [ -n "$name" ] && [ "$pub" != "$name" ] \
     || die "invalid extension id '$ext_id' (expected publisher.name)"
-  local url="https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${pub}/vsextensions/${name}/latest/vspackage"
   local dest="${dest_dir}/${ext_id}.vsix"
-  log "downloading extension $ext_id -> $dest"
-  curl -fSL -sS -m 120 -o "$dest" "$url" || die "extension download failed: $ext_id"
-  [ -s "$dest" ] || die "downloaded extension is empty: $ext_id"
+  python3 - "$pub" "$name" "$target_version" "$dest" "$MARKETPLACE_HOST" <<'PYEOF'
+import json, re, sys, urllib.request, urllib.error
+
+pub, name, target_version, dest, host = sys.argv[1:6]
+ext_id = f"{pub}.{name}"
+
+def http_post_json(url, body, headers):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode())
+
+def http_get(url):
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+def parse_version(v):
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", v)
+    return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+def engine_satisfied(engine_range, version_str):
+    # VS Code engine ranges in practice are almost always "^X.Y.Z", "*",
+    # or ">=X.Y.Z" — not a full semver-range grammar. Handle those; treat
+    # anything unparsed as satisfied-but-unverified (fail open on parsing,
+    # never silently reject a real extension over a range this script
+    # can't parse — record it as such via the caller's method field).
+    engine_range = (engine_range or "*").strip()
+    v = parse_version(version_str)
+    if engine_range in ("*", ""):
+        return True
+    m = re.match(r"\^(\d+)\.(\d+)\.(\d+)", engine_range)
+    if m:
+        lo = tuple(int(x) for x in m.groups())
+        hi = (lo[0] + 1, 0, 0)
+        return lo <= v < hi
+    m = re.match(r">=\s*(\d+)\.(\d+)\.(\d+)", engine_range)
+    if m:
+        lo = tuple(int(x) for x in m.groups())
+        return v >= lo
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)$", engine_range)
+    if m:
+        return v == tuple(int(x) for x in m.groups())
+    return True  # unparsed range: don't block on it
+
+def download_to(url, dest):
+    data = http_get(url)
+    if not data:
+        raise RuntimeError("empty download")
+    with open(dest, "wb") as f:
+        f.write(data)
+
+headers = {
+    "Content-Type": "application/json",
+    "Accept": "application/json;api-version=3.0-preview.1",
+}
+query_url = f"{host}/_apis/public/gallery/extensionquery"
+body = {
+    "filters": [{"criteria": [{"filterType": 7, "value": ext_id}]}],
+    # IncludeVersions(1) | IncludeFiles(2) | IncludeVersionProperties(16)
+    "flags": 19,
+}
+
+result = None
+try:
+    d = http_post_json(query_url, body, headers)
+    extensions = d.get("results", [{}])[0].get("extensions", [])
+    if not extensions:
+        raise RuntimeError(f"extension not found: {ext_id}")
+    versions = extensions[0]["versions"]
+
+    # Dedup by version string, preferring a linux-x64 targetPlatform entry
+    # over the platform-universal one (no targetPlatform key) when both
+    # exist for the same version; skip every OTHER platform-specific entry
+    # (darwin/win32/alpine/etc — irrelevant to a linux-x64 remote).
+    by_version = {}
+    for v in versions:
+        tp = v.get("targetPlatform")
+        if tp is not None and tp != "linux-x64":
+            continue
+        ver = v["version"]
+        if ver not in by_version or tp == "linux-x64":
+            by_version[ver] = v
+
+    ordered = sorted(by_version.values(), key=lambda v: parse_version(v["version"]), reverse=True)
+
+    chosen = None
+    for v in ordered:
+        props = {p["key"]: p["value"] for p in v.get("properties", [])}
+        engine = props.get("Microsoft.VisualStudio.Code.Engine", "*")
+        if engine_satisfied(engine, target_version):
+            chosen = (v, engine)
+            break
+
+    if chosen is None:
+        raise RuntimeError(f"no version of {ext_id} declares engine compatibility with {target_version}")
+
+    v, engine = chosen
+    vsix_url = None
+    for f in v["files"]:
+        if f["assetType"].endswith("VSIXPackage"):
+            vsix_url = f["source"]
+            break
+    if not vsix_url:
+        raise RuntimeError("no VSIXPackage asset in chosen version")
+
+    download_to(vsix_url, dest)
+    result = {
+        "id": ext_id, "version": v["version"],
+        "target_platform": v.get("targetPlatform") or "universal",
+        "engine": engine, "method": "engine-matched",
+    }
+except Exception as e:
+    # Fallback: the simple "give me whatever is newest" endpoint. No engine
+    # check happens here — recorded honestly as such.
+    sys.stderr.write(f"[extensionquery fallback for {ext_id}: {e}]\n")
+    fallback_url = f"{host}/_apis/public/gallery/publishers/{pub}/vsextensions/{name}/latest/vspackage"
+    download_to(fallback_url, dest)
+    result = {"id": ext_id, "version": "latest", "target_platform": "unknown",
+              "engine": "unverified", "method": "latest-fallback"}
+
+print(json.dumps(result))
+PYEOF
 }
 
 # ── ONLINE / BUNDLE: fetch everything into a staging dir ────────────────
 stage_artifacts() {
   local stage_dir="$1"
   mkdir -p "$stage_dir"
-  local commit cli_seg srv_seg cli_file srv_file cli_sha srv_sha
-  commit="$(resolve_commit)"
-  cli_seg="$(cli_platform_segment)"
-  cli_file="$stage_dir/cli.tar.gz"
-  if [ "$FORCE" -eq 1 ] || [ ! -f "$cli_file" ]; then
-    download_artifact "$commit" "$cli_seg" "$cli_file"
-  fi
-  cli_sha="$(sha256_of "$cli_file")"
 
-  srv_file=""
-  srv_sha=""
-  if srv_seg="$(server_web_platform_segment 2>/dev/null)"; then
-    srv_file="$stage_dir/server-web.tar.gz"
-    if [ "$FORCE" -eq 1 ] || [ ! -f "$srv_file" ]; then
-      download_artifact "$commit" "$srv_seg" "$srv_file"
-    fi
-    srv_sha="$(sha256_of "$srv_file")"
-  else
-    warn "no server-web artifact for arch '$ARCH' — bundling CLI only (client-only architecture, e.g. darwin/armhf)"
+  # -- Mandatory: Remote-SSH server for the remote Linux host --
+  local srv_seg srv_meta srv_sha srv_src commit version
+  srv_seg="$(remote_ssh_server_segment)"
+  local srv_file="$stage_dir/server-linux-x64.tar.gz"
+  srv_meta="$(download_checksummed_artifact "$srv_seg" "$srv_file")"
+  srv_sha="$(printf '%s' "$srv_meta" | sed -n 1p)"
+  srv_src="$(printf '%s' "$srv_meta" | sed -n 2p)"
+  commit="$(cat "${srv_file}.commit")"; rm -f "${srv_file}.commit"
+
+  # Resolve the version string (needed for extension engine matching and
+  # the manifest) from the same commit via /api/update — cheap, and gives
+  # us the canonical "1.133.0"-style string rather than a raw commit hash.
+  version="$(resolve_version_for_commit "$commit")"
+
+  # -- Mandatory: client installers (commit-matched) --
+  local lin_meta lin_sha lin_src
+  local lin_file="$stage_dir/vscode-linux-x64.tar.gz"
+  lin_meta="$(download_checksummed_artifact "$DESKTOP_LINUX_SEGMENT" "$lin_file")"
+  lin_sha="$(printf '%s' "$lin_meta" | sed -n 1p)"
+  lin_src="$(printf '%s' "$lin_meta" | sed -n 2p)"
+  rm -f "${lin_file}.commit"
+
+  local win_meta win_sha win_src
+  local win_file="$stage_dir/VSCodeUserSetup-x64-${version}.exe"
+  win_meta="$(download_checksummed_artifact "$DESKTOP_WINDOWS_SEGMENT" "$win_file")"
+  win_sha="$(printf '%s' "$win_meta" | sed -n 1p)"
+  win_src="$(printf '%s' "$win_meta" | sed -n 2p)"
+  rm -f "${win_file}.commit"
+
+  # -- Optional: CLI (--serve-web / --tunnel) and server-web (--serve-web) --
+  local cli_sha="" cli_src="" srvweb_sha="" srvweb_src=""
+  if [ "$WITH_CLI" -eq 1 ]; then
+    local cli_seg cli_meta
+    cli_seg="$(cli_platform_segment)"
+    local cli_file="$stage_dir/cli.tar.gz"
+    cli_meta="$(download_checksummed_artifact "$cli_seg" "$cli_file")"
+    cli_sha="$(printf '%s' "$cli_meta" | sed -n 1p)"
+    cli_src="$(printf '%s' "$cli_meta" | sed -n 2p)"
+    rm -f "${cli_file}.commit"
+  fi
+  if [ "$WITH_SERVE_WEB" -eq 1 ]; then
+    local sw_seg sw_meta
+    sw_seg="$(server_web_platform_segment)"
+    local sw_file="$stage_dir/server-web.tar.gz"
+    sw_meta="$(download_checksummed_artifact "$sw_seg" "$sw_file")"
+    srvweb_sha="$(printf '%s' "$sw_meta" | sed -n 1p)"
+    srvweb_src="$(printf '%s' "$sw_meta" | sed -n 2p)"
+    rm -f "${sw_file}.commit"
   fi
 
+  # -- Extensions: union of --extensions and --extensions-file, deduped --
   local ext_dir="$stage_dir/extensions"
-  local ext_list=()
-  if [ -n "$EXTENSIONS" ]; then
+  local all_ext_ids="" ext_results=()
+  [ -n "$EXTENSIONS" ] && all_ext_ids="$(echo "$EXTENSIONS" | tr ',' '\n')"
+  if [ -n "$EXTENSIONS_FILE" ]; then
+    all_ext_ids="$(printf '%s\n%s\n' "$all_ext_ids" "$(read_extensions_file "$EXTENSIONS_FILE")")"
+  fi
+  local dedup_ids
+  dedup_ids="$(printf '%s\n' "$all_ext_ids" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u || true)"
+  if [ -n "$dedup_ids" ]; then
     mkdir -p "$ext_dir"
-    local IFS=','
-    for ext in $EXTENSIONS; do
-      ext="$(echo "$ext" | xargs)"
+    while IFS= read -r ext; do
       [ -n "$ext" ] || continue
-      download_extension "$ext" "$ext_dir"
-      ext_list+=("$ext")
-    done
+      log "resolving extension $ext (engine target: vscode $version)"
+      local one
+      one="$(pick_and_download_extension "$ext" "$version" "$ext_dir")" \
+        || die "extension resolution failed: $ext"
+      ext_results+=("$one")
+      log "  -> $(printf '%s' "$one" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["id"], d["version"], "("+d["method"]+")")' 2>/dev/null || echo "$one")"
+    done <<<"$dedup_ids"
   fi
 
-  # versions.json — the manifest offline installs verify against. This is
-  # OUR OWN computed sha256, not one Microsoft publishes: their commit-based
-  # cli/server-web artifacts ship with no published checksum file (unlike,
-  # say, a Linux distro ISO). See docs/reference/download-urls.md for the
-  # one endpoint that DOES carry a Microsoft-issued sha256 (desktop
-  # /api/update, not used by this tool) and why it doesn't apply here.
+  write_manifest "$stage_dir" "$commit" "$version" \
+    "$srv_sha" "$srv_src" "$lin_sha" "$lin_src" "$win_sha" "$win_src" \
+    "$cli_sha" "$cli_src" "$srvweb_sha" "$srvweb_src" "$(basename "$win_file")" \
+    "${ext_results[@]:-}"
+}
+
+resolve_version_for_commit() {
+  local commit="$1"
+  if [ -n "$VERSION" ]; then echo "$VERSION"; return; fi
+  local json
+  json="$(curl -fsSL -m 20 "$UPDATE_HOST/api/update/server-linux-x64/$CHANNEL/latest" 2>/dev/null)" || json=""
+  local v
+  # NOTE the field name: Microsoft's /api/update JSON is misleadingly
+  # shaped — its "version" key actually holds the COMMIT hash (that's
+  # what resolve_artifact_meta reads it as, correctly) and the real
+  # semver lives under "productVersion". Verified live 2026-08-17 — a
+  # naive read of "version" here silently produced a commit-hash-named
+  # .exe file instead of "VSCodeUserSetup-x64-1.133.0.exe".
+  v="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("productVersion",""))' 2>/dev/null || true)"
+  if [ -n "$v" ]; then echo "$v"; return; fi
+  warn "could not resolve a semver for commit ${commit:0:12}... — recording the commit itself as the version"
+  echo "$commit"
+}
+
+write_manifest() {
+  local stage_dir="$1" commit="$2" version="$3"
+  local srv_sha="$4" srv_src="$5" lin_sha="$6" lin_src="$7" win_sha="$8" win_src="$9"
+  shift 9
+  local cli_sha="$1" cli_src="$2" srvweb_sha="$3" srvweb_src="$4" win_file_name="$5"
+  shift 5
+  local ext_results=("$@")
+
   local manifest="$stage_dir/versions.json"
   {
     printf '{\n'
     printf '  "channel": "%s",\n' "$CHANNEL"
     printf '  "commit": "%s",\n' "$commit"
+    printf '  "vscode_version": "%s",\n' "$version"
     printf '  "requested_version": "%s",\n' "${VERSION:-latest}"
-    printf '  "arch": "%s",\n' "$ARCH"
+    printf '  "remote_arch": "%s",\n' "$ARCH"
     printf '  "built_at_utc": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '  "cli_artifact": "cli.tar.gz",\n'
-    printf '  "cli_sha256": "%s",\n' "$cli_sha"
-    if [ -n "$srv_file" ]; then
-      printf '  "server_artifact": "server-web.tar.gz",\n'
-      printf '  "server_sha256": "%s",\n' "$srv_sha"
+    printf '  "server_artifact": "server-linux-x64.tar.gz",\n'
+    printf '  "server_sha256": "%s",\n' "$srv_sha"
+    printf '  "server_sha256_source": "%s",\n' "$srv_src"
+    printf '  "client_linux_artifact": "vscode-linux-x64.tar.gz",\n'
+    printf '  "client_linux_sha256": "%s",\n' "$lin_sha"
+    printf '  "client_linux_sha256_source": "%s",\n' "$lin_src"
+    printf '  "client_windows_artifact": "%s",\n' "$win_file_name"
+    printf '  "client_windows_sha256": "%s",\n' "$win_sha"
+    printf '  "client_windows_sha256_source": "%s",\n' "$win_src"
+    if [ -n "$cli_sha" ]; then
+      printf '  "cli_artifact": "cli.tar.gz",\n'
+      printf '  "cli_sha256": "%s",\n' "$cli_sha"
+      printf '  "cli_sha256_source": "%s",\n' "$cli_src"
     else
-      printf '  "server_artifact": null,\n'
-      printf '  "server_sha256": null,\n'
+      printf '  "cli_artifact": null,\n'
+    fi
+    if [ -n "$srvweb_sha" ]; then
+      printf '  "server_web_artifact": "server-web.tar.gz",\n'
+      printf '  "server_web_sha256": "%s",\n' "$srvweb_sha"
+      printf '  "server_web_sha256_source": "%s",\n' "$srvweb_src"
+    else
+      printf '  "server_web_artifact": null,\n'
     fi
     printf '  "extensions": ['
     local i=0
-    for ext in "${ext_list[@]:-}"; do
-      [ -n "$ext" ] || continue
-      [ $i -gt 0 ] && printf ','
-      printf '\n    {"id": "%s", "sha256": "%s"}' "$ext" "$(sha256_of "$ext_dir/$ext.vsix")"
+    for r in "${ext_results[@]:-}"; do
+      [ -n "$r" ] || continue
+      [ "$i" -gt 0 ] && printf ','
+      printf '\n    %s' "$r"
       i=$((i+1))
     done
-    [ $i -gt 0 ] && printf '\n  '
+    [ "$i" -gt 0 ] && printf '\n  '
     printf ']\n'
     printf '}\n'
   } > "$manifest"
@@ -406,8 +777,9 @@ run_bundle() {
   mkdir -p "$(dirname "$BUNDLE_PATH")"
   tar -C "$_STAGE_DIR" -czf "$BUNDLE_PATH" .
   log "bundle written: $BUNDLE_PATH ($(du -h "$BUNDLE_PATH" | awk '{print $1}'))"
-  log "carry this file across the air gap, then run:"
-  log "  $SELF --mode offline --bundle-path <path-to-bundle> --bind 0.0.0.0 --port $PORT"
+  log "carry this file across the air gap, log in as the SAME user Remote-SSH" \
+      "will connect as, then run:"
+  log "  $SELF --mode offline --bundle-path <path-to-bundle>"
 }
 
 # ── ONLINE mode ────────────────────────────────────────────────────────────
@@ -435,29 +807,33 @@ run_offline() {
   tar -C "$_STAGE_DIR" -xzf "$BUNDLE_PATH"
   [ -f "$_STAGE_DIR/versions.json" ] || die "bundle is missing versions.json — not built by this script?"
 
-  local expect_cli_sha expect_srv_sha srv_artifact
-  expect_cli_sha="$(json_field "$_STAGE_DIR/versions.json" cli_sha256)"
-  expect_srv_sha="$(json_field "$_STAGE_DIR/versions.json" server_sha256)"
-  srv_artifact="$(json_field "$_STAGE_DIR/versions.json" server_artifact)"
-
-  local got
-  got="$(sha256_of "$_STAGE_DIR/cli.tar.gz")"
-  [ "$got" = "$expect_cli_sha" ] || die "sha256 mismatch for cli.tar.gz: expected $expect_cli_sha got $got — bundle is corrupt or tampered, refusing to install"
-  log "cli.tar.gz sha256 OK"
-
-  if [ -n "$srv_artifact" ] && [ "$srv_artifact" != "null" ]; then
-    got="$(sha256_of "$_STAGE_DIR/server-web.tar.gz")"
-    [ "$got" = "$expect_srv_sha" ] || die "sha256 mismatch for server-web.tar.gz: expected $expect_srv_sha got $got — bundle is corrupt or tampered, refusing to install"
-    log "server-web.tar.gz sha256 OK"
-  else
-    warn "bundle has no server artifact for this arch — CLI-only install (cannot run serve-web here)"
-  fi
+  verify_artifact_sha "$_STAGE_DIR" server_artifact server_sha256 || die "sha256 mismatch on the Remote-SSH server artifact — bundle is corrupt or tampered, refusing to install"
+  verify_artifact_sha "$_STAGE_DIR" client_linux_artifact client_linux_sha256 || die "sha256 mismatch on the Linux client artifact — refusing to install"
+  verify_artifact_sha "$_STAGE_DIR" client_windows_artifact client_windows_sha256 || die "sha256 mismatch on the Windows client artifact — refusing to install"
+  verify_artifact_sha "$_STAGE_DIR" cli_artifact cli_sha256 || true
+  verify_artifact_sha "$_STAGE_DIR" server_web_artifact server_web_sha256 || true
+  log "all bundled artifacts sha256-verified against versions.json"
 
   if [ "$ACTION" = "tunnel" ]; then
-    die "--tunnel is not supported in offline mode: Remote Tunnels requires an outbound connection to Microsoft's relay, which by definition is not available on an air-gapped host. Use serve-web (the default) instead — see --help LIMITATIONS."
+    die "--tunnel is not supported in offline mode: Remote Tunnels requires an outbound connection to Microsoft's relay, which by definition is not available on an air-gapped host. See --help LIMITATIONS."
   fi
 
   install_from_stage "$_STAGE_DIR"
+}
+
+# verify_artifact_sha <stage_dir> <artifact-field> <sha-field>
+# Returns 0 (verified) / 1 (field is null, i.e. that optional artifact
+# wasn't bundled — not an error) / dies on an actual mismatch.
+verify_artifact_sha() {
+  local stage_dir="$1" artifact_field="$2" sha_field="$3"
+  local artifact sha
+  artifact="$(json_field "$stage_dir/versions.json" "$artifact_field")"
+  [ -n "$artifact" ] && [ "$artifact" != "null" ] || return 1
+  sha="$(json_field "$stage_dir/versions.json" "$sha_field")"
+  local got
+  got="$(sha256_of "$stage_dir/$artifact")"
+  [ "$got" = "$sha" ] || die "sha256 mismatch for $artifact: expected $sha got $got"
+  log "$artifact sha256 OK"
 }
 
 # tiny JSON scalar-field reader (no jq dependency) — good enough for our own
@@ -471,34 +847,65 @@ json_field() {
 # ── Shared install step (used by online + offline) ───────────────────────
 install_from_stage() {
   local stage_dir="$1"
-  mkdir -p "$INSTALL_DIR/cli" "$INSTALL_DIR/server"
+  local commit
+  commit="$(json_field "$stage_dir/versions.json" commit)"
+  [ -n "$commit" ] || die "versions.json has no commit field"
 
-  log "installing CLI into $INSTALL_DIR/cli"
-  tar -C "$INSTALL_DIR/cli" -xzf "$stage_dir/cli.tar.gz"
-  local cli_bin
-  cli_bin="$(find "$INSTALL_DIR/cli" -maxdepth 1 -type f -name 'code' | head -1)"
-  [ -n "$cli_bin" ] || die "extracted CLI tarball did not contain a 'code' binary"
-  chmod +x "$cli_bin"
+  # THE critical path: extract straight into INSTALL_DIR/bin/<commit>/ —
+  # exactly where Remote-SSH looks on its own. The tarball's single
+  # top-level dir (vscode-server-linux-x64/) is stripped so its CONTENTS
+  # (node, bin/, out/, product.json, ...) land directly in <commit>/.
+  # Verified live (2026-08-17) against the real tarball layout — see
+  # docs/reference/download-urls.md.
+  local server_bin_dir="$INSTALL_DIR/bin/$commit"
+  if [ -f "$server_bin_dir/product.json" ]; then
+    log "Remote-SSH server for commit ${commit:0:12}... already present at $server_bin_dir — leaving in place"
+  else
+    mkdir -p "$server_bin_dir"
+    log "installing Remote-SSH server (commit ${commit:0:12}...) -> $server_bin_dir"
+    tar -C "$server_bin_dir" --strip-components=1 -xzf "$stage_dir/server-linux-x64.tar.gz"
+    [ -f "$server_bin_dir/product.json" ] || die "extracted server tree has no product.json at the expected depth — layout assumption is wrong, refusing to claim success"
+    [ -x "$server_bin_dir/bin/code-server" ] || warn "bin/code-server is not executable after extraction (tar should preserve the mode bit — check the archive)"
+  fi
 
+  # Client installers: STAGED for the operator, never "installed" here —
+  # a Windows .exe can't run on this host, and the Linux tarball is meant
+  # for operator laptops, not the remote itself.
+  local client_dir="$INSTALL_DIR/client-installers"
+  mkdir -p "$client_dir"
+  cp -f "$stage_dir"/vscode-linux-x64.tar.gz "$client_dir/" 2>/dev/null || true
+  cp -f "$stage_dir"/VSCodeUserSetup-x64-*.exe "$client_dir/" 2>/dev/null || true
+  log "client installers staged at $client_dir — install ONE of these on the" \
+      "operator's laptop (matches commit ${commit:0:12}... exactly; a" \
+      "mismatched client commit is what makes Remote-SSH try to download a" \
+      "server over the wire):"
+  log "  Linux:   tar -xzf vscode-linux-x64.tar.gz && ./VSCode-linux-x64/bin/code"
+  log "  Windows: run VSCodeUserSetup-x64-*.exe (per-user, no admin rights needed)"
+
+  # Optional CLI (for --serve-web / --tunnel)
+  local cli_bin=""
+  if [ -f "$stage_dir/cli.tar.gz" ]; then
+    mkdir -p "$INSTALL_DIR/cli"
+    log "installing CLI into $INSTALL_DIR/cli"
+    tar -C "$INSTALL_DIR/cli" -xzf "$stage_dir/cli.tar.gz"
+    cli_bin="$(find "$INSTALL_DIR/cli" -maxdepth 1 -type f -name 'code' | head -1)"
+    [ -n "$cli_bin" ] && chmod +x "$cli_bin"
+  fi
   if [ -f "$stage_dir/server-web.tar.gz" ]; then
-    log "installing server-web into $INSTALL_DIR/server"
-    tar -C "$INSTALL_DIR/server" -xzf "$stage_dir/server-web.tar.gz"
+    mkdir -p "$INSTALL_DIR/server-web"
+    log "installing server-web into $INSTALL_DIR/server-web"
+    tar -C "$INSTALL_DIR/server-web" -xzf "$stage_dir/server-web.tar.gz"
   fi
 
   if [ -d "$stage_dir/extensions" ] && [ -n "$(ls -A "$stage_dir/extensions" 2>/dev/null)" ]; then
-    # `code --install-extension` targets the CLI's OWN version-managed
-    # install (see docs/reference/download-urls.md "extension install
-    # gap") — it does NOT reliably reach a separately-extracted
-    # server-web tree the way this script lays one out. Verified live
-    # (2026-08-17): it fails with "No installation of Visual Studio Code
-    # stable was found" against exactly this layout. Rather than pretend
-    # that works, copy the vsix files somewhere durable and tell the
-    # operator the one path that IS standard VS Code behaviour: the Web
-    # UI's own Extensions view -> "Install from VSIX...".
+    # `code --install-extension` targets a version-managed CLI install and
+    # does NOT reliably reach a bare extracted server tree — verified live
+    # (2026-08-17, see docs/reference/download-urls.md). Stage the VSIX
+    # files and tell the operator the standard, supported path.
     mkdir -p "$INSTALL_DIR/extensions-to-install"
     cp -f "$stage_dir"/extensions/*.vsix "$INSTALL_DIR/extensions-to-install/"
     log "extensions staged (not auto-installed — see below): $INSTALL_DIR/extensions-to-install"
-    log "  once connected, open the Extensions view in the browser and use" \
+    log "  once connected via Remote-SSH, open the Extensions view and use" \
         "'Install from VSIX...' for each file in that directory."
   fi
 
@@ -506,14 +913,22 @@ install_from_stage() {
   log "install complete. versions: $INSTALL_DIR/versions.json"
 
   if [ "$DOWNLOAD_ONLY" -eq 1 ]; then
-    log "--download-only set: not starting a server"
+    log "--download-only set: not starting anything"
     return
   fi
 
   if [ "$ACTION" = "tunnel" ]; then
+    [ -n "$cli_bin" ] || die "internal error: --tunnel requested but no CLI was staged"
     start_tunnel "$cli_bin"
-  elif [ "$START_AFTER_INSTALL" -eq 1 ]; then
-    start_serve_web "$cli_bin"
+  elif [ "$WITH_SERVE_WEB" -eq 1 ] && [ "$START_AFTER_INSTALL" -eq 1 ]; then
+    local sw_bin
+    sw_bin="$(find "$INSTALL_DIR/cli" -maxdepth 1 -type f -name 'code' | head -1)"
+    [ -n "$sw_bin" ] || die "internal error: --serve-web requested but no CLI was staged"
+    start_serve_web "$sw_bin"
+  else
+    log "Remote-SSH server is staged and ready. Connect from an operator" \
+        "laptop with a matching-commit VS Code client — see" \
+        "$SELF --emit-ssh-config and docs/runbooks/remote-ssh-realm-otp.md."
   fi
 }
 
@@ -541,7 +956,7 @@ start_serve_web() {
   local cli_bin="$1"
   local tok
   tok="$(resolve_token)"
-  log "starting serve-web on ${BIND_ADDR}:${PORT}"
+  log "starting serve-web on ${BIND_ADDR}:${PORT} (secondary path — primary is Remote-SSH)"
   local args=(serve-web --host "$BIND_ADDR" --port "$PORT" --server-data-dir "$INSTALL_DIR/server-data")
   if [ "$tok" = "__NONE__" ]; then
     warn "TOKEN=none: starting WITHOUT a connection token (--without-connection-token)." \
@@ -572,7 +987,89 @@ run_status() {
   echo "install dir : $INSTALL_DIR"
   echo "versions    : $INSTALL_DIR/versions.json"
   cat "$INSTALL_DIR/versions.json"
+  echo
+  local commit
+  commit="$(json_field "$INSTALL_DIR/versions.json" commit)"
+  if [ -n "$commit" ] && [ -d "$INSTALL_DIR/bin/$commit" ]; then
+    echo "server dir  : $INSTALL_DIR/bin/$commit (present)"
+  fi
   [ -f "$INSTALL_DIR/serve-web.token" ] && echo "token file  : $INSTALL_DIR/serve-web.token (present, not shown)"
+}
+
+# ── emit-ssh-config ────────────────────────────────────────────────────
+run_emit_ssh_config() {
+  mkdir -p "$INSTALL_DIR"
+  local ssh_out="$INSTALL_DIR/ssh-config.example"
+  local settings_out="$INSTALL_DIR/settings.json.example"
+  write_ssh_config_example > "$ssh_out"
+  write_settings_json_example > "$settings_out"
+  log "wrote $ssh_out"
+  log "wrote $settings_out"
+  log "see docs/runbooks/remote-ssh-realm-otp.md for the full rationale" \
+      "behind every line."
+}
+
+write_ssh_config_example() {
+  cat <<'EOF'
+# Example ~/.ssh/config entry for an air-gapped Remote-SSH host with realm
+# (GSSAPI/Kerberos) authentication AND a keyboard-interactive OTP factor,
+# through port 22 only. See docs/runbooks/remote-ssh-realm-otp.md.
+#
+# Replace airgapped-host / airgapped-host.example.realm with your actual
+# hostname before use.
+
+Host airgapped-host
+    HostName airgapped-host.example.realm
+    User youruser
+    Port 22
+
+    # Realm first, OTP as the interactive fallback. Pubkey is NOT the only
+    # method and is not required — omit it entirely if your policy forbids
+    # keys on this host, or leave it last as a convenience for hosts where
+    # it's also allowed.
+    PreferredAuthentications gssapi-with-mic,keyboard-interactive,password
+    GSSAPIAuthentication yes
+    GSSAPIDelegateCredentials yes
+    PubkeyAuthentication no
+
+    # ControlMaster multiplexing can swallow or misroute the
+    # keyboard-interactive OTP prompt on later connections that reuse the
+    # master — turn it off for this host.
+    ControlMaster no
+    ControlPath none
+
+    # No ProxyJump / extra listeners — only port 22 on this host is open.
+    # ProxyJump bastion.example.realm   # <- do NOT add unless your network
+                                         #    actually requires a jump host.
+EOF
+}
+
+write_settings_json_example() {
+  cat <<'EOF'
+{
+  "//": "Merge these into your VS Code user settings.json. See docs/runbooks/remote-ssh-realm-otp.md for why each one is set this way — verified live against the Remote-SSH extension's own current package.json (2026-08-17).",
+
+  "remote.SSH.showLoginTerminal": true,
+  "// showLoginTerminal": "Reveals the terminal for every SSH command Remote-SSH runs, so the GSSAPI/OTP keyboard-interactive prompt is actually visible instead of silently hanging in a background process.",
+
+  "remote.SSH.useLocalServer": false,
+  "// useLocalServer": "Disables the shared-connection-across-windows multiplexing mode. That mode authenticates once and reuses the connection — fine for a password, unreliable for a keyboard-interactive OTP prompt that needs a live terminal on every distinct auth. Costs you more frequent OTP entry; buys you prompts that actually work.",
+
+  "remote.SSH.remotePlatform": { "airgapped-host": "linux" },
+  "// remotePlatform": "Skips a remote OS-detection round trip. The extension's own docs note this setting becomes closer to required once useLocalServer is disabled (as above) — set both together. Replace 'airgapped-host' with your actual Host alias from ssh-config.example.",
+
+  "remote.SSH.lockfilesInTmp": true,
+  "// lockfilesInTmp": "Keeps lockfiles in /tmp instead of inside the server's install folder — matters if the remote home directory is NFS or another distributed filesystem with locking quirks. Harmless to leave on otherwise.",
+
+  "remote.SSH.useExecServer": false,
+  "// useExecServer": "Defaults to true in the current extension (verified live, 2026-08-17) and switches connection bootstrapping to a newer mode described only as 'toggled off in the event of connection issues'. Turned off here so the connection uses the classic bootstrap path this tool's pre-staged ~/.vscode-server/bin/<commit>/ layout is proven against, rather than a less-documented alternate path.",
+
+  "remote.SSH.connectTimeout": 30,
+  "// connectTimeout": "Default is 15s; raised because a realm+OTP login round trip (Kerberos ticket check + waiting on a human to type a code) routinely takes longer than a plain key-based connect.",
+
+  "//NOT_SET allowLocalServerDownload": "Deliberately left at its default (true). Verified live: this only controls a client-downloads-then-scps FALLBACK path if a REMOTE-side download fails — it does not mean 'never try to download'. The actual fail-closed mechanism is that this tool pre-stages the exact matching commit at ~/.vscode-server/bin/<commit>/ before you ever connect, so Remote-SSH's own existing-install check finds it and skips downloading in the first place. See the LIMITATIONS section of `vscode-airgap.sh --help`."
+}
+EOF
 }
 
 # ── Dispatch ───────────────────────────────────────────────────────────
@@ -580,8 +1077,12 @@ if [ "$ACTION" = "status" ]; then
   run_status
   exit 0
 fi
+if [ "$ACTION" = "emit-ssh-config" ]; then
+  run_emit_ssh_config
+  exit 0
+fi
 
-log "mode=$MODE channel=$CHANNEL arch=$ARCH install_dir=$INSTALL_DIR"
+log "mode=$MODE channel=$CHANNEL remote_arch=$ARCH install_dir=$INSTALL_DIR"
 case "$MODE" in
   online)  run_online ;;
   bundle)  run_bundle ;;

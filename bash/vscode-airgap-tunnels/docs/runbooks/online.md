@@ -1,27 +1,35 @@
 # Runbook: online mode (internet-connected host)
 
-Use this when the target host has outbound HTTPS, directly or via a proxy.
+Use this on a machine with outbound HTTPS to prepare an air-gapped
+Remote-SSH connection, or optionally to run the secondary serve-web/tunnel
+paths.
 
-## 1. Straight install + start (latest stable, localhost only)
+## 1. Straight install (latest stable, primary Remote-SSH path)
 
 ```bash
 ./bin/vscode-airgap.sh --mode online
 ```
 
-- Resolves the latest `stable` commit from `update.code.visualstudio.com`.
-- Downloads the CLI + `server-linux-*-web` tarball for the detected arch.
-- Installs into `~/.vscode-server` (override with `--install-dir`).
-- Generates a random connection token at
-  `~/.vscode-server/serve-web.token` (chmod 600, never printed).
-- Starts `code serve-web --host 127.0.0.1 --port 8000`.
+- Resolves the latest `stable` release for `server-linux-x64`
+  (Remote-SSH's classic server — mandatory), the Linux x64 desktop
+  tarball, and the Windows x64 User Setup (both mandatory client
+  installers, commit-matched to the server).
+- Installs the server at `~/.vscode-server/bin/<commit>/` — the exact
+  path Remote-SSH looks for on its own.
+- Stages the client installers at `~/.vscode-server/client-installers/`
+  and prints install instructions for the operator's laptop.
 
-Connect from the same host: `http://127.0.0.1:8000`, paste the token from
-the token file.
+This is meant to run **on the air-gapped host itself**, as the same user
+Remote-SSH will connect as — see `docs/runbooks/airgap.md` for the actual
+air-gap flow (bundle here, install there with zero network). Running it
+directly online-mode-on-the-target only makes sense if that host
+genuinely has (or temporarily has) internet access.
 
 ## 2. Behind an egress proxy
 
-The script does nothing special for proxies — curl reads the standard
-environment variables natively:
+The script does nothing special for proxies — curl and Python's urllib
+(used for extension queries) both read the standard environment variables
+natively:
 
 ```bash
 export HTTPS_PROXY=http://proxy.example:3128
@@ -29,17 +37,20 @@ export NO_PROXY=localhost,127.0.0.1,.internal.example
 ./bin/vscode-airgap.sh --mode online
 ```
 
-## 3. Pin an exact commit and expose on the LAN
+## 3. Pin an exact commit + bundle a set of extensions
 
 ```bash
 ./bin/vscode-airgap.sh --mode online \
   --commit a5b500951314efd502d07465bd138dfbd714a960 \
-  --bind 0.0.0.0 --port 8000
+  --extensions-file team-extensions.txt \
+  --extensions ms-python.python
 ```
 
-`--bind 0.0.0.0` exposes serve-web to the whole LAN with only the
-connection-token as auth and no TLS. Prefer the SSH-port-forward pattern in
-`docs/runbooks/airgap.md` unless the LAN is already trusted.
+`--extensions-file` is a newline-delimited list of `publisher.name` IDs
+(`#` comments and blank lines ignored); unioned with `--extensions`
+(comma list), duplicates deduped. Each is resolved to the newest version
+whose declared VS Code engine range accepts the bundled version — not a
+stale pin. See `docs/reference/download-urls.md` for exactly how.
 
 ## 4. Real Remote Tunnels (needs internet + a Microsoft/GitHub account)
 
@@ -47,23 +58,42 @@ connection-token as auth and no TLS. Prefer the SSH-port-forward pattern in
 ./bin/vscode-airgap.sh --mode online --tunnel
 ```
 
-This runs `code tunnel` after install instead of `serve-web`. It will print
-a device-code URL/login prompt on first run (interactive — not suitable for
-unattended automation) and then keep an outbound connection open to
-Microsoft's tunnel relay for as long as it runs. This is the feature most
-people mean by "VS Code Remote Tunnels"; it is **not** what makes this tool
-useful for air-gapped hosts — see `docs/runbooks/airgap.md` for that case.
+Fetches a CLI matching **this machine's** architecture and runs
+`code tunnel` after install. Interactive on first run (device-code
+login) — not suitable for unattended automation. This is the feature
+most people mean by "VS Code Remote Tunnels"; it needs live internet on
+this host for the lifetime of the tunnel and is not what makes this tool
+useful for an actually air-gapped host — see
+`docs/runbooks/remote-ssh-realm-otp.md` for that.
 
-## 5. Download only, install later
+## 5. Optional: `serve-web` instead of / alongside Remote-SSH
+
+```bash
+./bin/vscode-airgap.sh --mode online --serve-web
+```
+
+Also fetches CLI + server-web (matching **this machine's** architecture,
+not `--arch`) and starts `code serve-web` bound to `BIND_ADDR:PORT`
+(default `127.0.0.1:8000`) after install. Still stages the Remote-SSH
+server too — the two paths aren't mutually exclusive, `--serve-web` is
+additive.
+
+## 6. Download only, install/start later
 
 ```bash
 ./bin/vscode-airgap.sh --mode online --download-only
 ```
 
-Fetches and verifies (self-computed sha256) into
-`INSTALL_DIR/.download-cache` without starting anything.
+## 7. Print the SSH/VS Code config templates
 
-## 6. Check what's installed
+```bash
+./bin/vscode-airgap.sh --emit-ssh-config
+```
+
+Standalone — no `--mode` or network needed. See
+`docs/runbooks/remote-ssh-realm-otp.md`.
+
+## 8. Check what's installed
 
 ```bash
 ./bin/vscode-airgap.sh --status --install-dir ~/.vscode-server

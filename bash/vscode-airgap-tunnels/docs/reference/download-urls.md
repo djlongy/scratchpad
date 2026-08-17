@@ -33,27 +33,44 @@ follows it transparently.
 
 ### Platform segments this tool uses
 
-| Segment | Arch | Contains |
+| Segment | Fetched when | Contains |
 |---|---|---|
-| `cli-linux-x64` | linux-x64 | `code` CLI binary (`vscode_cli_linux_x64_cli.tar.gz`) |
-| `cli-linux-arm64` | linux-arm64 | `code` CLI binary |
-| `cli-linux-armhf` | linux-armhf | `code` CLI binary |
-| `cli-alpine-x64` | alpine-x64 (musl) | `code` CLI binary |
-| `cli-alpine-arm64` | alpine-arm64 (musl) | `code` CLI binary |
-| `cli-darwin-x64` | darwin-x64 | `code` CLI binary (client-only, no server) |
-| `cli-darwin-arm64` | darwin-arm64 | `code` CLI binary (client-only, no server) |
-| `server-linux-x64-web` | linux-x64 | VS Code Server + built-in web UI (what `code serve-web` runs) |
-| `server-linux-arm64-web` | linux-arm64 | same, arm64 |
-| `server-linux-armhf-web` | linux-armhf | same, armhf |
-| `server-linux-alpine-web` | alpine-x64 | same, musl |
-| `server-linux-x64` (no `-web`) | linux-x64 | classic Remote-SSH server (no bundled web UI) |
+| `server-linux-x64` | always (mandatory) | classic Remote-SSH server — no bundled web UI, this is what a real Remote-SSH auto-install produces. Also `server-linux-arm64`/`-armhf`/`server-linux-alpine` for other `--arch` values. |
+| `linux-x64` | always (mandatory) | Linux x64 **desktop** tarball, portable/extract-and-run (`code-stable-x64-<ts>.tar.gz`) — the client installer, commit-matched to the staged server. |
+| `win32-x64-user` | always (mandatory) | Windows x64 **User Setup** (`VSCodeUserSetup-x64-<ver>.exe`) — per-user install, no admin rights needed. |
+| `cli-linux-<local-arch>` | `--serve-web` or `--tunnel` | `code` CLI binary. Uses the arch of the machine RUNNING this script (`LOCAL_ARCH`), not `--arch` (the remote server's arch) — see the arch-mismatch gotcha below. |
+| `server-linux-<local-arch>-web` | `--serve-web` | VS Code Server + built-in web UI (what `code serve-web` runs). Same `LOCAL_ARCH` rule as the CLI. |
 
-There is no `server-*-web` artifact for darwin or armhf — those are
-client-only architectures in Microsoft's build matrix, matching a Mac used
-to run the `code` CLI to *connect out*, never to host `serve-web`/tunnels
-itself. This script errors clearly if you ask for a server-web artifact on
-one of those (see `server_web_platform_segment()` in
-`bin/vscode-airgap.sh`).
+There is no `server-*-web` (or classic `server-linux-*`) artifact for
+darwin or armhf — those are client-only architectures in Microsoft's
+build matrix. `--arch` (the mandatory remote-server artifact) only
+accepts `linux-x64`/`linux-arm64`/`linux-armhf`/`alpine-x64` for this
+reason; darwin only ever appears as a `LOCAL_ARCH` value for the
+optional CLI/serve-web fetch when this script itself runs on a Mac.
+
+### The `ARCH` vs `LOCAL_ARCH` split (found in live testing, 2026-08-17)
+
+v1 of this tool auto-detected one `ARCH` from `uname` and used it for
+everything. That broke the moment the primary artifact set became fixed
+(mandatory `linux-x64` server + client installers, regardless of what's
+running the script) while `--serve-web`/`--tunnel` still need to fetch a
+CLI/server-web that matches **this machine**, which is very often a
+*different* architecture than the remote target (e.g. building a bundle
+for an x86_64 remote on an Apple Silicon Mac, or in this case, an arm64
+Colima container). Reproduced directly: with `ARCH` defaulted to
+`linux-x64` and reused for `--serve-web` on an arm64 Colima host,
+`code serve-web` exec'd an x86_64 binary and Rosetta failed it outright:
+
+```
+rosetta error: failed to open elf at /lib64/ld-linux-x86-64.so.2
+```
+
+Fixed by splitting the two concerns: `ARCH`/`--arch` now means *only*
+"the remote Linux host's arch" (mandatory server artifact, default
+`linux-x64`, never auto-detected from `uname` — pass `--arch auto` to
+opt back into that for the secondary `--serve-web`-on-this-host case),
+and a separate `LOCAL_ARCH` (always `uname`-detected, no override flag)
+drives the CLI/server-web fetch for `--serve-web`/`--tunnel`.
 
 ### Example (verified live)
 
@@ -65,23 +82,84 @@ HTTP/1.1 200 OK
 Content-Disposition: attachment; filename=vscode-server-linux-x64-web.tar.gz
 ```
 
-## Checksums — the honest gap
+## Checksums — corrected 2026-08-17 (was wrongly documented as a gap)
 
-Microsoft's desktop build endpoint,
-`GET /api/update/<platform>/<channel>/latest`, DOES return a `sha256hash`
-field — but that's for the desktop `code-stable-*` installer, a different
-artifact family from `cli-*`/`server-*-web`, which this tool uses. As of
-this writing there is **no published checksum file** for the CLI or
-server-web tarballs at the commit-pinned URLs above.
+**This section previously claimed no checksum exists for the CLI/server
+artifact family. That was wrong — verified live and corrected.**
 
-This tool does not pretend otherwise. It computes its own sha256 of every
-artifact **at download time** (on the online/bundle side) and pins that
-value into the bundle's `versions.json`. `--mode offline` verifies every
-extracted artifact against that manifest before touching `INSTALL_DIR`, and
-refuses to install on a mismatch. That's a self-consistent chain of
-custody (bundle-builder → bundle → installer), not independent
-Microsoft-issued attestation — say so if anyone asks "did you verify the
-checksum against Microsoft's".
+```
+GET https://update.code.visualstudio.com/api/update/<platform-segment>/<channel>/latest
+```
+
+Returns Microsoft-published metadata **for every platform segment this
+tool uses**, not just the desktop build — confirmed live for
+`server-linux-x64`, `server-linux-x64-web`, `cli-linux-x64`, `linux-x64`,
+and `win32-x64-user` alike:
+
+```json
+{
+  "url": "https://vscode.download.prss.microsoft.com/.../vscode-server-linux-x64.tar.gz",
+  "name": "1.133.0",
+  "version": "a5b500951314efd502d07465bd138dfbd714a960",
+  "productVersion": "1.133.0",
+  "sha256hash": "6aa31693bb05b8cb07c939f19112548fbef5752f905fb5834e26493b9619a430",
+  ...
+}
+```
+
+**Field-name gotcha, found the hard way:** in this JSON, `"version"` is
+actually the **commit hash**, and the real semver lives under
+`"productVersion"` (or `"name"`). A first implementation read `"version"`
+expecting a semver and got a commit hash back — silently correct-looking
+(both are strings) until it showed up as a filename:
+`VSCodeUserSetup-x64-a5b500951314efd502d07465bd138dfbd714a960.exe`
+instead of `VSCodeUserSetup-x64-1.133.0.exe`. Fixed by reading
+`productVersion`; `resolve_artifact_meta()`'s own read of `"version"` as
+the commit is correct on its own terms — the bug was specifically in the
+separate semver-resolution helper, `resolve_version_for_commit()`.
+
+This tool now uses this endpoint as the **primary** checksum source —
+`server_sha256_source`/`client_linux_sha256_source`/etc in `versions.json`
+record `"microsoft"` when it came from here. It only serves the
+**current latest** build per platform (confirmed live: passing an older
+commit where "latest" goes 204s — an update-check semantic, not a
+historical lookup), so an explicit `--commit` pin falls back to
+constructing the direct commit-pinned URL and self-computing sha256
+instead, recorded as `"self"` in the same manifest fields. Either way,
+`--mode offline` verifies every extracted artifact against
+`versions.json` before touching `INSTALL_DIR` and refuses to install on a
+mismatch — the manifest is honest about which kind of checksum backs
+each artifact rather than presenting both as equivalent.
+
+## Classic Remote-SSH server layout (verified live, 2026-08-17)
+
+`server-linux-x64.tar.gz` extracts to a single top-level directory
+(`vscode-server-linux-x64/`) containing:
+
+```
+vscode-server-linux-x64/
+├── node                    # bundled Node.js runtime, executable
+├── product.json            # {"commit": "...", "version": "1.133.0", ...}
+├── package.json
+├── bin/
+│   ├── code-server          # executable — the actual server entrypoint
+│   ├── remote-cli/code
+│   └── helpers/
+├── out/
+│   ├── server-main.js
+│   └── ...
+├── extensions/              # ~38 built-in extensions, ships with the server
+└── node_modules/
+```
+
+Remote-SSH expects this content **directly inside**
+`~/.vscode-server/bin/<commit>/` (commit taken from `product.json`) — so
+this tool extracts with `tar --strip-components=1` to drop the
+`vscode-server-linux-x64/` wrapper directory, then asserts `product.json`
+exists and `bin/code-server` is executable before claiming success. This
+is the single most load-bearing detail in the whole tool: get this
+directory wrong and Remote-SSH falls back to trying a download, which is
+exactly the failure mode air-gapping is meant to prevent.
 
 ## Semver → commit: also a gap
 
@@ -149,14 +227,59 @@ DNS in `--mode offline`. If your policy requires zero attempted egress
 Microsoft-built `code` binary's own runtime, not from this script, and
 isn't something this tool can suppress from the outside.
 
-## Marketplace extension downloads (air-gap bundling)
+## Marketplace extension downloads: engine-matched, not a blind "latest"
+
+```
+POST https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery
+Content-Type: application/json
+Accept: application/json;api-version=3.0-preview.1
+
+{"filters":[{"criteria":[{"filterType":7,"value":"<publisher>.<name>"}]}],
+ "flags":19}
+```
+
+`flags: 19` = `IncludeVersions(1) | IncludeFiles(2) |
+IncludeVersionProperties(16)`. Returns every published version (newest
+first per version), each with:
+- `targetPlatform` — many extensions (e.g. `ms-python.python`) ship
+  per-platform builds (`linux-x64`, `win32-x64`, `darwin-arm64`, `web`,
+  ...). This tool prefers the `linux-x64` build when one exists (the
+  remote is a Linux host), falling back to the platform-universal entry
+  (no `targetPlatform` key) otherwise, and skips every other
+  platform-specific variant.
+- `properties` containing `Microsoft.VisualStudio.Code.Engine` — a
+  semver range (almost always `^X.Y.Z` in practice) the extension
+  declares compatibility with.
+- `files` containing a `Microsoft.VisualStudio.Services.VSIXPackage`
+  asset URL — a direct, version-specific `.vsix` download link.
+
+The script walks versions newest-first and downloads the **first one
+whose engine range accepts the bundled VS Code version** (the resolved
+`productVersion` for the pinned/latest commit, e.g. `1.133.0`) — latest
+*compatible*, not an old hardcoded pin, and not blindly "whatever is
+newest regardless of engine". Recorded per-extension in `versions.json`:
+`{"id","version","target_platform","engine","method":"engine-matched"}`.
+
+**Fallback, and when it fires:** if the query itself fails (network
+issue, extension not found, no version satisfies the engine range), the
+script falls back to the simple:
 
 ```
 GET https://marketplace.visualstudio.com/_apis/public/gallery/publishers/<publisher>/vsextensions/<name>/latest/vspackage
 ```
 
-Returns the `.vsix` package directly (also a redirect to a CDN blob in
-practice). No auth required for public extensions. The script downloads
-these on the online/bundle side and installs them offline via
-`code --install-extension <path>.vsix`, which works entirely from the
-local file — no marketplace reachability needed at install time.
+— genuinely "whatever is newest," no engine check — and records
+`"method":"latest-fallback"` so the manifest is honest that
+compatibility wasn't verified for that particular extension. A garbage
+extension id (malformed, or one that doesn't exist on the Marketplace)
+fails loudly through this same path rather than silently producing an
+empty/invalid `.vsix` — verified live with both a malformed id
+(`not-a-valid-id`, rejected before any network call) and a well-formed
+but nonexistent one (`totally-bogus.does-not-exist-xyz-123`, 404s
+through the fallback and the script exits non-zero).
+
+Extension install at the remote is entirely offline — VSIX files are
+staged at `INSTALL_DIR/extensions-to-install/` and installed via the
+connected Web/Desktop client's own "Install from VSIX..." command (see
+the install-gap note above); no marketplace reachability is needed on
+the air-gapped side at any point.
