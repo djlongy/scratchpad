@@ -1,0 +1,295 @@
+---
+# roles/harbor/defaults/main.yml
+# Behavioural defaults for Harbor. Every value here is safe in any environment:
+# identity, credentials, IdP and notification targets are supplied by inventory.
+
+# Role enable gate — set false in host/group_vars to no-op this role
+harbor_enabled: true
+
+# --- Container engine ---------------------------------------------------------
+# docker — Docker Engine with the compose v2 plugin
+# podman — Podman with podman-docker and a compose implementation. Harbor's
+#          prepare step shells out to `docker run`, which the shim satisfies.
+harbor_container_engine: "docker"
+# Command the systemd unit uses to drive compose. Empty derives from the engine.
+harbor_compose_command: ""
+# Socket exported as DOCKER_HOST for the engine. Empty leaves it unset, which is
+# correct for Docker.
+harbor_engine_socket: ""
+# CLI used for `exec` into running containers (backup, verification).
+harbor_engine_cli: ""
+# Harbor generates a compose file that ships every service's logs to its own
+# rsyslog container via Docker's syslog log driver. Engines that do not
+# implement syslog need it rewritten. Empty derives from the engine; set
+# explicitly to force a driver, or to "" on Podman to keep the generated value.
+harbor_compose_log_driver: ""
+
+# --- Install ------------------------------------------------------------------
+
+harbor_version: "v2.14.2"
+# Schema version of harbor.yml, versioned independently of the release tag by
+# upstream. Bump only when the installer rejects the rendered config.
+harbor_config_version: "2.14.0"
+# Where the offline bundle comes from. The bundle carries every container image,
+# so once it is on the target no further egress is needed — which is what makes
+# an air-gapped install possible at all.
+#   url        — fetch from harbor_installer_url (needs egress from the target)
+#   controller — copy from harbor_installer_local_path on the Ansible controller
+#   remote     — already staged on the target; the role only verifies it
+harbor_installer_source: "url"
+harbor_installer_url: >-
+  https://github.com/goharbor/harbor/releases/download/{{ harbor_version }}/harbor-offline-installer-{{ harbor_version }}.tgz
+# Controller-side path used when harbor_installer_source is 'controller'.
+harbor_installer_local_path: ""
+# Optional integrity check, as "<algo>:<hex>" (e.g. "sha256:abc123..."). Applies
+# to every source, so a staged bundle is verified the same as a downloaded one.
+harbor_installer_checksum: ""
+# Download/extract scratch area. Not /tmp: the offline bundle is ~700 MB and
+# tmpfs-backed /tmp cannot hold it on small guests.
+harbor_installer_cache_dir: "/var/cache/harbor"
+harbor_data_dir: "/opt/harbor"
+# Flags passed to Harbor's prepare script, which renders common/ and
+# docker-compose.yml from harbor.yml.
+harbor_prepare_args:
+  - "--with-trivy"
+# Re-render the runtime configuration even when harbor.yml is unchanged.
+harbor_force_reinstall: false
+
+# --- Identity and listeners ---------------------------------------------------
+
+# FQDN clients use to reach the registry. Empty falls back to inventory_hostname.
+harbor_hostname: ""
+# Public URL. Empty derives from the scheme, hostname and port below.
+harbor_external_url: ""
+# Scheme clients use. Stays https when TLS is terminated by an upstream proxy,
+# which is why it is independent of harbor_tls_mode.
+harbor_external_scheme: "https"
+harbor_http_port: 80
+harbor_https_port: 443
+# API base used for bootstrap calls. Empty derives a loopback URL whose scheme
+# follows harbor_tls_mode, so bootstrap does not depend on external DNS or on a
+# reverse proxy being up. When Harbor terminates TLS it redirects plain HTTP,
+# so an http:// base would 308 every call.
+harbor_api_url: ""
+# Loopback never matches a certificate issued for the service FQDN, so
+# verification is off for these calls by default.
+harbor_api_validate_certs: false
+
+# --- TLS ----------------------------------------------------------------------
+
+# none     — plain HTTP; TLS terminated upstream by a reverse proxy
+# provided — Harbor terminates TLS with the cert/key paths below
+harbor_tls_mode: "none"
+harbor_tls_certificate: ""
+harbor_tls_private_key: ""
+harbor_tls_strong_ciphers: false
+
+# --- Credentials --------------------------------------------------------------
+# Both are required. No defaults: the upstream template ships well-known values
+# ("Harbor12345", "root123") and a silent fallback would deploy them.
+
+harbor_admin_username: "admin"
+harbor_admin_password: ""
+harbor_db_password: ""
+
+# --- Authentication -----------------------------------------------------------
+# db_auth   — local Harbor accounts only
+# oidc_auth — any OIDC provider; applied through the configurations API, because
+#             harbor.yml has no auth keys (verified against upstream v2.14.2).
+harbor_auth_mode: "db_auth"
+
+# Display name shown on the Harbor login button.
+harbor_oidc_name: ""
+# Issuer URL. Providers differ in path shape — supply the full issuer.
+harbor_oidc_endpoint: ""
+harbor_oidc_client_id: ""
+harbor_oidc_client_secret: ""
+harbor_oidc_groups_claim: "groups"
+# Directory group whose members are granted Harbor admin, matched against the
+# claim named by harbor_oidc_groups_claim.
+harbor_oidc_admin_group: ""
+harbor_oidc_scope: "openid,profile,email,groups"
+# Claim carrying the username. Empty uses the provider's subject. Providers that
+# issue an opaque subject need an explicit claim here to produce readable names.
+harbor_oidc_user_claim: ""
+harbor_oidc_verify_cert: true
+harbor_oidc_auto_onboard: true
+# Parsed as JSON by Harbor, so an empty string is rejected with "unexpected end
+# of JSON input". Harbor's own default is an empty object.
+harbor_oidc_extra_redirect_parms: "{}"
+# The client secret is never returned by the API, so drift detection cannot see
+# it. Set true for one run to push a rotated secret.
+harbor_oidc_rotate_secret: false
+
+# --- Projects and proxy caches ------------------------------------------------
+
+harbor_proxy_cache_metadata:
+  public: "true"
+  auto_scan: "true"
+  auto_sbom_generation: "true"
+harbor_local_project_metadata:
+  public: "false"
+  auto_scan: "true"
+  auto_sbom_generation: "true"
+
+# Upstream registries mirrored as pull-through caches. `type` is a Harbor
+# adapter name; registries without a dedicated adapter use `docker-hub`.
+harbor_registry_endpoints:
+  - name: docker-hub
+    project_name: docker-hub
+    type: docker-hub
+    url: https://hub.docker.com
+  - name: ghcr
+    project_name: ghcr
+    type: github-ghcr
+    url: https://ghcr.io
+  - name: quay
+    project_name: quay
+    type: docker-hub
+    url: https://quay.io
+  - name: registry-k8s
+    project_name: registry-k8s
+    type: docker-hub
+    url: https://registry.k8s.io
+  - name: mcr
+    project_name: mcr
+    type: docker-hub
+    url: https://mcr.microsoft.com
+
+# Locally-hosted projects. The default is an environment-per-project layout:
+# repository path inside each project is <team>/<image>, and promotion between
+# projects is a cross-project manifest mount that preserves the digest.
+harbor_local_projects:
+  - name: dev
+  - name: prod
+  - name: shared
+
+# --- Promotion controls -------------------------------------------------------
+# Projects on their own are a naming convention. These three make the boundary
+# between environments enforceable: who may write where, what may be overwritten,
+# and what gets cleaned up.
+
+# Scoped machine credentials. Each entry needs a name and permissions; supply the
+# secret rather than letting Harbor generate one, because a generated secret is
+# returned exactly once at creation and cannot be recovered or reconciled after.
+#   - name: ci-push-dev
+#     description: CI pushes builds into the dev project
+#     duration: -1                 # -1 never expires
+#     level: project               # project | system
+#     secret: "{{ vault_harbor_robot_ci_push_dev }}"
+#     permissions:
+#       - kind: project
+#         namespace: dev
+#         access:
+#           - {resource: repository, action: push}
+#           - {resource: repository, action: pull}
+harbor_robot_accounts: []
+# Harbor never returns a robot secret, so a changed value cannot be detected.
+# Set true for one run to push the declared secrets.
+harbor_robot_rotate_secrets: false
+
+# Tag immutability. An artifact matching a rule cannot be overwritten or deleted,
+# which is what stops a promoted release tag being moved underneath consumers.
+#   - project: prod
+#     repositories: "**"           # doublestar pattern
+#     tags: "**"
+harbor_immutability_rules: []
+
+# Tag retention. Rules only ever RETAIN — anything not matched by a rule becomes
+# a deletion candidate on the schedule.
+#   - project: dev
+#     schedule: "0 0 2 * * *"
+#     rules:
+#       - template: latestPushedK
+#         params: {latestPushedK: 20}
+harbor_retention_policies: []
+harbor_retention_default_cron: "0 0 2 * * *"
+
+# --- Outbound webhook ---------------------------------------------------------
+# Registers one webhook policy on every managed project, pointed at an external
+# receiver. Off by default: the receiver is not part of this role.
+
+harbor_webhook_enabled: false
+harbor_webhook_name: "artifact-event-relay"
+harbor_webhook_description: "Forward artifact events to an external receiver"
+harbor_webhook_url: ""
+# Bearer token presented to the receiver. Empty with a Vault base configured
+# falls back to a lookup; see harbor_webhook_vault_secret.
+harbor_webhook_secret: ""
+# Optional HashiCorp Vault fallback, e.g. "kv-dev/data/apps/harbor/runtime:webhook_secret".
+harbor_webhook_vault_secret: ""
+harbor_webhook_skip_cert_verify: false
+# Deletion events let the receiver retire a downstream record instead of
+# leaving it orphaned when an artifact goes away.
+harbor_webhook_event_types:
+  - SCANNING_COMPLETED
+  - DELETE_ARTIFACT
+
+# --- Scheduled vulnerability scan ---------------------------------------------
+
+harbor_scan_all_enabled: true
+harbor_scan_all_schedule_type: "Daily"
+# Harbor uses a six-field cron (seconds first).
+harbor_scan_all_cron: "0 0 3 * * *"
+
+# --- Backup -------------------------------------------------------------------
+
+harbor_backup_enabled: true
+harbor_backup_dir: "/opt/backups/harbor"
+harbor_backup_retention_days: 14
+harbor_backup_script_dir: "/root/scripts"
+harbor_backup_log: "/var/log/harbor-backup.log"
+harbor_backup_hour: "2"
+harbor_backup_minute: "0"
+harbor_backup_db_container: "harbor-db"
+harbor_backup_db_user: "postgres"
+harbor_backup_db_name: "registry"
+
+# --- Engine tuning ------------------------------------------------------------
+# Upstream defaults, exposed so they can be tuned without editing the template.
+
+harbor_database_tuning:
+  max_idle_conns: 100
+  max_open_conns: 900
+  conn_max_lifetime: 5m
+  conn_max_idle_time: 0
+harbor_trivy_config:
+  ignore_unfixed: false
+  skip_update: false
+  skip_java_db_update: false
+  offline_scan: false
+  insecure: false
+  timeout: 5m0s
+harbor_jobservice_config:
+  max_job_workers: 10
+  max_job_duration_hours: 24
+  job_loggers:
+    - STD_OUTPUT
+    - FILE
+  logger_sweeper_duration: 1
+harbor_notification_config:
+  webhook_job_max_retry: 3
+  webhook_job_http_client_timeout: 3
+harbor_log_config:
+  level: info
+  local:
+    rotate_count: 50
+    rotate_size: 200M
+    location: /var/log/harbor
+harbor_upload_purging_config:
+  enabled: true
+  age: 168h
+  interval: 24h
+  dryrun: false
+harbor_cache_config:
+  enabled: false
+  expire_hours: 24
+# Outbound proxy for the components that reach the internet. Empty values are
+# rendered as unset keys.
+harbor_http_proxy: ""
+harbor_https_proxy: ""
+harbor_no_proxy: ""
+harbor_proxy_components:
+  - core
+  - jobservice
+  - trivy

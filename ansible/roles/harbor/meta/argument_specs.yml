@@ -1,0 +1,438 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Harbor registry with OIDC, projects and proxy caches
+    description:
+      - >-
+        Installs Harbor from the official offline bundle under a systemd
+        unit, then applies authentication, proxy-cache registry endpoints,
+        local projects, an outbound webhook and the scheduled scan through the
+        Harbor API.
+      - >-
+        Authentication is applied over the API rather than harbor.yml, which
+        has no auth keys. Any OIDC provider works; nothing here is specific to
+        one identity product.
+      - >-
+        harbor_admin_password and harbor_db_password have no defaults. The
+        upstream template ships well-known values, so a fallback would deploy
+        them silently.
+
+    options:
+      harbor_enabled:
+        type: bool
+        default: true
+        description: Master gate; false makes the role a no-op.
+
+      harbor_container_engine:
+        type: str
+        default: docker
+        choices: [docker, podman]
+        description: >-
+          Container engine driving the stack. Podman additionally needs
+          podman-docker, a compose implementation and an enabled podman.socket,
+          because Harbor's prepare step shells out to docker run.
+
+      harbor_compose_command:
+        type: str
+        default: ""
+        description: Compose command; empty derives from the engine.
+
+      harbor_engine_socket:
+        type: str
+        default: ""
+        description: Socket exported as DOCKER_HOST; empty derives from the engine.
+
+      harbor_engine_cli:
+        type: str
+        default: ""
+        description: CLI used to exec into containers; empty derives from the engine.
+
+      harbor_version:
+        type: str
+        default: "v2.14.2"
+        description: Harbor release tag to install.
+
+      harbor_config_version:
+        type: str
+        default: "2.14.0"
+        description: >-
+          Schema version written as harbor.yml `_version`. Upstream versions it
+          independently of the release tag.
+
+      harbor_installer_url:
+        type: str
+        description: Offline installer URL; templated from harbor_version.
+
+      harbor_installer_cache_dir:
+        type: str
+        default: "/var/cache/harbor"
+        description: Download and extraction area for the installer archive.
+
+      harbor_data_dir:
+        type: str
+        default: "/opt/harbor"
+        description: Install root and data directory.
+
+      harbor_prepare_args:
+        type: list
+        elements: str
+        default: ["--with-trivy"]
+        description: Flags passed to Harbor's prepare script.
+
+      harbor_force_reinstall:
+        type: bool
+        default: false
+        description: Re-render the runtime configuration even when harbor.yml is unchanged.
+
+      harbor_hostname:
+        type: str
+        default: ""
+        description: FQDN clients use; empty falls back to inventory_hostname.
+
+      harbor_external_url:
+        type: str
+        default: ""
+        description: Public URL; empty derives from scheme, hostname and port.
+
+      harbor_external_scheme:
+        type: str
+        default: https
+        choices: [http, https]
+        description: Scheme clients use, independent of where TLS terminates.
+
+      harbor_http_port:
+        type: int
+        default: 80
+        description: HTTP listener port.
+
+      harbor_https_port:
+        type: int
+        default: 443
+        description: HTTPS listener port, used when Harbor terminates TLS.
+
+      harbor_api_url:
+        type: str
+        default: "http://127.0.0.1/api/v2.0"
+        description: API base for bootstrap calls; loopback avoids a DNS dependency.
+
+      harbor_tls_mode:
+        type: str
+        default: none
+        choices: [none, provided]
+        description: >-
+          none leaves TLS to an upstream proxy; provided makes Harbor terminate
+          TLS with the certificate and key below.
+
+      harbor_tls_certificate:
+        type: str
+        default: ""
+        description: Certificate path on the target. Required when the mode is provided.
+
+      harbor_tls_private_key:
+        type: str
+        default: ""
+        description: Private key path on the target. Required when the mode is provided.
+
+      harbor_tls_strong_ciphers:
+        type: bool
+        default: false
+        description: Restrict to the strong cipher suite list.
+
+      harbor_admin_username:
+        type: str
+        default: admin
+        description: Harbor admin username for install and API calls.
+
+      harbor_admin_password:
+        type: str
+        default: ""
+        description: Harbor admin password. Required; supply from a secret store.
+
+      harbor_db_password:
+        type: str
+        default: ""
+        description: Harbor PostgreSQL password. Required; supply from a secret store.
+
+      harbor_auth_mode:
+        type: str
+        default: db_auth
+        choices: [db_auth, oidc_auth]
+        description: >-
+          Applied over the API. Harbor rejects a change once local users other
+          than admin exist.
+
+      harbor_oidc_name:
+        type: str
+        default: ""
+        description: Provider name shown on the Harbor login button.
+
+      harbor_oidc_endpoint:
+        type: str
+        default: ""
+        description: OIDC issuer URL.
+
+      harbor_oidc_client_id:
+        type: str
+        default: ""
+        description: OIDC client ID.
+
+      harbor_oidc_client_secret:
+        type: str
+        default: ""
+        description: OIDC client secret. Never returned by the API.
+
+      harbor_oidc_groups_claim:
+        type: str
+        default: groups
+        description: Claim carrying group membership.
+
+      harbor_oidc_admin_group:
+        type: str
+        default: ""
+        description: Group granted Harbor admin, matched against the groups claim.
+
+      harbor_oidc_scope:
+        type: str
+        default: "openid,profile,email,groups"
+        description: Scopes requested at authorisation.
+
+      harbor_oidc_user_claim:
+        type: str
+        default: ""
+        description: >-
+          Claim carrying the username; empty uses the subject. Providers issuing
+          an opaque subject need this set to produce readable names.
+
+      harbor_oidc_verify_cert:
+        type: bool
+        default: true
+        description: Verify the provider's TLS certificate.
+
+      harbor_oidc_auto_onboard:
+        type: bool
+        default: true
+        description: Create a Harbor user on first successful login.
+
+      harbor_oidc_extra_redirect_parms:
+        type: str
+        default: "{}"
+        description: >-
+          Extra parameters appended to the authorisation redirect, as a JSON
+          object. Harbor parses this field, so an empty string is rejected.
+
+      harbor_oidc_rotate_secret:
+        type: bool
+        default: false
+        description: >-
+          Force a configuration PUT. The client secret is never returned, so
+          rotating it is invisible to drift detection.
+
+      harbor_proxy_cache_metadata:
+        type: dict
+        description: Metadata applied to proxy-cache projects.
+
+      harbor_local_project_metadata:
+        type: dict
+        description: Metadata applied to local projects.
+
+      harbor_registry_endpoints:
+        type: list
+        elements: dict
+        description: >-
+          Upstream registries mirrored as pull-through caches; each entry needs
+          name, project_name, type and url.
+
+      harbor_local_projects:
+        type: list
+        elements: dict
+        description: Locally hosted projects, as a list of {name}.
+
+      harbor_robot_accounts:
+        type: list
+        elements: dict
+        description: >-
+          Scoped robot accounts; each needs name and permissions. Supply secret
+          explicitly — Harbor returns a generated one only once, at creation.
+
+      harbor_robot_rotate_secrets:
+        type: bool
+        default: false
+        description: >-
+          Push the declared robot secrets. Harbor never returns a secret, so
+          rotation cannot be driven by drift detection.
+
+      harbor_immutability_rules:
+        type: list
+        elements: dict
+        description: >-
+          Tag immutability rules per project; matching artifacts cannot be
+          overwritten or deleted.
+
+      harbor_retention_policies:
+        type: list
+        elements: dict
+        description: >-
+          Tag retention policy per project. Rules only retain; unmatched
+          artifacts become deletion candidates on the schedule.
+
+      harbor_retention_default_cron:
+        type: str
+        default: "0 0 2 * * *"
+        description: Six-field cron used when a retention policy sets no schedule.
+
+      harbor_webhook_enabled:
+        type: bool
+        default: false
+        description: Register an outbound webhook on every managed project.
+
+      harbor_webhook_name:
+        type: str
+        default: artifact-event-relay
+        description: Webhook policy name registered in Harbor.
+
+      harbor_webhook_description:
+        type: str
+        default: "Forward artifact events to an external receiver"
+        description: Webhook policy description.
+
+      harbor_webhook_url:
+        type: str
+        default: ""
+        description: Receiver endpoint. Required when the webhook is enabled.
+
+      harbor_webhook_secret:
+        type: str
+        default: ""
+        description: >-
+          Bearer token presented to the receiver. Empty falls back to
+          harbor_webhook_vault_secret.
+
+      harbor_webhook_vault_secret:
+        type: str
+        default: ""
+        description: >-
+          HashiCorp Vault lookup for the webhook secret, as
+          "<mount>/data/<path>:<field>".
+
+      harbor_webhook_skip_cert_verify:
+        type: bool
+        default: false
+        description: Skip TLS verification when calling the receiver.
+
+      harbor_webhook_event_types:
+        type: list
+        elements: str
+        description: Harbor event types delivered to the receiver.
+
+      harbor_scan_all_enabled:
+        type: bool
+        default: true
+        description: Manage the scheduled scan-all job.
+
+      harbor_scan_all_schedule_type:
+        type: str
+        default: Daily
+        description: Harbor schedule type.
+
+      harbor_scan_all_cron:
+        type: str
+        default: "0 0 3 * * *"
+        description: Six-field cron (seconds first) used when the type is Custom.
+
+      harbor_backup_enabled:
+        type: bool
+        default: true
+        description: Install the backup script and cron entry.
+
+      harbor_backup_dir:
+        type: str
+        default: "/opt/backups/harbor"
+        description: Backup output directory.
+
+      harbor_backup_retention_days:
+        type: int
+        default: 14
+        description: Days of backups retained.
+
+      harbor_backup_script_dir:
+        type: str
+        default: "/root/scripts"
+        description: Directory the backup script is installed into.
+
+      harbor_backup_log:
+        type: str
+        default: "/var/log/harbor-backup.log"
+        description: Backup cron log file.
+
+      harbor_backup_hour:
+        type: str
+        default: "2"
+        description: Cron hour for the backup.
+
+      harbor_backup_minute:
+        type: str
+        default: "0"
+        description: Cron minute for the backup.
+
+      harbor_backup_db_container:
+        type: str
+        default: harbor-db
+        description: Container name holding the Harbor database.
+
+      harbor_backup_db_user:
+        type: str
+        default: postgres
+        description: Database user used by pg_dump.
+
+      harbor_backup_db_name:
+        type: str
+        default: registry
+        description: Database dumped by the backup script.
+
+      harbor_database_tuning:
+        type: dict
+        description: Connection-pool settings written to harbor.yml.
+
+      harbor_trivy_config:
+        type: dict
+        description: Trivy scanner settings written to harbor.yml.
+
+      harbor_jobservice_config:
+        type: dict
+        description: Job service settings written to harbor.yml.
+
+      harbor_notification_config:
+        type: dict
+        description: Webhook delivery retry and timeout settings.
+
+      harbor_log_config:
+        type: dict
+        description: Logging settings written to harbor.yml.
+
+      harbor_upload_purging_config:
+        type: dict
+        description: Upload purge settings written to harbor.yml.
+
+      harbor_cache_config:
+        type: dict
+        description: Registry cache settings written to harbor.yml.
+
+      harbor_http_proxy:
+        type: str
+        default: ""
+        description: Outbound HTTP proxy for Harbor components.
+
+      harbor_https_proxy:
+        type: str
+        default: ""
+        description: Outbound HTTPS proxy for Harbor components.
+
+      harbor_no_proxy:
+        type: str
+        default: ""
+        description: Proxy bypass list.
+
+      harbor_proxy_components:
+        type: list
+        elements: str
+        description: Components the proxy settings apply to.

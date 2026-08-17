@@ -1,0 +1,281 @@
+---
+# roles/harbor/tasks/install.yml
+
+- name: Create Harbor directories
+  become: true  # root: creates directories under system paths
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ harbor_data_dir }}"
+    - "{{ harbor_data_dir }}/data"
+    - "{{ harbor_installer_cache_dir }}"
+
+# The bundle is the only artifact that has to reach the target; every container
+# image is inside it. Sourcing it from the controller or from prior staging is
+# what lets the rest of this role run with no egress at all.
+- name: Download the Harbor offline bundle
+  become: true  # root: writes into the installer cache under a system path
+  ansible.builtin.get_url:
+    url: "{{ harbor_installer_url }}"
+    dest: "{{ harbor_bundle_path }}"
+    checksum: "{{ harbor_installer_checksum | default(omit, true) }}"
+    mode: '0644'
+    # No `creates:` — get_url does not accept it. force defaults to false, which
+    # already skips the transfer when dest exists, and the version is in the
+    # filename so an upgrade downloads while a re-run does not.
+    force: false
+  when: harbor_installer_source == 'url'
+
+# No `checksum:` here — the copy module accepts SHA1 only, while
+# harbor_installer_checksum carries whatever algorithm the operator chose. The
+# stat-based assert below is the single integrity gate for every source.
+- name: Copy the Harbor offline bundle from the controller
+  become: true  # root: writes into the installer cache under a system path
+  ansible.builtin.copy:
+    src: "{{ harbor_installer_local_path }}"
+    dest: "{{ harbor_bundle_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  when: harbor_installer_source == 'controller'
+
+- name: Confirm the staged Harbor bundle is present
+  become: true  # root: stats a file under a system path
+  ansible.builtin.stat:
+    path: "{{ harbor_bundle_path }}"
+    checksum_algorithm: "{{ (harbor_installer_checksum | default('sha256:', true)).split(':') | first }}"
+    get_checksum: "{{ harbor_installer_checksum | default('', true) | length > 0 }}"
+  register: _harbor_bundle
+
+- name: Assert the Harbor bundle is present and intact
+  ansible.builtin.assert:
+    that:
+      - _harbor_bundle.stat.exists
+      - >-
+        (harbor_installer_checksum | default('', true) | length == 0)
+        or (_harbor_bundle.stat.checksum == (harbor_installer_checksum | split(':') | last))
+    fail_msg: >-
+      The Harbor offline bundle is missing or corrupt at {{ harbor_bundle_path }}.
+      With harbor_installer_source='{{ harbor_installer_source }}' it must be
+      {{ 'downloadable from harbor_installer_url'
+         if harbor_installer_source == 'url'
+         else ('present at harbor_installer_local_path on the controller'
+               if harbor_installer_source == 'controller'
+               else 'staged on the target before this role runs') }}.
+    quiet: true
+
+- name: Extract the Harbor offline bundle
+  become: true  # root: extracts into the installer cache under a system path
+  ansible.builtin.unarchive:
+    src: "{{ harbor_bundle_path }}"
+    dest: "{{ harbor_installer_cache_dir }}"
+    remote_src: true
+    creates: "{{ harbor_installer_cache_dir }}/harbor/install.sh"
+
+# cp rather than the copy module: the payload includes a multi-hundred-megabyte
+# image bundle, which the copy module would checksum on every run. The stamp
+# file carries the version, so a version bump re-copies and a re-run does not.
+- name: Copy Harbor installer payload into the data directory
+  become: true  # root: writes into the data dir under a system path
+  ansible.builtin.command:
+    argv:
+      - cp
+      - -a
+      - "{{ harbor_installer_cache_dir }}/harbor/."
+      - "{{ harbor_data_dir }}/"
+    creates: "{{ harbor_data_dir }}/.payload-{{ harbor_version }}"
+  register: _harbor_payload
+
+- name: Stamp the deployed payload version
+  become: true  # root: writes the stamp file under the data dir
+  ansible.builtin.file:
+    path: "{{ harbor_data_dir }}/.payload-{{ harbor_version }}"
+    state: touch
+    owner: root
+    group: root
+    mode: '0644'
+  when: _harbor_payload is changed
+
+- name: Deploy Harbor configuration
+  become: true  # root: writes harbor.yml under the data dir
+  ansible.builtin.template:
+    src: harbor-compose.yml.j2
+    dest: "{{ harbor_data_dir }}/harbor.yml"
+    owner: root
+    group: root
+    # 0640: harbor.yml carries the admin and database passwords in clear text.
+    mode: '0640'
+  register: _harbor_config
+  no_log: true
+
+- name: Deploy Harbor systemd unit
+  become: true  # root: writes the unit file to /etc/systemd/system
+  ansible.builtin.template:
+    src: harbor.service.j2
+    dest: /etc/systemd/system/harbor.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Reload systemd
+
+- name: Check whether Harbor has already been prepared
+  become: true  # root: stats a file under the data dir
+  ansible.builtin.stat:
+    path: "{{ harbor_data_dir }}/docker-compose.yml"
+  register: _harbor_compose
+
+# Running install.sh tears the stack down and back up, so it must fire only on a
+# real change. Without this gate every play restarted the registry.
+- name: Decide whether the installer needs to run
+  ansible.builtin.set_fact:
+    _harbor_needs_install: >-
+      {{ (not _harbor_compose.stat.exists)
+         or (_harbor_config is changed)
+         or (_harbor_payload is changed)
+         or (harbor_force_reinstall | bool) }}
+
+- name: Apply the systemd unit before the stack starts
+  ansible.builtin.meta: flush_handlers
+
+# install.sh is deliberately not used. It does three things — load images, run
+# prepare, bring compose up — behind two checks that make it unusable here:
+#
+#   * check_docker parses `docker --version` and rejects anything below 17. The
+#     podman-docker shim reports Podman's own version, so the installer refuses
+#     to run on Podman at all.
+#   * its teardown guard, [ -n "$DOCKER_COMPOSE ps -q" ], tests a non-empty
+#     string literal rather than running the command, so it is always true and
+#     `compose down -v` runs on every invocation, volumes included.
+#
+# Calling the same three steps directly works on either engine and lets each one
+# be gated separately.
+
+- name: Load the bundled Harbor images
+  become: true  # root: talks to the engine socket
+  ansible.builtin.shell:
+    cmd: set -o pipefail && {{ harbor_engine_cli_effective | trim | quote }} load -i {{ harbor_data_dir | quote }}/harbor.*.tar.gz
+    creates: "{{ harbor_data_dir }}/.images-{{ harbor_version }}"
+  environment: "{{ harbor_engine_environment }}"
+  register: _harbor_image_load
+
+- name: Stamp the loaded image set
+  become: true  # root: writes the stamp file under the data dir
+  ansible.builtin.file:
+    path: "{{ harbor_data_dir }}/.images-{{ harbor_version }}"
+    state: touch
+    owner: root
+    group: root
+    mode: '0644'
+  when: _harbor_image_load is changed
+
+- name: Remove stale Harbor generated config
+  become: true  # root: removes the generated config dir under the data dir
+  ansible.builtin.file:
+    path: "{{ harbor_data_dir }}/common"
+    state: absent
+  when: _harbor_needs_install | bool
+
+# prepare bind-mounts these into its container. Docker creates a missing bind
+# source directory on the fly; Podman refuses with "statfs ...: no such file or
+# directory", so they are created explicitly for both engines.
+- name: Create the directories prepare bind-mounts
+  become: true  # root: creates directories under the data dir
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ harbor_data_dir }}/common/config"
+    - "{{ harbor_data_dir }}/data"
+
+# prepare renders common/ and docker-compose.yml from harbor.yml. It shells out
+# to `docker run` only, which the podman-docker shim satisfies.
+- name: Render the Harbor runtime configuration
+  become: true  # root: runs the prepare container and writes under the data dir
+  ansible.builtin.command:
+    argv: "{{ [harbor_data_dir ~ '/prepare'] + harbor_prepare_args }}"
+    chdir: "{{ harbor_data_dir }}"
+  environment: "{{ harbor_engine_environment }}"
+  register: _harbor_prepare
+  changed_when: _harbor_prepare.rc == 0
+  when: _harbor_needs_install | bool
+  notify: Restart harbor
+
+# prepare hardcodes Docker's syslog log driver on every service so their logs
+# reach Harbor's own rsyslog container. Engines without a syslog driver fail at
+# container create with "invalid log driver", and because prepare regenerates
+# docker-compose.yml this has to be reapplied after every render.
+- name: Retarget the compose log driver for this engine
+  become: true  # root: edits the generated compose file under the data dir
+  ansible.builtin.replace:
+    path: "{{ harbor_data_dir }}/docker-compose.yml"
+    # Both option lines are matched explicitly. A repeating group such as
+    # (\s+\S+:.*\n)+ keeps matching past the options into the next key, eats the
+    # following `volumes:` line and orphans its list items — which still passes a
+    # grep for the old driver while leaving unparseable YAML behind.
+    regexp: '(?m)^(\s+)logging:\n\s+driver: "syslog"\n\s+options:\n\s+syslog-address: [^\n]*\n\s+tag: [^\n]*\n'
+    replace: '\1logging:\n\1  driver: "{{ harbor_compose_log_driver_effective | trim }}"\n'
+  when: harbor_compose_log_driver_effective | trim | length > 0
+  register: _harbor_log_driver
+  notify: Restart harbor
+
+# Validated by the tool that consumes the file, not by grepping it: a rewrite can
+# remove every trace of the old driver and still leave broken YAML.
+- name: Assert the rewritten compose file is still valid
+  become: true  # root: reads the generated compose file under the data dir
+  ansible.builtin.command:
+    cmd: "{{ harbor_compose_command_effective | trim }} -f {{ harbor_data_dir }}/docker-compose.yml config -q"
+    chdir: "{{ harbor_data_dir }}"
+  environment: "{{ harbor_engine_environment }}"
+  changed_when: false
+  when: harbor_compose_log_driver_effective | trim | length > 0
+
+- name: Enable and start Harbor
+  become: true  # root: manages the harbor systemd unit
+  ansible.builtin.systemd:
+    name: harbor
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# The installer brings the stack up itself. Flushing here hands it back to
+# systemd before the health gate, so what is validated is what stays running.
+- name: Hand the stack to systemd before validating it
+  ansible.builtin.meta: flush_handlers
+
+# A firewalld reload rebuilds the netfilter ruleset from its own config and
+# discards netavark's published-port rules with it. The containers stay up and
+# keep reporting healthy — their probes run inside the container network — while
+# every published port silently stops answering on the host. Reloading the
+# container networks reinstates those rules; it is idempotent, so it runs
+# unconditionally rather than trying to detect whether anything touched the
+# firewall earlier in the play.
+- name: Reinstate container port-forwarding rules
+  become: true  # root: rewrites netfilter rules for the container networks
+  ansible.builtin.command: "{{ harbor_engine_cli_effective | trim }} network reload --all"
+  environment: "{{ harbor_engine_environment }}"
+  changed_when: false
+  when: harbor_container_engine == 'podman'
+
+- name: Wait for the Harbor API to report healthy
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/health"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_health
+  until: _harbor_health.json.status | default('') == 'healthy'
+  retries: 30
+  delay: 10
+  changed_when: false
+  no_log: true

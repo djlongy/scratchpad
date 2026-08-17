@@ -1,0 +1,20 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Harbor Container Registry
+After={{ harbor_engine_unit }}
+Requires={{ harbor_engine_unit }}
+
+[Service]
+Type=simple
+WorkingDirectory={{ harbor_data_dir }}
+{% if harbor_engine_socket_effective | trim | length > 0 %}
+Environment=DOCKER_HOST={{ harbor_engine_socket_effective | trim }}
+{% endif %}
+ExecStart={{ harbor_compose_command_effective | trim }} up
+ExecStop={{ harbor_compose_command_effective | trim }} down
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,75 @@
+---
+# roles/harbor/vars/main.yml
+# Derived values. High precedence and not meant to be overridden — set the
+# inputs in defaults/main.yml instead.
+
+harbor_hostname_effective: "{{ harbor_hostname | default('', true) | ternary(harbor_hostname, inventory_hostname) }}"
+
+# Port is omitted when it is the default for the scheme, so the rendered URL
+# matches what a browser sends back on the OIDC redirect.
+_harbor_scheme_port: "{{ (harbor_external_scheme == 'https') | ternary(harbor_https_port, harbor_http_port) }}"
+_harbor_default_port: "{{ (harbor_external_scheme == 'https') | ternary(443, 80) }}"
+_harbor_port_suffix: "{{ (_harbor_scheme_port | int == _harbor_default_port | int) | ternary('', ':' ~ _harbor_scheme_port) }}"
+harbor_external_url_effective: >-
+  {{ harbor_external_url
+     if (harbor_external_url | default('', true) | length > 0)
+     else harbor_external_scheme ~ '://' ~ harbor_hostname_effective ~ _harbor_port_suffix }}
+
+# --- Container engine ---------------------------------------------------------
+# Per-engine defaults, overridable by the matching harbor_* input.
+
+_harbor_engine_defaults:
+  docker:
+    compose_command: "/usr/bin/docker compose"
+    cli: "/usr/bin/docker"
+    socket: ""
+    unit: "docker.service"
+    log_driver: ""
+  podman:
+    # podman-docker supplies /usr/bin/docker, but the shim carries no compose
+    # subcommand, so compose is invoked directly against the Podman socket.
+    compose_command: "/usr/bin/docker-compose"
+    cli: "/usr/bin/podman"
+    socket: "unix:///run/podman/podman.sock"
+    # The socket unit, not podman.service: the API socket is what compose and
+    # the docker shim talk to, and it is socket-activated.
+    unit: "podman.socket"
+    # Podman implements k8s-file, journald, json-file, none and passthrough —
+    # not syslog, which is what Harbor generates for every service.
+    log_driver: "k8s-file"
+
+harbor_compose_command_effective: >-
+  {{ harbor_compose_command
+     if (harbor_compose_command | default('', true) | length > 0)
+     else _harbor_engine_defaults[harbor_container_engine].compose_command }}
+harbor_engine_cli_effective: >-
+  {{ harbor_engine_cli
+     if (harbor_engine_cli | default('', true) | length > 0)
+     else _harbor_engine_defaults[harbor_container_engine].cli }}
+harbor_engine_unit: "{{ _harbor_engine_defaults[harbor_container_engine].unit }}"
+harbor_compose_log_driver_effective: >-
+  {{ harbor_compose_log_driver
+     if (harbor_compose_log_driver | default('', true) | length > 0)
+     else _harbor_engine_defaults[harbor_container_engine].log_driver }}
+harbor_engine_socket_effective: >-
+  {{ harbor_engine_socket
+     if (harbor_engine_socket | default('', true) | length > 0)
+     else _harbor_engine_defaults[harbor_container_engine].socket }}
+
+# Environment every engine invocation runs under. Declared natively rather than
+# built from a Jinja string, which would reach `environment:` as text, not a
+# dict. An empty DOCKER_HOST is treated as unset by both CLIs.
+harbor_engine_environment:
+  DOCKER_HOST: "{{ harbor_engine_socket_effective | trim }}"
+
+harbor_api_url_effective: >-
+  {{ harbor_api_url
+     if (harbor_api_url | default('', true) | length > 0)
+     else ((harbor_tls_mode == 'provided') | ternary('https', 'http')) ~ '://127.0.0.1/api/v2.0' }}
+
+harbor_bundle_path: "{{ harbor_installer_cache_dir }}/harbor-offline-installer-{{ harbor_version }}.tgz"
+
+# Every project this role manages, for webhook registration and verification.
+harbor_managed_project_names: >-
+  {{ (harbor_local_projects | map(attribute='name') | list)
+     + (harbor_registry_endpoints | map(attribute='project_name') | list) }}

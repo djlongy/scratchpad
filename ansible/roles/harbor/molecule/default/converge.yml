@@ -1,0 +1,68 @@
+---
+# Exercises everything that does not require a running container engine: the
+# preflight contract and the rendered artifacts. Installing Harbor itself needs
+# a ~700 MB download and a working compose stack, which is an integration
+# concern rather than a role unit test.
+- name: Converge
+  hosts: all
+  gather_facts: true
+
+  vars:
+    harbor_hostname: registry.example.internal
+    harbor_admin_password: "molecule-admin-password"
+    harbor_db_password: "molecule-db-password"
+    harbor_data_dir: /opt/harbor
+    out_dir: /tmp/harbor-render
+
+  tasks:
+    - name: Create the render output directory
+      ansible.builtin.file:
+        path: "{{ out_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Load the role contract
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/../../defaults/main.yml"
+        - "{{ playbook_dir }}/../../vars/main.yml"
+
+    - name: Render harbor.yml with TLS terminated upstream
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/harbor-compose.yml.j2"
+        dest: "{{ out_dir }}/harbor-tls-none.yml"
+        mode: '0640'
+
+    - name: Render harbor.yml with Harbor terminating TLS
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/harbor-compose.yml.j2"
+        dest: "{{ out_dir }}/harbor-tls-provided.yml"
+        mode: '0640'
+      vars:
+        harbor_tls_mode: provided
+        harbor_tls_certificate: /etc/pki/tls/certs/harbor.crt
+        harbor_tls_private_key: /etc/pki/tls/private/harbor.key
+
+    - name: Render the systemd unit for Docker
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/harbor.service.j2"
+        dest: "{{ out_dir }}/harbor-docker.service"
+        mode: '0644'
+
+    - name: Render the systemd unit for Podman
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/harbor.service.j2"
+        dest: "{{ out_dir }}/harbor-podman.service"
+        mode: '0644'
+      vars:
+        harbor_container_engine: podman
+
+    - name: Render the backup script for Podman
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/harbor-backup.sh.j2"
+        dest: "{{ out_dir }}/harbor-backup-podman.sh"
+        mode: '0750'
+        validate: "bash -n %s"
+      vars:
+        harbor_container_engine: podman

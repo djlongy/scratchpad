@@ -1,0 +1,52 @@
+---
+# roles/harbor/tasks/main.yml
+# Phase orchestrator. A no-tag run executes every phase in order (refinement
+# model, not enablement). import_tasks propagates tags at compile time, so
+# --tags <phase> reaches the tasks inside each file.
+
+# Tagged with every phase rather than `always`: `always` fires even when the
+# role is out of scope entirely, so a run scoped to another role's tags would
+# trip Harbor's preflight on a host that has no container engine yet.
+- name: Skip harbor (harbor_enabled is false)
+  ansible.builtin.debug:
+    msg: "harbor_enabled is false — skipping harbor"
+  when: not (harbor_enabled | bool)
+  tags: [install, auth, bootstrap, webhooks, promotion, backup, verify]
+
+- name: Configure harbor
+  when: harbor_enabled | bool
+  block:
+
+    # Every phase, so the contract is checked whichever phase is selected.
+    - name: Import preflight phase
+      ansible.builtin.import_tasks: assert.yml
+      tags: [install, auth, bootstrap, webhooks, promotion, backup, verify]
+
+    - name: Import install phase
+      ansible.builtin.import_tasks: install.yml
+      tags: [install]
+
+    # auth and bootstrap talk only to the API. They carry their own tags so a
+    # config change can be applied without re-running the installer, which
+    # restarts the registry.
+    - name: Import authentication phase
+      ansible.builtin.import_tasks: auth.yml
+      tags: [install, auth]
+
+    - name: Import bootstrap phase
+      ansible.builtin.import_tasks: bootstrap.yml
+      tags: [install, bootstrap, webhooks]
+
+    # After bootstrap: robots, immutability and retention all attach to projects
+    # that bootstrap creates.
+    - name: Import promotion phase
+      ansible.builtin.import_tasks: promotion.yml
+      tags: [install, promotion]
+
+    - name: Import backup phase
+      ansible.builtin.import_tasks: backup.yml
+      tags: [backup]
+
+    - name: Import verify phase
+      ansible.builtin.import_tasks: verify.yml
+      tags: [install, verify]

@@ -1,0 +1,128 @@
+---
+# inventories/example/group_vars/harbor/main.yml
+#
+# A worked multi-environment registry: one Harbor, one project per environment,
+# and promotion between them as a cross-project manifest mount that preserves
+# the digest. The alternative — one registry per environment — makes promotion
+# a re-upload and gives up that guarantee, so it is only worth the extra storage
+# and egress when the environments must not share a control plane at all.
+#
+# Repository path inside each project is <team>/<image>, e.g.
+# prod/apps/api, shared/base/nginx.
+
+harbor_hostname: registry.example.com
+
+# TLS terminates at a reverse proxy in front of this host, so Harbor itself
+# listens on plain HTTP while clients still address it over https. Set
+# harbor_tls_mode to `provided` with a certificate and key to terminate here.
+harbor_tls_mode: none
+harbor_external_scheme: https
+
+# Any OIDC provider works — the issuer, client and claim names are all inputs,
+# and nothing in the role is shaped around a particular product.
+harbor_auth_mode: oidc_auth
+harbor_oidc_name: "Single Sign-On"
+harbor_oidc_endpoint: "https://sso.example.com/realms/main"
+harbor_oidc_client_id: harbor
+harbor_oidc_client_secret: "{{ vault_harbor_oidc_client_secret }}"
+harbor_oidc_admin_group: registry-admins
+# Providers that issue an opaque subject need a claim naming the user, or every
+# account onboards with a UUID for a username.
+harbor_oidc_user_claim: preferred_username
+
+harbor_admin_password: "{{ vault_harbor_admin_password }}"
+harbor_db_password: "{{ vault_harbor_db_password }}"
+
+# ── Environment-per-project layout ───────────────────────────────────────────
+harbor_local_projects:
+  - name: dev       # CI publishes every build here
+  - name: preprod   # candidates under test
+  - name: prod      # promoted releases only
+  - name: shared    # base images consumed by several teams
+
+# ── Promotion controls ───────────────────────────────────────────────────────
+# Projects alone are a naming convention. These three make the boundary real:
+# who may write where, what may never be overwritten, and what gets cleaned up.
+
+# Each robot is scoped to exactly one project. The CI identity that publishes
+# builds cannot write to prod, so promotion has to go through the pipeline that
+# holds the promoter credential.
+harbor_robot_accounts:
+  - name: ci-push-dev
+    description: CI publishes builds into dev
+    duration: -1
+    level: project
+    secret: "{{ vault_harbor_robot_ci_push_dev }}"
+    permissions:
+      - kind: project
+        namespace: dev
+        access:
+          - {resource: repository, action: push}
+          - {resource: repository, action: pull}
+
+  # Promotion needs pull on the source and push on the destination, which is
+  # why it is a separate identity rather than a wider version of the one above.
+  - name: promoter
+    description: Mounts verified artifacts from preprod into prod
+    duration: -1
+    level: system
+    secret: "{{ vault_harbor_robot_promoter }}"
+    permissions:
+      - kind: project
+        namespace: preprod
+        access:
+          - {resource: repository, action: pull}
+      - kind: project
+        namespace: prod
+        access:
+          - {resource: repository, action: push}
+          - {resource: repository, action: pull}
+
+  # Runtime pulls are read-only and never need the mutable environments.
+  - name: runtime-pull-prod
+    description: Cluster pull secret for prod workloads
+    duration: -1
+    level: project
+    secret: "{{ vault_harbor_robot_runtime_pull_prod }}"
+    permissions:
+      - kind: project
+        namespace: prod
+        access:
+          - {resource: repository, action: pull}
+
+# A released tag must not move under consumers, so prod is immutable. The
+# mutable environments are deliberately absent: overwriting a dev tag is the
+# normal way to iterate.
+harbor_immutability_rules:
+  - project: prod
+    repositories: "**"
+    tags: "**"
+
+# Retention rules only ever RETAIN — anything a rule does not match becomes a
+# deletion candidate on the schedule. prod has no policy at all, so nothing
+# there is ever a candidate.
+harbor_retention_policies:
+  - project: dev
+    schedule: "0 0 2 * * *"
+    rules:
+      - template: latestPushedK
+        params: {latestPushedK: 20}
+  - project: preprod
+    schedule: "0 0 3 * * *"
+    rules:
+      - template: latestPushedK
+        params: {latestPushedK: 10}
+
+# ── Upstream proxy caches ────────────────────────────────────────────────────
+# Pull-through caches for the public registries, so builds do not depend on
+# reaching them directly and rate limits stop being a build failure. Set this
+# to [] on an air-gapped install, where the upstreams do not exist.
+harbor_registry_endpoints:
+  - name: docker-hub
+    project_name: docker-hub
+    type: docker-hub
+    url: https://hub.docker.com
+  - name: ghcr
+    project_name: ghcr
+    type: github-ghcr
+    url: https://ghcr.io

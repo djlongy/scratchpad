@@ -1,0 +1,271 @@
+---
+# roles/harbor/tasks/bootstrap.yml
+# Declarative registry state applied over the API: proxy-cache endpoints, local
+# projects, the outbound webhook, and the scheduled scan.
+
+- name: Query existing Harbor registry endpoints
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/registries?page=1&page_size=100"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_registries
+  changed_when: false
+  no_log: true
+
+- name: Create missing Harbor upstream registry endpoints
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/registries"
+    method: POST
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      type: "{{ item.type }}"
+      url: "{{ item.url }}"
+      insecure: false
+    status_code: [201]
+  loop: "{{ harbor_registry_endpoints }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in (_harbor_registries.json | map(attribute='name') | list)
+  no_log: true
+
+- name: Re-read Harbor registry endpoints after create
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/registries?page=1&page_size=100"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_registries
+  changed_when: false
+  no_log: true
+
+- name: Map Harbor registry names to IDs
+  ansible.builtin.set_fact:
+    # Built in one pass. A loop of combine() calls would accumulate across hosts
+    # in the same play and carry a stale map into the next one.
+    harbor_registry_id_map: >-
+      {{ dict((_harbor_registries.json | map(attribute='name') | list)
+              | zip(_harbor_registries.json | map(attribute='id') | list)) }}
+
+- name: Query existing Harbor projects
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects?page=1&page_size=100&with_detail=true"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_projects
+  changed_when: false
+  no_log: true
+
+- name: Record existing Harbor project names
+  ansible.builtin.set_fact:
+    harbor_project_names: "{{ _harbor_projects.json | map(attribute='name') | list }}"
+
+- name: Create missing Harbor proxy-cache projects
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects"
+    method: POST
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body: >-
+      {{ {'project_name': item.project_name,
+          'registry_id': harbor_registry_id_map[item.name],
+          'metadata': harbor_proxy_cache_metadata} }}
+    status_code: [201]
+  loop: "{{ harbor_registry_endpoints }}"
+  loop_control:
+    label: "{{ item.project_name }}"
+  when: item.project_name not in harbor_project_names
+  no_log: true
+
+- name: Create missing Harbor local projects
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects"
+    method: POST
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body: "{{ {'project_name': item.name, 'metadata': harbor_local_project_metadata} }}"
+    status_code: [201]
+  loop: "{{ harbor_local_projects }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in harbor_project_names
+  no_log: true
+
+- name: Reconcile metadata on existing proxy-cache projects
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects/{{ item.project_name }}"
+    method: PUT
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body: "{{ {'metadata': harbor_proxy_cache_metadata} }}"
+    status_code: [200]
+  loop: "{{ harbor_registry_endpoints }}"
+  loop_control:
+    label: "{{ item.project_name }}"
+  when: item.project_name in harbor_project_names
+  no_log: true
+
+- name: Reconcile metadata on existing local projects
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects/{{ item.name }}"
+    method: PUT
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body: "{{ {'metadata': harbor_local_project_metadata} }}"
+    status_code: [200]
+  loop: "{{ harbor_local_projects }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in harbor_project_names
+  no_log: true
+
+# --- Outbound webhook ---------------------------------------------------------
+
+- name: Configure the outbound webhook
+  when: harbor_webhook_enabled | bool
+  vars:
+    _harbor_webhook_body:
+      name: "{{ harbor_webhook_name }}"
+      description: "{{ harbor_webhook_description }}"
+      enabled: true
+      targets:
+        - type: http
+          address: "{{ harbor_webhook_url }}"
+          auth_header: "Bearer {{ harbor_webhook_secret }}"
+          skip_cert_verify: "{{ harbor_webhook_skip_cert_verify | bool }}"
+      event_types: "{{ harbor_webhook_event_types }}"
+  block:
+
+    - name: Resolve the webhook secret
+      ansible.builtin.set_fact:
+        harbor_webhook_secret: >-
+          {{ harbor_webhook_secret
+             if (harbor_webhook_secret | default('', true) | length > 0)
+             else lookup('community.hashi_vault.hashi_vault',
+                         'secret=' ~ harbor_webhook_vault_secret) }}
+      no_log: true
+
+    - name: Query existing webhook policies per project
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects/{{ item }}/webhook/policies"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      loop: "{{ harbor_managed_project_names }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _harbor_webhooks
+      changed_when: false
+      no_log: true
+
+    - name: Create the webhook on projects that lack it
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects/{{ item.item }}/webhook/policies"
+        method: POST
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        body: "{{ _harbor_webhook_body }}"
+        status_code: [201]
+      loop: "{{ _harbor_webhooks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.json | selectattr('name', 'equalto', harbor_webhook_name) | list | length == 0
+      no_log: true
+
+    # Creating alone leaves existing policies pinned to whatever they were
+    # created with, so a changed event list or URL would never reach a live
+    # Harbor. Comparing and updating makes the policy declarative.
+    - name: Update webhook policies that have drifted
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: >-
+          {{ harbor_api_url_effective }}/projects/{{ item.item }}/webhook/policies/{{ _harbor_policy.id }}
+        method: PUT
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        # Harbor's PUT replaces the policy wholesale, so the body carries every
+        # field the create body sets, not just what changed.
+        body: "{{ _harbor_webhook_body | combine({'id': _harbor_policy.id}) }}"
+        status_code: [200]
+      vars:
+        _harbor_policy: >-
+          {{ (item.json | selectattr('name', 'equalto', harbor_webhook_name) | list | first)
+             | default({}, true) }}
+      loop: "{{ _harbor_webhooks.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when:
+        - item.json | selectattr('name', 'equalto', harbor_webhook_name) | list | length > 0
+        # Compared as sets: Harbor does not preserve the submitted order, so a
+        # plain list comparison would report drift on every run.
+        - (_harbor_policy.event_types | default([]) | unique | sort
+           != harbor_webhook_event_types | unique | sort)
+          or (_harbor_policy.targets | default([]) | map(attribute='address') | list
+              != [harbor_webhook_url])
+      no_log: true
+
+# --- Scheduled vulnerability scan ---------------------------------------------
+
+- name: Configure the scheduled scan-all job
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/system/scanAll/schedule"
+    method: PUT
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body:
+      schedule:
+        type: "{{ harbor_scan_all_schedule_type }}"
+        cron: "{{ harbor_scan_all_cron }}"
+    status_code: [200]
+  when: harbor_scan_all_enabled | bool
+  no_log: true

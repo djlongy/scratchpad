@@ -1,0 +1,35 @@
+---
+# harbor.yml
+# Harbor container registry from the official offline bundle, managed by
+# systemd, with any OIDC provider, an environment-per-project layout, and the
+# controls that make that layout enforceable.
+#
+# Requires a container engine and a compose implementation on the target
+# (apply the docker role first, or install Podman with podman-docker plus a
+# docker-compose binary and an enabled podman.socket). Required inventory:
+# harbor_hostname, harbor_admin_password and harbor_db_password — see
+# roles/harbor/README.md.
+#
+# Tags:
+#   install    — full converge (bundle, prepare, systemd, then every API phase)
+#   auth       — authentication only, no restart
+#   bootstrap  — registries, projects, webhook, scan schedule
+#   promotion  — robot accounts, immutability, retention
+#   backup     — backup script + cron only
+#   verify     — re-read live state and assert it matches inventory
+#
+# Examples:
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/harbor.yml
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/harbor.yml --tags promotion
+#   ansible-playbook -i inventories/example/hosts.yml playbooks/harbor.yml --tags verify
+#
+# Air-gapped: stage the offline bundle and set harbor_installer_source to
+# `controller` or `remote`. Nothing else in the deployment needs egress.
+
+- name: Deploy Harbor
+  hosts: harbor
+  gather_facts: true
+  # No play-level become — the role escalates only the tasks that need root.
+  roles:
+    - role: harbor
+      tags: [harbor]

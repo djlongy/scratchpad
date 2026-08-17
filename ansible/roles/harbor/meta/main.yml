@@ -1,0 +1,27 @@
+---
+galaxy_info:
+  role_name: harbor
+  author: longy
+  description: >-
+    Harbor container registry via the official offline installer under systemd,
+    with Trivy scanning, provider-neutral OIDC applied through the
+    configurations API, and declarative proxy-cache registries, projects,
+    outbound webhook and scheduled scan. Includes a nightly backup.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+        - "10"
+  galaxy_tags:
+    - harbor
+    - registry
+    - containers
+    - oidc
+    - supplychain
+
+# Collections this role needs installed (roles cannot hard-depend on collections —
+# declare them in your requirements.yml; same set as README Requirements):
+#   community.hashi_vault  — only when harbor_webhook_vault_secret is used
+dependencies: []

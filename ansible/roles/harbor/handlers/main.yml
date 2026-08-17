@@ -1,0 +1,14 @@
+---
+# roles/harbor/handlers/main.yml
+
+- name: Reload systemd
+  become: true  # root: reloads the systemd manager
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart harbor
+  become: true  # root: manages the harbor systemd unit
+  ansible.builtin.systemd:
+    name: harbor
+    state: restarted
+    daemon_reload: true

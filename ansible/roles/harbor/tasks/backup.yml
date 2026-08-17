@@ -1,0 +1,52 @@
+---
+# roles/harbor/tasks/backup.yml
+
+- name: Manage the Harbor backup job
+  when: harbor_backup_enabled | bool
+  block:
+
+    - name: Create the backup script directory
+      become: true  # root: creates a directory under a system path
+      ansible.builtin.file:
+        path: "{{ harbor_backup_script_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Create the Harbor backup directory
+      become: true  # root: creates the backup dir under a system path
+      ansible.builtin.file:
+        path: "{{ harbor_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Install the Harbor backup script
+      become: true  # root: writes the backup script under a system path
+      ansible.builtin.template:
+        src: harbor-backup.sh.j2
+        dest: "{{ harbor_backup_script_dir }}/harbor-backup.sh"
+        owner: root
+        group: root
+        mode: '0750'
+        validate: "bash -n %s"
+
+    - name: Schedule the Harbor backup
+      become: true  # root: manages root's crontab
+      ansible.builtin.cron:
+        name: Harbor backup
+        user: root
+        minute: "{{ harbor_backup_minute }}"
+        hour: "{{ harbor_backup_hour }}"
+        job: "{{ harbor_backup_script_dir }}/harbor-backup.sh >> {{ harbor_backup_log }} 2>&1"
+        state: present
+
+- name: Remove the Harbor backup schedule
+  become: true  # root: manages root's crontab
+  ansible.builtin.cron:
+    name: Harbor backup
+    user: root
+    state: absent
+  when: not (harbor_backup_enabled | bool)

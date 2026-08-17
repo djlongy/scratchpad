@@ -1,0 +1,49 @@
+{{ ansible_managed | comment }}
+# Harbor configuration (harbor.yml) — consumed by install.sh/prepare.
+# Only keys upstream recognises appear here. Authentication is NOT one of them:
+# harbor.yml has no auth_mode or oidc_* keys, so auth is applied through the
+# configurations API by tasks/auth.yml.
+hostname: {{ harbor_hostname_effective }}
+external_url: {{ harbor_external_url_effective }}
+
+http:
+  port: {{ harbor_http_port }}
+{% if harbor_tls_mode == 'provided' %}
+
+https:
+  port: {{ harbor_https_port }}
+  certificate: {{ harbor_tls_certificate }}
+  private_key: {{ harbor_tls_private_key }}
+  strong_ssl_ciphers: {{ harbor_tls_strong_ciphers | bool | lower }}
+{% endif %}
+
+harbor_admin_password: {{ harbor_admin_password }}
+
+database:
+  password: {{ harbor_db_password }}
+{{ harbor_database_tuning | to_nice_yaml(indent=2) | indent(2, true) }}
+data_volume: {{ harbor_data_dir }}/data
+
+trivy:
+{{ harbor_trivy_config | to_nice_yaml(indent=2) | indent(2, true) }}
+jobservice:
+{{ harbor_jobservice_config | to_nice_yaml(indent=2) | indent(2, true) }}
+notification:
+{{ harbor_notification_config | to_nice_yaml(indent=2) | indent(2, true) }}
+log:
+{{ harbor_log_config | to_nice_yaml(indent=2) | indent(2, true) }}
+_version: {{ harbor_config_version }}
+
+proxy:
+  http_proxy: {{ harbor_http_proxy }}
+  https_proxy: {{ harbor_https_proxy }}
+  no_proxy: {{ harbor_no_proxy }}
+  components:
+{% for component in harbor_proxy_components %}
+    - {{ component }}
+{% endfor %}
+
+upload_purging:
+{{ harbor_upload_purging_config | to_nice_yaml(indent=2) | indent(2, true) }}
+cache:
+{{ harbor_cache_config | to_nice_yaml(indent=2) | indent(2, true) }}

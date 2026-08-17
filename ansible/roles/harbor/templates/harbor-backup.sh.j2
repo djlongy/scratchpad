@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+{{ ansible_managed | comment }}
+set -euo pipefail
+
+BACKUP_DIR="{{ harbor_backup_dir }}"
+DATA_DIR="{{ harbor_data_dir }}"
+RETENTION_DAYS="{{ harbor_backup_retention_days }}"
+ENGINE="{{ harbor_engine_cli_effective | trim }}"
+DB_CONTAINER="{{ harbor_backup_db_container }}"
+DB_USER="{{ harbor_backup_db_user }}"
+DB_NAME="{{ harbor_backup_db_name }}"
+LOG_TAG="[harbor-backup]"
+{% if harbor_engine_socket_effective | trim | length > 0 %}
+export DOCKER_HOST="{{ harbor_engine_socket_effective | trim }}"
+{% endif %}
+
+log() {
+  printf '%s %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$LOG_TAG" "$*"
+}
+
+log "Starting Harbor backup run"
+install -d -m 0750 "$BACKUP_DIR"
+
+TIMESTAMP="$(date '+%Y%m%d-%H%M%S')"
+DUMP_FILE="$BACKUP_DIR/harbor-pg-${TIMESTAMP}.sql.gz"
+CONFIG_FILE="$BACKUP_DIR/harbor-config-${TIMESTAMP}.tar.gz"
+
+log "Dumping the Harbor database"
+# PIPESTATUS, not just set -o pipefail: a pg_dump that dies still produces a
+# valid gzip stream, so a non-empty output file is not proof the dump succeeded.
+"$ENGINE" exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" | gzip > "$DUMP_FILE"
+dump_rc="${PIPESTATUS[0]}"
+if [[ "$dump_rc" -ne 0 ]]; then
+  log "ERROR: pg_dump exited ${dump_rc}"
+  rm -f "$DUMP_FILE"
+  exit 1
+fi
+if [[ ! -s "$DUMP_FILE" ]]; then
+  log "ERROR: database dump is empty"
+  rm -f "$DUMP_FILE"
+  exit 1
+fi
+
+# harbor.yml and common/ sit directly in the data directory; the installer
+# payload is flattened into it rather than kept under a harbor/ subdirectory.
+log "Backing up the Harbor configuration"
+if [[ ! -f "$DATA_DIR/harbor.yml" ]]; then
+  log "ERROR: $DATA_DIR/harbor.yml not found"
+  exit 1
+fi
+tar czf "$CONFIG_FILE" -C "$DATA_DIR" harbor.yml common
+if [[ ! -s "$CONFIG_FILE" ]]; then
+  log "ERROR: configuration archive is empty"
+  exit 1
+fi
+
+# Written under a restrictive umask: the metadata names the dump files, and the
+# directory is the only thing standing between them and another local account.
+( umask 077; cat > "$BACKUP_DIR/metadata.txt" <<META
+generated_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+pg_dump=${DUMP_FILE##*/}
+config_archive=${CONFIG_FILE##*/}
+harbor_version={{ harbor_version }}
+META
+)
+
+log "Pruning backups older than ${RETENTION_DAYS} days"
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'harbor-pg-*.sql.gz' -mtime "+${RETENTION_DAYS}" -delete
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'harbor-config-*.tar.gz' -mtime "+${RETENTION_DAYS}" -delete
+
+log "Backup run completed"

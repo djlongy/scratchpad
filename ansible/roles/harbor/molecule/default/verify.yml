@@ -1,0 +1,113 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+
+  vars:
+    out_dir: /tmp/harbor-render
+
+  tasks:
+    - name: Read the rendered configurations
+      ansible.builtin.slurp:
+        src: "{{ out_dir }}/{{ item }}"
+      loop:
+        - harbor-tls-none.yml
+        - harbor-tls-provided.yml
+      register: _rendered
+
+    - name: Parse the rendered configurations
+      ansible.builtin.set_fact:
+        _tls_none: "{{ _rendered.results[0].content | b64decode | from_yaml }}"
+        _tls_provided: "{{ _rendered.results[1].content | b64decode | from_yaml }}"
+
+    - name: Assert harbor.yml carries only keys upstream recognises
+      ansible.builtin.assert:
+        that:
+          - _tls_none | list | difference(_known_keys) | length == 0
+          # Auth is applied over the API; upstream harbor.yml has no auth keys,
+          # so anything written here would be discarded without an error.
+          - "'auth_mode' not in _tls_none"
+          - _tls_none | list | select('match', '^oidc_') | list | length == 0
+        fail_msg: >-
+          Unexpected harbor.yml keys:
+          {{ _tls_none | list | difference(_known_keys) | join(', ') }}
+        quiet: true
+      vars:
+        _known_keys:
+          - hostname
+          - external_url
+          - http
+          - https
+          - harbor_admin_password
+          - database
+          - data_volume
+          - trivy
+          - jobservice
+          - notification
+          - log
+          - _version
+          - proxy
+          - upload_purging
+          - cache
+
+    - name: Assert credentials and identity were rendered
+      ansible.builtin.assert:
+        that:
+          - _tls_none.hostname == 'registry.example.internal'
+          - _tls_none.external_url == 'https://registry.example.internal'
+          - _tls_none.harbor_admin_password | length > 0
+          - _tls_none.database.password | length > 0
+        fail_msg: "harbor.yml is missing identity or credential values."
+        quiet: true
+
+    - name: Assert the TLS section follows the mode
+      ansible.builtin.assert:
+        that:
+          - "'https' not in _tls_none"
+          - "'https' in _tls_provided"
+          - _tls_provided.https.certificate == '/etc/pki/tls/certs/harbor.crt'
+          - _tls_provided.https.private_key == '/etc/pki/tls/private/harbor.key'
+        fail_msg: "The https section does not track harbor_tls_mode."
+        quiet: true
+
+    - name: Read the rendered systemd units
+      ansible.builtin.slurp:
+        src: "{{ out_dir }}/{{ item }}"
+      loop:
+        - harbor-docker.service
+        - harbor-podman.service
+      register: _units
+
+    - name: Assert each unit targets its own engine
+      ansible.builtin.assert:
+        that:
+          - "'Requires=docker.service' in _docker_unit"
+          - "'ExecStart=/usr/bin/docker compose up' in _docker_unit"
+          - "'DOCKER_HOST' not in _docker_unit"
+          - "'Requires=podman.socket' in _podman_unit"
+          - "'DOCKER_HOST=unix:///run/podman/podman.sock' in _podman_unit"
+        fail_msg: "The systemd unit does not track harbor_container_engine."
+        quiet: true
+      vars:
+        _docker_unit: "{{ _units.results[0].content | b64decode }}"
+        _podman_unit: "{{ _units.results[1].content | b64decode }}"
+
+    # slurp, not lookup('file'): lookup reads the controller's filesystem, and
+    # the rendered script only exists on the target.
+    - name: Read the rendered backup script
+      ansible.builtin.slurp:
+        src: "{{ out_dir }}/harbor-backup-podman.sh"
+      register: _backup_script
+
+    - name: Assert the backup script targets the Podman CLI and socket
+      ansible.builtin.assert:
+        that:
+          - "'ENGINE=\"/usr/bin/podman\"' in _script"
+          - "'export DOCKER_HOST=\"unix:///run/podman/podman.sock\"' in _script"
+          # The payload is flattened into the data directory, so the archive
+          # must reference harbor.yml and common/ at its root.
+          - "'-C \"$DATA_DIR\" harbor.yml common' in _script"
+        fail_msg: "The backup script does not track the engine or the data layout."
+        quiet: true
+      vars:
+        _script: "{{ _backup_script.content | b64decode }}"

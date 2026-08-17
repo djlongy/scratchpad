@@ -1,0 +1,352 @@
+---
+# roles/harbor/tasks/promotion.yml
+# What makes an environment-per-project layout mean something: scoped robot
+# accounts so a pipeline can only write where it is allowed, immutability so a
+# promoted tag cannot be moved under you, and retention so the mutable
+# environments do not grow without bound.
+#
+# Projects alone are only a naming convention; these three turn the boundary
+# into something enforced.
+
+# --- Robot accounts -----------------------------------------------------------
+
+- name: Manage Harbor robot accounts
+  when: harbor_robot_accounts | length > 0
+  block:
+
+    - name: Query projects that own a declared robot
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects?page=1&page_size=100"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      register: _harbor_robot_projects
+      changed_when: false
+      no_log: true
+
+    - name: Map project names to IDs
+      ansible.builtin.set_fact:
+        harbor_project_id_map: >-
+          {{ dict((_harbor_robot_projects.json | map(attribute='name') | list)
+                  | zip(_harbor_robot_projects.json | map(attribute='project_id') | list)) }}
+
+    # Harbor refuses to list project-level robots without a ProjectID filter, so
+    # a plain /robots call returns system robots only. Querying just that made
+    # every project robot look absent, so each run re-created one and the second
+    # run failed on CONFLICT.
+    - name: Query robot accounts at every level in use
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/robots?page_size=100&q={{ item | urlencode }}"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      loop: "{{ _harbor_robot_queries }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        _harbor_robot_queries: >-
+          {{ ['Level=system']
+             + (harbor_robot_accounts
+                | selectattr('level', 'defined') | selectattr('level', 'eq', 'project')
+                | map(attribute='permissions') | map('first') | map(attribute='namespace')
+                | unique
+                | map('extract', harbor_project_id_map)
+                | map('regex_replace', '^', 'Level=project,ProjectID=') | list) }}
+      register: _harbor_robots
+      changed_when: false
+      no_log: true
+
+    # Harbor stores a system robot as "robot$<name>" and a project robot as
+    # "robot$<project>+<name>"; both prefixes come off before comparing with the
+    # declared name.
+    - name: Record existing robots by their declared name
+      ansible.builtin.set_fact:
+        harbor_robot_id_map: >-
+          {{ dict(_harbor_declared | zip(_harbor_found | map(attribute='id') | list)) }}
+        # Harbor rejects a PUT whose name differs from the stored one, and the
+        # stored name keeps its prefix, so an update has to send this rather than
+        # the declared name.
+        harbor_robot_name_map: >-
+          {{ dict(_harbor_declared | zip(_harbor_found | map(attribute='name') | list)) }}
+      vars:
+        _harbor_found: "{{ _harbor_robots.results | map(attribute='json') | select('iterable') | flatten }}"
+        _harbor_declared: >-
+          {{ _harbor_found | map(attribute='name')
+             | map('regex_replace', '^robot\$', '')
+             | map('regex_replace', '^[^+]+\+', '') | list }}
+
+    - name: Create missing Harbor robot accounts
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/robots"
+        method: POST
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        # The secret is supplied rather than generated. Harbor returns a
+        # generated secret exactly once, at creation, so letting it generate one
+        # means the credential exists only in that response — unrecoverable if
+        # the play fails afterwards, and impossible to reconcile on a re-run.
+        body: >-
+          {{ {'name': item.name,
+              'description': item.description | default(''),
+              'duration': item.duration | default(-1),
+              'disable': item.disabled | default(false),
+              'level': item.level | default('system'),
+              'permissions': item.permissions}
+             | combine({'secret': item.secret} if (item.secret | default('', true) | length > 0) else {}) }}
+        # 409 is accepted so a listing this role cannot see can never wedge the
+        # run; the reconcile below still corrects anything that already exists.
+        status_code: [201, 409]
+      loop: "{{ harbor_robot_accounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.name not in harbor_robot_id_map
+      no_log: true
+
+    - name: Re-read robot accounts after create
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/robots?page_size=100&q={{ item | urlencode }}"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      loop: "{{ _harbor_robot_queries }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        _harbor_robot_queries: >-
+          {{ ['Level=system']
+             + (harbor_robot_accounts
+                | selectattr('level', 'defined') | selectattr('level', 'eq', 'project')
+                | map(attribute='permissions') | map('first') | map(attribute='namespace')
+                | unique
+                | map('extract', harbor_project_id_map)
+                | map('regex_replace', '^', 'Level=project,ProjectID=') | list) }}
+      register: _harbor_robots
+      changed_when: false
+      no_log: true
+
+    - name: Rebuild the robot name to ID map
+      ansible.builtin.set_fact:
+        harbor_robot_id_map: >-
+          {{ dict(_harbor_declared | zip(_harbor_found | map(attribute='id') | list)) }}
+        # Harbor rejects a PUT whose name differs from the stored one, and the
+        # stored name keeps its prefix, so an update has to send this rather than
+        # the declared name.
+        harbor_robot_name_map: >-
+          {{ dict(_harbor_declared | zip(_harbor_found | map(attribute='name') | list)) }}
+      vars:
+        _harbor_found: "{{ _harbor_robots.results | map(attribute='json') | select('iterable') | flatten }}"
+        _harbor_declared: >-
+          {{ _harbor_found | map(attribute='name')
+             | map('regex_replace', '^robot\$', '')
+             | map('regex_replace', '^[^+]+\+', '') | list }}
+
+    # Permissions are reconciled, not just created: a robot whose scope was
+    # widened in inventory but never updated in Harbor is a silent authorisation
+    # gap, and one whose scope was narrowed keeps the old access forever.
+    - name: Reconcile robot account permissions
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/robots/{{ harbor_robot_id_map[item.name] }}"
+        method: PUT
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        body: >-
+          {{ {'name': harbor_robot_name_map[item.name],
+              'description': item.description | default(''),
+              'duration': item.duration | default(-1),
+              'disable': item.disabled | default(false),
+              'level': item.level | default('system'),
+              'permissions': item.permissions} }}
+        status_code: [200]
+      loop: "{{ harbor_robot_accounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.name in harbor_robot_id_map
+      no_log: true
+
+    # A robot's secret is write-only: Harbor never returns it, so drift against
+    # the declared value is undetectable. Rotation is therefore explicit rather
+    # than automatic — set the flag for one run after changing the stored secret.
+    - name: Rotate robot account secrets
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/robots/{{ harbor_robot_id_map[item.name] }}"
+        method: PATCH
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        body:
+          secret: "{{ item.secret }}"
+        status_code: [200]
+      loop: "{{ harbor_robot_accounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when:
+        - harbor_robot_rotate_secrets | bool
+        - item.name in harbor_robot_id_map
+        - item.secret | default('', true) | length > 0
+      no_log: true
+
+# --- Tag immutability ---------------------------------------------------------
+
+- name: Manage tag immutability rules
+  when: harbor_immutability_rules | length > 0
+  block:
+
+    - name: Query existing immutability rules per project
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects/{{ item }}/immutabletagrules"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      loop: "{{ harbor_immutability_rules | map(attribute='project') | unique | list }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _harbor_immutability
+      changed_when: false
+      no_log: true
+
+    # A rule carries no name, so identity is the selector pair it enforces.
+    # Matching on that is what keeps a re-run from stacking duplicates.
+    - name: Record existing immutability selectors per project
+      ansible.builtin.set_fact:
+        harbor_immutability_existing: >-
+          {{ dict(_harbor_immutability.results | map(attribute='item') | list
+                  | zip(_harbor_immutability.results
+                        | map(attribute='json') | list)) }}
+
+    - name: Create missing immutability rules
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects/{{ item.project }}/immutabletagrules"
+        method: POST
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        body:
+          disabled: "{{ item.disabled | default(false) }}"
+          scope_selectors:
+            repository:
+              - decoration: "{{ item.repository_decoration | default('repoMatches') }}"
+                kind: doublestar
+                pattern: "{{ item.repositories | default('**') }}"
+          tag_selectors:
+            - decoration: "{{ item.tag_decoration | default('matches') }}"
+              kind: doublestar
+              pattern: "{{ item.tags | default('**') }}"
+        status_code: [201]
+      loop: "{{ harbor_immutability_rules }}"
+      loop_control:
+        label: "{{ item.project }}:{{ item.tags | default('**') }}"
+      when: >-
+        harbor_immutability_existing[item.project] | default([])
+        | selectattr('tag_selectors', 'defined')
+        | map(attribute='tag_selectors') | map('first')
+        | map(attribute='pattern') | select('eq', item.tags | default('**'))
+        | list | length == 0
+      no_log: true
+
+# --- Tag retention ------------------------------------------------------------
+
+- name: Manage tag retention policies
+  when: harbor_retention_policies | length > 0
+  block:
+
+    - name: Read projects that carry a retention policy
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects/{{ item.project }}"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      loop: "{{ harbor_retention_policies }}"
+      loop_control:
+        label: "{{ item.project }}"
+      register: _harbor_retention_projects
+      changed_when: false
+      no_log: true
+
+    # A project's retention policy id lives in its metadata; absent means no
+    # policy exists yet, which decides POST versus PUT below.
+    - name: Build the retention request for each project
+      ansible.builtin.set_fact:
+        harbor_retention_requests: >-
+          {{ _harbor_retention_projects.results | map(attribute='item') | list
+             | zip(_harbor_retention_projects.results
+                   | map(attribute='json') | list) | list }}
+      no_log: true
+
+    - name: Create or update the retention policy
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: >-
+          {{ harbor_api_url_effective }}/retentions{{ ('/' ~ _retention_id) if _retention_id else '' }}
+        method: "{{ 'PUT' if _retention_id else 'POST' }}"
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        body_format: json
+        body:
+          algorithm: "{{ item.0.algorithm | default('or') }}"
+          scope:
+            level: project
+            ref: "{{ item.1.project_id }}"
+          trigger:
+            kind: Schedule
+            references: {}
+            settings:
+              cron: "{{ item.0.schedule | default(harbor_retention_default_cron) }}"
+          rules: >-
+            {{ item.0.rules | map('combine', _retention_rule_defaults) | list }}
+        status_code: [200, 201]
+      vars:
+        _retention_id: "{{ item.1.metadata.retention_id | default('', true) }}"
+        # Every rule keeps artifacts (Harbor has no delete action); the selectors
+        # default to the whole project so a rule only has to state its template.
+        _retention_rule_defaults:
+          disabled: false
+          action: retain
+          scope_selectors:
+            repository:
+              - decoration: repoMatches
+                kind: doublestar
+                pattern: "**"
+          tag_selectors:
+            - decoration: matches
+              kind: doublestar
+              pattern: "**"
+      loop: "{{ harbor_retention_requests }}"
+      loop_control:
+        label: "{{ item.0.project }}"
+      no_log: true

@@ -1,0 +1,106 @@
+---
+# roles/harbor/tasks/auth.yml
+# Authentication is applied through the configurations API, not harbor.yml.
+# Upstream harbor.yml has no auth_mode or oidc_* keys (checked against v2.14.2),
+# so anything written there is discarded by the installer without an error.
+#
+# Provider-neutral: issuer, client and claim names are all inputs, so the same
+# variables cover any OIDC provider.
+
+- name: Read the current Harbor configuration
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/configurations"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_config_current
+  changed_when: false
+  no_log: true
+
+- name: Build the desired authentication configuration
+  ansible.builtin.set_fact:
+    # The client secret is deliberately absent: it is added only to the PUT body,
+    # never to the comparison, because the API never returns it.
+    _harbor_auth_desired: >-
+      {{ {'auth_mode': harbor_auth_mode}
+         | combine(_harbor_oidc_settings if harbor_auth_mode == 'oidc_auth' else {}) }}
+  vars:
+    _harbor_oidc_base:
+      oidc_name: "{{ harbor_oidc_name }}"
+      oidc_endpoint: "{{ harbor_oidc_endpoint }}"
+      oidc_client_id: "{{ harbor_oidc_client_id }}"
+      oidc_groups_claim: "{{ harbor_oidc_groups_claim }}"
+      oidc_admin_group: "{{ harbor_oidc_admin_group }}"
+      oidc_scope: "{{ harbor_oidc_scope }}"
+      oidc_verify_cert: "{{ harbor_oidc_verify_cert | bool }}"
+      oidc_auto_onboard: "{{ harbor_oidc_auto_onboard | bool }}"
+    # Both are sent only when set. An empty user claim makes Harbor fall back to
+    # the subject, and providers differ on which claim carries a readable name;
+    # an empty redirect-parms string is rejected outright, because Harbor parses
+    # that field as JSON.
+    _harbor_oidc_settings: >-
+      {{ _harbor_oidc_base
+         | combine({'oidc_user_claim': harbor_oidc_user_claim}
+                   if (harbor_oidc_user_claim | default('', true) | length > 0) else {})
+         | combine({'oidc_extra_redirect_parms': harbor_oidc_extra_redirect_parms}
+                   if (harbor_oidc_extra_redirect_parms | default('', true) | length > 0) else {}) }}
+  no_log: true
+
+- name: Flatten the live configuration to plain key/value pairs
+  ansible.builtin.set_fact:
+    _harbor_config_live: >-
+      {{ dict(_harbor_settings | map(attribute='key') | list
+              | zip(_harbor_settings | map(attribute='value.value') | list)) }}
+  vars:
+    # Most settings are wrapped as {value: ..., editable: ...}, but not all:
+    # scan_all_policy comes back as an empty object, and mapping .value across
+    # everything raises on it. Only wrapped settings are flattened — the rest
+    # are not comparable anyway.
+    _harbor_settings: >-
+      {{ _harbor_config_current.json | default({}) | dict2items
+         | selectattr('value.value', 'defined') | list }}
+  no_log: true
+
+- name: Determine whether the authentication configuration needs updating
+  ansible.builtin.set_fact:
+    _harbor_auth_needs_update: >-
+      {{ (harbor_oidc_rotate_secret | bool) or (_harbor_desired_norm != _harbor_live_norm) }}
+  vars:
+    _harbor_live_subset: >-
+      {{ _harbor_config_live | dict2items
+         | selectattr('key', 'in', (_harbor_auth_desired | list)) | items2dict }}
+    # Both sides are cast to strings before comparing. Templating renders a
+    # boolean input as "True" while the API returns a JSON true, and an untyped
+    # comparison would report drift on every run and PUT forever.
+    _harbor_desired_norm: >-
+      {{ _harbor_auth_desired | dict2items | sort(attribute='key')
+         | map(attribute='value') | map('string') | list }}
+    _harbor_live_norm: >-
+      {{ _harbor_live_subset | dict2items | sort(attribute='key')
+         | map(attribute='value') | map('string') | list }}
+  no_log: true
+
+# Changing auth_mode is rejected by Harbor once local users other than admin
+# exist, so a mode switch on a populated registry fails here rather than
+# silently leaving the old mode in place.
+- name: Apply the authentication configuration
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/configurations"
+    method: PUT
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    body_format: json
+    body: >-
+      {{ _harbor_auth_desired
+         | combine({'oidc_client_secret': harbor_oidc_client_secret}
+                   if harbor_auth_mode == 'oidc_auth' else {}) }}
+    status_code: [200]
+  when: _harbor_auth_needs_update | bool
+  no_log: true

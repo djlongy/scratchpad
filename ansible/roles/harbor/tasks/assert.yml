@@ -1,0 +1,112 @@
+---
+# roles/harbor/tasks/assert.yml
+# Preflight. Every failure here happens before the installer runs, so a missing
+# input cannot leave a half-installed registry behind.
+
+- name: Assert Harbor credentials are supplied
+  ansible.builtin.assert:
+    that:
+      - harbor_admin_password | default('', true) | length > 0
+      - harbor_db_password | default('', true) | length > 0
+    fail_msg: >-
+      harbor_admin_password and harbor_db_password must be set in inventory.
+      They have no defaults on purpose: the upstream template ships well-known
+      values and a fallback would silently deploy them.
+    quiet: true
+
+- name: Assert the container engine is supported
+  ansible.builtin.assert:
+    that:
+      - harbor_container_engine in ['docker', 'podman']
+    fail_msg: >-
+      harbor_container_engine must be 'docker' or 'podman', got
+      '{{ harbor_container_engine }}'.
+    quiet: true
+
+- name: Assert the installer source is supported
+  ansible.builtin.assert:
+    that:
+      - harbor_installer_source in ['url', 'controller', 'remote']
+      - >-
+        harbor_installer_source != 'controller'
+        or (harbor_installer_local_path | default('', true) | length > 0)
+    fail_msg: >-
+      harbor_installer_source must be 'url', 'controller' or 'remote'
+      (got '{{ harbor_installer_source }}'), and 'controller' additionally
+      requires harbor_installer_local_path.
+    quiet: true
+
+- name: Assert the TLS mode is supported
+  ansible.builtin.assert:
+    that:
+      - harbor_tls_mode in ['none', 'provided']
+    fail_msg: "harbor_tls_mode must be 'none' or 'provided', got '{{ harbor_tls_mode }}'."
+    quiet: true
+
+- name: Assert TLS material is supplied when Harbor terminates TLS
+  ansible.builtin.assert:
+    that:
+      - harbor_tls_certificate | default('', true) | length > 0
+      - harbor_tls_private_key | default('', true) | length > 0
+    fail_msg: >-
+      harbor_tls_mode is 'provided', so harbor_tls_certificate and
+      harbor_tls_private_key must both point at files on the target host.
+    quiet: true
+  when: harbor_tls_mode == 'provided'
+
+- name: Assert the auth mode is supported
+  ansible.builtin.assert:
+    that:
+      - harbor_auth_mode in ['db_auth', 'oidc_auth']
+    fail_msg: "harbor_auth_mode must be 'db_auth' or 'oidc_auth', got '{{ harbor_auth_mode }}'."
+    quiet: true
+
+- name: Assert OIDC settings are complete
+  ansible.builtin.assert:
+    that:
+      - harbor_oidc_name | default('', true) | length > 0
+      - harbor_oidc_endpoint | default('', true) | length > 0
+      - harbor_oidc_client_id | default('', true) | length > 0
+      - harbor_oidc_client_secret | default('', true) | length > 0
+    fail_msg: >-
+      harbor_auth_mode is 'oidc_auth', so harbor_oidc_name, harbor_oidc_endpoint,
+      harbor_oidc_client_id and harbor_oidc_client_secret must all be set.
+    quiet: true
+  when: harbor_auth_mode == 'oidc_auth'
+  no_log: true
+
+- name: Assert a webhook target and secret source are configured
+  ansible.builtin.assert:
+    that:
+      - harbor_webhook_url | default('', true) | length > 0
+      - >-
+        (harbor_webhook_secret | default('', true) | length > 0)
+        or (harbor_webhook_vault_secret | default('', true) | length > 0)
+    fail_msg: >-
+      harbor_webhook_enabled is true, so harbor_webhook_url must be set, along
+      with either harbor_webhook_secret or harbor_webhook_vault_secret.
+    quiet: true
+  when: harbor_webhook_enabled | bool
+
+# The upstream installer shells out to `docker compose` unconditionally. On
+# Podman that only works with podman-docker plus a compose implementation, so
+# prove both are present before the installer discovers it the hard way.
+- name: Probe the compose implementation
+  become: true  # root: the engine socket is root-owned
+  ansible.builtin.command:
+    argv: "{{ (harbor_compose_command_effective | split) + ['version'] }}"
+  environment: "{{ harbor_engine_environment }}"
+  register: _harbor_compose_probe
+  changed_when: false
+  failed_when: false
+
+- name: Assert the compose implementation is usable
+  ansible.builtin.assert:
+    that:
+      - _harbor_compose_probe.rc == 0
+    fail_msg: >-
+      '{{ harbor_compose_command_effective }} version' failed on the target
+      (rc={{ _harbor_compose_probe.rc }}). Install a compose implementation for
+      {{ harbor_container_engine }} before running this role; on Podman that
+      means podman-docker, docker-compose, and an enabled podman.socket.
+    quiet: true

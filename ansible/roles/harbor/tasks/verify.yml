@@ -1,0 +1,241 @@
+---
+# roles/harbor/tasks/verify.yml
+# The role asserts its own work. Every check re-reads live state rather than
+# trusting a fact set earlier in the run.
+
+- name: Re-read Harbor health
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/health"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_verify_health
+  changed_when: false
+  no_log: true
+
+- name: Assert every Harbor component is healthy
+  ansible.builtin.assert:
+    that:
+      - _harbor_verify_health.json.status == 'healthy'
+    fail_msg: >-
+      Harbor reports status '{{ _harbor_verify_health.json.status | default('unknown') }}'.
+      Unhealthy components:
+      {{ _harbor_verify_health.json.components | default([])
+         | rejectattr('status', 'eq', 'healthy') | map(attribute='name') | list | join(', ') }}
+    quiet: true
+
+- name: Re-read Harbor projects
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects?page=1&page_size=100"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_verify_projects
+  changed_when: false
+  no_log: true
+
+- name: Assert every declared project exists
+  ansible.builtin.assert:
+    that:
+      - _harbor_missing_projects | length == 0
+    fail_msg: "Declared projects missing from Harbor: {{ _harbor_missing_projects | join(', ') }}"
+    quiet: true
+  vars:
+    _harbor_missing_projects: >-
+      {{ harbor_managed_project_names
+         | difference(_harbor_verify_projects.json | map(attribute='name') | list) }}
+
+- name: Re-read Harbor registry endpoints
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/registries?page=1&page_size=100"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_verify_registries
+  changed_when: false
+  no_log: true
+
+- name: Assert every declared upstream registry exists
+  ansible.builtin.assert:
+    that:
+      - _harbor_missing_registries | length == 0
+    fail_msg: "Declared registries missing from Harbor: {{ _harbor_missing_registries | join(', ') }}"
+    quiet: true
+  vars:
+    _harbor_missing_registries: >-
+      {{ (harbor_registry_endpoints | map(attribute='name') | list)
+         | difference(_harbor_verify_registries.json | map(attribute='name') | list) }}
+
+- name: Re-read the Harbor authentication configuration
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/configurations"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  register: _harbor_verify_config
+  changed_when: false
+  no_log: true
+
+- name: Assert the authentication mode was applied
+  ansible.builtin.assert:
+    that:
+      - _harbor_verify_config.json.auth_mode.value == harbor_auth_mode
+    fail_msg: >-
+      Harbor auth_mode is '{{ _harbor_verify_config.json.auth_mode.value | default('unset') }}',
+      expected '{{ harbor_auth_mode }}'. Harbor refuses a mode change once local
+      users other than admin exist.
+    quiet: true
+
+- name: Assert the OIDC issuer and admin group were applied
+  ansible.builtin.assert:
+    that:
+      - _harbor_verify_config.json.oidc_endpoint.value | default('') == harbor_oidc_endpoint
+      - _harbor_verify_config.json.oidc_admin_group.value | default('') == harbor_oidc_admin_group
+    fail_msg: >-
+      Harbor OIDC settings do not match inventory. Live issuer
+      '{{ _harbor_verify_config.json.oidc_endpoint.value | default('unset') }}',
+      live admin group
+      '{{ _harbor_verify_config.json.oidc_admin_group.value | default('unset') }}'.
+    quiet: true
+  when: harbor_auth_mode == 'oidc_auth'
+
+- name: Re-read webhook policies per project
+  become: false  # API — no host privilege
+  ansible.builtin.uri:
+    url: "{{ harbor_api_url_effective }}/projects/{{ item }}/webhook/policies"
+    method: GET
+    user: "{{ harbor_admin_username }}"
+    password: "{{ harbor_admin_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ harbor_api_validate_certs }}"
+    status_code: [200]
+  loop: "{{ harbor_managed_project_names }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _harbor_verify_webhooks
+  changed_when: false
+  when: harbor_webhook_enabled | bool
+  no_log: true
+
+# Asserted per project rather than over a pre-built list: the match is on a
+# policy name nested inside each result, which a flat filter chain cannot reach.
+- name: Assert the webhook is present on every managed project
+  ansible.builtin.assert:
+    that:
+      - item.json | default([]) | selectattr('name', 'equalto', harbor_webhook_name)
+        | list | length > 0
+    fail_msg: "Webhook '{{ harbor_webhook_name }}' is missing from project '{{ item.item }}'."
+    quiet: true
+  loop: "{{ _harbor_verify_webhooks.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: harbor_webhook_enabled | bool
+
+- name: Assert the Harbor service is enabled and running
+  become: true  # root: reads unit state from the system manager
+  ansible.builtin.systemd:
+    name: harbor
+  register: _harbor_verify_unit
+  changed_when: false
+
+- name: Assert the Harbor unit is active and enabled at boot
+  ansible.builtin.assert:
+    that:
+      - _harbor_verify_unit.status.ActiveState == 'active'
+      - _harbor_verify_unit.status.UnitFileState == 'enabled'
+    fail_msg: >-
+      harbor.service is {{ _harbor_verify_unit.status.ActiveState | default('unknown') }} /
+      {{ _harbor_verify_unit.status.UnitFileState | default('unknown') }}, expected active/enabled.
+    quiet: true
+
+- name: Verify the promotion controls
+  when: >-
+    (harbor_robot_accounts | length > 0)
+    or (harbor_immutability_rules | length > 0)
+    or (harbor_retention_policies | length > 0)
+  block:
+
+    - name: Re-read projects for the promotion checks
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects?page=1&page_size=100"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      register: _harbor_promo_projects
+      changed_when: false
+      no_log: true
+
+    - name: Assert every declared robot exists
+      ansible.builtin.assert:
+        that:
+          - item.name in harbor_robot_id_map
+        fail_msg: "Robot account '{{ item.name }}' is missing from Harbor."
+        quiet: true
+      loop: "{{ harbor_robot_accounts }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Re-read immutability rules per project
+      become: false  # API — no host privilege
+      ansible.builtin.uri:
+        url: "{{ harbor_api_url_effective }}/projects/{{ item }}/immutabletagrules"
+        method: GET
+        user: "{{ harbor_admin_username }}"
+        password: "{{ harbor_admin_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ harbor_api_validate_certs }}"
+        status_code: [200]
+      loop: "{{ harbor_immutability_rules | map(attribute='project') | unique | list }}"
+      loop_control:
+        label: "{{ item }}"
+      register: _harbor_verify_immutability
+      changed_when: false
+      when: harbor_immutability_rules | length > 0
+      no_log: true
+
+    - name: Assert each project with a declared rule has one
+      ansible.builtin.assert:
+        that:
+          - item.json | default([]) | length > 0
+        fail_msg: "Project '{{ item.item }}' has no immutability rule."
+        quiet: true
+      loop: "{{ _harbor_verify_immutability.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: harbor_immutability_rules | length > 0
+
+    # Retention is asserted through the project's own metadata: the policy id
+    # only appears there once Harbor has actually attached it.
+    - name: Assert each project with a declared policy carries a retention id
+      ansible.builtin.assert:
+        that:
+          - _harbor_project_meta.metadata.retention_id | default('') | length > 0
+        fail_msg: "Project '{{ item.project }}' has no retention policy attached."
+        quiet: true
+      vars:
+        _harbor_project_meta: >-
+          {{ (_harbor_promo_projects.json | selectattr('name', 'eq', item.project) | list | first)
+             | default({}, true) }}
+      loop: "{{ harbor_retention_policies }}"
+      loop_control:
+        label: "{{ item.project }}"
