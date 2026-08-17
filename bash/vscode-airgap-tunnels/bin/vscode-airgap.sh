@@ -1431,9 +1431,10 @@ install_from_stage() {
     [ -n "$sw_bin" ] || die "internal error: --serve-web requested but no CLI was staged"
     start_serve_web "$sw_bin"
   else
-    log "Remote-SSH server is staged and ready. Connect from an operator" \
-        "laptop with a matching-commit VS Code client — see" \
-        "$SELF --emit-ssh-config and docs/runbooks/remote-ssh-realm-otp.md."
+    log "Remote-SSH server is staged and ready. Connect from an operator"
+    log "laptop with a matching-commit VS Code client. Print the templates:"
+    log "  $SELF --emit-ssh-config"
+    log "  see docs/runbooks/remote-ssh-realm-otp.md"
   fi
 }
 
