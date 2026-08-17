@@ -62,7 +62,8 @@ Output tarball contains:
 
 ```
 versions.json
-server-linux-x64.tar.gz          # Remote-SSH server for the Linux host
+server-linux-x64.tar.gz          # Remote-SSH classic server for the Linux host
+cli-alpine-x64.tar.gz            # handshake + exec-server CLI (not cli.tar.gz)
 vscode-linux-x64.tar.gz          # client, user-space, Linux laptops
 VSCodeUserSetup-x64-<ver>.exe    # client, Windows user setup
 extensions/*.vsix
@@ -74,9 +75,11 @@ allows — out of scope for this script.
 ## 2. On the air-gapped host: install with network blocked
 
 Run this **logged in as the exact user account Remote-SSH will connect
-as** — the install path (`~/.vscode-server/bin/<commit>/`) is
-per-user, and that's the whole point: it has to be the account the SSH
-session lands in.
+as** — the install path (`~/.vscode-server`) is per-user, and that's
+the whole point: it has to be the account the SSH session lands in.
+Offline install writes both layouts (classic `bin/<commit>/` and
+exec-server `code-<commit>` + `cli/servers/Stable-<commit>/server/`)
+plus the handshake tarball.
 
 The script never calls `curl` in `--mode offline` — there's nothing to
 disable. To *prove* that during testing, run with network genuinely cut:
@@ -92,7 +95,7 @@ export HTTPS_PROXY=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1
 Expected: sha256 verification against `versions.json` for every artifact
 (Microsoft-published where the bundle used "latest", self-computed for a
 pinned commit — both distinguished, not conflated), extraction straight
-into `~/.vscode-server/bin/<commit>/`, client installers + extension
+into both Remote-SSH layouts under `~/.vscode-server`, client installers + extension
 VSIX files staged, then the script prints next steps. If the bundle is
 corrupt or was tampered with in transit, the sha256 check fails loudly
 and nothing is installed.
@@ -116,13 +119,14 @@ all of this exists to prevent.
 ## 4. Connect
 
 See `docs/runbooks/remote-ssh-realm-otp.md` for the full `~/.ssh/config`
-+ `settings.json` walkthrough (realm/GSSAPI + OTP, port 22 only,
-`ControlMaster off`, and the specific VS Code settings verified live
-against the Remote-SSH extension's current package.json). Quick start:
++ JSONC `settings.json` + remote-host walkthrough (realm/GSSAPI + OTP,
+port 22 only, ControlMaster on Unix / `useLocalServer` on Windows).
+Quick start:
 
 ```bash
 ./bin/vscode-airgap.sh --emit-ssh-config
-# writes ~/.vscode-server/ssh-config.example and settings.json.example
+# writes ssh-config.example, settings.json.example (JSONC // comments),
+# and remote-host.example
 ```
 
 Then in VS Code: **Remote-SSH: Connect to Host...** → the `Host` alias

@@ -1,32 +1,42 @@
-# Example ~/.ssh/config entry for an air-gapped Remote-SSH host with realm
-# (GSSAPI/Kerberos) authentication AND a keyboard-interactive OTP factor,
-# through port 22 only. See docs/runbooks/remote-ssh-realm-otp.md.
+# Client ~/.ssh/config for an air-gapped Remote-SSH host with realm
+# (GSSAPI/Kerberos) and/or keyboard-interactive OTP, port 22 only.
+# See docs/runbooks/remote-ssh-realm-otp.md.
 #
-# Replace airgapped-host / airgapped-host.example.realm with your actual
-# hostname before use.
+# Replace airgapped-host / airgapped-host.example.realm / youruser
+# before use. Point remote.SSH.configFile at this file, or merge
+# the Host block into the user's default config.
 
+# --- Unix / macOS client ---
+# ControlMaster reuses the first TCP session so a second SSH in the
+# same TOTP window is not a new login (realm OTP is anti-replay).
+# mkdir -p ~/.ssh/sockets
 Host airgapped-host
     HostName airgapped-host.example.realm
     User youruser
     Port 22
-
-    # Realm first, OTP as the interactive fallback. Pubkey is NOT the only
-    # method and is not required — omit it entirely if your policy forbids
-    # keys on this host, or leave it last as a convenience for hosts where
-    # it's also allowed.
     PreferredAuthentications gssapi-with-mic,keyboard-interactive,password
     GSSAPIAuthentication yes
     GSSAPIDelegateCredentials yes
     PubkeyAuthentication no
-
-    # After the first OTP, reuse that TCP session. A second independent
-    # SSH in the same 30s TOTP window is denied (FreeIPA anti-replay).
-    # Windows OpenSSH ignores ControlMaster — pair this with
-    # remote.SSH.useLocalServer=true. mkdir -p ~/.ssh/sockets
     ControlMaster auto
     ControlPath ~/.ssh/sockets/%r@%h-%p
     ControlPersist 600
+    ServerAliveInterval 30
+    StrictHostKeyChecking accept-new
+    # ProxyJump bastion.example.realm   # only if the network requires a jump
 
-    # No ProxyJump / extra listeners — only port 22 on this host is open.
-    # ProxyJump bastion.example.realm   # <- do NOT add unless your network
-                                         #    actually requires a jump host.
+# --- Windows client (native OpenSSH optional feature) ---
+# Win32-OpenSSH ignores ControlMaster. Session reuse is
+# remote.SSH.useLocalServer=true in settings.json, not this file.
+# Force the native binary with remote.SSH.path =
+# C:\Windows\System32\OpenSSH\ssh.exe
+Host airgapped-host
+    HostName airgapped-host.example.realm
+    User youruser
+    Port 22
+    PreferredAuthentications keyboard-interactive
+    PubkeyAuthentication no
+    GSSAPIAuthentication no
+    NumberOfPasswordPrompts 3
+    ServerAliveInterval 30
+    StrictHostKeyChecking accept-new

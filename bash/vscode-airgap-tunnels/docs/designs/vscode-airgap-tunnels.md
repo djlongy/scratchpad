@@ -22,12 +22,16 @@ Remote-SSH the primary path and keeps tunnels/serve-web as explicit,
 secondary, opt-in options:
 
 1. **Remote-SSH (default, both `online` and `offline` modes)** — download
-   the exact commit's classic server (`server-linux-x64`) plus matching
-   Linux/Windows **desktop client installers** (same commit), install the
-   server at `~/.vscode-server/bin/<commit>/` — the literal path
-   Remote-SSH looks at on its own — and stage the client installers +
-   any extension VSIX for the operator. Zero new ports, zero new
-   listeners; connects over the SSH session that's already there.
+   the exact commit's classic server (`server-linux-x64`) **and** the
+   alpine CLI (`cli-alpine-x64`) plus matching Linux/Windows **desktop
+   client installers** (same commit). Install both layouts the client
+   may pick — classic `~/.vscode-server/bin/<commit>/` and exec-server
+   `~/.vscode-server/code-<commit>` plus
+   `cli/servers/Stable-<commit>/server/` — and write the handshake
+   tarball (`vscode-cli-<commit>.tar.gz` + `.done` last). Stage the
+   client installers + any extension VSIX for the operator. Zero new
+   ports, zero new listeners; connects over the SSH session that's
+   already there.
 2. **`--serve-web` (opt-in, either mode)** — the v1 path, kept because
    some operators do want browser access without a VS Code Desktop
    install. Fetches CLI + server-web matching the arch of the machine
@@ -64,7 +68,7 @@ to get wrong by hand.
   connection; it does not touch credentials, tickets, or OTP seeds.
 - **Building our own relay** (to make tunnels air-gap-capable): rejected.
   Reimplementing tunnel relay semantics is a large, security-sensitive
-  undertaking for a homelab script, and the actual requirement (a client
+  undertaking for a small standalone script, and the actual requirement (a client
   reaches an isolated VS Code instance) is already solved by
   Remote-SSH over an already-open, already-authenticated port.
 
@@ -96,9 +100,9 @@ that manifest before extracting anything either way.
 - Multi-user auth beyond the SSH session (primary) or the connection
   token (secondary `serve-web`) — this tool does not layer its own auth,
   store credentials, or handle OTP seeds/Kerberos tickets. It writes
-  *example* `ssh_config`/`settings.json` templates
-  (`--emit-ssh-config`); the operator's existing realm/OTP infrastructure
-  does the actual authenticating.
+  *example* `ssh_config` / JSONC `settings.json` / remote-host
+  templates (`--emit-ssh-config`); the operator's existing realm/OTP
+  infrastructure does the actual authenticating.
 - A custom SSH client or SSH protocol extension — explicitly out of
   scope per the operator's own instruction; realm+OTP+port-22 is entirely
   standard OpenSSH client/server configuration.

@@ -71,12 +71,14 @@ usage() {
   cat <<'EOF'
 vscode-airgap.sh — stage VS Code Remote-SSH for an air-gapped Linux host
 
-Primary path: pre-install the exact VS Code Server commit at
-~/.vscode-server/bin/<commit>/ on the air-gapped host so the Remote-SSH
-extension finds a matching install and never tries to download one over
-the wire, plus matching Linux/Windows client installers so an operator's
-laptop reports the same commit under Help > About. Connects over plain
-SSH port 22 with realm (GSSAPI/Kerberos) + OTP auth — see
+Primary path: pre-install the exact VS Code Server commit on the
+air-gapped host so Remote-SSH finds a matching install and never tries
+to download one over the wire. Stages BOTH layouts the client may pick
+(classic ~/.vscode-server/bin/<commit>/ AND exec-server
+~/.vscode-server/code-<commit> plus cli/servers/Stable-<commit>/server/)
+plus matching Linux/Windows client installers so Help > About reports
+the same commit. Connects over plain SSH port 22 with realm
+(GSSAPI/Kerberos) + OTP auth — see
 docs/runbooks/remote-ssh-realm-otp.md. `code serve-web` and Remote Tunnels
 are supported as secondary, opt-in paths (--serve-web / --tunnel).
 
@@ -96,10 +98,14 @@ MODES
             both are needed so at least one operator platform's Help >
             About commit matches the staged server), any --extensions /
             --extensions-file, install the server at
-            INSTALL_DIR/bin/<commit>/ (the real path Remote-SSH itself
-            uses when INSTALL_DIR is left at its ~/.vscode-server
-            default), and stage the client installers + extension VSIX
-            files for the operator to pick up. Add --serve-web to also
+            INSTALL_DIR/bin/<commit>/ (classic) AND
+            INSTALL_DIR/code-<commit> plus
+            cli/servers/Stable-<commit>/server/ (exec-server), plus the
+            handshake tarball vscode-cli-<commit>.tar.gz with its
+            sibling .done written last. INSTALL_DIR defaults to
+            ~/.vscode-server — the real path Remote-SSH itself uses.
+            Stage the client installers + extension VSIX for the
+            operator to pick up. Add --serve-web to also
             fetch+start `code serve-web`, or --tunnel for real Remote
             Tunnels (internet-only, see LIMITATIONS).
   bundle    Same download step as online, but instead of installing, packs
@@ -112,9 +118,11 @@ MODES
   offline   Installs from a bundle tarball with ZERO outbound network calls.
             Refuses to run if BUNDLE_PATH is missing, and verifies every
             artifact's sha256 against the bundle's own versions.json before
-            extracting anything. Installs the server at
-            INSTALL_DIR/bin/<commit>/ and stages client installers +
-            extensions for the operator. --tunnel is rejected in this mode
+            extracting anything. Installs both Remote-SSH layouts
+            (classic bin/<commit>/ and exec-server code-<commit> +
+            cli/servers/Stable-<commit>/server/) plus the handshake
+            tarball, and stages client installers + extensions for the
+            operator. --tunnel is rejected in this mode
             (Remote Tunnels needs Microsoft's relay — see LIMITATIONS).
 
 OPTIONS (env var equivalents in parentheses)
@@ -214,8 +222,10 @@ OPTIONS (env var equivalents in parentheses)
   --download-only         Fetch/verify artifacts but do not install/start.
   --status                Print install state for INSTALL_DIR and exit.
                           Standalone — no MODE/network/curl required.
-  --emit-ssh-config       Write ssh-config.example and settings.json.example
-                          into INSTALL_DIR (or --install-dir) and exit.
+  --emit-ssh-config       Write ssh-config.example, settings.json.example
+                          (JSONC: real // comments, not fake "// key"
+                          pairs), and remote-host.example into
+                          INSTALL_DIR (or --install-dir) and exit.
                           Standalone — no MODE/network required. See
                           docs/runbooks/remote-ssh-realm-otp.md.
   --force                 Re-download even if a matching cached artifact
@@ -241,7 +251,7 @@ EXAMPLES
   # user Remote-SSH will connect as, then:
   ./vscode-airgap.sh --mode offline --bundle-path ./vscode-bundle.tar.gz
 
-  # Print the ssh_config / settings.json templates for realm+OTP, port 22 only
+  # Print ssh_config + JSONC settings.json + remote-host notes
   ./vscode-airgap.sh --emit-ssh-config
 
   # Optional secondary path: serve-web instead of / alongside Remote-SSH
@@ -270,18 +280,18 @@ LIMITATIONS — READ THIS BEFORE CHOOSING --tunnel OR --serve-web
   --serve-web only if you specifically want the browser-based path too.
 
   There is no VS Code setting that means "never attempt any server
-  download, ever" — verified live against the Remote-SSH extension's own
-  current package.json (2026-08-17): `remote.SSH.allowLocalServerDownload`
-  only controls a client-downloads-and-scps FALLBACK path, not the initial
-  attempt. The actual fail-closed mechanism is what this script does:
-  pre-stage the exact matching commit at ~/.vscode-server/bin/<commit>/
-  BEFORE the first connection, so Remote-SSH's own "is a valid server
-  already installed" check finds one and skips downloading entirely. See
-  docs/runbooks/remote-ssh-realm-otp.md for the full settings rationale,
-  including `remote.SSH.useExecServer: false` (verified live: this
-  defaults to true in the current extension and switches to a newer,
-  less-documented bootstrapping mode — turned off here so the connection
-  uses the classic, well-understood path that matches what gets staged).
+  download, ever". `remote.SSH.localServerDownload: "off"` is still
+  required: a staging miss otherwise wget -O truncates the CLI tarball
+  to zero bytes and the install script polls forever. The fail-closed
+  mechanism is what this script does: pre-stage BOTH Remote-SSH layouts
+  (classic ~/.vscode-server/bin/<commit>/ AND exec-server
+  ~/.vscode-server/code-<commit> plus
+  cli/servers/Stable-<commit>/server/) BEFORE the first connection, so
+  whichever bootstrap script arrives, its presence test passes and the
+  download branch is never entered. Also set
+  remote.SSH.remoteServerListenOnSocket: false in settings.json —
+  true silently forces useLocalServer off (Windows ignores the UI
+  toggle). See docs/runbooks/remote-ssh-realm-otp.md.
 EOF
 }
 
@@ -358,11 +368,16 @@ fi
 
 sha256_of() {
   # Portable sha256: coreutils sha256sum on Linux, shasum -a 256 on macOS/BSD.
+  # Missing file must fail (empty stdout + rc 0 used to look like a match).
+  [ -f "$1" ] || return 1
+  local out
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    out="$(sha256sum "$1" | awk '{print $1}')"
   else
-    shasum -a 256 "$1" | awk '{print $1}'
+    out="$(shasum -a 256 "$1" | awk '{print $1}')"
   fi
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
 }
 
 # ── Arch handling ─────────────────────────────────────────────────────────
@@ -1062,10 +1077,9 @@ stage_artifacts() {
     rssh_cli_sha="$(printf '%s' "$rssh_cli_meta" | sed -n 1p)"
     rssh_cli_src="$(printf '%s' "$rssh_cli_meta" | sed -n 2p)"
     rm -f "${rssh_cli_file}.commit"
-    # Offline install also looks for the historical ./cli.tar.gz name.
-    if [ ! -f "$stage_dir/cli.tar.gz" ]; then
-      cp -f "$rssh_cli_file" "$stage_dir/cli.tar.gz"
-    fi
+    # Do NOT copy this alpine tarball to cli.tar.gz. That name is the
+    # builder-local CLI used by --serve-web/--tunnel (often glibc).
+    # Pre-seeding it here skips the real download and installs musl.
   else
     warn "no Remote-SSH CLI segment for --arch $ARCH — handshake archive will not be bundled"
   fi
@@ -1173,7 +1187,13 @@ write_manifest() {
       printf '  "cli_artifact": null,\n'
     fi
     if [ -n "$rssh_cli_sha" ]; then
-      printf '  "remote_ssh_cli_artifact": "cli-alpine-x64.tar.gz",\n'
+      local rssh_cli_name="cli-alpine-x64.tar.gz"
+      if [ -f "$stage_dir/cli-alpine-arm64.tar.gz" ]; then
+        rssh_cli_name="cli-alpine-arm64.tar.gz"
+      elif [ -f "$stage_dir/cli-alpine-x64.tar.gz" ]; then
+        rssh_cli_name="cli-alpine-x64.tar.gz"
+      fi
+      printf '  "remote_ssh_cli_artifact": "%s",\n' "$rssh_cli_name"
       printf '  "remote_ssh_cli_sha256": "%s",\n' "$rssh_cli_sha"
       printf '  "remote_ssh_cli_sha256_source": "%s",\n' "$rssh_cli_src"
     else
@@ -1208,7 +1228,9 @@ run_bundle() {
   trap cleanup_stage_dir EXIT
   stage_artifacts "$_STAGE_DIR"
   mkdir -p "$(dirname "$BUNDLE_PATH")"
-  tar -C "$_STAGE_DIR" -czf "$BUNDLE_PATH" .
+  # macOS tar otherwise writes LIBARCHIVE.xattr.com.apple.provenance
+  # headers; GNU tar on the air-gapped host warns and ignores them.
+  COPYFILE_DISABLE=1 tar -C "$_STAGE_DIR" --exclude='._*' -czf "$BUNDLE_PATH" .
   log "bundle written: $BUNDLE_PATH ($(du -h "$BUNDLE_PATH" | awk '{print $1}'))"
   log "carry this file across the air gap, log in as the SAME user Remote-SSH" \
       "will connect as, then run:"
@@ -1265,7 +1287,8 @@ verify_artifact_sha() {
   [ -n "$artifact" ] && [ "$artifact" != "null" ] || return 1
   sha="$(json_field "$stage_dir/versions.json" "$sha_field")"
   local got
-  got="$(sha256_of "$stage_dir/$artifact")"
+  got="$(sha256_of "$stage_dir/$artifact")" \
+    || die "cannot hash $artifact at $stage_dir/$artifact (missing or unreadable)"
   [ "$got" = "$sha" ] || die "sha256 mismatch for $artifact: expected $sha got $got"
   log "$artifact sha256 OK"
 }
@@ -1300,7 +1323,26 @@ install_from_stage() {
     tar -C "$server_bin_dir" --strip-components=1 -xzf "$stage_dir/server-linux-x64.tar.gz"
     [ -f "$server_bin_dir/product.json" ] || die "extracted server tree has no product.json at the expected depth — layout assumption is wrong, refusing to claim success"
     [ -x "$server_bin_dir/bin/code-server" ] || warn "bin/code-server is not executable after extraction (tar should preserve the mode bit — check the archive)"
+    chmod 0755 "$server_bin_dir/bin/helpers/check-requirements.sh" 2>/dev/null || true
   fi
+
+  # Exec-server layout. Remote-SSH chooses bootstrap script by a staged
+  # rollout, not by extension version. Presence tests:
+  #   $INSTALL_DIR/code-<commit>                         alpine CLI binary
+  #   $INSTALL_DIR/cli/servers/Stable-<commit>/server/   same tree as bin/
+  # Stage both so whichever script arrives never enters the download branch.
+  local stable_dir="$INSTALL_DIR/cli/servers/Stable-$commit/server"
+  if [ ! -x "$stable_dir/bin/code-server" ]; then
+    mkdir -p "$(dirname "$stable_dir")"
+    if cp -al "$server_bin_dir" "$stable_dir" 2>/dev/null; then
+      log "exec-server tree hardlinked at $stable_dir"
+    else
+      cp -a "$server_bin_dir" "$stable_dir"
+      log "exec-server tree copied to $stable_dir"
+    fi
+  fi
+  chmod 0755 "$stable_dir/bin/code-server" "$stable_dir/node" \
+    "$stable_dir/bin/helpers/check-requirements.sh" 2>/dev/null || true
 
   # Client installers: STAGED for the operator, never "installed" here —
   # a Windows .exe can't run on this host, and the Linux tarball is meant
@@ -1326,23 +1368,31 @@ install_from_stage() {
     [ -n "$cli_bin" ] && chmod +x "$cli_bin"
   fi
 
-  # Remote-SSH handshake archive. Prefer the alpine CLI tarball Remote-SSH
-  # actually requests; fall back to cli.tar.gz only when that is the alpine
-  # artifact (no --serve-web local-arch overwrite).
-  local handshake_src=""
-  if [ -f "$stage_dir/cli-alpine-x64.tar.gz" ]; then
+  # Handshake archive is belt-and-braces only. Prefer the extracted
+  # code-<commit> binary (skips the download branch entirely). Write the
+  # tarball first and .done last — a .done with a missing/empty tar is
+  # Remote-SSH exit 199.
+  local handshake_src="" handshake_name
+  handshake_name="$(json_field "$stage_dir/versions.json" remote_ssh_cli_artifact)"
+  if [ -n "$handshake_name" ] && [ "$handshake_name" != "null" ] && [ -f "$stage_dir/$handshake_name" ]; then
+    handshake_src="$stage_dir/$handshake_name"
+  elif [ -f "$stage_dir/cli-alpine-x64.tar.gz" ]; then
     handshake_src="$stage_dir/cli-alpine-x64.tar.gz"
   elif [ -f "$stage_dir/cli-alpine-arm64.tar.gz" ]; then
     handshake_src="$stage_dir/cli-alpine-arm64.tar.gz"
-  elif [ -f "$stage_dir/cli.tar.gz" ] && [ "$WITH_CLI" -eq 0 ]; then
-    handshake_src="$stage_dir/cli.tar.gz"
   fi
   if [ -n "$handshake_src" ]; then
     [ -s "$handshake_src" ] || die "Remote-SSH CLI archive is empty: $handshake_src"
     local remote_cli_archive="$INSTALL_DIR/vscode-cli-${commit}.tar.gz"
+    local exec_cli="$INSTALL_DIR/code-${commit}"
     log "staging CLI archive for Remote-SSH bootstrap at $remote_cli_archive"
     cp -f "$handshake_src" "$remote_cli_archive"
     chmod 640 "$remote_cli_archive" 2>/dev/null || chmod 600 "$remote_cli_archive"
+    if [ ! -x "$exec_cli" ]; then
+      tar -xOf "$handshake_src" code > "$exec_cli" \
+        || die "could not extract CLI binary 'code' from $handshake_src"
+      chmod 0755 "$exec_cli"
+    fi
     : > "${remote_cli_archive}.done"
     chmod 640 "${remote_cli_archive}.done" 2>/dev/null || chmod 600 "${remote_cli_archive}.done"
   fi
@@ -1448,6 +1498,15 @@ run_status() {
   if [ -n "$commit" ] && [ -d "$INSTALL_DIR/bin/$commit" ]; then
     echo "server dir  : $INSTALL_DIR/bin/$commit (present)"
   fi
+  if [ -n "$commit" ] && [ -x "$INSTALL_DIR/code-$commit" ]; then
+    echo "exec cli    : $INSTALL_DIR/code-$commit (present)"
+  fi
+  if [ -n "$commit" ] && [ -x "$INSTALL_DIR/cli/servers/Stable-$commit/server/bin/code-server" ]; then
+    echo "exec server : $INSTALL_DIR/cli/servers/Stable-$commit/server (present)"
+  fi
+  if [ -n "$commit" ] && [ -s "$INSTALL_DIR/vscode-cli-$commit.tar.gz" ]; then
+    echo "handshake   : $INSTALL_DIR/vscode-cli-$commit.tar.gz (present)"
+  fi
   # `&&` as the LAST command of a function under `set -e` propagates a
   # false test as the whole script's exit code — found live: a
   # Remote-SSH-only install (no serve-web token, the common case now
@@ -1463,76 +1522,182 @@ run_emit_ssh_config() {
   mkdir -p "$INSTALL_DIR"
   local ssh_out="$INSTALL_DIR/ssh-config.example"
   local settings_out="$INSTALL_DIR/settings.json.example"
+  local remote_out="$INSTALL_DIR/remote-host.example"
   write_ssh_config_example > "$ssh_out"
   write_settings_json_example > "$settings_out"
+  write_remote_host_example > "$remote_out"
   log "wrote $ssh_out"
   log "wrote $settings_out"
+  log "wrote $remote_out"
   log "see docs/runbooks/remote-ssh-realm-otp.md for the full rationale" \
       "behind every line."
 }
 
 write_ssh_config_example() {
   cat <<'EOF'
-# Example ~/.ssh/config entry for an air-gapped Remote-SSH host with realm
-# (GSSAPI/Kerberos) authentication AND a keyboard-interactive OTP factor,
-# through port 22 only. See docs/runbooks/remote-ssh-realm-otp.md.
+# Client ~/.ssh/config for an air-gapped Remote-SSH host with realm
+# (GSSAPI/Kerberos) and/or keyboard-interactive OTP, port 22 only.
+# See docs/runbooks/remote-ssh-realm-otp.md.
 #
-# Replace airgapped-host / airgapped-host.example.realm with your actual
-# hostname before use.
+# Replace airgapped-host / airgapped-host.example.realm / youruser
+# before use. Point remote.SSH.configFile at this file, or merge
+# the Host block into the user's default config.
 
+# --- Unix / macOS client ---
+# ControlMaster reuses the first TCP session so a second SSH in the
+# same TOTP window is not a new login (realm OTP is anti-replay).
+# mkdir -p ~/.ssh/sockets
 Host airgapped-host
     HostName airgapped-host.example.realm
     User youruser
     Port 22
-
-    # Realm first, OTP as the interactive fallback. Pubkey is NOT the only
-    # method and is not required — omit it entirely if your policy forbids
-    # keys on this host, or leave it last as a convenience for hosts where
-    # it's also allowed.
     PreferredAuthentications gssapi-with-mic,keyboard-interactive,password
     GSSAPIAuthentication yes
     GSSAPIDelegateCredentials yes
     PubkeyAuthentication no
-
-    # After the first OTP, reuse that TCP session. A second independent
-    # SSH in the same 30s TOTP window is denied (FreeIPA anti-replay).
-    # Windows OpenSSH ignores ControlMaster — pair this with
-    # remote.SSH.useLocalServer=true. mkdir -p ~/.ssh/sockets
     ControlMaster auto
     ControlPath ~/.ssh/sockets/%r@%h-%p
     ControlPersist 600
+    ServerAliveInterval 30
+    StrictHostKeyChecking accept-new
+    # ProxyJump bastion.example.realm   # only if the network requires a jump
 
-    # No ProxyJump / extra listeners — only port 22 on this host is open.
-    # ProxyJump bastion.example.realm   # <- do NOT add unless your network
-                                         #    actually requires a jump host.
+# --- Windows client (native OpenSSH optional feature) ---
+# Win32-OpenSSH ignores ControlMaster. Session reuse is
+# remote.SSH.useLocalServer=true in settings.json, not this file.
+# Force the native binary with remote.SSH.path =
+# C:\Windows\System32\OpenSSH\ssh.exe
+Host airgapped-host
+    HostName airgapped-host.example.realm
+    User youruser
+    Port 22
+    PreferredAuthentications keyboard-interactive
+    PubkeyAuthentication no
+    GSSAPIAuthentication no
+    NumberOfPasswordPrompts 3
+    ServerAliveInterval 30
+    StrictHostKeyChecking accept-new
 EOF
 }
 
 write_settings_json_example() {
+  # VS Code settings.json is JSONC. Comments are // lines, never
+  # fake keys like "// useLocalServer": "…". Those are real JSON
+  # properties the extension will ignore or reject.
   cat <<'EOF'
 {
-  "//": "Merge these into your VS Code user settings.json. See docs/runbooks/remote-ssh-realm-otp.md for why each one is set this way — verified live against the Remote-SSH extension's own current package.json (2026-08-17).",
+  // JSONC (JSON with Comments). VS Code reads // lines.
+  // Do not comment with fake keys such as "// useLocalServer".
+  // Merge into the operator laptop's user settings.json.
+  // These keys are CLIENT-only. They do nothing on the remote host.
+  // After connect, remote.SSH.log must dump the same values.
 
+  // Show the keyboard-interactive prompts (password + TOTP).
   "remote.SSH.showLoginTerminal": true,
-  "// showLoginTerminal": "Reveals the terminal for every SSH command Remote-SSH runs, so the GSSAPI/OTP keyboard-interactive prompt is actually visible instead of silently hanging in a background process.",
 
+  // One shared SSH connection. Required on Windows (no ControlMaster).
+  // Pair with remoteServerListenOnSocket false or this is silently undone.
   "remote.SSH.useLocalServer": true,
-  "// useLocalServer": "Reuses one SSH session across Remote-SSH's extra channels. Required for FreeIPA/realm OTP: TOTP is anti-replay inside the 30s window, so a second unauthenticated channel is denied. Windows OpenSSH has no ControlMaster — this setting is the Windows-safe mux. First connect still needs showLoginTerminal for the OTP prompt.",
 
-  "remote.SSH.remotePlatform": { "airgapped-host": "linux" },
-  "// remotePlatform": "Skips a remote OS-detection round trip. The extension's own docs note this setting becomes closer to required once useLocalServer is disabled (as above) — set both together. Replace 'airgapped-host' with your actual Host alias from ssh-config.example.",
-
-  "remote.SSH.lockfilesInTmp": true,
-  "// lockfilesInTmp": "Keeps lockfiles in /tmp instead of inside the server's install folder — matters if the remote home directory is NFS or another distributed filesystem with locking quirks. Harmless to leave on otherwise.",
-
+  // Classic bootstrap. A staged rollout can still pick exec-server;
+  // this tool stages both layouts so either presence test passes.
+  // Confirm the log line: remote.SSH.useExecServer = false
   "remote.SSH.useExecServer": false,
-  "// useExecServer": "Defaults to true in the current extension (verified live, 2026-08-17) and switches connection bootstrapping to a newer mode described only as 'toggled off in the event of connection issues'. Turned off here so the connection uses the classic bootstrap path this tool's pre-staged ~/.vscode-server/bin/<commit>/ layout is proven against, rather than a less-documented alternate path.",
 
-  "remote.SSH.connectTimeout": 30,
-  "// connectTimeout": "Default is 15s; raised because a realm+OTP login round trip (Kerberos ticket check + waiting on a human to type a code) routinely takes longer than a plain key-based connect.",
+  // A staging miss otherwise wget -O truncates the CLI tarball to
+  // zero bytes and the install script polls forever. off fails fast.
+  "remote.SSH.localServerDownload": "off",
 
-  "//NOT_SET allowLocalServerDownload": "Deliberately left at its default (true). Verified live: this only controls a client-downloads-then-scps FALLBACK path if a REMOTE-side download fails — it does not mean 'never try to download'. The actual fail-closed mechanism is that this tool pre-stages the exact matching commit at ~/.vscode-server/bin/<commit>/ before you ever connect, so Remote-SSH's own existing-install check finds it and skips downloading in the first place. See the LIMITATIONS section of `vscode-airgap.sh --help`."
+  // true silently forces useLocalServer off. Must be in this file —
+  // Windows ignores the UI toggle.
+  "remote.SSH.remoteServerListenOnSocket": false,
+
+  // Lockfiles in /tmp (or %TEMP%) instead of the server install folder.
+  "remote.SSH.lockfilesInTmp": true,
+
+  // Realm + OTP is slower than a key-based connect (default 15s).
+  "remote.SSH.connectTimeout": 60,
+
+  // Native Windows OpenSSH optional feature. Omit this key on Unix.
+  "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+
+  // Optional. If you uncomment this, the file must contain the Host
+  // alias used in remotePlatform below.
+  // "remote.SSH.configFile": "C:\\Users\\youruser\\.ssh\\config",
+
+  // Skip remote OS detection. Key must match the Host alias.
+  "remote.SSH.remotePlatform": {
+    "airgapped-host": "linux"
+  }
 }
+EOF
+}
+
+write_remote_host_example() {
+  cat <<'EOF'
+# Remote air-gapped Linux host — apply as root. Not VS Code settings.
+# Client remote.SSH.* keys do not go here.
+# See docs/runbooks/remote-ssh-realm-otp.md
+
+# ---------------------------------------------------------------------------
+# 1. Server bits — run as the SAME user Remote-SSH will log in as
+# ---------------------------------------------------------------------------
+#   ./vscode-airgap.sh --mode offline --bundle-path ./vscode-bundle.tar.gz
+#
+# Must exist afterwards (commit = client Help > About):
+#   ~/.vscode-server/bin/<commit>/          node, bin/code-server, +x
+#                                           bin/helpers/check-requirements.sh +x
+#   ~/.vscode-server/code-<commit>          extracted alpine CLI, +x
+#   ~/.vscode-server/cli/servers/Stable-<commit>/server/
+#   ~/.vscode-server/vscode-cli-<commit>.tar.gz       real file, not 0 bytes
+#   ~/.vscode-server/vscode-cli-<commit>.tar.gz.done  written LAST
+# Owner = that user. Do not leave the tree root-owned.
+
+# ---------------------------------------------------------------------------
+# 2. sshd drop-in  (e.g. /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf)
+# ---------------------------------------------------------------------------
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+UsePAM yes
+AllowTcpForwarding yes
+AllowStreamLocalForwarding yes
+GatewayPorts no
+# OpenSSH 9.9+: a hung OTP prompt otherwise bans the client IP.
+# Replace with the operator workstation CIDRs.
+PerSourcePenaltyExemptList 192.0.2.0/24,198.51.100.0/24
+
+# Then: sshd -t && systemctl reload sshd
+
+# ---------------------------------------------------------------------------
+# 3. Inbound firewall
+# ---------------------------------------------------------------------------
+# Default zone: drop.
+# One management zone: service ssh (and icmp if you want ping), sourced
+# only from operator CIDRs.
+# Non-loopback listen must be TCP/22 only. The VS Code server stays on
+# 127.0.0.1 and is forwarded through that SSH session. Do not open an
+# extra "VS Code" TCP port.
+
+# ---------------------------------------------------------------------------
+# 4. Egress lock (IPv4 and IPv6)
+# ---------------------------------------------------------------------------
+# Allow loopback + RFC1918 (and unique-local/link-local on v6).
+# Reject everything else, especially 80/443 to the public Internet.
+# An ESTABLISHED-only lock is not enough: an in-flight download keeps
+# going. Prove: curl https://update.code.visualstudio.com fails with
+# no route / administratively prohibited.
+
+# ---------------------------------------------------------------------------
+# 5. Identity
+# ---------------------------------------------------------------------------
+# Realm user, OTP auth type, HBAC for this host + sshd.
+# First Factor = password. Second Factor = TOTP (not the password again).
+# A second independent ssh in the same 30s TOTP window is denied
+# (anti-replay). That is why the client must mux (ControlMaster on Unix,
+# useLocalServer on Windows).
+
+# Do NOT set on the remote:
+#   any remote.SSH.* key, ControlMaster, vscode listening on 0.0.0.0
 EOF
 }
 

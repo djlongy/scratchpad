@@ -11,11 +11,14 @@ paths.
 ```
 
 - Resolves the latest `stable` release for `server-linux-x64`
-  (Remote-SSH's classic server — mandatory), the Linux x64 desktop
-  tarball, and the Windows x64 User Setup (both mandatory client
-  installers, commit-matched to the server).
-- Installs the server at `~/.vscode-server/bin/<commit>/` — the exact
-  path Remote-SSH looks for on its own.
+  (Remote-SSH's classic server — mandatory), `cli-alpine-x64` (handshake
+  + exec-server CLI), the Linux x64 desktop tarball, and the Windows
+  x64 User Setup (both mandatory client installers, commit-matched to
+  the server).
+- Installs both layouts Remote-SSH may look for:
+  `~/.vscode-server/bin/<commit>/` (classic) and
+  `~/.vscode-server/code-<commit>` plus
+  `cli/servers/Stable-<commit>/server/` (exec-server).
 - Stages the client installers at `~/.vscode-server/client-installers/`
   and prints install instructions for the operator's laptop.
 
@@ -111,7 +114,9 @@ additive.
 ./bin/vscode-airgap.sh --emit-ssh-config
 ```
 
-Standalone — no `--mode` or network needed. See
+Standalone — no `--mode` or network needed. Writes
+`ssh-config.example`, JSONC `settings.json.example` (`//` comments, not
+fake `"// key"` pairs), and `remote-host.example`. See
 `docs/runbooks/remote-ssh-realm-otp.md`.
 
 ## 8. Check what's installed

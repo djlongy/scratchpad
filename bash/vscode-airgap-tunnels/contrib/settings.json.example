@@ -1,23 +1,45 @@
 {
-  "//": "Merge these into your VS Code user settings.json. See docs/runbooks/remote-ssh-realm-otp.md for why each one is set this way — verified live against the Remote-SSH extension's own current package.json (2026-08-17).",
+  // JSONC (JSON with Comments). VS Code reads // lines.
+  // Do not comment with fake keys such as "// useLocalServer".
+  // Merge into the operator laptop's user settings.json.
+  // These keys are CLIENT-only. They do nothing on the remote host.
+  // After connect, remote.SSH.log must dump the same values.
 
+  // Show the keyboard-interactive prompts (password + TOTP).
   "remote.SSH.showLoginTerminal": true,
-  "// showLoginTerminal": "Reveals the terminal for every SSH command Remote-SSH runs, so the GSSAPI/OTP keyboard-interactive prompt is actually visible instead of silently hanging in a background process.",
 
+  // One shared SSH connection. Required on Windows (no ControlMaster).
+  // Pair with remoteServerListenOnSocket false or this is silently undone.
   "remote.SSH.useLocalServer": true,
-  "// useLocalServer": "Reuses one SSH session across Remote-SSH's extra channels. Required for FreeIPA/realm OTP: TOTP is anti-replay inside the 30s window, so a second unauthenticated channel is denied. Windows OpenSSH has no ControlMaster — this setting is the Windows-safe mux. First connect still needs showLoginTerminal for the OTP prompt.",
 
-  "remote.SSH.remotePlatform": { "airgapped-host": "linux" },
-  "// remotePlatform": "Skips a remote OS-detection round trip. The extension's own docs note this setting becomes closer to required once useLocalServer is disabled (as above) — set both together. Replace 'airgapped-host' with your actual Host alias from ssh-config.example.",
-
-  "remote.SSH.lockfilesInTmp": true,
-  "// lockfilesInTmp": "Keeps lockfiles in /tmp instead of inside the server's install folder — matters if the remote home directory is NFS or another distributed filesystem with locking quirks. Harmless to leave on otherwise.",
-
+  // Classic bootstrap. A staged rollout can still pick exec-server;
+  // this tool stages both layouts so either presence test passes.
+  // Confirm the log line: remote.SSH.useExecServer = false
   "remote.SSH.useExecServer": false,
-  "// useExecServer": "Defaults to true in the current extension (verified live, 2026-08-17) and switches connection bootstrapping to a newer mode described only as 'toggled off in the event of connection issues'. Turned off here so the connection uses the classic bootstrap path this tool's pre-staged ~/.vscode-server/bin/<commit>/ layout is proven against, rather than a less-documented alternate path.",
 
-  "remote.SSH.connectTimeout": 30,
-  "// connectTimeout": "Default is 15s; raised because a realm+OTP login round trip (Kerberos ticket check + waiting on a human to type a code) routinely takes longer than a plain key-based connect.",
+  // A staging miss otherwise wget -O truncates the CLI tarball to
+  // zero bytes and the install script polls forever. off fails fast.
+  "remote.SSH.localServerDownload": "off",
 
-  "//NOT_SET allowLocalServerDownload": "Deliberately left at its default (true). Verified live: this only controls a client-downloads-then-scps FALLBACK path if a REMOTE-side download fails — it does not mean 'never try to download'. The actual fail-closed mechanism is that this tool pre-stages the exact matching commit at ~/.vscode-server/bin/<commit>/ before you ever connect, so Remote-SSH's own existing-install check finds it and skips downloading in the first place. See the LIMITATIONS section of `vscode-airgap.sh --help`."
+  // true silently forces useLocalServer off. Must be in this file —
+  // Windows ignores the UI toggle.
+  "remote.SSH.remoteServerListenOnSocket": false,
+
+  // Lockfiles in /tmp (or %TEMP%) instead of the server install folder.
+  "remote.SSH.lockfilesInTmp": true,
+
+  // Realm + OTP is slower than a key-based connect (default 15s).
+  "remote.SSH.connectTimeout": 60,
+
+  // Native Windows OpenSSH optional feature. Omit this key on Unix.
+  "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+
+  // Optional. If you uncomment this, the file must contain the Host
+  // alias used in remotePlatform below.
+  // "remote.SSH.configFile": "C:\\Users\\youruser\\.ssh\\config",
+
+  // Skip remote OS detection. Key must match the Host alias.
+  "remote.SSH.remotePlatform": {
+    "airgapped-host": "linux"
+  }
 }
