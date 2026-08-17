@@ -6,6 +6,10 @@
 # is only a fallback for a checkout without the vendored trees, and the script
 # logs which path it took.
 #
+# The theme ships inside the dotfiles package (../../dotfiles/bash/theme) so the
+# offline bundle is self-contained. This script reaches into that package for
+# it; nothing in the package reaches back out here.
+#
 # Local:
 #   ./deploy.sh
 #   ./deploy.sh --local
@@ -27,7 +31,7 @@ set -euo pipefail
 
 THEME_NAME="devops-powerline"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-THEME_SRC="${SCRIPT_DIR}/theme/${THEME_NAME}/${THEME_NAME}.theme.bash"
+THEME_SRC="${SCRIPT_DIR}/../../dotfiles/bash/theme/${THEME_NAME}/${THEME_NAME}.theme.bash"
 
 # Vendored payloads, two levels up in the repository. Empty when this script is
 # used standalone, which is what selects the clone fallback.
@@ -67,7 +71,8 @@ EOF
 ensure_theme_exists() {
   if [[ ! -f "${THEME_SRC}" ]]; then
     echo "ERROR: Theme file not found: ${THEME_SRC}"
-    echo "Run from the ohmybash directory or check theme/ subdirectory."
+    echo "The theme ships in the dotfiles package — keep this script beside a"
+    echo "dotfiles/ directory containing bash/theme/${THEME_NAME}/."
     exit 1
   fi
 }

@@ -1,5 +1,5 @@
 # bash functions for day-to-day git work — interactive branch checkout,
-# named stash save/pop/apply with an fzf picker, and pruning of orphaned
+# named stash save/pop/apply/delete with an fzf picker, and pruning of orphaned
 # branches. Powered by fzf.
 # Append these to your .bashrc file (or `source` it from there).
 
@@ -59,6 +59,9 @@ gci() {
 #   gstash apply [name]    Apply a stash (keeps it after restoring).
 #                          With <name>: match by exact message.
 #                          Without args: fzf picker with diff preview.
+#   gstash delete [name]   Drop a stash for good. With <name>: match by exact
+#                          message; refuses and lists them if several match.
+#                          Without args: fzf multi-select, then a y/N confirm.
 #   gstash list            Show all stashes (alias: ls)
 #   gstash help            Show usage
 #
@@ -84,6 +87,7 @@ gstash() {
     save)            _gstash_save "$@" ;;
     pop)             _gstash_restore pop "$@" ;;
     apply)           _gstash_restore apply "$@" ;;
+    delete)          _gstash_delete "$@" ;;
     list|ls)         git stash list ;;
     help|-h|--help)  _gstash_help ;;
     *)
@@ -108,6 +112,9 @@ _gstash_help() {
     '                         Without args: fzf picker with diff preview.' \
     '  gstash apply [name]    Apply a stash (keeps it). With <name>: match by exact message.' \
     '                         Without args: fzf picker with diff preview.' \
+    '  gstash delete [name]   Drop a stash for good. With <name>: match by exact message' \
+    '                         (refuses if several stashes share it).' \
+    '                         Without args: fzf multi-select, then a y/N confirm.' \
     '  gstash list            Show all stashes' \
     '  gstash help            Show this help'
 }
@@ -179,6 +186,74 @@ _gstash_restore() {
   fi
 
   git stash "$mode" "$target"
+}
+
+_gstash_delete() {
+  local name="${1:-}"
+
+  if [[ -z "$(git stash list)" ]]; then
+    echo "gstash delete: no stashes" >&2
+    return 1
+  fi
+
+  # Refs to drop, one "stash@{n}" per line.
+  local targets
+  if [[ -n "$name" ]]; then
+    local matches count
+    matches=$(git stash list --format='%gd%x09%gs' | awk -F'\t' -v n="$name" '
+      {
+        msg = $2
+        sub(/^[^:]*: /, "", msg)
+        if (msg == n) print $0
+      }
+    ')
+    count=$(printf '%s' "$matches" | grep -c . || true)
+    if [[ "$count" -eq 0 ]]; then
+      echo "gstash delete: no stash matches name '${name}'" >&2
+      return 1
+    fi
+    if [[ "$count" -gt 1 ]]; then
+      # A dropped stash is not listed anywhere afterwards, so an ambiguous name
+      # is refused outright — show which entries collided instead of guessing.
+      echo "gstash delete: ${count} stashes match '${name}':" >&2
+      printf '%s\n' "$matches" | awk -F'\t' '{printf "  %-12s %s\n", $1, $2}' >&2
+      echo "gstash delete: run 'gstash delete' without a name to choose interactively" >&2
+      return 1
+    fi
+    targets=$(printf '%s\n' "$matches" | cut -f1)
+  else
+    local selected
+    selected=$(
+      git stash list --format='%gd%x09%cr%x09%gs' |
+      fzf --ansi --height=40% --reverse --multi \
+          --delimiter=$'\t' --with-nth=1,2,3 \
+          --preview='git stash show -p --color=always {1}' \
+          --preview-window=right:60%:wrap \
+          --prompt='stash delete> ' \
+          --header='TAB marks several, Enter confirms the selection'
+    )
+    [[ -z "$selected" ]] && return 0
+
+    echo "gstash delete: about to drop:" >&2
+    printf '%s\n' "$selected" | awk -F'\t' '{printf "  %-12s %s\n", $1, $3}' >&2
+    local reply
+    read -r -p "Drop permanently? [y/N] " reply
+    if [[ ! "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+      echo "gstash delete: aborted, nothing dropped" >&2
+      return 1
+    fi
+
+    targets=$(printf '%s\n' "$selected" | cut -f1)
+  fi
+
+  # git renumbers the stack after every drop — stash@{2} becomes stash@{1} the
+  # moment stash@{1} goes. Dropping from the highest index down keeps the refs
+  # still to be processed pointing at the entries they were selected from.
+  local ref
+  while read -r ref; do
+    [[ -n "$ref" ]] || continue
+    git stash drop "$ref" || return 1
+  done < <(printf '%s\n' "$targets" | awk -F'[{}]' '{print $2 "\t" $0}' | sort -k1,1rn | cut -f2-)
 }
 
 # Delete local branches where remote is gone

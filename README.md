@@ -35,7 +35,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | [`vsphere dynamic inventory`](ansible/inventories/vmware/) | Three vSphere inventory plugin configs — community.vmware, the official vmware.vmware (kitchen-sink folder-path template), and a lean **tag-grouped** config (groups off `Tenant`/`Environment` tags — the companion to the `vsphere_vm` + `vcenter_svc_accounts` roles). All wired up with persistent caching. | `ansible/inventories/` |
 | [fapolicyd troubleshooting](linux/fapolicyd/) | Step-by-step debug-deny / trust.d / rules.d guide for EL9 hardening. | `linux/` |
 | [EL9 hardened kickstart](linux/kickstart/) | Unattended-install template — GNOME, FIPS, fapolicyd, STIG scan, VMware USB passthrough. | `linux/` |
-| [`bash/git-functions`](bash/git-functions/) | fzf interactive branch picker, prune-gone-branches helper. | `bash/` |
+| [`dotfiles/bash/git-functions`](dotfiles/bash/git-functions/) | fzf interactive branch picker, prune-gone-branches helper. | `bash/` |
 | [`bash/ohmybash`](bash/ohmybash/) | Powerline prompt with git/venv/time, deploy script, Nerd Font installer. | `bash/` |
 | [`bash/vscode-airgap-tunnels`](bash/vscode-airgap-tunnels/) | Download, bundle, and install VS Code Server on hosts with no internet access — online/bundle/offline modes, checksum-pinned bundles, and an honest look at why Microsoft's Remote Tunnels can't do this (use `code serve-web` instead). | `bash/` |
 | [`dotfiles/tmux`](dotfiles/) | Stow-managed tmux + dev environment bootstrap. | `dotfiles/` |

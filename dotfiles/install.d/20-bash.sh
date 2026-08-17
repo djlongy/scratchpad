@@ -2,24 +2,27 @@
 set -euo pipefail
 
 # Installs Oh My Bash + the devops-powerline prompt from the vendored trees in
-# dotfiles/vendor/. Everything it needs is already on disk: no network, no
-# package manager, no git, no make. Safe to re-run — the managed ~/.bashrc block
-# is replaced in place and ~/.oh-my-bash/custom is left alone.
+# vendor/, plus the git shortcut functions from bash/git-functions/. Every path
+# it reads is inside this package, so the extracted bundle is the whole
+# dependency: no network, no package manager, no git, no make. Safe to re-run —
+# the managed ~/.bashrc block is replaced in place and ~/.oh-my-bash/custom is
+# left alone.
 #
-# ble.sh (inline autosuggestions) is optional and OFF by default, matching
-# bash/ohmybash/deploy.sh. Enable with either:
+# ble.sh (inline autosuggestions) is optional and OFF by default, matching the
+# standalone deploy script. Enable with either:
 #   WITH_BLESH=1 bash 20-bash.sh
 #   bash 20-bash.sh --with-blesh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOTFILES_DIR="${DOTFILES_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-REPO_DIR="$(cd "$DOTFILES_DIR/.." && pwd)"
 
 THEME_NAME="devops-powerline"
 VENDOR_OMB="$DOTFILES_DIR/vendor/oh-my-bash"
 VENDOR_BLESH="$DOTFILES_DIR/vendor/blesh"
-# Override when the theme lives outside this repository layout.
-THEME_SRC="${BASH_THEME_SRC:-$REPO_DIR/bash/ohmybash/theme/$THEME_NAME/$THEME_NAME.theme.bash}"
+# Both payloads ship inside the package. The overrides exist for a checkout that
+# keeps them somewhere else — they are not needed by the bundle.
+THEME_SRC="${BASH_THEME_SRC:-$DOTFILES_DIR/bash/theme/$THEME_NAME/$THEME_NAME.theme.bash}"
+GIT_FUNCTIONS_SRC="${BASH_GIT_FUNCTIONS_SRC:-$DOTFILES_DIR/bash/git-functions/git-functions.bash}"
 
 OSH_DIR="$HOME/.oh-my-bash"
 BLESH_DIR="$HOME/.local/share/blesh"
@@ -27,6 +30,12 @@ BASHRC="$HOME/.bashrc"
 
 BEGIN_MARK='# >>> dotfiles bash (managed) >>>'
 END_MARK='# <<< dotfiles bash (managed) <<<'
+
+# First line of the copy dropped into custom/. uninstall.d/20-bash.sh removes the
+# file only when it starts with this, so a hand-written file of the same name is
+# never deleted.
+GIT_FUNCTIONS_DEST="$OSH_DIR/custom/git-functions.sh"
+GIT_FUNCTIONS_MARK='# >>> dotfiles git-functions (managed) >>>'
 
 WITH_BLESH="${WITH_BLESH:-0}"
 for arg in "$@"; do
@@ -40,6 +49,7 @@ done
 [ -d "$VENDOR_OMB" ] || { echo "20-bash: missing vendored tree $VENDOR_OMB" >&2; exit 1; }
 [ -f "$VENDOR_OMB/oh-my-bash.sh" ] || { echo "20-bash: $VENDOR_OMB is not an Oh My Bash tree" >&2; exit 1; }
 [ -f "$THEME_SRC" ] || { echo "20-bash: theme not found at $THEME_SRC (set BASH_THEME_SRC)" >&2; exit 1; }
+[ -f "$GIT_FUNCTIONS_SRC" ] || { echo "20-bash: git functions not found at $GIT_FUNCTIONS_SRC (set BASH_GIT_FUNCTIONS_SRC)" >&2; exit 1; }
 
 # --- Oh My Bash framework -------------------------------------------------
 # Refresh every top-level entry from the vendor tree except custom/, which holds
@@ -77,6 +87,28 @@ echo "OMB   $OSH_DIR (vendored)"
 
 install -m 0644 "$THEME_SRC" "$OSH_DIR/custom/themes/$THEME_NAME/$THEME_NAME.theme.bash"
 echo "THEME $OSH_DIR/custom/themes/$THEME_NAME/"
+
+# --- git shortcut functions ----------------------------------------------
+# Oh My Bash sources $OSH_CUSTOM/*.{sh,bash} on every interactive start
+# (vendor/oh-my-bash/oh-my-bash.sh:140), and does it after the plugins, so the
+# functions here win over any same-named plugin alias. Dropping the file in is
+# the whole wiring — no extra line in ~/.bashrc.
+if [ -f "$GIT_FUNCTIONS_DEST" ] && ! head -n 1 "$GIT_FUNCTIONS_DEST" | grep -qF "$GIT_FUNCTIONS_MARK"; then
+  echo "KEEP  $GIT_FUNCTIONS_DEST (already exists without our marker — left untouched)"
+  echo "WARN  Move it aside and re-run to install the packaged copy."
+else
+  {
+    printf '%s\n' "$GIT_FUNCTIONS_MARK"
+    printf '%s\n' '# Copied by install.d/20-bash.sh from bash/git-functions/. The line'
+    printf '%s\n' '# above is what uninstall.d/20-bash.sh matches before removing this file, so'
+    printf '%s\n' '# keep it. Edits here are lost on the next install — change the packaged copy.'
+    printf '%s\n' ''
+    cat "$GIT_FUNCTIONS_SRC"
+  } >"$GIT_FUNCTIONS_DEST.tmp"
+  chmod 0644 "$GIT_FUNCTIONS_DEST.tmp"
+  mv "$GIT_FUNCTIONS_DEST.tmp" "$GIT_FUNCTIONS_DEST"
+  echo "GITFN $GIT_FUNCTIONS_DEST"
+fi
 
 # --- ble.sh (optional) ----------------------------------------------------
 # ble.sh refuses to load unless this exact set of POSIX tools is on PATH, and it

@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Reverses dotfiles/install.d/20-bash.sh. Removes the managed ~/.bashrc block and
 # the framework files this repository put in place, and deliberately does NOT
-# touch ~/.oh-my-bash/custom — anything you wrote yourself lives there.
+# touch ~/.oh-my-bash/custom — anything you wrote yourself lives there. The one
+# file removed from custom/ is the git-functions copy the installer wrote, and
+# only when it still carries the marker that installer stamped on it.
 
 OSH_DIR="$HOME/.oh-my-bash"
 BLESH_DIR="$HOME/.local/share/blesh"
@@ -11,6 +13,9 @@ BASHRC="$HOME/.bashrc"
 
 BEGIN_MARK='# >>> dotfiles bash (managed) >>>'
 END_MARK='# <<< dotfiles bash (managed) <<<'
+
+GIT_FUNCTIONS_DEST="$OSH_DIR/custom/git-functions.sh"
+GIT_FUNCTIONS_MARK='# >>> dotfiles git-functions (managed) >>>'
 
 if [ -f "$BASHRC" ] && grep -qF "$BEGIN_MARK" "$BASHRC"; then
   stripped="$(mktemp)"
@@ -24,6 +29,15 @@ if [ -f "$BASHRC" ] && grep -qF "$BEGIN_MARK" "$BASHRC"; then
   echo "RC    removed managed block from $BASHRC"
 else
   echo "RC    no managed block in $BASHRC"
+fi
+
+if [ -f "$GIT_FUNCTIONS_DEST" ]; then
+  if head -n 1 "$GIT_FUNCTIONS_DEST" | grep -qF "$GIT_FUNCTIONS_MARK"; then
+    rm -f "$GIT_FUNCTIONS_DEST"
+    echo "GITFN removed $GIT_FUNCTIONS_DEST"
+  else
+    echo "GITFN kept $GIT_FUNCTIONS_DEST (no managed marker — treated as yours)"
+  fi
 fi
 
 if [ -d "$OSH_DIR" ]; then

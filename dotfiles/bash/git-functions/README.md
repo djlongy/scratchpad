@@ -33,6 +33,9 @@ gstash save <name>     # stash tracked changes with a named message
 gstash pop  [name]     # pop a stash. With <name>: match by exact message.
                        #              Without args: fzf picker.
 gstash apply [name]    # apply a stash (keeps it). Same matching rules as pop.
+gstash delete [name]   # drop a stash for good. With <name>: match by exact message
+                       #                        (refuses if several match).
+                       #                        Without args: fzf multi-select + y/N.
 gstash list            # show all stashes (alias: gstash ls)
 gstash help            # usage
 ```
@@ -54,6 +57,24 @@ stash@{2}    3 days ago     WIP on main: abc1234 Initial commit
 `apply` is useful when you want to use the same fix in multiple branches —
 restore the changes without consuming the stash.
 
+#### Deleting stashes
+
+`gstash delete` is the one destructive subcommand, so it is deliberately harder
+to fire by accident than `pop`:
+
+- `gstash delete <name>` drops the single stash whose message is exactly
+  `<name>`. If two stashes share that message it drops **neither** — it prints
+  both and tells you to pick interactively. A dropped stash is not listed
+  anywhere afterwards, so guessing is not an option.
+- `gstash delete` with no name opens the picker with multi-select enabled
+  (`TAB` to mark, `Enter` to confirm), prints exactly what it is about to drop,
+  and waits for a `y`/`N` confirmation. Anything other than `y`/`yes` aborts
+  without touching a single stash.
+
+Selected entries are dropped highest-index-first, because `git stash drop`
+renumbers the stack — `stash@{2}` becomes `stash@{1}` the moment `stash@{1}`
+goes, and dropping in list order would take the wrong entries.
+
 **Requires:** `fzf`
 
 ### `gbp` — Git branch prune
@@ -71,11 +92,26 @@ No confirmation prompt — use with awareness in repos with many local branches.
 
 ## Installation
 
+### Via the dotfiles installer (recommended)
+
+This directory lives inside the dotfiles package, so `install.sh` already ships
+these functions. Its `install.d/20-bash.sh` hook copies this file to
+`~/.oh-my-bash/custom/git-functions.sh`, which Oh My Bash sources automatically
+on every interactive start — nothing is added to `~/.bashrc` for it. The
+installed copy carries a marker line at the top so `uninstall.sh` can remove
+exactly that file and leave anything else in `custom/` alone.
+
+The hook resolves this file inside the package (`bash/git-functions/`), so an
+extracted bundle needs nothing from outside it. Set `BASH_GIT_FUNCTIONS_SRC` to
+an absolute path if you keep the functions somewhere else.
+
+### By hand
+
 Source the file from your `~/.bashrc`:
 
 ```bash
 # Add to ~/.bashrc
-source /path/to/scratchpad/bash/git-functions/git-functions.bash
+source /path/to/dotfiles/bash/git-functions/git-functions.bash
 ```
 
 Or copy just the functions you want directly into your `~/.bashrc`.

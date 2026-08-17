@@ -47,20 +47,20 @@ The canonical install location is `~/.dotfiles` — hidden, because the tree is
 installer machinery, not something to browse day-to-day:
 
 ```bash
-tar --no-xattrs -C .. -czf dotfiles-bundle.tar.gz dotfiles bash/ohmybash
+tar --no-xattrs -C dotfiles -czf dotfiles-bundle.tar.gz .
 scp dotfiles-bundle.tar.gz user@host:
-ssh user@host 'mkdir -p ~/.dotfiles && tar xzf dotfiles-bundle.tar.gz -C ~/.dotfiles && ~/.dotfiles/dotfiles/install.sh'
+ssh user@host 'mkdir -p ~/.dotfiles && tar xzf dotfiles-bundle.tar.gz -C ~/.dotfiles && ~/.dotfiles/install.sh'
 ```
 
 (`--no-xattrs` matters when bundling from macOS — without it the extract on
-Linux prints hundreds of harmless but noisy xattr warnings. The bundle keeps
-`dotfiles/` and `bash/` side by side inside `~/.dotfiles` — the installer
-resolves the prompt theme through that sibling layout.)
+Linux prints hundreds of harmless but noisy xattr warnings. The package is
+self-contained: the prompt theme, the git shortcut functions and both vendored
+trees all ship inside it, so `~/.dotfiles` needs nothing beside it.)
 
 The config files in `$HOME` are symlinks into this tree, so it stays for the
 life of the install; deleting it breaks the links. If you unpacked somewhere
 else first, just move the tree to `~/.dotfiles` and re-run
-`~/.dotfiles/dotfiles/install.sh` — it re-points every link in one pass.
+`~/.dotfiles/install.sh` — it re-points every link in one pass.
 
 ## tmux
 
@@ -108,7 +108,7 @@ copy-mode.
 ## bash — Oh My Bash + devops-powerline prompt
 
 Installs the Oh My Bash framework and the two-line powerline prompt from
-`bash/ohmybash/theme/`. Entirely offline: the framework is vendored at
+`bash/theme/` inside this package. Entirely offline: the framework is vendored at
 `vendor/oh-my-bash/` and copied into `~/.oh-my-bash`, so no network, package
 manager, `git` or `make` is involved.
 
@@ -128,8 +128,19 @@ ble.sh (inline autosuggestions) is optional and off by default. Enable it with
 (including `ps`) are missing, it is skipped with a warning instead of being
 wired into a shell where it would error on every start.
 
-For a single host, or a remote one over SSH, `bash/ohmybash/deploy.sh` does the
-same job interactively and is vendor-first in both local and remote mode.
+The installer also copies `bash/git-functions/git-functions.bash` to
+`~/.oh-my-bash/custom/git-functions.sh`, giving every interactive shell the
+`gci`, `gstash` (including `gstash delete`) and `gbp` shortcuts. Oh My Bash
+sources everything in `custom/` automatically, so nothing is added to
+`~/.bashrc` for it. The copy carries a marker line so the uninstaller removes
+that one file and leaves the rest of `custom/` alone; a file you wrote yourself
+at the same path is never overwritten. `gstash` and `gci` need `fzf` on PATH
+and say so politely when it is absent.
+
+For a single host, or a remote one over SSH, the repo's `bash/ohmybash/deploy.sh`
+does the same framework+theme install interactively and is vendor-first in both
+local and remote mode — it installs the theme from this package, so it needs a
+full repo checkout.
 
 ## Verify
 

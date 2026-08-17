@@ -79,7 +79,7 @@ Optional: with `--with-blesh`, it also installs `ble.sh` and enables inline auto
 Step 2 is **vendor-first**. When `../../dotfiles/vendor/oh-my-bash` exists — it does in
 this repository — the framework is installed by copying that tree, so the whole deploy
 runs on a host with no internet, no package manager and no `git`. The upstream clone is
-only a fallback for a standalone copy of this directory. Every run says which path it
+only a fallback for a checkout that has no vendored trees. Every run says which path it
 took:
 
 ```
@@ -138,7 +138,7 @@ Open a new shell (or run `source ~/.bashrc`) after deployment.
 
 ## Updating the theme
 
-Edit `theme/devops-powerline/devops-powerline.theme.bash` locally, then re-run `deploy.sh`. It overwrites only the theme file and updates `OSH_THEME` as needed.
+Edit `../../dotfiles/bash/theme/devops-powerline/devops-powerline.theme.bash` locally, then re-run `deploy.sh`. It overwrites only the theme file and updates `OSH_THEME` as needed.
 
 ## Tested distros
 
@@ -186,19 +186,24 @@ To change the fill character, edit `_DP_FILL_CHAR='·'`.
 bash/ohmybash/
 ├── README.md
 ├── deploy.sh                              # Local install by default; remote optional
-└── theme/
-    └── devops-powerline/
-        └── devops-powerline.theme.bash    # The OMB theme
+└── install-nerd-font.sh                   # Terminal font for the powerline glyphs
 ```
 
-The payloads `deploy.sh` installs live outside this directory, shared with the
-repository-wide installer:
+Everything `deploy.sh` installs — the theme and both vendored trees — lives in the
+dotfiles package, which is what gets bundled for an air-gapped host:
 
 ```
 dotfiles/
+├── bash/theme/
+│   └── devops-powerline/
+│       └── devops-powerline.theme.bash    # The OMB theme
 ├── install.d/20-bash.sh                   # Unattended, fully offline install hook
 ├── uninstall.d/20-bash.sh                 # Reverses it, keeping ~/.oh-my-bash/custom
 └── vendor/
     ├── oh-my-bash/                        # Upstream working tree + UPSTREAM.md
     └── blesh/                             # Prebuilt ble.sh release + UPSTREAM.md
 ```
+
+The dependency runs one way: `deploy.sh` reaches into the package, and nothing in
+the package reaches back out here. That is what lets the package be extracted on
+its own as `~/.dotfiles` and still work.
