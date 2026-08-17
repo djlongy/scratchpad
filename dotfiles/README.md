@@ -43,17 +43,24 @@ rather than duplicated.
 
 ### Air-gapped transfer
 
+The canonical install location is `~/.dotfiles` — hidden, because the tree is
+installer machinery, not something to browse day-to-day:
+
 ```bash
 tar --no-xattrs -C .. -czf dotfiles-bundle.tar.gz dotfiles bash/ohmybash
 scp dotfiles-bundle.tar.gz user@host:
-ssh user@host 'tar xzf dotfiles-bundle.tar.gz && cd dotfiles && ./install.sh'
+ssh user@host 'mkdir -p ~/.dotfiles && tar xzf dotfiles-bundle.tar.gz -C ~/.dotfiles && ~/.dotfiles/dotfiles/install.sh'
 ```
 
 (`--no-xattrs` matters when bundling from macOS — without it the extract on
-Linux prints hundreds of harmless but noisy xattr warnings.)
+Linux prints hundreds of harmless but noisy xattr warnings. The bundle keeps
+`dotfiles/` and `bash/` side by side inside `~/.dotfiles` — the installer
+resolves the prompt theme through that sibling layout.)
 
-The config files in `$HOME` are symlinks into the extracted tree, so keep it
-where you unpacked it; deleting the directory breaks the links.
+The config files in `$HOME` are symlinks into this tree, so it stays for the
+life of the install; deleting it breaks the links. If you unpacked somewhere
+else first, just move the tree to `~/.dotfiles` and re-run
+`~/.dotfiles/dotfiles/install.sh` — it re-points every link in one pass.
 
 ## tmux
 
