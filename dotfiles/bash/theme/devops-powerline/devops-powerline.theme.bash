@@ -47,7 +47,7 @@ _DP_CLOCK='⊙'
 _DP_VENV_DOT='●'
 
 # ── Color palette (xterm-256) ─────────────────────────────────────────────────────
-_DP_C_PATH_BG=33      # Blue        — path segment background
+_DP_C_PATH_BG=25      # Blue        — path segment background (25 = darker #005faf; 33 = original brighter #0087ff)
 _DP_C_PATH_FG=255     # White       — path segment text
 _DP_C_GIT_BG=214      # Amber       — git branch segment background
 _DP_C_GIT_FG=235      # Near-black  — git branch segment text
@@ -60,7 +60,7 @@ _DP_C_VENV_DOT=43     # Cyan-green  — venv dot colour
 _DP_C_TIME_BG=252     # Light gray  — time segment background
 _DP_C_TIME_FG=235     # Near-black  — time segment text
 _DP_C_FILL=240        # Dim gray    — fill character colour
-_DP_C_CHEVRON=33      # Blue        — input chevron
+_DP_C_CHEVRON=25      # Blue        — input chevron (matches path segment; 33 = original brighter)
 
 # ── Color helpers ─────────────────────────────────────────────────────────────────
 function __dp_bg() { printf '\[\e[48;5;%sm\]' "$1"; }
