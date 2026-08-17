@@ -45,6 +45,9 @@ WITH_SERVE_WEB=0          # --serve-web: also fetch+optionally start code serve-
 WITH_CLI=0                # implied by --serve-web or --tunnel
 LIST_VERSIONS="${LIST_VERSIONS:-0}"
 LIST_FORMAT="text"        # text|json, for --list-versions
+# Default 10 newest rows so --list-versions is a picker, not a 10-year dump.
+# 0 / --all = no cap. Env LIST_LIMIT overrides the default.
+LIST_LIMIT="${LIST_LIMIT:-10}"
 TAG_CACHE_DIR="${TAG_CACHE_DIR:-$DEFAULT_TAG_CACHE_DIR}"
 TAG_CACHE_TTL="${TAG_CACHE_TTL:-$DEFAULT_TAG_CACHE_TTL}"
 
@@ -83,7 +86,7 @@ USAGE
   vscode-airgap.sh --mode offline  [options]   # air-gapped host: install from a bundle
   vscode-airgap.sh --emit-ssh-config [--install-dir DIR]
   vscode-airgap.sh --status [--install-dir DIR]
-  vscode-airgap.sh --list-versions [--format text|json] [--refresh]
+  vscode-airgap.sh --list-versions [--limit N|--all] [--format text|json] [--refresh]
   vscode-airgap.sh --help
 
 MODES
@@ -142,15 +145,21 @@ OPTIONS (env var equivalents in parentheses)
                           endpoint only serves the CURRENT latest build per
                           platform, confirmed live — it 204s for an older
                           commit). (COMMIT)
-  --list-versions         Print every stable VS Code release with its
-                          resolved commit, newest first (standalone — no
-                          --mode required). The CDN column is derived from
-                          a cached availability boundary (see --refresh),
-                          not a live check per row — the authoritative
-                          check happens when you actually pick a version
-                          with --version. With --bundle-path, prints the
-                          single version already staged in that bundle
-                          instead of hitting the network. (LIST_VERSIONS=1)
+  --list-versions         Print stable VS Code releases with commit,
+                          newest first (standalone — no --mode required).
+                          Default: the most recent 10 (LIST_LIMIT=10) so
+                          the picker stays short. Use --limit N or --all
+                          for more; --version still accepts any cached
+                          tag, not only the printed rows. CDN column is
+                          from the cached availability floor (see
+                          --refresh), not a live check per row — pick
+                          with --version for an authoritative HEAD.
+                          With --bundle-path, prints the single version
+                          already staged in that bundle (offline).
+                          (LIST_VERSIONS=1)
+  --limit N               How many newest rows --list-versions prints.
+                          Default 10. 0 means all. (LIST_LIMIT)
+  --all                   Same as --limit 0: print the full tag list.
   --format text|json      Output format for --list-versions. Default text.
   --refresh               Force-refetch the git tag cache (also implies
                           --force for artifact downloads). Tag list is
@@ -296,6 +305,8 @@ while [ $# -gt 0 ]; do
     --status) ACTION="status"; shift ;;
     --emit-ssh-config) ACTION="emit-ssh-config"; shift ;;
     --list-versions) ACTION="list-versions"; shift ;;
+    --limit) LIST_LIMIT="$2"; shift 2 ;;
+    --all) LIST_LIMIT=0; shift ;;
     --format) LIST_FORMAT="$2"; shift 2 ;;
     --force) FORCE=1; shift ;;
     --refresh) FORCE=1; shift ;;
@@ -726,14 +737,23 @@ run_list_versions() {
   cache_file="$(ensure_tag_cache)"
   local boundary
   boundary="$(tag_cache_boundary "$cache_file")"
-  local total
+  local total shown
   total="$(grep -c $'\t' "$cache_file" || true)"
-  log "$total stable versions cached; CDN floor (server-linux-x64, as of last refresh): ${boundary:-unknown}"
+  case "$LIST_LIMIT" in
+    ''|*[!0-9]*) die "invalid --limit '$LIST_LIMIT' (need a non-negative integer, or --all)" ;;
+  esac
+  if [ "$LIST_LIMIT" -eq 0 ] || [ "$LIST_LIMIT" -ge "$total" ]; then
+    shown="$total"
+  else
+    shown="$LIST_LIMIT"
+  fi
+  log "$total stable versions cached, showing $shown newest; CDN floor (server-linux-x64, as of last refresh): ${boundary:-unknown}"
 
   if [ "$LIST_FORMAT" = "json" ]; then
     python3 -c '
 import json, sys
 boundary = sys.argv[1]
+limit = int(sys.argv[2])
 def semver_key(v):
     return tuple(int(x) for x in v.split("."))
 rows = []
@@ -744,15 +764,19 @@ for line in sys.stdin:
     v, c = line.split("\t")
     ok = boundary != "unknown" and semver_key(v) >= semver_key(boundary)
     rows.append({"version": v, "commit": c, "cdn": "ok" if ok else "missing"})
+    if limit and len(rows) >= limit:
+        break
 print(json.dumps(rows, indent=2))
-' "${boundary:-unknown}" < "$cache_file"
+' "${boundary:-unknown}" "$LIST_LIMIT" < "$cache_file"
   else
     printf '%-11s %-42s %s\n' "VERSION" "COMMIT" "CDN"
     python3 -c '
 import sys
 boundary = sys.argv[1]
+limit = int(sys.argv[2])
 def semver_key(v):
     return tuple(int(x) for x in v.split("."))
+n = 0
 for line in sys.stdin:
     line = line.rstrip("\n")
     if not line or line.startswith("#"):
@@ -761,7 +785,13 @@ for line in sys.stdin:
     ok = boundary != "unknown" and semver_key(v) >= semver_key(boundary)
     status = "ok" if ok else "missing"
     print(f"{v:<11} {c:<42} {status}")
-' "${boundary:-unknown}" < "$cache_file"
+    n += 1
+    if limit and n >= limit:
+        break
+' "${boundary:-unknown}" "$LIST_LIMIT" < "$cache_file"
+    if [ "$shown" -lt "$total" ]; then
+      log "showing $shown of $total (newest first). --limit N or --all for more; --version still accepts any cached tag."
+    fi
     log "CDN column is derived from the cached floor (${boundary:-unknown}), not a live check per row — pass --refresh to re-derive it, or --version <ver> to get an authoritative live check for one version."
   fi
 }

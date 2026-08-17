@@ -32,8 +32,10 @@ still fail with a clear error rather than silently substituting latest.
 See `docs/reference/download-urls.md` for exactly how this resolves and
 what "1.32.0 doesn't work" actually means (that specific version was the
 worked example during development — its tag is real, its CDN artifact is
-gone). `--list-versions` lists everything that's resolvable, newest first,
-with a CDN-availability column (`--refresh` to force a fresh check).
+gone). `--list-versions` prints the 10 newest resolvable versions by
+default (newest first, with a CDN-availability column; `--limit N` or
+`--all` for more, `--refresh` to force a fresh check) — `--version`
+still accepts any cached tag, not only a printed row.
 
 ## 1. On a host WITH internet: build the bundle
 
