@@ -1,66 +1,16 @@
-# WHERE THIS GOES — THIS Linux host as root, NOT the operator laptop
-#   sshd drop-in:  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf
-#   then:          sshd -t && systemctl reload sshd
-# Copy the sshd block only (section 2). Firewall/egress are notes.
-# Do not put remote.SSH.* keys or this file on the laptop.
-# See docs/runbooks/remote-ssh-realm-otp.md
-
-# ---------------------------------------------------------------------------
-# 1. Server bits — run as the SAME user Remote-SSH will log in as
-# ---------------------------------------------------------------------------
-#   ./vscode-airgap.sh --mode offline --bundle-path ./vscode-bundle.tar.gz
+# WHERE THIS GOES — THIS Linux host as root, NOT the laptop
+#   /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf
+#   then: sshd -t && systemctl reload sshd
 #
-# Must exist afterwards (commit = client Help > About):
-#   ~/.vscode-server/bin/<commit>/          node, bin/code-server, +x
-#                                           bin/helpers/check-requirements.sh +x
-#   ~/.vscode-server/code-<commit>          extracted alpine CLI, +x
-#   ~/.vscode-server/cli/servers/Stable-<commit>/server/
-#   ~/.vscode-server/vscode-cli-<commit>.tar.gz       real file, not 0 bytes
-#   ~/.vscode-server/vscode-cli-<commit>.tar.gz.done  written LAST
-# Owner = that user. Do not leave the tree root-owned.
+# Makes sshd accept password+OTP and allow Remote-SSH forwarding.
+# First Factor = password. Second Factor = TOTP (not the password again).
+# remote.SSH.* keys do not go here.
 
-# ---------------------------------------------------------------------------
-# 2. sshd drop-in  (e.g. /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf)
-# ---------------------------------------------------------------------------
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 UsePAM yes
 AllowTcpForwarding yes
 AllowStreamLocalForwarding yes
-GatewayPorts no
-# OpenSSH 9.9+: a hung OTP prompt otherwise bans the client IP.
+# OpenSSH 9.9+ bans the client IP after a hung OTP prompt.
 # Replace with the operator workstation CIDRs.
 PerSourcePenaltyExemptList 192.0.2.0/24,198.51.100.0/24
-
-# Then: sshd -t && systemctl reload sshd
-
-# ---------------------------------------------------------------------------
-# 3. Inbound firewall
-# ---------------------------------------------------------------------------
-# Default zone: drop.
-# One management zone: service ssh (and icmp if you want ping), sourced
-# only from operator CIDRs.
-# Non-loopback listen must be TCP/22 only. The VS Code server stays on
-# 127.0.0.1 and is forwarded through that SSH session. Do not open an
-# extra "VS Code" TCP port.
-
-# ---------------------------------------------------------------------------
-# 4. Egress lock (IPv4 and IPv6)
-# ---------------------------------------------------------------------------
-# Allow loopback + RFC1918 (and unique-local/link-local on v6).
-# Reject everything else, especially 80/443 to the public Internet.
-# An ESTABLISHED-only lock is not enough: an in-flight download keeps
-# going. Prove: curl https://update.code.visualstudio.com fails with
-# no route / administratively prohibited.
-
-# ---------------------------------------------------------------------------
-# 5. Identity
-# ---------------------------------------------------------------------------
-# Realm user, OTP auth type, HBAC for this host + sshd.
-# First Factor = password. Second Factor = TOTP (not the password again).
-# A second independent ssh in the same 30s TOTP window is denied
-# (anti-replay). That is why the client must mux (ControlMaster on Unix,
-# useLocalServer on Windows).
-
-# Do NOT set on the remote:
-#   any remote.SSH.* key, ControlMaster, vscode listening on 0.0.0.0

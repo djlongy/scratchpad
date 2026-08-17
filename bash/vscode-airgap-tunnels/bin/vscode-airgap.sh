@@ -1548,10 +1548,8 @@ run_emit_ssh_config() {
   log ""
   log "  $remote_out"
   log "    WHO:  THIS Linux host, as root (not the laptop)"
-  log "    sshd ->  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf"
-  log "    HOW:  copy the sshd block only, then:"
-  log "          sshd -t && systemctl reload sshd"
-  log "    Firewall/egress sections are notes, not a drop-in file."
+  log "    PUT:  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf"
+  log "    HOW:  copy the file, then sshd -t && systemctl reload sshd"
 }
 
 write_ssh_config_example() {
@@ -1559,17 +1557,10 @@ write_ssh_config_example() {
 # WHERE THIS GOES — operator laptop, NOT the remote host
 #   Unix/macOS:  ~/.ssh/config
 #   Windows:     C:\Users\youruser\.ssh\config
-# Merge ONE Host block (Unix or Windows section below) into that file.
-# Replace airgapped-host / airgapped-host.example.realm / youruser.
-# Unix only, after merge: mkdir -p ~/.ssh/sockets
-#
-# This file is a template. Leaving it under ~/.vscode-server does nothing.
-# See docs/runbooks/remote-ssh-realm-otp.md.
+# Merge ONE Host block. Replace the host / realm / user placeholders.
+# Unix after merge: mkdir -p ~/.ssh/sockets
 
-# --- Unix / macOS client ---
-# ControlMaster reuses the first TCP session so a second SSH in the
-# same TOTP window is not a new login (realm OTP is anti-replay).
-# mkdir -p ~/.ssh/sockets
+# Unix / macOS — ControlMaster reuses the OTP login (anti-replay).
 Host airgapped-host
     HostName airgapped-host.example.realm
     User youruser
@@ -1583,13 +1574,8 @@ Host airgapped-host
     ControlPersist 600
     ServerAliveInterval 30
     StrictHostKeyChecking accept-new
-    # ProxyJump bastion.example.realm   # only if the network requires a jump
 
-# --- Windows client (native OpenSSH optional feature) ---
-# Win32-OpenSSH ignores ControlMaster. Session reuse is
-# remote.SSH.useLocalServer=true in settings.json, not this file.
-# Force the native binary with remote.SSH.path =
-# C:\Windows\System32\OpenSSH\ssh.exe
+# Windows — no ControlMaster. Reuse is useLocalServer in settings.json.
 Host airgapped-host
     HostName airgapped-host.example.realm
     User youruser
@@ -1611,49 +1597,36 @@ write_settings_json_example() {
 {
   // WHERE THIS GOES — operator laptop, NOT the remote host
   //   Windows:  %APPDATA%\Code\User\settings.json
-  //             C:\Users\youruser\AppData\Roaming\Code\User\settings.json
   //   macOS:    ~/Library/Application Support/Code/User/settings.json
   //   Linux:    ~/.config/Code/User/settings.json
-  // Merge these keys. Do not replace the whole file if you already
-  // have settings. Or: Preferences -> Settings -> Open Settings (JSON).
-  // JSONC: VS Code reads // lines. Do not use fake "// key" pairs.
-  // Omit remote.SSH.path on Unix. UTF-8, no BOM.
-  // These keys do nothing on the remote host.
+  // Merge these keys (JSONC: // comments are fine). UTF-8, no BOM.
+  // Omit remote.SSH.path on Unix.
 
-  // Show the keyboard-interactive prompts (password + TOTP).
+  // So the password + TOTP prompts are visible.
   "remote.SSH.showLoginTerminal": true,
 
-  // One shared SSH connection. Required on Windows (no ControlMaster).
-  // Pair with remoteServerListenOnSocket false or this is silently undone.
+  // Reuse the OTP login. Required on Windows (no ControlMaster).
   "remote.SSH.useLocalServer": true,
 
-  // Classic bootstrap. A staged rollout can still pick exec-server;
-  // this tool stages both layouts so either presence test passes.
-  // Confirm the log line: remote.SSH.useExecServer = false
+  // Classic bootstrap. Confirm the log: useExecServer = false
   "remote.SSH.useExecServer": false,
 
-  // A staging miss otherwise wget -O truncates the CLI tarball to
-  // zero bytes and the install script polls forever. off fails fast.
+  // Fail fast if the server bits are missing (do not wget forever).
   "remote.SSH.localServerDownload": "off",
 
-  // true silently forces useLocalServer off. Must be in this file —
-  // Windows ignores the UI toggle.
+  // true silently turns useLocalServer off. Windows ignores the UI.
   "remote.SSH.remoteServerListenOnSocket": false,
 
-  // Lockfiles in /tmp (or %TEMP%) instead of the server install folder.
+  // Harmless. Avoids lock files in the server install folder.
   "remote.SSH.lockfilesInTmp": true,
 
-  // Realm + OTP is slower than a key-based connect (default 15s).
+  // OTP login is slower than a key (default 15s).
   "remote.SSH.connectTimeout": 60,
 
-  // Native Windows OpenSSH optional feature. Omit this key on Unix.
+  // Windows only — native OpenSSH optional feature.
   "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
 
-  // Optional. If you uncomment this, the file must contain the Host
-  // alias used in remotePlatform below.
-  // "remote.SSH.configFile": "C:\\Users\\youruser\\.ssh\\config",
-
-  // Skip remote OS detection. Key must match the Host alias.
+  // Host alias must match the ssh config Host name.
   "remote.SSH.remotePlatform": {
     "airgapped-host": "linux"
   }
@@ -1663,72 +1636,22 @@ EOF
 
 write_remote_host_example() {
   cat <<'EOF'
-# WHERE THIS GOES — THIS Linux host as root, NOT the operator laptop
-#   sshd drop-in:  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf
-#   then:          sshd -t && systemctl reload sshd
-# Copy the sshd block only (section 2). Firewall/egress are notes.
-# Do not put remote.SSH.* keys or this file on the laptop.
-# See docs/runbooks/remote-ssh-realm-otp.md
-
-# ---------------------------------------------------------------------------
-# 1. Server bits — run as the SAME user Remote-SSH will log in as
-# ---------------------------------------------------------------------------
-#   ./vscode-airgap.sh --mode offline --bundle-path ./vscode-bundle.tar.gz
+# WHERE THIS GOES — THIS Linux host as root, NOT the laptop
+#   /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf
+#   then: sshd -t && systemctl reload sshd
 #
-# Must exist afterwards (commit = client Help > About):
-#   ~/.vscode-server/bin/<commit>/          node, bin/code-server, +x
-#                                           bin/helpers/check-requirements.sh +x
-#   ~/.vscode-server/code-<commit>          extracted alpine CLI, +x
-#   ~/.vscode-server/cli/servers/Stable-<commit>/server/
-#   ~/.vscode-server/vscode-cli-<commit>.tar.gz       real file, not 0 bytes
-#   ~/.vscode-server/vscode-cli-<commit>.tar.gz.done  written LAST
-# Owner = that user. Do not leave the tree root-owned.
+# Makes sshd accept password+OTP and allow Remote-SSH forwarding.
+# First Factor = password. Second Factor = TOTP (not the password again).
+# remote.SSH.* keys do not go here.
 
-# ---------------------------------------------------------------------------
-# 2. sshd drop-in  (e.g. /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf)
-# ---------------------------------------------------------------------------
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
 UsePAM yes
 AllowTcpForwarding yes
 AllowStreamLocalForwarding yes
-GatewayPorts no
-# OpenSSH 9.9+: a hung OTP prompt otherwise bans the client IP.
+# OpenSSH 9.9+ bans the client IP after a hung OTP prompt.
 # Replace with the operator workstation CIDRs.
 PerSourcePenaltyExemptList 192.0.2.0/24,198.51.100.0/24
-
-# Then: sshd -t && systemctl reload sshd
-
-# ---------------------------------------------------------------------------
-# 3. Inbound firewall
-# ---------------------------------------------------------------------------
-# Default zone: drop.
-# One management zone: service ssh (and icmp if you want ping), sourced
-# only from operator CIDRs.
-# Non-loopback listen must be TCP/22 only. The VS Code server stays on
-# 127.0.0.1 and is forwarded through that SSH session. Do not open an
-# extra "VS Code" TCP port.
-
-# ---------------------------------------------------------------------------
-# 4. Egress lock (IPv4 and IPv6)
-# ---------------------------------------------------------------------------
-# Allow loopback + RFC1918 (and unique-local/link-local on v6).
-# Reject everything else, especially 80/443 to the public Internet.
-# An ESTABLISHED-only lock is not enough: an in-flight download keeps
-# going. Prove: curl https://update.code.visualstudio.com fails with
-# no route / administratively prohibited.
-
-# ---------------------------------------------------------------------------
-# 5. Identity
-# ---------------------------------------------------------------------------
-# Realm user, OTP auth type, HBAC for this host + sshd.
-# First Factor = password. Second Factor = TOTP (not the password again).
-# A second independent ssh in the same 30s TOTP window is denied
-# (anti-replay). That is why the client must mux (ControlMaster on Unix,
-# useLocalServer on Windows).
-
-# Do NOT set on the remote:
-#   any remote.SSH.* key, ControlMaster, vscode listening on 0.0.0.0
 EOF
 }
 

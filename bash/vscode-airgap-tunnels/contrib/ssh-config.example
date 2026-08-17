@@ -1,17 +1,10 @@
 # WHERE THIS GOES — operator laptop, NOT the remote host
 #   Unix/macOS:  ~/.ssh/config
 #   Windows:     C:\Users\youruser\.ssh\config
-# Merge ONE Host block (Unix or Windows section below) into that file.
-# Replace airgapped-host / airgapped-host.example.realm / youruser.
-# Unix only, after merge: mkdir -p ~/.ssh/sockets
-#
-# This file is a template. Leaving it under ~/.vscode-server does nothing.
-# See docs/runbooks/remote-ssh-realm-otp.md.
+# Merge ONE Host block. Replace the host / realm / user placeholders.
+# Unix after merge: mkdir -p ~/.ssh/sockets
 
-# --- Unix / macOS client ---
-# ControlMaster reuses the first TCP session so a second SSH in the
-# same TOTP window is not a new login (realm OTP is anti-replay).
-# mkdir -p ~/.ssh/sockets
+# Unix / macOS — ControlMaster reuses the OTP login (anti-replay).
 Host airgapped-host
     HostName airgapped-host.example.realm
     User youruser
@@ -25,13 +18,8 @@ Host airgapped-host
     ControlPersist 600
     ServerAliveInterval 30
     StrictHostKeyChecking accept-new
-    # ProxyJump bastion.example.realm   # only if the network requires a jump
 
-# --- Windows client (native OpenSSH optional feature) ---
-# Win32-OpenSSH ignores ControlMaster. Session reuse is
-# remote.SSH.useLocalServer=true in settings.json, not this file.
-# Force the native binary with remote.SSH.path =
-# C:\Windows\System32\OpenSSH\ssh.exe
+# Windows — no ControlMaster. Reuse is useLocalServer in settings.json.
 Host airgapped-host
     HostName airgapped-host.example.realm
     User youruser

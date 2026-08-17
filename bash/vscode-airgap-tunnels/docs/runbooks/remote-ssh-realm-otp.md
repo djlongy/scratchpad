@@ -14,7 +14,7 @@ They are not live until you copy them:
 |---|---|---|
 | `ssh-config.example` | operator laptop | Unix/macOS: `~/.ssh/config` · Windows: `C:\Users\youruser\.ssh\config` |
 | `settings.json.example` | operator laptop | Windows: `%APPDATA%\Code\User\settings.json` · macOS: `~/Library/Application Support/Code/User/settings.json` · Linux: `~/.config/Code/User/settings.json` |
-| `remote-host.example` | air-gapped host (root) | sshd block → `/etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf` (firewall/egress are notes, not a drop-in) |
+| `remote-host.example` | air-gapped host (root) | `/etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf` |
 
 `settings.json.example` is **JSONC**: comments are `//` lines. Do **not**
 comment with fake keys such as `"// useLocalServer": "…"`. Those are
@@ -152,57 +152,27 @@ miss fails fast.
 Write the file as UTF-8 **without a BOM**. A UTF-8 BOM makes VS Code
 reject the JSON.
 
-## 5. Remote host (not VS Code settings)
+## 5. Remote host (sshd only)
 
 See [`contrib/remote-host.example`](../../contrib/remote-host.example).
-None of the `remote.SSH.*` keys go on the Linux host.
+Copy it to `/etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf`, then
+`sshd -t && systemctl reload sshd`. None of the `remote.SSH.*` keys go
+here.
 
-**sshd drop-in** (e.g. `/etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf`):
+That drop-in turns on password + keyboard-interactive (OTP) and the
+TCP/stream forwards Remote-SSH needs. `PerSourcePenaltyExemptList` stops
+OpenSSH 9.9+ banning the laptop IP after a hung OTP prompt — replace the
+placeholders with the workstation CIDRs.
 
-```
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-UsePAM yes
-AllowTcpForwarding yes
-AllowStreamLocalForwarding yes
-GatewayPorts no
-PerSourcePenaltyExemptList 192.0.2.0/24,198.51.100.0/24
-```
-
-Then `sshd -t && systemctl reload sshd`. OpenSSH 9.9+ otherwise bans
-the client IP after a hung OTP prompt. Replace the TEST-NET CIDRs with
-the operator workstation ranges.
-
-**Inbound firewall:** default zone drop. One management zone: service
-`ssh` (and icmp if you want ping), sourced only from operator CIDRs.
-Non-loopback listen is TCP/22 only. The VS Code server stays on
-`127.0.0.1` and is forwarded through that SSH session. Do not open an
-extra "VS Code" TCP port.
-
-**Egress lock (IPv4 and IPv6):** allow loopback + RFC1918 (and
-unique-local/link-local on v6). Reject everything else, especially
-80/443 to the public Internet. An ESTABLISHED-only lock is not enough:
-an in-flight download keeps going. Prove with
-`curl https://update.code.visualstudio.com` — expect no route /
-administratively prohibited.
-
-**Identity:** realm user, OTP auth type, HBAC for this host + `sshd`.
 First Factor = password. Second Factor = TOTP (not the password again).
-
-**Do not set on the remote:** any `remote.SSH.*` key, ControlMaster, or
-a vscode listener on `0.0.0.0`.
 
 ## 6. Why port 22 is enough
 
-Remote-SSH's server-side component listens on a **localhost** port on
-the remote host — it is never exposed to the network. Every byte
-between the VS Code client and that local listener travels through the
-single SSH connection's own port forwarding. There is no secondary
-network-visible listener to punch a hole for.
-`remote.SSH.remoteServerListenOnSocket` must stay `false` in
-`settings.json`: when `true` it silently turns `useLocalServer` off,
-which on Windows (no ControlMaster) means a second OTP and a denied
-session. It is a local multiplexing detail, not a firewall change.
+Remote-SSH listens on **localhost** on the remote host. The client
+reaches it through the SSH session you already have. You do not open a
+second "VS Code" port. Keep
+`remote.SSH.remoteServerListenOnSocket` `false` or Windows loses
+`useLocalServer` and the second OTP is denied.
 
 ## 7. Extensions
 
