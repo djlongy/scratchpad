@@ -14,7 +14,7 @@ README explaining what it does, what it requires, and how to plug it in.
 |---|---|
 | [`ansible/`](ansible/) | Portable Ansible roles, reference playbooks, sample inventories, action plugins, and a fapolicyd rule-template library. Standard top-level layout (roles/, playbooks/, inventories/, plugins/, scripts/, files/, docs/). |
 | [`linux/`](linux/) | Distribution-level reference docs and configs. fapolicyd troubleshooting on EL9, hardened EL9 kickstart with GNOME + FIPS + STIG. |
-| [`bash/`](bash/) | Self-contained bash tools — fzf-driven git helpers, an Oh My Bash powerline theme + deploy script. |
+| [`bash/`](bash/) | Self-contained bash tools — fzf-driven git helpers, an Oh My Bash powerline theme + deploy script, a VS Code Server installer for air-gapped networks. |
 | [`python/`](python/) | Python install/setup notes and small helpers. Currently the VMware vSphere Automation SDK install guide. |
 | [`dotfiles/`](dotfiles/) | GNU Stow packages for fast machine bootstrap (tmux, dev shell). |
 
@@ -37,6 +37,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | [EL9 hardened kickstart](linux/kickstart/) | Unattended-install template — GNOME, FIPS, fapolicyd, STIG scan, VMware USB passthrough. | `linux/` |
 | [`bash/git-functions`](bash/git-functions/) | fzf interactive branch picker, prune-gone-branches helper. | `bash/` |
 | [`bash/ohmybash`](bash/ohmybash/) | Powerline prompt with git/venv/time, deploy script, Nerd Font installer. | `bash/` |
+| [`bash/vscode-airgap-tunnels`](bash/vscode-airgap-tunnels/) | Download, bundle, and install VS Code Server on hosts with no internet access — online/bundle/offline modes, checksum-pinned bundles, and an honest look at why Microsoft's Remote Tunnels can't do this (use `code serve-web` instead). | `bash/` |
 | [`dotfiles/tmux`](dotfiles/) | Stow-managed tmux + dev environment bootstrap. | `dotfiles/` |
 | [`vsphere-automation-sdk`](python/vsphere-automation-sdk/) | Install instructions for the VMware vSphere Automation SDK on macOS + Oracle Linux. | `python/` |
 
