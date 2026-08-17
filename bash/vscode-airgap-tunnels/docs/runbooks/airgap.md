@@ -125,8 +125,7 @@ Quick start:
 
 ```bash
 ./bin/vscode-airgap.sh --emit-ssh-config
-# writes ssh-config.example, settings.json.example (JSONC // comments),
-# and remote-host.example
+# writes templates AND prints the destination path for each file
 ```
 
 Then in VS Code: **Remote-SSH: Connect to Host...** → the `Host` alias

@@ -222,12 +222,12 @@ OPTIONS (env var equivalents in parentheses)
   --download-only         Fetch/verify artifacts but do not install/start.
   --status                Print install state for INSTALL_DIR and exit.
                           Standalone — no MODE/network/curl required.
-  --emit-ssh-config       Write ssh-config.example, settings.json.example
-                          (JSONC: real // comments, not fake "// key"
-                          pairs), and remote-host.example into
-                          INSTALL_DIR (or --install-dir) and exit.
-                          Standalone — no MODE/network required. See
-                          docs/runbooks/remote-ssh-realm-otp.md.
+  --emit-ssh-config       Write three templates into INSTALL_DIR and
+                          print where each one is copied (laptop
+                          ~/.ssh/config, laptop VS Code user
+                          settings.json, this host's sshd drop-in).
+                          JSONC // comments, not fake "// key" pairs.
+                          Standalone — no MODE/network required.
   --force                 Re-download even if a matching cached artifact
                           already exists.
   -h, --help              This text.
@@ -1431,10 +1431,9 @@ install_from_stage() {
     [ -n "$sw_bin" ] || die "internal error: --serve-web requested but no CLI was staged"
     start_serve_web "$sw_bin"
   else
-    log "Remote-SSH server is staged and ready. Connect from an operator"
-    log "laptop with a matching-commit VS Code client. Print the templates:"
+    log "Remote-SSH server is staged and ready."
+    log "Print templates AND the destination path for each file:"
     log "  $SELF --emit-ssh-config"
-    log "  see docs/runbooks/remote-ssh-realm-otp.md"
   fi
 }
 
@@ -1527,22 +1526,45 @@ run_emit_ssh_config() {
   write_ssh_config_example > "$ssh_out"
   write_settings_json_example > "$settings_out"
   write_remote_host_example > "$remote_out"
-  log "wrote $ssh_out"
-  log "wrote $settings_out"
-  log "wrote $remote_out"
-  log "see docs/runbooks/remote-ssh-realm-otp.md for the full rationale" \
-      "behind every line."
+  log "wrote templates under $INSTALL_DIR"
+  log "These are NOT live. Copy/merge each file to the path below."
+  log ""
+  log "  $ssh_out"
+  log "    WHO:  operator laptop (not this host)"
+  log "    Unix/macOS ->  ~/.ssh/config"
+  log "    Windows    ->  C:\\Users\\youruser\\.ssh\\config"
+  log "    HOW:  merge ONE Host block (Unix or Windows), replace"
+  log "          airgapped-host / youruser / the hostname"
+  log ""
+  log "  $settings_out"
+  log "    WHO:  operator laptop (not this host)"
+  log "    Windows ->  %APPDATA%\\Code\\User\\settings.json"
+  log "                C:\\Users\\youruser\\AppData\\Roaming\\Code\\User\\settings.json"
+  log "    macOS   ->  ~/Library/Application Support/Code/User/settings.json"
+  log "    Linux   ->  ~/.config/Code/User/settings.json"
+  log "    HOW:  merge the keys (do not wipe existing settings)."
+  log "          Or: VS Code -> Preferences -> Settings -> Open Settings (JSON)"
+  log "          Omit remote.SSH.path on Unix. UTF-8, no BOM."
+  log ""
+  log "  $remote_out"
+  log "    WHO:  THIS Linux host, as root (not the laptop)"
+  log "    sshd ->  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf"
+  log "    HOW:  copy the sshd block only, then:"
+  log "          sshd -t && systemctl reload sshd"
+  log "    Firewall/egress sections are notes, not a drop-in file."
 }
 
 write_ssh_config_example() {
   cat <<'EOF'
-# Client ~/.ssh/config for an air-gapped Remote-SSH host with realm
-# (GSSAPI/Kerberos) and/or keyboard-interactive OTP, port 22 only.
-# See docs/runbooks/remote-ssh-realm-otp.md.
+# WHERE THIS GOES — operator laptop, NOT the remote host
+#   Unix/macOS:  ~/.ssh/config
+#   Windows:     C:\Users\youruser\.ssh\config
+# Merge ONE Host block (Unix or Windows section below) into that file.
+# Replace airgapped-host / airgapped-host.example.realm / youruser.
+# Unix only, after merge: mkdir -p ~/.ssh/sockets
 #
-# Replace airgapped-host / airgapped-host.example.realm / youruser
-# before use. Point remote.SSH.configFile at this file, or merge
-# the Host block into the user's default config.
+# This file is a template. Leaving it under ~/.vscode-server does nothing.
+# See docs/runbooks/remote-ssh-realm-otp.md.
 
 # --- Unix / macOS client ---
 # ControlMaster reuses the first TCP session so a second SSH in the
@@ -1587,11 +1609,16 @@ write_settings_json_example() {
   # properties the extension will ignore or reject.
   cat <<'EOF'
 {
-  // JSONC (JSON with Comments). VS Code reads // lines.
-  // Do not comment with fake keys such as "// useLocalServer".
-  // Merge into the operator laptop's user settings.json.
-  // These keys are CLIENT-only. They do nothing on the remote host.
-  // After connect, remote.SSH.log must dump the same values.
+  // WHERE THIS GOES — operator laptop, NOT the remote host
+  //   Windows:  %APPDATA%\Code\User\settings.json
+  //             C:\Users\youruser\AppData\Roaming\Code\User\settings.json
+  //   macOS:    ~/Library/Application Support/Code/User/settings.json
+  //   Linux:    ~/.config/Code/User/settings.json
+  // Merge these keys. Do not replace the whole file if you already
+  // have settings. Or: Preferences -> Settings -> Open Settings (JSON).
+  // JSONC: VS Code reads // lines. Do not use fake "// key" pairs.
+  // Omit remote.SSH.path on Unix. UTF-8, no BOM.
+  // These keys do nothing on the remote host.
 
   // Show the keyboard-interactive prompts (password + TOTP).
   "remote.SSH.showLoginTerminal": true,
@@ -1636,8 +1663,11 @@ EOF
 
 write_remote_host_example() {
   cat <<'EOF'
-# Remote air-gapped Linux host — apply as root. Not VS Code settings.
-# Client remote.SSH.* keys do not go here.
+# WHERE THIS GOES — THIS Linux host as root, NOT the operator laptop
+#   sshd drop-in:  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf
+#   then:          sshd -t && systemctl reload sshd
+# Copy the sshd block only (section 2). Firewall/egress are notes.
+# Do not put remote.SSH.* keys or this file on the laptop.
 # See docs/runbooks/remote-ssh-realm-otp.md
 
 # ---------------------------------------------------------------------------

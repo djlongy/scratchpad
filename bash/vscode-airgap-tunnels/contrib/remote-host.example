@@ -1,5 +1,8 @@
-# Remote air-gapped Linux host — apply as root. Not VS Code settings.
-# Client remote.SSH.* keys do not go here.
+# WHERE THIS GOES — THIS Linux host as root, NOT the operator laptop
+#   sshd drop-in:  /etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf
+#   then:          sshd -t && systemctl reload sshd
+# Copy the sshd block only (section 2). Firewall/egress are notes.
+# Do not put remote.SSH.* keys or this file on the laptop.
 # See docs/runbooks/remote-ssh-realm-otp.md
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,14 @@
 {
-  // JSONC (JSON with Comments). VS Code reads // lines.
-  // Do not comment with fake keys such as "// useLocalServer".
-  // Merge into the operator laptop's user settings.json.
-  // These keys are CLIENT-only. They do nothing on the remote host.
-  // After connect, remote.SSH.log must dump the same values.
+  // WHERE THIS GOES — operator laptop, NOT the remote host
+  //   Windows:  %APPDATA%\Code\User\settings.json
+  //             C:\Users\youruser\AppData\Roaming\Code\User\settings.json
+  //   macOS:    ~/Library/Application Support/Code/User/settings.json
+  //   Linux:    ~/.config/Code/User/settings.json
+  // Merge these keys. Do not replace the whole file if you already
+  // have settings. Or: Preferences -> Settings -> Open Settings (JSON).
+  // JSONC: VS Code reads // lines. Do not use fake "// key" pairs.
+  // Omit remote.SSH.path on Unix. UTF-8, no BOM.
+  // These keys do nothing on the remote host.
 
   // Show the keyboard-interactive prompts (password + TOTP).
   "remote.SSH.showLoginTerminal": true,

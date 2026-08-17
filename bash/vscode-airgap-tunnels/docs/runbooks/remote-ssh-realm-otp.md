@@ -7,13 +7,14 @@ protocol. This script's job is getting the right server bits onto the
 remote host *before* the first connection so nothing tries to download
 anything mid-session.
 
-`--emit-ssh-config` writes three files (also kept under `contrib/`):
+`--emit-ssh-config` writes three **templates** (also under `contrib/`).
+They are not live until you copy them:
 
-| File | Where it lives |
-|---|---|
-| `ssh-config.example` | operator laptop `~/.ssh/config` |
-| `settings.json.example` | operator laptop VS Code **user** `settings.json` (JSONC) |
-| `remote-host.example` | air-gapped Linux host (sshd, firewall, layout) |
+| Template | Who | Put it here |
+|---|---|---|
+| `ssh-config.example` | operator laptop | Unix/macOS: `~/.ssh/config` · Windows: `C:\Users\youruser\.ssh\config` |
+| `settings.json.example` | operator laptop | Windows: `%APPDATA%\Code\User\settings.json` · macOS: `~/Library/Application Support/Code/User/settings.json` · Linux: `~/.config/Code/User/settings.json` |
+| `remote-host.example` | air-gapped host (root) | sshd block → `/etc/ssh/sshd_config.d/50-remote-ssh-airgap.conf` (firewall/egress are notes, not a drop-in) |
 
 `settings.json.example` is **JSONC**: comments are `//` lines. Do **not**
 comment with fake keys such as `"// useLocalServer": "…"`. Those are
