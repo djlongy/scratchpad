@@ -1,6 +1,6 @@
 # Oh My Bash — devops-powerline theme
 
-Powerline-style two-line bash prompt. No packages required — just bash, git, and a Nerd Font on your SSH client.
+Powerline-style two-line bash prompt. No packages required — just bash and a Nerd Font on your SSH client. Oh My Bash itself is vendored into this repository, so the whole thing installs on an air-gapped host.
 
 ## Prompt layout
 
@@ -26,10 +26,12 @@ No `username@hostname`. No clutter.
 | Requirement | Notes |
 |-------------|-------|
 | bash 4.2+ | Ships with RHEL 8+, AlmaLinux 8+, Ubuntu 20.04+ |
-| git | For OMB installation (one-time) |
-| make | Only needed when using `--with-blesh` |
 | Nerd Font on client terminal | MesloLGS NF, Hack NF, JetBrainsMono NF, etc. |
 | UTF-8 locale | Standard on modern Linux |
+| git | **Fallback only** — not needed when the vendored tree is present |
+| make | **Never** — the vendored ble.sh is a prebuilt release |
+
+Nothing here needs a package manager or a network. See *Offline by default* below.
 
 The powerline arrow glyphs (``, ``) and the branch glyph (``) are Nerd Font codepoints. Everything else (`✓`, `✗`, `❯`, `·`) is standard Unicode — the prompt degrades gracefully if Nerd Fonts are missing.
 
@@ -66,11 +68,60 @@ chmod +x deploy.sh
 
 The script:
 1. Backs up existing `~/.bashrc`
-2. Clones Oh My Bash into `~/.oh-my-bash` (skips if already installed)
+2. Installs Oh My Bash into `~/.oh-my-bash` (skips if already installed)
 3. Installs/updates the theme at `~/.oh-my-bash/custom/themes/devops-powerline/`
-4. Appends or updates OMB config in `~/.bashrc`
+4. Appends or updates OMB config in `~/.bashrc`, with update checking switched off
 
 Optional: with `--with-blesh`, it also installs `ble.sh` and enables inline autosuggestions/history prediction in `~/.bashrc`.
+
+## Offline by default
+
+Step 2 is **vendor-first**. When `../../dotfiles/vendor/oh-my-bash` exists — it does in
+this repository — the framework is installed by copying that tree, so the whole deploy
+runs on a host with no internet, no package manager and no `git`. The upstream clone is
+only a fallback for a standalone copy of this directory. Every run says which path it
+took:
+
+```
+  Oh My Bash source: vendored tree (offline) — /path/to/dotfiles/vendor/oh-my-bash
+  - Source: VENDORED tree at /path/to/dotfiles/vendor/oh-my-bash (offline, no network)
+```
+
+versus
+
+```
+  Oh My Bash source: upstream clone (needs internet) — no vendored tree found
+  - Source: NETWORK clone (no vendored tree found — this needs internet)
+```
+
+`--with-blesh` is vendor-first too, using the **prebuilt** ble.sh release under
+`../../dotfiles/vendor/blesh`. Nothing is compiled, so `make` is never required.
+
+Remote mode carries the same guarantee: the vendored trees are streamed over the SSH
+connection as tarballs and unpacked into the staging directory, so the target host never
+reaches for a network of its own.
+
+Provenance for both vendored trees — upstream URL, commit or release, checksum, and how
+to refresh them — is recorded in `UPSTREAM.md` beside each one.
+
+### No update prompts, ever
+
+A vendored framework must not try to update itself, and an air-gapped host has nothing to
+update from. The config written to `~/.bashrc` sets `DISABLE_AUTO_UPDATE=true`, which is
+the switch Oh My Bash tests before sourcing `tools/check_for_upgrade.sh` at all, plus a
+very large `UPDATE_OSH_DAYS` as a second line of defence.
+
+`DISABLE_UPDATE_PROMPT` is deliberately left **false**. Despite the name it does not mean
+"stay quiet" — setting it true makes Oh My Bash run the upgrade *without asking*, which is
+the opposite of what an offline host wants.
+
+### For a fully unattended install
+
+`deploy.sh` is the interactive, one-host tool. To provision from the repository as a
+whole, use `dotfiles/install.sh`, which runs `dotfiles/install.d/20-bash.sh`. That hook
+does the same job with no network commands in any executed path, writes its config into a
+marker-delimited block so re-runs replace rather than duplicate it, and leaves anything
+you have put in `~/.oh-my-bash/custom` untouched.
 
 ### `--for-root` — keep the prompt alive under sudo
 
@@ -100,6 +151,19 @@ Edit `theme/devops-powerline/devops-powerline.theme.bash` locally, then re-run `
 | Ubuntu 20.04 | ✓ |
 | Ubuntu 22.04+ | ✓ |
 
+The offline path is verified on AlmaLinux 9 x86_64 in a container with no network
+interface and with neither `git` nor `make` installed.
+
+### One caveat with `--with-blesh`
+
+ble.sh needs a set of POSIX tools on `PATH`, including `ps`. Every real RHEL-family
+install has them, but a stripped container may not, and ble.sh reports the problem on
+stderr at *every* shell start. Both installers check the list first and skip ble.sh with
+a warning rather than wire a permanently noisy line into `~/.bashrc`.
+
+The first ble.sh-enabled shell prints cache-building progress (`updating tput cache…`,
+`updating binders…`). That is one-time work, not an error; later shells are silent.
+
 ## Customisation
 
 Edit the colour palette at the top of the theme file:
@@ -125,4 +189,16 @@ bash/ohmybash/
 └── theme/
     └── devops-powerline/
         └── devops-powerline.theme.bash    # The OMB theme
+```
+
+The payloads `deploy.sh` installs live outside this directory, shared with the
+repository-wide installer:
+
+```
+dotfiles/
+├── install.d/20-bash.sh                   # Unattended, fully offline install hook
+├── uninstall.d/20-bash.sh                 # Reverses it, keeping ~/.oh-my-bash/custom
+└── vendor/
+    ├── oh-my-bash/                        # Upstream working tree + UPSTREAM.md
+    └── blesh/                             # Prebuilt ble.sh release + UPSTREAM.md
 ```

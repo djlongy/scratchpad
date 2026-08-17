@@ -1,34 +1,34 @@
-# Dotfiles (GNU Stow)
+# Dotfiles (self-contained, offline-first)
 
-Stow-managed dotfiles for repeatable workstation/server setup.
+Repeatable shell/tmux setup for air-gapped machines: no internet access, and
+nothing needed beyond a `tmux` and `fzf` binary plus the OS base repos.
+Everything else the installers need ships inside this repo — tmux plugins, the
+Oh My Bash framework, ble.sh. `install.sh` never touches a network, a package
+manager, or git.
 
-Goal: copy this repo to a new machine and recreate the same shell/tmux workflow
-without manually editing config files.
+## Layout
 
-## Why this layout
-
-- Each folder is a Stow package (`tmux`, more packages can be added later).
-- Files inside each package mirror their destination under `$HOME`.
-- Symlinks make updates simple and reversible.
-
-## Current package
-
-- `tmux`
-  - `.tmux.conf`
-  - `.local/bin/tmx-dev` (session bootstrap with shell + cheatsheet pane)
-  - `.local/bin/tmx-cheatsheet` (shortcut reference shown in pane)
-  - `.local/bin/tmx-install-tpm` (optional TPM installer)
+- `install.sh` — links the config packages (GNU Stow when available, plain
+  symlinks otherwise), then runs each hook in `install.d/` in filename order.
+- `install.d/10-tmux.sh` — copies the vendored tmux plugins into
+  `~/.tmux/plugins`. If `tmux` is not on PATH it says so once, with the fix,
+  and still lays the plugins down.
+- `install.d/20-bash.sh` — copies the vendored Oh My Bash to `~/.oh-my-bash`,
+  installs the `devops-powerline` theme, and writes a marker-delimited managed
+  block to `~/.bashrc`.
+- `vendor/` — the offline payload. Each vendored tree carries an `UPSTREAM.md`
+  recording its upstream URL and pinned commit/version, alongside the upstream
+  LICENSE.
+- `tmux/` — the stow package with `.tmux.conf` and the `tmx-*` helper scripts.
 
 ## Requirements
 
-- `tmux`
+- `tmux` — from your OS repos or any binary on PATH
+- `fzf` — only for the sessionx picker; without it the binding simply does not
+  appear (no error, no message)
 
-Optional but recommended:
-
-- `stow` (preferred install method; on RHEL it lives in EPEL, and `install.sh`
-  falls back to plain symlinks when it is absent)
-- `fzf`
-- `git`
+Everything else is vendored. `stow` and `git` remain optional conveniences and
+are never required.
 
 ## Install
 
@@ -37,120 +37,122 @@ cd dotfiles
 ./install.sh
 ```
 
-With stow available this runs `stow --target "$HOME" tmux`; without it, the
-same files are symlinked into `$HOME` directly.
+Re-running is safe and idempotent: links are refreshed, plugin copies are
+re-synced, and the `.bashrc` managed block is replaced between its markers
+rather than duplicated.
+
+### Air-gapped transfer
+
+```bash
+tar --no-xattrs -C .. -czf dotfiles-bundle.tar.gz dotfiles bash/ohmybash
+scp dotfiles-bundle.tar.gz user@host:
+ssh user@host 'tar xzf dotfiles-bundle.tar.gz && cd dotfiles && ./install.sh'
+```
+
+(`--no-xattrs` matters when bundling from macOS — without it the extract on
+Linux prints hundreds of harmless but noisy xattr warnings.)
+
+The config files in `$HOME` are symlinks into the extracted tree, so keep it
+where you unpacked it; deleting the directory breaks the links.
+
+## tmux
+
+### Plugins — no install step, no nags
+
+TPM, tmux-sensible, tmux-resurrect, tmux-continuum and tmux-sessionx are
+vendored under `vendor/tmux-plugins/` and copied into place by the installer.
+There is no `prefix + I` plugin-install step — everything is present after
+`install.sh`, and the config stays silent on a machine that never ran it
+(missing plugins are skipped without a message). TPM's network keys
+(`prefix + U`, `prefix + M-u`) are unbound since the vendored trees are not git
+clones; `prefix + I` just tells you the plugins ship with the repo.
+
+- **sessionx** — `prefix + O` appears only when `fzf` is on PATH. Without fzf:
+  no binding, no error, no message.
+- **resurrect/continuum** — `prefix + Ctrl-s` save, `prefix + Ctrl-r` restore;
+  continuum auto-save hooks into the status line (its one deviation from stock
+  `status-right`, invisible on screen).
+
+### Appearance
+
+The status bar keeps tmux's stock colours (green) so it is obvious at a glance
+that you are inside tmux. A blue theme ships commented out in the status-line
+section of `.tmux.conf` — uncomment those five lines to switch.
+
+### Helpers
+
+- `~/.local/bin/tmx-dev` — session bootstrap with shell + cheatsheet pane
+- `~/.local/bin/tmx-cheatsheet` — shortcut reference (`Ctrl-b ?`)
 
 **Copy `.tmux.conf` alone and the `Ctrl-b ?` cheatsheet (and the `tmx-dev`
 cheatsheet pane) cannot work** — they run `~/.local/bin/tmx-cheatsheet`, which
-only exists after `install.sh` has linked the scripts. The keybind now says so
-instead of flashing an empty pane. TPM is unrelated: the cheatsheet is
-plugin-free by design.
+only exists after `install.sh` has linked the scripts. The keybind says so
+instead of flashing an empty pane.
 
-## Copy behaviour
+### Copy behaviour
 
 Mouse drag in copy-mode copies the selection and **stays at the scrolled
-position** instead of snapping back to the live bottom (`copy-selection-no-clear`).
-The clipboard is reached via tmux's OSC 52 passthrough (`set-clipboard on`), so
-it works over SSH with no `xclip`/`wl-copy` installed. Press `q` (or scroll to
-the bottom) to leave copy-mode.
+position** instead of snapping back to the live bottom
+(`copy-selection-no-clear`). The clipboard is reached via tmux's OSC 52
+passthrough (`set-clipboard on`), so it works over SSH with no
+`xclip`/`wl-copy` installed. Press `q` (or scroll to the bottom) to leave
+copy-mode.
 
-## Detailed setup on a new machine
+## bash — Oh My Bash + devops-powerline prompt
 
-1) Install minimum dependencies:
+Installs the Oh My Bash framework and the two-line powerline prompt from
+`bash/ohmybash/theme/`. Entirely offline: the framework is vendored at
+`vendor/oh-my-bash/` and copied into `~/.oh-my-bash`, so no network, package
+manager, `git` or `make` is involved.
 
-```bash
-# RHEL/Alma/Rocky
-sudo dnf install -y git tmux stow
+`install.d/20-bash.sh` writes a marker-delimited block to `~/.bashrc` holding
+`OSH`, `OSH_THEME`, a guarded `~/.local/bin` PATH entry, and the
+plugin/completion/alias lists. Re-runs replace that block rather than duplicate
+it, and never touch `~/.oh-my-bash/custom`, so anything you add there survives.
+A one-time backup is kept at `~/.bashrc.pre-dotfiles`.
 
-# Debian/Ubuntu
-sudo apt-get update && sudo apt-get install -y git tmux stow
-```
+Update checking is off: the block sets `DISABLE_AUTO_UPDATE=true`, the switch
+Oh My Bash tests before loading its upgrade check. `DISABLE_UPDATE_PROMPT`
+stays false on purpose — it means "upgrade without asking", not "stay quiet".
 
-2) Clone your repo and apply dotfiles:
+ble.sh (inline autosuggestions) is optional and off by default. Enable it with
+`WITH_BLESH=1` or `--with-blesh`; it installs from the prebuilt release at
+`vendor/blesh/`, so nothing is compiled. If the POSIX tools ble.sh requires
+(including `ps`) are missing, it is skipped with a warning instead of being
+wired into a shell where it would error on every start.
 
-```bash
-git clone <your-repo-url> ~/scratchpad
-cd ~/scratchpad/dotfiles
-chmod +x install.sh uninstall.sh save-environment.sh tmux/.local/bin/tmx-dev tmux/.local/bin/tmx-cheatsheet tmux/.local/bin/tmx-install-tpm
-./install.sh
-```
+For a single host, or a remote one over SSH, `bash/ohmybash/deploy.sh` does the
+same job interactively and is vendor-first in both local and remote mode.
 
-3) Start tmux with the default layout:
-
-```bash
-~/.local/bin/tmx-dev
-```
-
-This starts one session with one window split into two panes:
-
-- Left pane: terminal in your workspace
-- Right pane: tmux shortcut cheatsheet
-
-Kill the cheatsheet pane any time with `Ctrl-b x`.
-Inside cheatsheet pane: use `/` to search, `n`/`N` for next/previous match, mouse wheel to scroll, `q` to quit.
-
-4) Optional plugin path (only if GitHub access is allowed):
+## Verify
 
 ```bash
-~/.local/bin/tmx-install-tpm
-tmux
-# inside tmux: prefix + I
+tmux new-session -d -s t && tmux list-keys | grep -E 'resurrect|sessionx'
+bash -ic 'echo $OSH_THEME'    # devops-powerline
 ```
 
-5) Verify:
-
-```bash
-tmux -V
-tmux source-file ~/.tmux.conf
-tmux list-keys | grep sessionx || true
-```
-
-If `sessionx` bindings are not listed, TPM/plugins are not installed yet; base tmux workflow still works.
-
-## Save environment on current machine and push to git
-
-1) Ensure stow links are active:
-
-```bash
-cd ~/scratchpad/dotfiles
-./install.sh
-```
-
-2) Save a tool-version snapshot:
-
-```bash
-./save-environment.sh
-```
-
-3) Review changes and sanitize machine-specific values if needed.
-
-4) Commit and push:
-
-```bash
-cd ~/scratchpad
-git status
-git add dotfiles
-git commit -m "Add tmux dotfiles workflow with stow"
-git push
-```
-
-## Re-apply after changes
-
-```bash
-cd dotfiles
-./install.sh
-```
-
-## Remove symlinks
+## Uninstall
 
 ```bash
 cd dotfiles
 ./uninstall.sh
 ```
 
-## Restricted environment notes
+Drops the config symlinks (stow when available, direct unlinking otherwise),
+then runs `uninstall.d/*.sh`: plugin directories are removed only when they
+carry the installer's marker, and saved tmux-resurrect sessions in
+`~/.local/share/tmux/resurrect` are never touched. The bash hook removes the `.bashrc` managed block and the
+framework files while keeping `~/.oh-my-bash/custom`.
 
-- This setup works without downloading tmux plugins.
-- The tmux config is fully usable with stock tmux.
-- If internet policy allows GitHub and you later want plugin support, add TPM/plugins as a separate optional step.
-- Keep host/user/domain values generic in docs/scripts before committing.
+## Save environment snapshot
+
+```bash
+./save-environment.sh   # writes environment-snapshot.txt; review before commit
+```
+
+## Refreshing the vendored payload
+
+Each `vendor/**/UPSTREAM.md` records the pinned upstream URL and commit or
+release. Refreshing is deliberate and manual: re-fetch upstream on a connected
+machine, strip `.git`/`.github`, update `UPSTREAM.md`, and re-run the install
+on a disconnected test box before committing.
