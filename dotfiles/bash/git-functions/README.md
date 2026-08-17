@@ -1,6 +1,12 @@
 # git-functions
 
-Interactive git utilities for day-to-day branch management. Powered by `fzf`.
+Interactive git utilities for day-to-day branch management. `gci` and `gstash`
+are powered by `fzf`; `gbp` needs only git.
+
+All three are shell functions, and each checks it is inside a repository before
+running any git command — outside one you get a single polite line rather than
+a pile of `fatal: not a git repository`. `gstash help` is the deliberate
+exception: usage prints anywhere, with or without a repository or `fzf`.
 
 ## Functions
 
@@ -85,10 +91,18 @@ Deletes all local branches where the upstream remote tracking branch has been de
 ```bash
 gbp
 # Equivalent to:
-# git branch -vv | grep ': gone]' | awk '{print $1}' | xargs git branch -D
+# git branch -vv | grep ': gone]' | grep -v '^[*+]' | awk '{print $1}' | xargs -r git branch -D
 ```
 
+The branch you are on (`*`) and any checked out in another worktree (`+`) are
+skipped, because git cannot delete either. If the branch you are standing on is
+the one whose upstream is gone, `gbp` leaves it alone and says nothing — switch
+away first, then run it again.
+
 No confirmation prompt — use with awareness in repos with many local branches.
+
+**Requires:** git only — `gbp` never opens a picker, so a missing `fzf` does not
+stop it.
 
 ## Installation
 
@@ -122,7 +136,7 @@ Or copy just the functions you want directly into your `~/.bashrc`.
 |------|-------|
 | bash 4.0+ | Ships on RHEL 8+, Ubuntu 20.04+, macOS (system bash is 3.x — install via brew) |
 | git | Any recent version |
-| fzf | Required for `gci` and `gstash`. Install: `brew install fzf` / `dnf install fzf` / [github.com/junegunn/fzf](https://github.com/junegunn/fzf) |
+| fzf | Required for `gci` and `gstash` (not for `gbp`, and not for `gstash help`). Install: `brew install fzf` / `dnf install fzf` / [github.com/junegunn/fzf](https://github.com/junegunn/fzf) |
 
 ## Files
 

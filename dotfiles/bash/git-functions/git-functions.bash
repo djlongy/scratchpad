@@ -1,12 +1,23 @@
 # bash functions for day-to-day git work — interactive branch checkout,
 # named stash save/pop/apply/delete with an fzf picker, and pruning of orphaned
-# branches. Powered by fzf.
+# branches. gci and gstash need fzf; gbp does not.
+#
+# All three are functions, and every one of them checks it is inside a
+# repository before running any git command, so outside one you get a single
+# polite line instead of a pile of "fatal:" output. `gstash help` is the
+# exception on purpose: usage is answerable anywhere.
+#
 # Append these to your .bashrc file (or `source` it from there).
 
 # Git checkout interactive
 gci() {
   if ! command -v fzf &>/dev/null; then
     echo "gci: fzf is not installed. Install it via your OS package manager (e.g. brew/apt/dnf/pacman)." >&2
+    return 1
+  fi
+
+  if ! git rev-parse --git-dir &>/dev/null; then
+    echo "gci: not inside a git repository" >&2
     return 1
   fi
 
@@ -70,6 +81,15 @@ gci() {
 # that starts with `gst`, producing a parse error.
 #
 gstash() {
+  local subcmd="${1:-help}"
+  (( $# > 0 )) && shift
+
+  # Usage is answerable anywhere, so it is handled before the guards below —
+  # asking how a command works must not require fzf or a repository.
+  case "$subcmd" in
+    help|-h|--help) _gstash_help; return 0 ;;
+  esac
+
   if ! command -v fzf &>/dev/null; then
     echo "gstash: fzf is not installed. Install it via your OS package manager (e.g. brew/apt/dnf/pacman)." >&2
     return 1
@@ -80,16 +100,13 @@ gstash() {
     return 1
   fi
 
-  local subcmd="${1:-help}"
-  (( $# > 0 )) && shift
-
   case "$subcmd" in
     save)            _gstash_save "$@" ;;
     pop)             _gstash_restore pop "$@" ;;
     apply)           _gstash_restore apply "$@" ;;
     delete)          _gstash_delete "$@" ;;
-    list|ls)         git stash list ;;
-    help|-h|--help)  _gstash_help ;;
+    # Meant to be read straight off the terminal, so never hand it to a pager.
+    list|ls)         git --no-pager stash list ;;
     *)
       echo "gstash: unknown subcommand '${subcmd}'" >&2
       _gstash_help >&2
@@ -256,5 +273,21 @@ _gstash_delete() {
   done < <(printf '%s\n' "$targets" | awk -F'[{}]' '{print $2 "\t" $0}' | sort -k1,1rn | cut -f2-)
 }
 
-# Delete local branches where remote is gone
-alias gbp='git branch -vv | grep ": gone]" | awk "{print \$1}" | sed "s/^\* //" | xargs -r git branch -D'
+# Delete local branches where remote is gone.
+#
+# A function rather than an alias so it can refuse politely outside a repository
+# — an alias would run the pipeline anyway and print git's own fatal. It does
+# not use fzf, so it does not check for it.
+gbp() {
+  if ! git rev-parse --git-dir &>/dev/null; then
+    echo "gbp: not inside a git repository" >&2
+    return 1
+  fi
+
+  # `git branch -vv` marks the branch checked out here with "* " and one checked
+  # out in another worktree with "+ ". Neither can be deleted, so drop those
+  # lines outright — taking field 1 without dropping them yields a bare "*",
+  # which git then refuses with an error. Everything else is indented by two
+  # spaces, so field 1 is the branch name.
+  git branch -vv | grep ': gone]' | grep -v '^[*+]' | awk '{print $1}' | xargs -r git branch -D
+}
