@@ -1,6 +1,6 @@
 # Oh My Bash — devops-powerline theme
 
-Powerline-style two-line bash prompt. No packages required — just bash and a Nerd Font on your SSH client. Oh My Bash itself is vendored into this repository, so the whole thing installs on an air-gapped host.
+Powerline-style two-line bash prompt. No packages required — just bash, and a Nerd Font on the client you are typing at. Oh My Bash and that font are both vendored into this repository, so the whole thing installs on an air-gapped host.
 
 ## Prompt layout
 
@@ -26,7 +26,7 @@ No `username@hostname`. No clutter.
 | Requirement | Notes |
 |-------------|-------|
 | bash 4.2+ | Ships with RHEL 8+, AlmaLinux 8+, Ubuntu 20.04+ |
-| Nerd Font on client terminal | MesloLGS NF, Hack NF, JetBrainsMono NF, etc. |
+| Nerd Font on the **client** terminal | MesloLGS Nerd Font ships in this repo — see *The Nerd Font* below |
 | UTF-8 locale | Standard on modern Linux |
 | git | **Fallback only** — not needed when the vendored tree is present |
 | make | **Never** — the vendored ble.sh is a prebuilt release |
@@ -34,6 +34,58 @@ No `username@hostname`. No clutter.
 Nothing here needs a package manager or a network. See *Offline by default* below.
 
 The powerline arrow glyphs (``, ``) and the branch glyph (``) are Nerd Font codepoints. Everything else (`✓`, `✗`, `❯`, `·`) is standard Unicode — the prompt degrades gracefully if Nerd Fonts are missing.
+
+## The Nerd Font
+
+**Install it on the machine you are sitting at, not on the host you SSH into.** Glyphs are
+rendered by the terminal emulator, which runs on your workstation; the remote host only
+sends codepoints down the wire and never consults a font. A Nerd Font installed on a server
+you only ever reach over SSH changes nothing on screen — this is the single most common
+reason the prompt still shows boxes after "installing the font".
+
+MesloLGS Nerd Font is vendored at `../../dotfiles/vendor/fonts/meslolgs-nf` (four faces:
+Regular, Bold, Italic, Bold Italic; Apache-2.0; provenance and per-file checksums in
+`UPSTREAM.md` beside them). It is the small-line-gap cut with the **slashed** zero — the
+`DZ` families are the dotted-zero alternative, confirmed by rendering the glyph rather
+than by reading the suffix, since the release notes do not document it. Three installers
+put it in place, all offline:
+
+| Client | Installer |
+|---|---|
+| Windows (Windows Terminal, PuTTY) | `../../dotfiles/windows/install-nerd-font.ps1` — per-user, no admin |
+| Linux / macOS workstation, via the whole package | `../../dotfiles/install.d/30-fonts.sh`, run by `dotfiles/install.sh` |
+| Linux / macOS, standalone | `./install-nerd-font.sh` |
+
+```bash
+cd bash/ohmybash
+./install-nerd-font.sh          # installs for the current user
+./install-nerd-font.sh --list   # shows which source it would use
+```
+
+`install-nerd-font.sh` is vendor-first in the same way as `deploy.sh`: with the vendored
+tree present it copies the four faces and never touches the network, and it says so:
+
+```
+==> Source: VENDORED tree at /path/to/dotfiles/vendor/fonts/meslolgs-nf (offline, no network)
+```
+
+Without a vendored tree — a copy of this script on its own, away from the repository — it
+falls back to the ryanoasis/nerd-fonts GitHub release, and announces that instead:
+
+```
+==> Source: NETWORK download from GitHub Releases (no vendored tree at … — this needs internet)
+```
+
+`dotfiles/install.d/30-fonts.sh` skips itself entirely on a host with no fontconfig, which
+is the normal state of a headless server — there is nothing there to render with. That skip
+is expected, not a failure.
+
+Then point the terminal at the font: `MesloLGS Nerd Font` in Windows Terminal
+(Settings → Defaults → Appearance → Font face), PuTTY (Window → Appearance → Font), or
+your Linux/macOS terminal's profile settings.
+
+Prefer not to install a font at all? Set `export NLP_NERD_FONT=0` in `~/.bashrc` before the
+`oh-my-bash.sh` line and the prompt uses the Unicode fallback glyphs.
 
 ## Deploy (local first)
 
@@ -187,6 +239,7 @@ bash/ohmybash/
 ├── README.md
 ├── deploy.sh                              # Local install by default; remote optional
 └── install-nerd-font.sh                   # Terminal font for the powerline glyphs
+                                        #   (vendor-first; download only as a fallback)
 ```
 
 Everything `deploy.sh` installs — the theme and both vendored trees — lives in the
@@ -198,10 +251,14 @@ dotfiles/
 │   └── devops-powerline/
 │       └── devops-powerline.theme.bash    # The OMB theme
 ├── install.d/20-bash.sh                   # Unattended, fully offline install hook
+├── install.d/30-fonts.sh                  # Nerd Font, when the host has fontconfig
 ├── uninstall.d/20-bash.sh                 # Reverses it, keeping ~/.oh-my-bash/custom
+├── uninstall.d/30-fonts.sh                # Removes exactly the four font files
+├── windows/install-nerd-font.ps1          # Windows client font install, per-user
 └── vendor/
     ├── oh-my-bash/                        # Upstream working tree + UPSTREAM.md
-    └── blesh/                             # Prebuilt ble.sh release + UPSTREAM.md
+    ├── blesh/                             # Prebuilt ble.sh release + UPSTREAM.md
+    └── fonts/meslolgs-nf/                 # Four MesloLGS faces + LICENSE + UPSTREAM.md
 ```
 
 The dependency runs one way: `deploy.sh` reaches into the package, and nothing in

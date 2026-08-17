@@ -142,6 +142,59 @@ does the same framework+theme install interactively and is vendor-first in both
 local and remote mode — it installs the theme from this package, so it needs a
 full repo checkout.
 
+## Nerd Font (the glyphs render on the CLIENT)
+
+The powerline prompt and the tmux status line draw from a Nerd Font. That font
+is read by your **terminal emulator**, which runs on the machine you are
+sitting at — the remote host only sends codepoints down the wire and never
+consults a font of its own. Installing the font on a server you reach over SSH
+changes nothing on screen. This is the usual reason a prompt still shows boxes
+after "installing the font".
+
+MesloLGS Nerd Font is vendored at `vendor/fonts/meslolgs-nf`: the
+small-line-gap cut with the **slashed** zero (the `DZ` families are the
+dotted-zero alternative), four faces, Apache-2.0, checksums and provenance in
+`UPSTREAM.md`. Nothing below needs a network.
+
+### Windows client (Windows Terminal, PuTTY)
+
+Per-user, no administrator rights:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\install-nerd-font.ps1
+```
+
+It copies the four faces to `%LOCALAPPDATA%\Microsoft\Windows\Fonts`,
+registers them under `HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts`,
+and loads them into the running session so no sign-out is needed. Re-running is
+safe: unchanged files are left alone and registry values are rewritten only
+when they differ, so nothing is ever duplicated.
+
+It then **prints** the terminal configuration rather than applying it — your
+`settings.json` is yours. Merge this into the top-level `profiles` object:
+
+```json
+"profiles": {
+    "defaults": {
+        "font": { "face": "MesloLGS Nerd Font" }
+    }
+}
+```
+
+The same setting without JSON: Settings → Defaults → Appearance → Font face.
+PuTTY: Window → Appearance → Font → Change…, pick `MesloLGS Nerd Font`, and
+save the session.
+
+Undo with `.\windows\uninstall-nerd-font.ps1`. Both scripts accept `-WhatIf`.
+
+### Linux / macOS
+
+`install.sh` runs `install.d/30-fonts.sh`, which installs to
+`~/.local/share/fonts/NerdFonts` (macOS: `~/Library/Fonts`) and refreshes the
+fontconfig cache. On a host with no fontconfig — the normal state of a headless
+server — it prints one line and skips, because nothing there would render with
+the font anyway. That skip is expected, not a failure.
+
 ## Verify
 
 ```bash
