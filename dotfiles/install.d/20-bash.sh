@@ -37,6 +37,10 @@ END_MARK='# <<< dotfiles bash (managed) <<<'
 GIT_FUNCTIONS_DEST="$OSH_DIR/custom/git-functions.sh"
 GIT_FUNCTIONS_MARK='# >>> dotfiles git-functions (managed) >>>'
 
+SHELL_ALIASES_SRC="${BASH_SHELL_ALIASES_SRC:-$DOTFILES_DIR/bash/shell-aliases/shell-aliases.bash}"
+SHELL_ALIASES_DEST="$OSH_DIR/custom/shell-aliases.sh"
+SHELL_ALIASES_MARK='# >>> dotfiles shell-aliases (managed) >>>'
+
 WITH_BLESH="${WITH_BLESH:-0}"
 for arg in "$@"; do
   case "$arg" in
@@ -108,6 +112,25 @@ else
   chmod 0644 "$GIT_FUNCTIONS_DEST.tmp"
   mv "$GIT_FUNCTIONS_DEST.tmp" "$GIT_FUNCTIONS_DEST"
   echo "GITFN $GIT_FUNCTIONS_DEST"
+fi
+
+# --- general shell aliases ------------------------------------------------
+# Same custom/ auto-source mechanism and ownership rules as the git functions.
+if [ -f "$SHELL_ALIASES_DEST" ] && ! head -n 1 "$SHELL_ALIASES_DEST" | grep -qF "$SHELL_ALIASES_MARK"; then
+  echo "KEEP  $SHELL_ALIASES_DEST (already exists without our marker — left untouched)"
+  echo "WARN  Move it aside and re-run to install the packaged copy."
+else
+  {
+    printf '%s\n' "$SHELL_ALIASES_MARK"
+    printf '%s\n' '# Copied by install.d/20-bash.sh from bash/shell-aliases/. The line'
+    printf '%s\n' '# above is what uninstall.d/20-bash.sh matches before removing this file, so'
+    printf '%s\n' '# keep it. Edits here are lost on the next install — change the packaged copy.'
+    printf '%s\n' ''
+    cat "$SHELL_ALIASES_SRC"
+  } >"$SHELL_ALIASES_DEST.tmp"
+  chmod 0644 "$SHELL_ALIASES_DEST.tmp"
+  mv "$SHELL_ALIASES_DEST.tmp" "$SHELL_ALIASES_DEST"
+  echo "ALIAS $SHELL_ALIASES_DEST"
 fi
 
 # --- ble.sh (optional) ----------------------------------------------------

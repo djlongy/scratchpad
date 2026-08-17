@@ -17,6 +17,9 @@ END_MARK='# <<< dotfiles bash (managed) <<<'
 GIT_FUNCTIONS_DEST="$OSH_DIR/custom/git-functions.sh"
 GIT_FUNCTIONS_MARK='# >>> dotfiles git-functions (managed) >>>'
 
+SHELL_ALIASES_DEST="$OSH_DIR/custom/shell-aliases.sh"
+SHELL_ALIASES_MARK='# >>> dotfiles shell-aliases (managed) >>>'
+
 if [ -f "$BASHRC" ] && grep -qF "$BEGIN_MARK" "$BASHRC"; then
   stripped="$(mktemp)"
   awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
@@ -37,6 +40,15 @@ if [ -f "$GIT_FUNCTIONS_DEST" ]; then
     echo "GITFN removed $GIT_FUNCTIONS_DEST"
   else
     echo "GITFN kept $GIT_FUNCTIONS_DEST (no managed marker — treated as yours)"
+  fi
+fi
+
+if [ -f "$SHELL_ALIASES_DEST" ]; then
+  if head -n 1 "$SHELL_ALIASES_DEST" | grep -qF "$SHELL_ALIASES_MARK"; then
+    rm -f "$SHELL_ALIASES_DEST"
+    echo "ALIAS removed $SHELL_ALIASES_DEST"
+  else
+    echo "ALIAS kept $SHELL_ALIASES_DEST (no managed marker — treated as yours)"
   fi
 fi
 
