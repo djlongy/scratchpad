@@ -22,10 +22,11 @@ without manually editing config files.
 ## Requirements
 
 - `tmux`
-- `stow`
 
 Optional but recommended:
 
+- `stow` (preferred install method; on RHEL it lives in EPEL, and `install.sh`
+  falls back to plain symlinks when it is absent)
 - `fzf`
 - `git`
 
@@ -36,7 +37,22 @@ cd dotfiles
 ./install.sh
 ```
 
-This runs `stow --target "$HOME" tmux`.
+With stow available this runs `stow --target "$HOME" tmux`; without it, the
+same files are symlinked into `$HOME` directly.
+
+**Copy `.tmux.conf` alone and the `Ctrl-b ?` cheatsheet (and the `tmx-dev`
+cheatsheet pane) cannot work** — they run `~/.local/bin/tmx-cheatsheet`, which
+only exists after `install.sh` has linked the scripts. The keybind now says so
+instead of flashing an empty pane. TPM is unrelated: the cheatsheet is
+plugin-free by design.
+
+## Copy behaviour
+
+Mouse drag in copy-mode copies the selection and **stays at the scrolled
+position** instead of snapping back to the live bottom (`copy-selection-no-clear`).
+The clipboard is reached via tmux's OSC 52 passthrough (`set-clipboard on`), so
+it works over SSH with no `xclip`/`wl-copy` installed. Press `q` (or scroll to
+the bottom) to leave copy-mode.
 
 ## Detailed setup on a new machine
 

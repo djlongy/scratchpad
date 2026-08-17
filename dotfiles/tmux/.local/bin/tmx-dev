@@ -14,8 +14,10 @@ tmux new-session -d -s "$session_name" -n shell -c "$workspace_dir"
 
 tmux send-keys -t "$session_name:shell" 'clear' C-m
 
-tmux split-window -h -t "$session_name:shell" -l 48 "~/.local/bin/tmx-cheatsheet"
-tmux select-pane -t "$session_name:shell" -L
+if [ -x "$HOME/.local/bin/tmx-cheatsheet" ]; then
+  tmux split-window -h -t "$session_name:shell" -l 48 "~/.local/bin/tmx-cheatsheet"
+  tmux select-pane -t "$session_name:shell" -L
+fi
 
 tmux select-window -t "$session_name:shell"
 exec tmux attach -t "$session_name"

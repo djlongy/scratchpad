@@ -39,6 +39,13 @@ Ctrl-b h/j/k/l  move between panes
 Ctrl-b H/J/K/L  resize pane
 Ctrl-b x      kill current pane
 
+Copy / scrollback
+-----------------
+scroll up     enter copy-mode (scroll to bottom auto-exits)
+mouse drag    copy selection; the view STAYS where you are
+q             leave copy-mode (view returns to live bottom)
+Ctrl-b [      enter copy-mode from the keyboard
+
 viewer usage in this pane
 -------------------------
 /pattern      search forward
