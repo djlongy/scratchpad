@@ -45,6 +45,7 @@ import pypi_resolve  # noqa: E402
 from pypi_resolve import (  # noqa: E402
     DEFAULT_PLATFORMS,
     assert_closed,
+    closed_lock_rows,
     install_report_args,
     packages_from_report,
     platform_flags,
@@ -124,21 +125,30 @@ def test_pypi_closure_fails_when_a_transitive_dep_is_missing(
         assert_closed(req, dest, tmp_path / "report.json", "39")
 
 
-def test_pypi_lock_flattens_union_of_targets(tmp_path: Path) -> None:
-    lock = tmp_path / "requirements.lock"
-    write_lock(
+def test_pypi_lock_is_one_closed_pin_set(tmp_path: Path) -> None:
+    rows = closed_lock_rows(
         {
-            "host": [{"name": "Requests", "version": "2.32.3", "requested": True}],
+            "host": [
+                {"name": "requests", "version": "2.32.3", "requested": True},
+                {"name": "urllib3", "version": "2.7.0", "requested": False},
+            ],
             "linux-cp39": [
                 {"name": "requests", "version": "2.32.3", "requested": True},
                 {"name": "urllib3", "version": "2.6.3", "requested": False},
             ],
-        },
-        lock,
+        }
     )
-    text = lock.read_text(encoding="utf-8")
-    assert "Requests==2.32.3" in text
-    assert "urllib3==2.6.3" in text
+    lock = tmp_path / "requirements.lock"
+    write_lock(rows + [{"name": "urllib3", "version": "2.6.3", "requested": False}], lock)
+    pins = [
+        line
+        for line in lock.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    ]
+    names = [pin.split("==", 1)[0].lower() for pin in pins]
+    assert names == sorted(set(names))
+    urllib_pins = [pin for pin in pins if pin.lower().startswith("urllib3==")]
+    assert urllib_pins == ["urllib3==2.7.0"]
 
 
 def test_parse_pin_lines_skips_comments_and_blanks() -> None:

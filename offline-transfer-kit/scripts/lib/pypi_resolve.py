@@ -141,13 +141,26 @@ def assert_closed(req: Path, dest: Path, report: Path, py_tag: str | None) -> li
     return rows
 
 
-def write_lock(rows_by_target: dict[str, list[dict[str, Any]]], lock_path: Path) -> None:
-    pins: set[str] = set()
+def closed_lock_rows(rows_by_target: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One installable pin set. Host is what `pip install -r lock` on the builder uses."""
+    host_rows = rows_by_target.get("host") or []
+    if host_rows:
+        return host_rows
     for rows in rows_by_target.values():
-        for row in rows:
-            pins.add(f"{row['name']}=={row['version']}")
+        if rows:
+            return rows
+    return []
+
+
+def write_lock(rows: list[dict[str, Any]], lock_path: Path) -> None:
+    pins: dict[str, str] = {}
+    for row in rows:
+        key = row["name"].lower()
+        if key in pins:
+            continue
+        pins[key] = f"{row['name']}=={row['version']}"
     lines = ["# Fully resolved by pypi_resolve.py — do not edit by hand"]
-    lines.extend(sorted(pins, key=str.lower))
+    lines.extend(pins[name] for name in sorted(pins))
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -195,7 +208,7 @@ def resolve(
         )
 
     write_tree(req, dest, rows_by_target, tree_path)
-    write_lock(rows_by_target, lock_path)
+    write_lock(closed_lock_rows(rows_by_target), lock_path)
     log(f"wrote {tree_path}")
     log(f"wrote {lock_path}")
     return rows_by_target
