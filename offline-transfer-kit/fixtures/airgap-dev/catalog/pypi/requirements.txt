@@ -1,0 +1,3 @@
+# Tiny representative pins — deps must also land in the bundle.
+requests==2.32.3
+packaging==24.2

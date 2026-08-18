@@ -1,0 +1,2 @@
+# Pinned fixture image — small, immutable tag. Digest is recorded at pull.
+docker.io/library/busybox:1.36.1

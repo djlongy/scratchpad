@@ -1,0 +1,2 @@
+# Tiny AlmaLinux 9 subset for the air-gap fixture (resolved via docker dnf).
+which

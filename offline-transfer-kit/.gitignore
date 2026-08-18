@@ -1,0 +1,10 @@
+.work/
+outbox/
+inbox/
+serve/
+drop/
+__pycache__/
+*.pyc
+.DS_Store
+*.tar.gz
+*.tar.zst

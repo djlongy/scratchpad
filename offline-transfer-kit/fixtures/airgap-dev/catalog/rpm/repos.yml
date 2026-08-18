@@ -1,0 +1,3 @@
+---
+# Default AlmaLinux repos inside the download container are enough for `which`.
+repos: {}

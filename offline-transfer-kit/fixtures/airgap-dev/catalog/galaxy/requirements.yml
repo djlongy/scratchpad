@@ -1,0 +1,5 @@
+---
+# One small collection for the air-gap fixture (not the production catalog).
+collections:
+  - name: ansible.posix
+    version: "1.6.2"
