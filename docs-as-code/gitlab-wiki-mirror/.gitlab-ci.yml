@@ -1,10 +1,64 @@
-# Mirror docs/ into the project's GitLab wiki on every merge to the default branch.
-# Add this job to the docs repo's .gitlab-ci.yml (stage names are examples).
+# Docs-as-code pipeline for a Markdown repo where docs/ is the only source.
 #
-# Needs one CI variable, WIKI_TOKEN: a project access token with the write_repository
-# scope and the Developer role (Settings > Access tokens), stored masked. CI_JOB_TOKEN
-# can clone a wiki but GitLab refuses its pushes, so the job stays skipped until the
-# variable exists rather than failing every pipeline.
+#   merge request / branch -> lint: strict MkDocs build, markdownlint, link check
+#   default branch         -> wiki: mirror docs/ into the project wiki (needs WIKI_TOKEN)
+#                          -> pages: GitLab Pages, if the instance has it (delete otherwise)
+#
+# Copy this file, scripts/wiki-sync.py, requirements.txt, .markdownlint.yaml and mkdocs.yml
+# into the docs repo. Everything is driven by predefined CI variables except WIKI_TOKEN.
+
+stages:
+  - test
+  - deploy
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  key: pip
+  paths:
+    - .cache/pip
+
+.mkdocs:
+  image: python:3.12
+  before_script:
+    - pip install -q -r requirements.txt
+
+.checks:
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+
+# Broken relative links and pages missing from the nav fail the build.
+lint:
+  extends: [.mkdocs, .checks]
+  script:
+    - mkdocs build --strict -d public
+
+# https://github.com/DavidAnson/markdownlint-cli2 (rules in .markdownlint.yaml)
+markdownlint:
+  extends: .checks
+  image:
+    name: davidanson/markdownlint-cli2
+    entrypoint: [""]
+  script:
+    - markdownlint-cli2 "docs/**/*.md"
+
+# https://github.com/lycheeverse/lychee. --offline checks only local file links, so
+# private hosts the runner cannot reach do not fail the job.
+links:
+  extends: .checks
+  image:
+    name: lycheeverse/lychee
+    entrypoint: [""]
+  script:
+    - lychee --offline --no-progress "docs/**/*.md"
+
+# Mirror docs/ into the project wiki. WIKI_TOKEN is a project access token with the
+# write_repository scope and the Developer role, stored as a masked CI variable.
+# CI_JOB_TOKEN can clone a wiki but GitLab refuses its pushes, so the job is skipped
+# by its rule until the variable exists rather than failing every pipeline.
 wiki:
   stage: deploy
   image: python:3.12
@@ -14,7 +68,7 @@ wiki:
     # The wiki is a mirror. If someone edited it by hand, stop rather than overwrite.
     - last=$(git -C wiki log -1 --format=%an 2>/dev/null || true)
     - '[ -z "$last" ] || [ "$last" = "docs ci" ] || { echo "wiki last commit by \"$last\", not CI. Port the change into docs/ first."; exit 1; }'
-    - python3 wiki-sync.py docs wiki
+    - python3 scripts/wiki-sync.py docs wiki
     - cd wiki
     - git config user.name "docs ci"
     - git config user.email "ci@${CI_SERVER_HOST}"
@@ -22,3 +76,16 @@ wiki:
     - git diff --cached --quiet && echo "wiki already current" || { git commit -q -m "Sync docs from ${CI_COMMIT_SHORT_SHA}"; git push -q origin HEAD:main; }
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $WIKI_TOKEN
+
+# GitLab Pages. Remove this job on an instance without Pages; the wiki job is then the
+# only publish step.
+pages:
+  extends: .mkdocs
+  stage: deploy
+  script:
+    - mkdocs build --strict -d public
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

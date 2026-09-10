@@ -1,0 +1,186 @@
+"""Tests for wiki-import.py and wiki-sync.py. Run: python3 -m pytest -q"""
+import importlib.util
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).parent
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), HERE / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wiki_import = load("wiki-import")
+wiki_sync = load("wiki-sync")
+
+
+def write(root: Path, files: dict):
+    for rel, content in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            p.write_bytes(content)
+        else:
+            p.write_text(content)
+
+
+def links(md: Path):
+    return re.findall(r"\]\(([^)]+)\)", md.read_text())
+
+
+# ---------------------------------------------------------------- wiki-import
+
+
+@pytest.fixture
+def wiki(tmp_path):
+    root = tmp_path / "wiki"
+    write(root, {
+        "home.md": "# Team wiki\n\n- [Ops](ops)\n- [Dev](dev)\n- [Glossary](glossary)\n",
+        "ops.md": "# Ops\n\n[Backups](ops/backups) [Release](dev/release) ![n](uploads/1/n.png)\n",
+        "ops/backups.md": "# Backups\n\n[release](../dev/release) [onboard](onboarding) [abs](/ops/onboarding)\n",
+        "ops/onboarding.md": "# Onboarding\n\n[missing](nowhere) [ext](https://example.com/x)\n",
+        "dev.md": "# Dev\n\n[Release](dev/release) [Ops](ops)\n",
+        "dev/release.md": "# Release\n\n![p](../uploads/1/p.png) [b](/ops/backups#restore)\n",
+        "glossary.md": "# Glossary\n\nno children, stays top-level\n",
+        "_sidebar.md": "**[x](/home)**\n",
+        "uploads/1/n.png": b"\x89PNG",
+        "uploads/1/p.png": b"\x89PNG",
+    })
+    return root
+
+
+def test_import_layout(wiki, tmp_path, capsys):
+    docs = tmp_path / "docs"
+    wiki_import.main(wiki, docs)
+    got = sorted(str(p.relative_to(docs)) for p in docs.rglob("*") if p.is_file())
+    assert got == [
+        "dev/index.md", "dev/release.md", "glossary.md", "index.md", "ops/backups.md",
+        "ops/index.md", "ops/onboarding.md", "uploads/1/n.png", "uploads/1/p.png",
+    ]
+    assert "_sidebar.md" not in got
+    out = capsys.readouterr().out
+    assert "imported 7 pages, 2 attachments" in out
+    assert "ops/onboarding.md: nowhere" in out  # unresolved link reported
+
+
+def test_import_rewrites_every_link_form(wiki, tmp_path):
+    docs = tmp_path / "docs"
+    wiki_import.main(wiki, docs)
+    assert links(docs / "index.md") == ["ops/index.md", "dev/index.md", "glossary.md"]
+    assert links(docs / "ops/index.md") == ["backups.md", "../dev/release.md", "../uploads/1/n.png"]
+    assert links(docs / "ops/backups.md") == ["../dev/release.md", "onboarding.md", "onboarding.md"]
+    assert links(docs / "ops/onboarding.md") == ["nowhere", "https://example.com/x"]  # untouched
+    assert links(docs / "dev/release.md") == ["../uploads/1/p.png", "../ops/backups.md#restore"]
+
+
+def test_import_generates_home_when_missing(tmp_path):
+    wiki = tmp_path / "wiki"
+    write(wiki, {"ops.md": "# Ops\n", "ops/a.md": "# A\n", "notes.md": "# Notes\n"})
+    docs = tmp_path / "docs"
+    wiki_import.main(wiki, docs)
+    assert links(docs / "index.md") == ["notes.md", "ops/index.md"]
+
+
+# ------------------------------------------------------------------ wiki-sync
+
+
+@pytest.fixture
+def docs(tmp_path):
+    root = tmp_path / "docs"
+    write(root, {
+        "index.md": "# Team docs\n\n[Ops](ops/index.md) [Glossary](glossary.md)\n",
+        ".pages": "nav:\n  - index.md\n  - Ops: ops\n  - ...\n",
+        "ops/index.md": (
+            "# Ops\n\n[Backups](backups.md) [Dev](../dev/index.md) ![n](../uploads/1/n.png) "
+            "[ext](https://example.com) [anchor](backups.md#restore) [out](../../outside.md)\n"
+        ),
+        "ops/.pages": "title: Operations\nnav:\n  - index.md\n  - onboarding.md\n  - ...\n",
+        "ops/backups.md": "# Backups\n\n[home](../index.md)\n",
+        "ops/onboarding.md": "# Onboarding\n",
+        "dev/index.md": "# Dev\n",
+        "dev/zeta.md": "# Zeta\n",
+        "dev/alpha.md": "# Alpha\n",
+        "glossary.md": "# Glossary\n",
+        "uploads/1/n.png": b"\x89PNG",
+    })
+    (tmp_path / "outside.md").write_text("# outside\n")
+    return root
+
+
+def test_sync_layout_and_links(docs, tmp_path, capsys):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki)
+    got = sorted(str(p.relative_to(wiki)) for p in wiki.rglob("*") if p.is_file())
+    assert got == ["_sidebar.md", "dev.md", "dev/alpha.md", "dev/zeta.md", "glossary.md", "home.md",
+                   "ops.md", "ops/backups.md", "ops/onboarding.md", "uploads/1/n.png"]
+    assert links(wiki / "home.md") == ["/ops", "/glossary"]
+    assert links(wiki / "ops.md") == ["/ops/backups", "/dev", "uploads/1/n.png", "https://example.com",
+                                      "/ops/backups#restore", "../../outside.md"]
+    assert links(wiki / "ops/backups.md") == ["/home"]
+    assert "synced 8 pages, 1 attachments, sidebar 7 lines" in capsys.readouterr().out
+
+
+def test_sync_sidebar_follows_pages_files(docs, tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki)
+    assert (wiki / "_sidebar.md").read_text() == (
+        "**[Team docs](/home)**\n\n"
+        "- [Ops](/ops)\n"  # the parent's explicit label wins over the folder's own title:
+        "  - [Onboarding](/ops/onboarding)\n"
+        "  - [Backups](/ops/backups)\n"
+        "- [Dev](/dev)\n"
+        "  - [Alpha](/dev/alpha)\n"
+        "  - [Zeta](/dev/zeta)\n"
+        "- [Glossary](/glossary)\n"
+    )
+
+
+def test_sync_removes_stale_pages_and_attachments(docs, tmp_path):
+    wiki = tmp_path / "wiki"
+    write(wiki, {"old.md": "# gone\n", "ops/old.md": "x\n", "uploads/9/old.png": b"x", ".git/HEAD": "ref\n"})
+    wiki_sync.main(docs, wiki)
+    assert not (wiki / "old.md").exists()
+    assert not (wiki / "ops/old.md").exists()
+    assert not (wiki / "uploads/9").exists()
+    assert (wiki / ".git/HEAD").exists()  # never touches the repo metadata
+
+
+def test_sync_is_idempotent(docs, tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki)
+    first = {p: p.read_bytes() for p in wiki.rglob("*") if p.is_file()}
+    wiki_sync.main(docs, wiki)
+    second = {p: p.read_bytes() for p in wiki.rglob("*") if p.is_file()}
+    assert first == second
+
+
+def test_sync_defaults_without_pages_or_home(tmp_path):
+    docs = tmp_path / "docs"
+    write(docs, {"b/index.md": "# Bee\n", "b/two.md": "# Two\n", "a.md": "# Ay\n", "b/one.md": "# One\n"})
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki)
+    assert (wiki / "_sidebar.md").read_text() == (
+        "**[Home](/home)**\n\n- [Ay](/a)\n- [Bee](/b)\n  - [One](/b/one)\n  - [Two](/b/two)\n"
+    )
+
+
+def test_round_trip_import_then_sync(wiki, tmp_path):
+    docs = tmp_path / "docs"
+    wiki_import.main(wiki, docs)
+    out = tmp_path / "out"
+    out.mkdir()
+    wiki_sync.main(docs, out)
+    assert links(out / "ops.md") == ["/ops/backups", "/dev/release", "uploads/1/n.png"]
+    assert links(out / "dev/release.md") == ["uploads/1/p.png", "/ops/backups#restore"]
+    assert (out / "uploads/1/n.png").read_bytes() == b"\x89PNG"

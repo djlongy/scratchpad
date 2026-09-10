@@ -1,0 +1,5 @@
+# The lint jobs use these; mkdocs-material is optional if you only publish the wiki.
+mkdocs<2
+mkdocs-material==9.7.*
+mkdocs-awesome-pages-plugin>=2.9,<3
+pyyaml

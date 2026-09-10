@@ -1,0 +1,9 @@
+# Minimal config: enough for `mkdocs build --strict` to validate links and nav, and for a
+# Pages site if the instance has Pages. See ../../mkdocs-material/ for the theme options.
+site_name: Team wiki
+site_url: https://example.com/docs/
+theme:
+  name: material
+plugins:
+  - search
+  - awesome-pages
