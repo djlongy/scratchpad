@@ -1,0 +1,4 @@
+# Material for MkDocs is in maintenance mode until 5 Nov 2026 and MkDocs 2.0 drops the
+# plugin API, so pin both. See the tutorial README, section 12.
+mkdocs<2
+mkdocs-material==9.7.*

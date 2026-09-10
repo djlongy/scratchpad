@@ -1,0 +1,63 @@
+site_name: Example Docs Portal
+site_url: https://example.com/docs/
+
+theme:
+  name: material
+  font:
+    text: Merriweather Sans
+    code: Red Hat Mono
+  icon:
+    logo: fontawesome/solid/book
+  features:
+    - navigation.footer
+    - content.code.copy
+  palette:
+    # Dark mode
+    - scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+      primary: green
+      accent: deep purple
+    # Light mode
+    - scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+      primary: blue
+      accent: deep orange
+
+markdown_extensions:
+  # Emoji and icons: :material-check: :fontawesome-brands-github:
+  - attr_list
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  # Code blocks: syntax highlighting, titles, line numbers, highlighted lines
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  # Fenced blocks, plus Mermaid diagrams rendered in the browser
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  # Content tabs
+  - pymdownx.tabbed:
+      alternate_style: true
+  # Admonitions (callouts), including collapsible ones
+  - admonition
+  - pymdownx.details
+
+extra:
+  social:
+    - icon: simple/github
+      link: https://github.com/djlongy
+    - icon: simple/youtube
+      link: https://youtube.com/@james-willett
+
+copyright: Copyright &copy; 2026 Example Docs

@@ -16,6 +16,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | [`linux/`](linux/) | Distribution-level reference docs and configs. fapolicyd troubleshooting on EL9, hardened EL9 kickstart with GNOME + FIPS + STIG. |
 | [`bash/`](bash/) | Self-contained bash tools — fzf-driven git helpers, an Oh My Bash powerline theme + deploy script, a VS Code Server installer for air-gapped networks. |
 | [`python/`](python/) | Python install/setup notes and small helpers. Currently the VMware vSphere Automation SDK install guide. |
+| [`docs-as-code/`](docs-as-code/) | Documentation kept as Markdown in git, reviewed like code and published by CI. Material for MkDocs tutorial with a runnable example site. |
 | [dev-env repo](https://github.com/djlongy/dev-env) | The dotfiles package, VS Code air-gap kit, and Oh My Bash tooling moved to their own repo — clone as `~/.dotfiles` and run `install.sh`. |
 
 ## Highlights
@@ -36,6 +37,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | [fapolicyd troubleshooting](linux/fapolicyd/) | Step-by-step debug-deny / trust.d / rules.d guide for EL9 hardening. | `linux/` |
 | [EL9 hardened kickstart](linux/kickstart/) | Unattended-install template — GNOME, FIPS, fapolicyd, STIG scan, VMware USB passthrough. | `linux/` |
 | git functions, Oh My Bash, VS Code air-gap, tmux dotfiles | Moved to the [dev-env repo](https://github.com/djlongy/dev-env). | — |
+| [Material for MkDocs tutorial](docs-as-code/mkdocs-material/) | Zero to a published docs portal: theme and dark-mode toggle, fonts, emoji and icons, code blocks, content tabs, admonitions, Mermaid diagrams, footer, then GitHub Pages and GitLab Pages workflows. Runnable example site included, pinned for the 2026 MkDocs/Material/Zensical situation. | `docs-as-code/` |
 | [`vsphere-automation-sdk`](python/vsphere-automation-sdk/) | Install instructions for the VMware vSphere Automation SDK on macOS + Oracle Linux. | `python/` |
 
 ## Conventions

@@ -1,0 +1,5 @@
+.venv/
+site/
+public/
+.cache/
+__pycache__/
