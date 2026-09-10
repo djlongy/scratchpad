@@ -7,7 +7,11 @@ His own written guide and repo: [jameswillett.dev](https://jameswillett.dev/gett
 [material-mkdocs-youtube-2024](https://github.com/james-willett/material-mkdocs-youtube-2024).
 
 The finished result of every step is in [`example/`](example/). Build it with
-`pip install -r requirements.txt && mkdocs serve` and compare as you go.
+`pip install -r requirements.txt && zensical serve` (or `mkdocs serve` with the fallback
+pins in `requirements.txt`) and compare as you go.
+
+Read section 15 first if you are starting a new site in late 2026: the build tool is
+Zensical, the theme and every feature below are unchanged, and `mkdocs.yml` stays.
 
 ## Contents
 
@@ -371,40 +375,61 @@ are right.
 
 ## 14. Publish to GitLab Pages
 
-GitLab has no `gh-deploy`; a job named `pages` that leaves the site in `public/` as an
-artifact is the whole mechanism. `.gitlab-ci.yml` ([full file](example/.gitlab-ci.yml)):
+GitLab has no `gh-deploy`; a job that leaves the built site as an artifact and declares it
+with `pages:` is the whole mechanism. `.gitlab-ci.yml` ([full file](example/.gitlab-ci.yml)),
+building with Zensical (section 15), which writes to `site/`:
 
 ```yaml
 image: python:3.12-slim
 stages: [test, deploy]
 
-.mkdocs:
+.build:
   before_script:
     - pip install -r requirements.txt
 
-lint:
-  extends: .mkdocs
+docs-build:
+  extends: .build
   stage: test
   script:
-    - mkdocs build --strict -d public
+    - zensical build --clean --strict
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
 
-pages:
-  extends: .mkdocs
+deploy-docs:
+  extends: .build
   stage: deploy
   script:
-    - mkdocs build --strict -d public
-  artifacts:
-    paths: [public]
+    - zensical build --clean --strict
+  pages:
+    publish: site
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 ```
 
-Merge requests get the strict build as a check; merges to the default branch publish. On
-a self-hosted instance Pages has to be enabled by the admin (`pages_external_url` in
-`gitlab.rb`); the project's URL is under *Deploy > Pages*.
+Merge requests get the strict build as a check; merges to the default branch publish.
+`pages: publish: site` is the GitLab 17.9+ form (the job can have any name; `publish` is
+appended to the artifact paths for you). On older instances name the job `pages`, `mv site
+public` after the build, and declare `artifacts: paths: [public]`. Tested on GitLab 18.9
+with Zensical 0.0.60: the deployment appeared under *Deploy > Pages* within a minute.
+
+The "Edit this page" button needs three lines, because Zensical and Material only
+auto-detect GitHub:
+
+```yaml
+repo_url: https://gitlab.example.com/group/docs
+repo_name: group/docs
+edit_uri: -/edit/main/docs/          # GitLab's web editor path, branch, then docs_dir
+theme:
+  icon:
+    repo: fontawesome/brands/gitlab
+  features:
+    - content.action.edit
+```
+
+Enabling Pages on a self-hosted instance, and how to get a predictable URL such as
+`wiki.example.com` or `wiki.pages.example.com`, is its own guide:
+[gitlab-pages-setup](../gitlab-pages-setup/).
 
 ## 15. 2026 notes: pinning, maintenance mode, Zensical
 
@@ -420,9 +445,18 @@ The video predates three changes that affect a new site today:
   natively. `pip install zensical && zensical build` on the example in this folder
   produces the same site (tested with Zensical 0.0.60).
 
-So: pin `mkdocs<2` and `mkdocs-material==9.7.*` (the example's `requirements.txt`
-does), keep an eye on Zensical's 1.0, and plan the switch before November 2026. Nothing
-in this tutorial needs to change for it beyond the install line and the build command.
+So the example's `requirements.txt` pins `zensical==0.0.60` and keeps the Material pins
+commented out as the fallback. Everything else in this tutorial is unchanged: Zensical
+reads `mkdocs.yml`, the theme is the same, and the features in sections 5 to 12 render the
+same. What changes: `pip install zensical`, `zensical build --clean --strict` (and
+`zensical serve`), output in `site/` instead of `public/`. Zensical is alpha; pin the
+version, keep `mkdocs.yml` rather than converting to `zensical.toml`, and keep the
+Material pins one comment away until it reaches 1.0.
+
+Platform note: on this machine (Apple Silicon) `zensical build` 0.0.60 hung indefinitely
+at "Build started" both natively and in an arm64 Linux container, while the same build
+completed in seconds on amd64 Linux (GitLab runners, and a Linux host). Build in CI, or on
+an amd64 box, until that is fixed upstream.
 
 ## 16. Where to go next
 

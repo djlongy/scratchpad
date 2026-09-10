@@ -1,9 +1,18 @@
 # Minimal config: enough for `mkdocs build --strict` to validate links and nav, and for a
 # Pages site if the instance has Pages. See ../../mkdocs-material/ for the theme options.
 site_name: Team wiki
-site_url: https://example.com/docs/
+site_url: https://wiki.pages.example.com/
+repo_url: https://gitlab.example.com/group/docs
+repo_name: group/docs
+edit_uri: -/edit/main/docs/
 theme:
   name: material
+  icon:
+    repo: fontawesome/brands/gitlab
+  features:
+    - content.action.edit
+    - navigation.sections
+    - search.suggest
 plugins:
   - search
   - awesome-pages

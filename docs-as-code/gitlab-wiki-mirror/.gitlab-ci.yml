@@ -30,11 +30,12 @@ cache:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
 
-# Broken relative links and pages missing from the nav fail the build.
+# Broken relative links and pages missing from the nav fail the build. Zensical reads
+# mkdocs.yml; with the Material fallback pins use `mkdocs build --strict` instead.
 lint:
   extends: [.mkdocs, .checks]
   script:
-    - mkdocs build --strict -d public
+    - zensical build --clean --strict
 
 # https://github.com/DavidAnson/markdownlint-cli2 (rules in .markdownlint.yaml)
 markdownlint:
@@ -77,15 +78,14 @@ wiki:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $WIKI_TOKEN
 
-# GitLab Pages. Remove this job on an instance without Pages; the wiki job is then the
-# only publish step.
-pages:
+# GitLab Pages (17.9+ form: the job may have any name, `pages.publish` names the built dir).
+# Remove this job on an instance without Pages; the wiki job is then the only publish step.
+deploy-docs:
   extends: .mkdocs
   stage: deploy
   script:
-    - mkdocs build --strict -d public
-  artifacts:
-    paths:
-      - public
+    - zensical build --clean --strict
+  pages:
+    publish: site
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

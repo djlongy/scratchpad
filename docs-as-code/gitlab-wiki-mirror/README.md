@@ -175,17 +175,18 @@ python3 wiki-import.py wiki-export docs --exclude 'templates/' --include '/opera
 
 | Job | When | What |
 |---|---|---|
-| `lint` | MR, feature branch | `mkdocs build --strict`: broken links and pages missing from the nav fail |
+| `lint` | MR, feature branch | `zensical build --clean --strict`: broken links and pages missing from the nav fail |
 | `markdownlint` | MR, feature branch | `markdownlint-cli2` with `.markdownlint.yaml` |
 | `links` | MR, feature branch | `lychee --offline` over `docs/`: file links only, so private hosts do not fail it |
 | `wiki` | default branch, only if `WIKI_TOKEN` is set | clone wiki, refuse over a hand edit, sync, push on change |
-| `pages` | default branch | GitLab Pages; delete this job on an instance without Pages |
+| `deploy-docs` | default branch | GitLab Pages (`pages: publish: site`, GitLab 17.9+); delete this job on an instance without Pages |
 
 Setup, once per repo:
 
 1. Copy `wiki-sync.py` and `docfilter.py` to `scripts/`, plus `.gitlab-ci.yml`, `requirements.txt`,
    `.markdownlint.yaml`, and `mkdocs.yml` (needed by `lint` even if you never publish a
-   site; it is what validates the links).
+   site; it is what validates the links). `requirements.txt` pins Zensical; the Material
+   for MkDocs pins are commented in it as the fallback.
 2. Create a project access token: *Settings > Access tokens*, name `wiki-sync`, scope
    `write_repository`, role Developer. Save it in your secret store first.
 3. *Settings > CI/CD > Variables*: `WIKI_TOKEN`, masked, protected if the default branch is.

@@ -1,5 +1,10 @@
-# The lint jobs use these; mkdocs-material is optional if you only publish the wiki.
-mkdocs<2
-mkdocs-material==9.7.*
+# Zensical reads mkdocs.yml and replaces mkdocs + mkdocs-material (Material EOL 5 Nov 2026).
+# Pin the exact version while it is pre-1.0. pyyaml is for the wiki scripts.
+zensical==0.0.60
 mkdocs-awesome-pages-plugin>=2.9,<3
 pyyaml
+
+# Fallback to Material for MkDocs: swap the first line for these two and use
+# `mkdocs build --strict` in CI.
+# mkdocs<2
+# mkdocs-material==9.7.*

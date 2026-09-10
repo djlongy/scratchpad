@@ -1,4 +1,8 @@
-# Material for MkDocs is in maintenance mode until 5 Nov 2026 and MkDocs 2.0 drops the
-# plugin API, so pin both. See the tutorial README, section 12.
-mkdocs<2
-mkdocs-material==9.7.*
+# Zensical is the successor to Material for MkDocs (Material reaches end of life on
+# 5 Nov 2026) and reads this mkdocs.yml as-is. It is pre-1.0: pin the exact version.
+zensical==0.0.60
+
+# Fallback while Zensical is alpha: uncomment these two, comment out zensical, and
+# replace `zensical build --clean --strict` with `mkdocs build --strict` in CI.
+# mkdocs<2
+# mkdocs-material==9.7.*

@@ -1,27 +1,41 @@
-# GitLab equivalent: MRs get a strict build, main publishes GitLab Pages.
+# GitLab: MRs get a strict build, main publishes GitLab Pages.
+# Zensical (Material for MkDocs' successor) builds from the same mkdocs.yml and writes site/.
+# Needs GitLab 17.9+ for the nested `pages:` keyword; older instances: see the comment at the end.
 image: python:3.12-slim
 
 stages: [test, deploy]
 
-.mkdocs:
+.build:
   before_script:
     - pip install -r requirements.txt
 
-lint:
-  extends: .mkdocs
+docs-build:
+  extends: .build
   stage: test
   script:
-    - mkdocs build --strict -d public
+    - zensical build --clean --strict
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
 
-pages:
-  extends: .mkdocs
+deploy-docs:
+  extends: .build
   stage: deploy
   script:
-    - mkdocs build --strict -d public
-  artifacts:
-    paths: [public]
+    - zensical build --clean --strict
+  pages:
+    publish: site
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# GitLab older than 17.9: replace deploy-docs with
+#   pages:
+#     extends: .build
+#     stage: deploy
+#     script:
+#       - zensical build --clean --strict
+#       - mv site public
+#     artifacts:
+#       paths: [public]
+#     rules:
+#       - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
