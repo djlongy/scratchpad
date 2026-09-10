@@ -188,6 +188,16 @@ def test_sync_removes_stale_pages_and_attachments(docs, tmp_path):
     assert (wiki / ".git/HEAD").exists()  # never touches the repo metadata
 
 
+def test_sync_skips_hidden_directories(docs, tmp_path):
+    """A stray .git or tool cache under docs/ must never be copied over the wiki clone."""
+    write(docs, {".git/config": "[remote]\n", ".cache/plugin/x.png": b"x", "ops/.hidden/y.png": b"y"})
+    wiki = tmp_path / "wiki"
+    write(wiki, {".git/config": "[remote \"origin\"]\n\turl = https://oauth2:secret@example.com/w.git\n"})
+    wiki_sync.main(docs, wiki)
+    assert (wiki / ".git/config").read_text().startswith("[remote \"origin\"]")
+    assert not (wiki / ".cache").exists() and not (wiki / "ops/.hidden").exists()
+
+
 def test_sync_is_idempotent(docs, tmp_path):
     wiki = tmp_path / "wiki"
     wiki.mkdir()

@@ -120,7 +120,9 @@ produced from it, untouched except for the three `.pages` files.
 - Attachment links → wiki-root-relative without a leading slash (`uploads/3f2a/network.png`),
   the form GitLab writes itself. A leading slash would point at the project's uploads, and
   `../uploads/...` does not resolve from a nested page.
-- Attachments are copied; pages and files no longer in `docs/` are deleted.
+- Attachments are copied; pages and files no longer in `docs/` are deleted. Hidden files and
+  hidden directories under `docs/` (`.pages`, `.git`, tool caches) are never copied; a stray
+  `.git` copied into the wiki clone would replace its remote and break the push.
 - `_sidebar.md` is generated from the `.pages` nav: section titles link to the section page,
   children nest under them, `...` expands to the remaining pages sorted.
 
@@ -217,7 +219,7 @@ filter grammar, `mkdocs.yml` parsing with `!!python/name` tags present, include/
 
 ```bash
 pip install pyyaml pytest
-python3 -m pytest -q test_wiki_tools.py        # 24 passed
+python3 -m pytest -q test_wiki_tools.py        # 25 passed
 ```
 
 Checked with ruff (`E,F,W,B,C90,N,UP,SIM`, clean) and a SonarQube "Sonar way" scan of the

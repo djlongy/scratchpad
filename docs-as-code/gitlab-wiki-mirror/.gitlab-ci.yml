@@ -64,7 +64,7 @@ wiki:
   image: python:3.12
   script:
     - pip install -q pyyaml
-    - git clone -q "https://oauth2:${WIKI_TOKEN}@${CI_SERVER_FQDN}/${CI_PROJECT_PATH}.wiki.git" wiki
+    - rm -rf wiki && git clone -q "https://oauth2:${WIKI_TOKEN}@${CI_SERVER_FQDN}/${CI_PROJECT_PATH}.wiki.git" wiki
     # The wiki is a mirror. If someone edited it by hand, stop rather than overwrite.
     - last=$(git -C wiki log -1 --format=%an 2>/dev/null || true)
     - '[ -z "$last" ] || [ "$last" = "docs ci" ] || { echo "wiki last commit by \"$last\", not CI. Port the change into docs/ first."; exit 1; }'

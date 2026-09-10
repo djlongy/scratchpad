@@ -146,7 +146,9 @@ def copy_tree(docs: Path, wiki: Path, flt: docfilter.Filter) -> tuple:
     pages = attachments = 0
     for src in docs.rglob("*"):
         rel = src.relative_to(docs)
-        if not src.is_file() or src.name.startswith(".") or not flt.allows(rel):
+        # Hidden files AND hidden directories are skipped: .pages, .git, .cache, tool caches.
+        # Copying a stray docs/.git or docs/.cache into the wiki clone would corrupt it.
+        if not src.is_file() or any(part.startswith(".") for part in rel.parts) or not flt.allows(rel):
             continue
         if src.suffix == ".md":
             dst = wiki / (wiki_path(rel) + ".md")
