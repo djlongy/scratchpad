@@ -1,0 +1,24 @@
+# Mirror docs/ into the project's GitLab wiki on every merge to the default branch.
+# Add this job to the docs repo's .gitlab-ci.yml (stage names are examples).
+#
+# Needs one CI variable, WIKI_TOKEN: a project access token with the write_repository
+# scope and the Developer role (Settings > Access tokens), stored masked. CI_JOB_TOKEN
+# can clone a wiki but GitLab refuses its pushes, so the job stays skipped until the
+# variable exists rather than failing every pipeline.
+wiki:
+  stage: deploy
+  image: python:3.12
+  script:
+    - pip install -q pyyaml
+    - git clone -q "https://oauth2:${WIKI_TOKEN}@${CI_SERVER_FQDN}/${CI_PROJECT_PATH}.wiki.git" wiki
+    # The wiki is a mirror. If someone edited it by hand, stop rather than overwrite.
+    - last=$(git -C wiki log -1 --format=%an 2>/dev/null || true)
+    - '[ -z "$last" ] || [ "$last" = "docs ci" ] || { echo "wiki last commit by \"$last\", not CI. Port the change into docs/ first."; exit 1; }'
+    - python3 wiki-sync.py docs wiki
+    - cd wiki
+    - git config user.name "docs ci"
+    - git config user.email "ci@${CI_SERVER_HOST}"
+    - git add -A
+    - git diff --cached --quiet && echo "wiki already current" || { git commit -q -m "Sync docs from ${CI_COMMIT_SHORT_SHA}"; git push -q origin HEAD:main; }
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $WIKI_TOKEN
