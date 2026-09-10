@@ -68,7 +68,7 @@ wiki:
     # The wiki is a mirror. If someone edited it by hand, stop rather than overwrite.
     - last=$(git -C wiki log -1 --format=%an 2>/dev/null || true)
     - '[ -z "$last" ] || [ "$last" = "docs ci" ] || { echo "wiki last commit by \"$last\", not CI. Port the change into docs/ first."; exit 1; }'
-    - python3 scripts/wiki-sync.py docs wiki
+    - python3 scripts/wiki-sync.py docs wiki --config mkdocs.yml
     - cd wiki
     - git config user.name "docs ci"
     - git config user.email "ci@${CI_SERVER_HOST}"

@@ -1,0 +1,13 @@
+# kubectl apply -k k8s/   (or `kubectl kustomize k8s/` to see the rendered output)
+# The image tag is replaced by CI with the commit SHA; see the deploy job.
+namespace: docs
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+
+images:
+  - name: docs-site
+    newName: registry.example.com/group/docs
+    newTag: latest

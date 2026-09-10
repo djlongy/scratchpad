@@ -16,7 +16,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | [`linux/`](linux/) | Distribution-level reference docs and configs. fapolicyd troubleshooting on EL9, hardened EL9 kickstart with GNOME + FIPS + STIG. |
 | [`bash/`](bash/) | Self-contained bash tools — fzf-driven git helpers, an Oh My Bash powerline theme + deploy script, a VS Code Server installer for air-gapped networks. |
 | [`python/`](python/) | Python install/setup notes and small helpers. Currently the VMware vSphere Automation SDK install guide. |
-| [`docs-as-code/`](docs-as-code/) | Documentation kept as Markdown in git, reviewed like code and published by CI. Material for MkDocs tutorial with a runnable example site, and a CI job that mirrors `docs/` into the GitLab wiki for instances without Pages. |
+| [`docs-as-code/`](docs-as-code/) | Documentation kept as Markdown in git, reviewed like code and published by CI. Material for MkDocs tutorial with a runnable example site, a CI job that mirrors `docs/` into the GitLab wiki for instances without Pages, and a container build plus Kubernetes deploy for teams on RKE2. |
 | [dev-env repo](https://github.com/djlongy/dev-env) | The dotfiles package, VS Code air-gap kit, and Oh My Bash tooling moved to their own repo — clone as `~/.dotfiles` and run `install.sh`. |
 
 ## Highlights
@@ -39,6 +39,7 @@ README explaining what it does, what it requires, and how to plug it in.
 | git functions, Oh My Bash, VS Code air-gap, tmux dotfiles | Moved to the [dev-env repo](https://github.com/djlongy/dev-env). | — |
 | [Material for MkDocs tutorial](docs-as-code/mkdocs-material/) | Zero to a published docs portal: theme and dark-mode toggle, fonts, emoji and icons, code blocks, content tabs, admonitions, Mermaid diagrams, footer, then GitHub Pages and GitLab Pages workflows. Runnable example site included, pinned for the 2026 MkDocs/Material/Zensical situation. | `docs-as-code/` |
 | [GitLab wiki mirror](docs-as-code/gitlab-wiki-mirror/) | `docs/` stays the source; CI mirrors it into the project wiki: index pages become section pages, links and attachments rewritten to the forms GitLab resolves, `_sidebar.md` from the `.pages` nav, a guard against hand edits, push only on change. Plus a one-time importer that turns an existing wiki (root pages, children, attachments, cross-links) into that `docs/` layout, the full lint-and-publish pipeline, and a worked two-section example. Tested (pytest, 98% coverage) and SonarQube-clean. | `docs-as-code/` |
+| [MkDocs on Kubernetes](docs-as-code/mkdocs-on-kubernetes/) | Docs site as a hardened container: Material image builds, unprivileged nginx serves, kaniko builds it in a Kubernetes-executor runner, kustomize manifests (non-root, read-only fs, probes) deploy through the GitLab agent. Image and manifests verified locally and with a server-side dry run. | `docs-as-code/` |
 | [`vsphere-automation-sdk`](python/vsphere-automation-sdk/) | Install instructions for the VMware vSphere Automation SDK on macOS + Oracle Linux. | `python/` |
 
 ## Conventions

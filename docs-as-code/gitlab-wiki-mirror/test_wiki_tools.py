@@ -1,4 +1,5 @@
 """Tests for wiki-import.py and wiki-sync.py. Run: python3 -m pytest -q"""
+import argparse
 import importlib.util
 import re
 import sys
@@ -86,6 +87,39 @@ def test_import_generates_home_when_missing(tmp_path):
     docs = tmp_path / "docs"
     wiki_import.main(wiki, docs)
     assert links(docs / "index.md") == ["notes.md", "ops/index.md"]
+
+
+def test_import_root_folders_only(tmp_path, capsys):
+    """Two root folders, no root pages, attachments nested inside, cross-folder links."""
+    wiki = tmp_path / "wiki"
+    write(wiki, {
+        "Operations/stuff01.md": "# Stuff 01\n\n[dev](Engineering/stuff02) ![d](Operations/attachments/diagram.png)\n",
+        "Operations/attachments/diagram.png": b"\x89PNG",
+        "Operations/deeper/stuff03.md": "# Stuff 03\n\n[up](../stuff01)\n",
+        "Engineering/stuff02.md": "# Stuff 02\n\n[ops](Operations/stuff01)\n",
+    })
+    docs = tmp_path / "docs"
+    wiki_import.main(wiki, docs)
+    assert "generated 4 index pages" in capsys.readouterr().out
+    assert links(docs / "index.md") == ["Engineering/index.md", "Operations/index.md"]
+    assert links(docs / "Operations/index.md") == ["deeper/index.md", "stuff01.md"]
+    assert links(docs / "Operations/deeper/index.md") == ["stuff03.md"]
+    assert links(docs / "Operations/stuff01.md") == ["../Engineering/stuff02.md", "attachments/diagram.png"]
+    assert links(docs / "Operations/deeper/stuff03.md") == ["../stuff01.md"]
+    assert (docs / "Operations/attachments/diagram.png").exists()
+    out = tmp_path / "out"
+    out.mkdir()
+    wiki_sync.main(docs, out)
+    assert links(out / "Operations/stuff01.md") == ["/Engineering/stuff02", "Operations/attachments/diagram.png"]
+    assert (out / "_sidebar.md").read_text() == (
+        "**[Home](/home)**\n\n"
+        "- [Engineering](/Engineering)\n"
+        "  - [Stuff 02](/Engineering/stuff02)\n"
+        "- [Operations](/Operations)\n"
+        "  - [deeper](/Operations/deeper)\n"
+        "    - [Stuff 03](/Operations/deeper/stuff03)\n"
+        "  - [Stuff 01](/Operations/stuff01)\n"
+    )
 
 
 # ------------------------------------------------------------------ wiki-sync
@@ -184,3 +218,86 @@ def test_round_trip_import_then_sync(wiki, tmp_path):
     assert links(out / "ops.md") == ["/ops/backups", "/dev/release", "uploads/1/n.png"]
     assert links(out / "dev/release.md") == ["uploads/1/p.png", "/ops/backups#restore"]
     assert (out / "uploads/1/n.png").read_bytes() == b"\x89PNG"
+
+
+# ------------------------------------------------------------------ filters
+
+
+docfilter = load("docfilter")
+
+
+@pytest.mark.parametrize("rel,pattern,expected", [
+    ("drafts/x.md", "drafts/", True),
+    ("a/drafts/x.md", "drafts", True),
+    ("a/drafts.md", "drafts", False),
+    ("a/b.tmp", "*.tmp", True),
+    ("internal/x.md", "/internal/*.md", True),
+    ("a/internal/x.md", "/internal/*.md", False),
+    ("reference/a/b.md", "reference/**", True),
+    ("ref/a.md", "reference/**", False),
+    ("x.md", "# comment", False),
+])
+def test_filter_matches(rel, pattern, expected):
+    assert docfilter.matches(rel, pattern) is expected
+
+
+def test_filter_reads_mkdocs_yml_with_python_tags(tmp_path):
+    cfg = tmp_path / "mkdocs.yml"
+    cfg.write_text(
+        "site_name: x\n"
+        "exclude_docs: |\n  drafts/\n  # a comment\n  *.tmp\n"
+        "not_in_nav: |\n  /glossary.md\n"
+        "markdown_extensions:\n  - pymdownx.emoji:\n"
+        "      emoji_index: !!python/name:material.extensions.emoji.twemoji\n"
+    )
+    assert docfilter.read_mkdocs(cfg) == (["drafts/", "*.tmp"], ["/glossary.md"])
+    args = argparse.Namespace(include=[], exclude=["*.bak"], config=cfg)
+    flt = docfilter.from_args(args)
+    assert flt.exclude == ["*.bak", "drafts/", "*.tmp"] and flt.not_in_nav == ["/glossary.md"]
+
+
+def test_sync_exclude_and_include(docs, tmp_path):
+    write(docs, {"drafts/wip.md": "# WIP\n", "ops/notes.tmp": b"x"})
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki, docfilter.Filter(exclude=["drafts/", "*.tmp"]))
+    got = {str(p.relative_to(wiki)) for p in wiki.rglob("*") if p.is_file()}
+    assert "drafts/wip.md" not in got and "ops/notes.tmp" not in got and "ops.md" in got
+    assert "WIP" not in (wiki / "_sidebar.md").read_text()
+    only = tmp_path / "only"
+    only.mkdir()
+    wiki_sync.main(docs, only, docfilter.Filter(include=["/ops/**", "/index.md"], exclude=["*.tmp"]))
+    got = sorted(str(p.relative_to(only)) for p in only.rglob("*") if p.is_file())
+    assert got == ["_sidebar.md", "home.md", "ops.md", "ops/backups.md", "ops/onboarding.md"]
+    assert links(only / "home.md") == ["/ops", "glossary.md"]  # link to an excluded page stays as written
+
+
+def test_sync_not_in_nav_keeps_page_but_hides_it(docs, tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki, docfilter.Filter(not_in_nav=["/glossary.md", "dev/"]))
+    assert (wiki / "glossary.md").exists() and (wiki / "dev/zeta.md").exists()
+    side = (wiki / "_sidebar.md").read_text()
+    assert "Glossary" not in side and "Zeta" not in side and "[Dev]" not in side and "Backups" in side
+
+
+def test_import_exclude(wiki, tmp_path, capsys):
+    docs = tmp_path / "docs"
+    wiki_import.main(wiki, docs, docfilter.Filter(exclude=["uploads/", "/glossary.md"]))
+    got = sorted(str(p.relative_to(docs)) for p in docs.rglob("*") if p.is_file())
+    assert "uploads/1/n.png" not in got and "glossary.md" not in got and "ops/index.md" in got
+    out = capsys.readouterr().out
+    assert "ops.md: uploads/1/n.png" in out  # link to an excluded attachment: reported, not rewritten
+
+
+def test_cli_entrypoints(docs, tmp_path):
+    cfg = tmp_path / "mkdocs.yml"
+    cfg.write_text("exclude_docs: |\n  /glossary.md\n")
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.cli([str(docs), str(wiki), "--config", str(cfg), "--exclude", "dev/"])
+    got = sorted(str(p.relative_to(wiki)) for p in wiki.rglob("*") if p.is_file())
+    assert "glossary.md" not in got and "dev.md" not in got and "ops.md" in got
+    back = tmp_path / "back"
+    wiki_import.cli([str(wiki), str(back), "--exclude", "_sidebar.md"])
+    assert (back / "ops/index.md").exists()

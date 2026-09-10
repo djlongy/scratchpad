@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mirror a docs/ tree into a GitLab wiki checkout and write _sidebar.md from the .pages nav.
 
-usage: wiki-sync.py DOCS_DIR WIKI_DIR
+usage: wiki-sync.py DOCS_DIR WIKI_DIR [--include P]... [--exclude P]... [--config mkdocs.yml]
 
 - docs/index.md becomes home.md (the wiki front page); section/index.md becomes section.md
   so the wiki titles the page "section" instead of "index"; every other page keeps its path.
@@ -14,13 +14,19 @@ usage: wiki-sync.py DOCS_DIR WIKI_DIR
 - Attachments are copied across; pages and attachments no longer in docs/ are deleted.
 - Sidebar order follows each folder's .pages `nav` list (awesome-pages format); `...`
   expands to the remaining pages, sorted. Folders without .pages are listed alphabetically.
+- Filtering follows MkDocs: --exclude and exclude_docs skip paths entirely, --include keeps
+  only matches, not_in_nav keeps the page but drops it from the sidebar (see docfilter.py).
 """
+import argparse
 import re
 import shutil
 import sys
 from pathlib import Path
 
 import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import docfilter  # noqa: E402
 
 LINK = re.compile(r"(\]\()([^)#\s]+?)(#[^)]*)?(\))")
 INDEX = "index.md"
@@ -43,7 +49,7 @@ def wiki_path(rel: Path) -> str:
     return str(rel.with_suffix(""))
 
 
-def rewrite_links(text: str, page: Path, root: Path) -> str:
+def rewrite_links(text: str, page: Path, root: Path, flt: docfilter.Filter) -> str:
     def sub(m):
         target = m.group(2)
         if "://" in target or target.startswith(("mailto:", "/")):
@@ -53,7 +59,7 @@ def rewrite_links(text: str, page: Path, root: Path) -> str:
             rel = resolved.relative_to(root.resolve())
         except ValueError:
             return m.group(0)  # points outside docs/; leave it
-        if not resolved.exists():
+        if not resolved.exists() or not flt.allows(rel):
             return m.group(0)
         new = "/" + wiki_path(rel) if rel.suffix == ".md" else str(rel)
         return f"{m.group(1)}{new}{m.group(3) or ''}{m.group(4)}"
@@ -87,29 +93,32 @@ def unlisted(folder: Path, listed: set) -> list:
     )
 
 
-def nav_entries(folder: Path, root: Path) -> list:
+def nav_entries(folder: Path, root: Path, flt: docfilter.Filter) -> list:
     """(title, wiki_link_or_None, children) in .pages order for one folder."""
     items = nav_items(folder)
     rest = unlisted(folder, {path for item in items if item != REST for _, path in [item]})
     entries = []
     for item in items:
         for title, path in ([(None, p) for p in rest] if item == REST else [item]):
-            entry = resolve(title, path, root)
+            entry = resolve(title, path, root, flt)
             if entry:
                 entries.append(entry)
     return entries
 
 
-def resolve(title, path: Path, root: Path):
+def resolve(title, path: Path, root: Path, flt: docfilter.Filter):
+    rel = path.relative_to(root)
+    if not path.exists() or not flt.allows(rel) or not flt.in_nav(rel):
+        return None
     if path.is_dir():
         index = path / INDEX
         fallback = title_of(index) if index.exists() else path.name.replace("-", " ").title()
         title = title or pages_spec(path).get("title") or fallback
         link = wiki_path(index.relative_to(root)) if index.exists() else None
-        children = [c for c in nav_entries(path, root) if c[1] != link]
-        return (title, link, children)
-    if path.suffix == ".md" and path.exists():
-        return (title or title_of(path), wiki_path(path.relative_to(root)), [])
+        children = [c for c in nav_entries(path, root, flt) if c[1] != link]
+        return (title, link, children) if link or children else None
+    if path.suffix == ".md":
+        return (title or title_of(path), wiki_path(rel), [])
     return None
 
 
@@ -132,17 +141,17 @@ def clear(wiki: Path) -> None:
             empty.rmdir()
 
 
-def copy_tree(docs: Path, wiki: Path) -> tuple:
+def copy_tree(docs: Path, wiki: Path, flt: docfilter.Filter) -> tuple:
     """Write pages (renamed, links rewritten) and copy attachments. Returns (pages, attachments)."""
     pages = attachments = 0
     for src in docs.rglob("*"):
-        if not src.is_file() or src.name.startswith("."):
-            continue
         rel = src.relative_to(docs)
+        if not src.is_file() or src.name.startswith(".") or not flt.allows(rel):
+            continue
         if src.suffix == ".md":
             dst = wiki / (wiki_path(rel) + ".md")
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(rewrite_links(src.read_text(), src, docs))
+            dst.write_text(rewrite_links(src.read_text(), src, docs, flt))
             pages += 1
         else:
             dst = wiki / rel
@@ -152,20 +161,30 @@ def copy_tree(docs: Path, wiki: Path) -> tuple:
     return pages, attachments
 
 
-def sidebar(docs: Path) -> list:
+def sidebar(docs: Path, flt: docfilter.Filter) -> list:
     home = docs / INDEX
     title = (title_of(home) if home.exists() else "") or "Home"
-    entries = [e for e in nav_entries(docs, docs) if e[1] != "home"]  # the header link already covers it
+    entries = [e for e in nav_entries(docs, docs, flt) if e[1] != "home"]  # the header link already covers it
     return [f"**[{title}](/home)**", ""] + render(entries)
 
 
-def main(docs: Path, wiki: Path) -> None:
+def main(docs: Path, wiki: Path, flt: docfilter.Filter = None) -> None:
+    flt = flt or docfilter.Filter()
     clear(wiki)
-    pages, attachments = copy_tree(docs, wiki)
-    lines = sidebar(docs)
+    pages, attachments = copy_tree(docs, wiki, flt)
+    lines = sidebar(docs, flt)
     (wiki / "_sidebar.md").write_text("\n".join(lines) + "\n")
     print(f"synced {pages} pages, {attachments} attachments, sidebar {len(lines) - 2} lines")
 
 
+def cli(argv=None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("docs", type=Path)
+    parser.add_argument("wiki", type=Path)
+    docfilter.add_arguments(parser)
+    args = parser.parse_args(argv)
+    main(args.docs.resolve(), args.wiki.resolve(), docfilter.from_args(args))
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve())
+    cli()

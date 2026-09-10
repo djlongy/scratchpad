@@ -1,0 +1,53 @@
+# Build the docs site into a container and roll it out to a Kubernetes cluster.
+# Meant for a GitLab Runner with the Kubernetes executor (no Docker socket), which is the
+# normal setup on RKE2: kaniko builds the image inside a pod, kubectl applies the manifests.
+#
+# Add these two jobs to the pipeline in ../gitlab-wiki-mirror/.gitlab-ci.yml (the lint jobs
+# stay as they are) and delete the `pages` job.
+#
+# Variables used, all predefined by GitLab except the two agent ones:
+#   CI_REGISTRY_IMAGE, CI_REGISTRY_USER, CI_REGISTRY_PASSWORD   project registry, job-scoped
+#   CI_COMMIT_SHORT_SHA                                          image tag
+#   KUBE_CONTEXT   "<group>/<project>:<agent-name>" for a GitLab agent registered in this
+#                  project (Operate > Kubernetes clusters). Set it as a CI variable.
+
+stages:
+  - test
+  - build
+  - deploy
+
+# https://github.com/GoogleContainerTools/kaniko
+image-build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${CI_REGISTRY}\":{\"username\":\"${CI_REGISTRY_USER}\",\"password\":\"${CI_REGISTRY_PASSWORD}\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+        --context "${CI_PROJECT_DIR}"
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
+        --destination "${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+        --destination "${CI_REGISTRY_IMAGE}:latest"
+        --cache=true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Rolls out the image built above. The agent gives kubectl a context named
+# <project path>:<agent name>; no kubeconfig is stored in CI.
+# https://docs.gitlab.com/user/clusters/agent/ci_cd_workflow/
+deploy:
+  stage: deploy
+  image:
+    name: bitnami/kubectl:1.31
+    entrypoint: [""]
+  script:
+    - kubectl config use-context "${KUBE_CONTEXT}"
+    - kubectl kustomize k8s/ | sed "s|registry.example.com/group/docs:latest|${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}|" | kubectl apply -f -
+    - kubectl -n docs rollout status deployment/docs --timeout=120s
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $KUBE_CONTEXT
+  environment:
+    name: docs
+    url: https://docs.example.com

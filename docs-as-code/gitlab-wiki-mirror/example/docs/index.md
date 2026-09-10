@@ -1,4 +1,4 @@
 # Team wiki
 
-- [Systems administration](systems-administration/index.md)
-- [System development](system-development/index.md)
+- [Operations](operations/index.md)
+- [Engineering](engineering/index.md)

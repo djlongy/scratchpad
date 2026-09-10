@@ -1,0 +1,24 @@
+# RKE2 ships the nginx ingress controller by default (class "nginx"). Point the host at the
+# ingress VIP in DNS. TLS: reference a Secret from cert-manager or one you create.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: docs
+  annotations:
+    # cert-manager.io/cluster-issuer: internal-ca
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: docs.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: docs
+                port:
+                  name: http
+  # tls:
+  #   - hosts: [docs.example.com]
+  #     secretName: docs-tls
