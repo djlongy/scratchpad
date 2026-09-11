@@ -1,0 +1,122 @@
+# Seed this project's PyPI registry with the docs toolchain wheels, then prove a
+# runner with no pypi.org access can install from it anonymously.
+#
+# publish jobs use CI_JOB_TOKEN only (packages:write on the own project is the
+# default). The consumer jobs need the registry to be public: run
+# PUBLIC_PULL=1 ./publish-wheels-to-gitlab.sh once with a Maintainer token.
+stages: [download, publish, publish-again, consume]
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_INPUT: "1"
+
+# One download per target interpreter, run ON that interpreter: pip evaluates
+# environment markers (python_version < "3.10" etc.) against the running
+# python, not against --python-version, so cross-version downloads drop deps.
+.download:
+  stage: download
+  script:
+    - python3 --version && uname -m
+    - 'pip download -q -r requirements.txt --only-binary=:all: --dest packages'
+    - ls packages | wc -l
+  artifacts:
+    paths: [packages/]
+    expire_in: 1 day
+
+download-py39:
+  extends: .download
+  image: python:3.9-slim
+
+download-py312:
+  extends: .download
+  image: python:3.12-slim
+
+# ubi9/ubi ships python3 (3.9) and curl-minimal; only pip is missing.
+publish-ubi9:
+  stage: publish
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  needs: [download-py39, download-py312]
+  before_script:
+    - dnf install -y -q python3-pip
+    - python3 --version && curl --version | head -1
+  script:
+    - bash publish-wheels-to-gitlab.sh
+
+# python:3.12-slim has no curl. Runs after publish-ubi9 so it exercises the skip path.
+publish-slim:
+  stage: publish-again
+  image: python:3.12-slim
+  needs: [download-py39, download-py312, publish-ubi9]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl >/dev/null
+  script:
+    - bash publish-wheels-to-gitlab.sh
+
+# Consumers: registry only, no credentials. GitLab forwards unknown package
+# names to pypi.org by default, which would hide a coverage gap, so .verify
+# fails the job if any newly installed dist was not served by the registry.
+.verify:
+  script:
+    - $PIP freeze | grep -vxFf before.txt > new.txt || true
+    - |
+      python3 - <<'PY'
+      import os, re, sys, urllib.request
+      idx, bad = os.environ["PIP_INDEX_URL"], 0
+      for line in open("new.txt"):
+          n, v = line.strip().lower().split("==")
+          n = re.sub(r"[-_.]+", "-", n)  # PEP 503 normalised name
+          try:
+              r = urllib.request.urlopen(f"{idx}/{n}/", timeout=30)
+              ok = r.url.startswith(idx) and f"-{v}" in r.read().decode()
+          except Exception:
+              ok = False
+          print("registry" if ok else "NOT IN REGISTRY", f"{n}=={v}")
+          bad += not ok
+      sys.exit(1 if bad else 0)
+      PY
+
+.consume:
+  stage: consume
+  needs: [publish-slim]
+  variables:
+    PIP_INDEX_URL: $CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/pypi/simple
+
+consume-ubi9-py39:
+  extends: .consume
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  variables:
+    PIP: pip3
+  before_script:
+    - dnf install -y -q python3-pip
+  script:
+    - python3 --version && $PIP --version
+    - $PIP freeze > before.txt
+    - $PIP install mkdocs mkdocs-material mkdocs-awesome-pages-plugin
+    - mkdocs --version
+    - !reference [.verify, script]
+
+consume-ubi9-py312:
+  extends: .consume
+  image: registry.access.redhat.com/ubi9/ubi:latest
+  variables:
+    PIP: python3.12 -m pip
+  before_script:
+    - dnf install -y -q python3.12 python3.12-pip
+  script:
+    - python3.12 --version && $PIP --version
+    - $PIP freeze > before.txt
+    - $PIP install zensical mkdocs-awesome-pages-plugin pyyaml
+    - zensical --version
+    - !reference [.verify, script]
+
+consume-slim-py312:
+  extends: .consume
+  image: python:3.12-slim
+  variables:
+    PIP: pip
+  script:
+    - python3 --version && $PIP --version
+    - $PIP freeze > before.txt
+    - $PIP install zensical mkdocs-awesome-pages-plugin pyyaml
+    - zensical --version
+    - !reference [.verify, script]
