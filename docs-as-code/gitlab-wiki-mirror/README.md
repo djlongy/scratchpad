@@ -219,6 +219,23 @@ the wiki straight afterwards.
 Without `WIKI_TOKEN` the `wiki` job is skipped by its rule, so the pipeline can land
 before the token exists.
 
+**A wiki edit does not start a pipeline by itself.** Pipelines start on a push to the repo,
+a schedule or a trigger, so without one more piece an edit made in the wiki UI waits for the
+next repo push. Two pieces, both native:
+
+1. A pipeline trigger token (*Settings > CI/CD > Pipeline trigger tokens*) and a project
+   webhook (*Settings > Webhooks*) with only **Wiki page events** ticked, whose URL is the
+   trigger endpoint:
+   `https://<gitlab>/api/v4/projects/<id>/ref/main/trigger/pipeline?token=<trigger token>`.
+   Every page create, edit or delete in the UI starts a pipeline within seconds. The CI's own
+   push into the wiki repository does not fire wiki page events, so there is no loop; the
+   `ci.skip` on the repo push covers the other direction.
+2. A pipeline schedule (*Build > Pipeline schedules*, hourly is plenty) as the safety net for
+   a missed webhook.
+
+`.not_for_wiki_sync` in `.gitlab-ci.yml` keeps every job but `wiki` out of those
+trigger and schedule pipelines, so an edit costs one short job, not a full run.
+
 Why a token: `CI_JOB_TOKEN` can clone a wiki but GitLab refuses its pushes
 (`You are not allowed to write to this project's wiki`), even with "Allow Git push
 requests to the repository" on; that setting covers the project repository only. Wiki CI

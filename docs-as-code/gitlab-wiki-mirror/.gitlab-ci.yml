@@ -33,9 +33,18 @@ cache:
   before_script:
     - pip install -q -r requirements.txt
 
+# A wiki edit starts a pipeline through a webhook on wiki page events that calls the pipeline
+# trigger API (source "trigger"); an hourly schedule is the safety net (source "schedule").
+# Those pipelines only need the wiki job; every other job stays out of them.
+.not_for_wiki_sync:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "schedule"
+      when: never
+
 .checks:
   stage: test
   rules:
+    - !reference [.not_for_wiki_sync, rules]
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
 
@@ -81,6 +90,7 @@ scripts-test:
     paths: [coverage.xml]
     expire_in: 1 day
   rules:
+    - !reference [.not_for_wiki_sync, rules]
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
@@ -105,4 +115,5 @@ deploy-docs:
   pages:
     publish: site
   rules:
+    - !reference [.not_for_wiki_sync, rules]
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
