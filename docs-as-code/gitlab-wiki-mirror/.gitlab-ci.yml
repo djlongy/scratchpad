@@ -69,6 +69,21 @@ links:
 # write_repository scope and the Developer role, stored as a masked CI variable.
 # CI_JOB_TOKEN can clone a wiki but GitLab refuses its pushes, so the job is skipped
 # by its rule until the variable exists rather than failing every pipeline.
+# The scripts' own tests, in MR, branch and default-branch pipelines; coverage.xml is for a
+# SonarQube job if the instance has one (a job with no rules is left out of MR pipelines).
+scripts-test:
+  stage: test
+  image: python:3.12
+  script:
+    - pip install -q pyyaml pytest pytest-cov
+    - python3 -m pytest -q scripts/ --cov=scripts --cov-report=xml:coverage.xml
+  artifacts:
+    paths: [coverage.xml]
+    expire_in: 1 day
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
 wiki:
   stage: deploy
   image: python:3.12

@@ -189,6 +189,7 @@ python3 wiki-import.py wiki-export docs --exclude 'templates/' --include '/opera
 | `lint` | MR, feature branch | `zensical build --clean --strict`: broken links and pages missing from the nav fail |
 | `markdownlint` | MR, feature branch | `markdownlint-cli2` with `.markdownlint.yaml` |
 | `links` | MR, feature branch | `lychee --offline` over `docs/`: file links only, so private hosts do not fail it |
+| `scripts-test` | MR, branch, default branch | the scripts' 137 tests, with `coverage.xml` for a SonarQube job |
 | `wiki` | default branch, only if `WIKI_TOKEN` is set | `scripts/wiki-deploy.sh docs wiki`: pull wiki edits into the repo, then sync the repo into the wiki |
 | `deploy-docs` | default branch | GitLab Pages (`pages: publish: site`, GitLab 17.9+); delete this job on an instance without Pages |
 
