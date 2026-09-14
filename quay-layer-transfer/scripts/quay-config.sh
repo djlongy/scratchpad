@@ -18,7 +18,7 @@ FEATURE_USER_CREATION: false
 FEATURE_DIRECT_LOGIN: true
 FEATURE_MAILING: false
 FEATURE_SECURITY_SCANNER: false
-FEATURE_PROXY_CACHE: false
+FEATURE_PROXY_CACHE: true          # proxy-cache organisations: needed to pull upstream through this registry
 SUPER_USERS:
   - admin
 SECRET_KEY: "$(rand)"

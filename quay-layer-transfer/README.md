@@ -179,6 +179,13 @@ and deploying — and marks which stages were executed against live registries a
 which are recommendations. Read it if you are building this rather than reading
 about it.
 
+## 3c. Driving it from git
+
+[`docs/inventory-driven-pipeline.md`](docs/inventory-driven-pipeline.md) — an
+update bot maintains an inventory of `repo:tag@digest`, merging an MR triggers a
+job that pulls those digests through the proxy caches and builds the transfer
+pack. Proven on a self-hosted GitLab.
+
 ## 4. Taking it to a real link
 
 - **Replace the folder with the diode.** The send flow's `PutFile` and the receive flow's
