@@ -110,7 +110,7 @@ def test_import_root_folders_only(tmp_path, capsys):
     out = tmp_path / "out"
     out.mkdir()
     wiki_sync.main(docs, out)
-    assert links(out / "Operations/stuff01.md") == ["../Engineering/stuff02", "attachments/diagram.png"]
+    assert links(out / "Operations/stuff01.md") == ["../Engineering/stuff02", "./attachments/diagram.png"]
     assert (out / "_sidebar.md").read_text() == (
         "**[Home](/home)**\n\n"
         "- [Engineering](/Engineering)\n"
@@ -156,10 +156,38 @@ def test_sync_layout_and_links(docs, tmp_path, capsys):
     assert got == [".gitlab/docs-map.json", "_sidebar.md", "dev.md", "dev/alpha.md", "dev/zeta.md", "glossary.md", "home.md",
                    "ops.md", "ops/backups.md", "ops/onboarding.md", "uploads/1/n.png"]
     assert links(wiki / "home.md") == ["./ops", "./glossary"]
-    assert links(wiki / "ops.md") == ["./ops/backups", "./dev", "uploads/1/n.png", "https://example.com",
+    assert links(wiki / "ops.md") == ["./ops/backups", "./dev", "./uploads/1/n.png", "https://example.com",
                                       "./ops/backups#restore", "../../outside.md"]
     assert links(wiki / "ops/backups.md") == ["../home"]
     assert "synced 8 pages, 1 attachments, sidebar 7 lines" in capsys.readouterr().out
+
+
+def test_sync_keeps_targets_below_the_page_folder_page_relative(tmp_path):
+    """A bare target is resolved from the wiki ROOT, so anything at or under the page's own folder
+    needs the ./ : a section link `deep/` from compute/nodes.md would otherwise read as /deep."""
+    docs = tmp_path / "docs"
+    write(docs, {
+        "index.md": "# Home\n",
+        "compute/index.md": "# Compute\n",
+        "compute/nodes.md": "# Nodes\n\n[deep](deep/) [rack](deep/rack.md) ![d](shots/d.png)\n",
+        "compute/deep/index.md": "# Deep\n",
+        "compute/deep/rack.md": "# Rack\n",
+        "compute/shots/d.png": b"\x89PNG",
+    })
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki)
+    assert links(wiki / "compute/nodes.md") == ["./deep", "./deep/rack", "./shots/d.png"]
+
+
+def test_sync_sidebar_quotes_page_names(tmp_path):
+    """The sidebar is Markdown too: an unquoted space makes `[x](/release notes)` not a link."""
+    docs = tmp_path / "docs"
+    write(docs, {"index.md": "# Home\n", "release notes.md": "# Release notes\n", "r\u00e9seau.md": "# R\u00e9seau\n"})
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    wiki_sync.main(docs, wiki)
+    assert links(wiki / "_sidebar.md") == ["/home", "/release%20notes", "/r\u00e9seau"]
 
 
 def test_sync_sidebar_follows_pages_files(docs, tmp_path):
@@ -240,7 +268,7 @@ def test_round_trip_import_then_sync(wiki, tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     wiki_sync.main(docs, out)
-    assert links(out / "ops.md") == ["./ops/backups", "./dev/release", "uploads/1/n.png"]
+    assert links(out / "ops.md") == ["./ops/backups", "./dev/release", "./uploads/1/n.png"]
     assert links(out / "dev/release.md") == ["../uploads/1/p.png", "../ops/backups#restore"]
     assert (out / "uploads/1/n.png").read_bytes() == b"\x89PNG"
 

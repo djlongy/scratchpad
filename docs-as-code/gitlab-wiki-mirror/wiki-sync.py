@@ -68,10 +68,17 @@ def wiki_file(rel: Path) -> Path:
     return Path(wiki_path(rel) + ".md") if rel.suffix == ".md" else rel
 
 
+def page_relative(target: str) -> str:
+    """GitLab resolves a bare target from the wiki ROOT, `./x` from the page's own folder, so every
+    link this script writes needs the `./`. It matters for anything at or below the page's folder:
+    a section link `deep/` from compute/nodes.md relpaths to `deep`, which the wiki reads as the
+    root page `deep`. Attachments take the same rule."""
+    return target if target.startswith(("./", "../")) else "./" + target
+
+
 def page_link(rel: Path, wiki_dir: Path) -> str:
     """Wiki page link from a page in wiki_dir: page-dir relative, no extension, ./ on siblings."""
-    target = os.path.relpath(wiki_file(rel), wiki_dir)[:-len(".md")]
-    return target if target.startswith(("./", "../")) else "./" + target
+    return page_relative(os.path.relpath(wiki_file(rel), wiki_dir)[:-len(".md")])
 
 
 def rewrite_links(text: str, page: Path, root: Path, flt: docfilter.Filter) -> str:
@@ -90,7 +97,8 @@ def rewrite_links(text: str, page: Path, root: Path, flt: docfilter.Filter) -> s
             return m.group(0)  # points outside docs/; leave it
         if not resolved.exists() or not flt.allows(rel):
             return m.group(0)
-        new = link_quote(page_link(rel, wiki_dir) if rel.suffix == ".md" else os.path.relpath(rel, wiki_dir))
+        new = link_quote(page_link(rel, wiki_dir) if rel.suffix == ".md"
+                         else page_relative(os.path.relpath(rel, wiki_dir)))
         return f"{m.group(1)}{new}{m.group(3) or ''}{m.group(4)}"
 
     return LINK.sub(sub, text)
@@ -154,7 +162,9 @@ def resolve(title, path: Path, root: Path, flt: docfilter.Filter):
 def render(entries, depth=0) -> list:
     lines = []
     for title, link, children in entries:
-        label = f"[{title}](/{link})" if link else title   # root-absolute: the sidebar shows on every page
+        # root-absolute: the sidebar shows on every page. Quoted like any other link: a page name
+        # with a space is not a link at all to a strict Markdown reader of the wiki checkout.
+        label = f"[{title}](/{link_quote(link)})" if link else title
         lines.append("  " * depth + f"- {label}")
         lines.extend(render(children, depth + 1))
     return lines

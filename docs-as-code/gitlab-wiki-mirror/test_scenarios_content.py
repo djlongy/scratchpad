@@ -8,7 +8,7 @@ wiki-deploy.sh, against local git repos and temp dirs only. Written against the 
 - the reverse resolves every form a person types in the GitLab UI back to relative .md links;
 - docs -> wiki -> docs is byte-identical for pages already in canonical relative form.
 
-Run: python3 -m pytest -q scripts/test_scenarios_content.py
+Run: python3 -m pytest -q scripts/wiki/test_scenarios_content.py
 """
 import importlib.util
 import os
@@ -184,8 +184,8 @@ WIKI_LINKS = {  # the spec: what each docs page's links become in its wiki locat
     # pages: relative to the page's wiki directory, no extension, ./ on siblings (GitLab serves a
     # .md link as the raw file and resolves a bare sibling from the wiki root); attachments keep
     # their extension and relative path
-    "home.md": ["./ops", "./ops/backups", "uploads/1/n.png", "./dev"],
-    "ops.md": ["./dev/release", "./ops/restore", "uploads/1/n.png", "./home", "./dev", "./ops"],
+    "home.md": ["./ops", "./ops/backups", "./uploads/1/n.png", "./dev"],
+    "ops.md": ["./dev/release", "./ops/restore", "./uploads/1/n.png", "./home", "./dev", "./ops"],
     "ops/backups.md": ["../dev/release", "./restore#steps", "../uploads/1/n.png", "../ops", "../home",
                        "https://example.com/a", "mailto:a@b.c", "/abs/path", "../../outside.md"],
     "ops/restore.md": ["./backups#top"],
