@@ -5,11 +5,14 @@ usage: wiki-sync.py DOCS_DIR WIKI_DIR [--include P]... [--exclude P]... [--confi
 
 - docs/index.md becomes home.md (the wiki front page); section/index.md becomes section.md
   so the wiki titles the page "section" instead of "index"; every other page keeps its path.
-- Links stay relative to the page's own directory and keep the .md extension on pages,
-  recomputed for the two pages that move (index.md -> home.md, section/index.md ->
-  section.md). GitLab renders `other.md`, `../dir/page.md` and `../uploads/x/f.png` from
-  any depth, and a clone of the wiki repo opens the same links in an editor. A bare
-  extension-less sibling (`other`) is never written: GitLab resolves that from the wiki root.
+- Page links are relative to the page's own directory and carry no extension: `./other`,
+  `../dir/page`, `../home`. GitLab renders those as wiki pages from any depth; a link that
+  ends in .md is served as the raw file instead, and a bare sibling (`other`, no ./) is
+  resolved from the wiki root. Attachment links keep their extension (`../uploads/x/f.png`).
+  The two relocated pages (index.md -> home.md, section/index.md -> section.md) get their
+  relative paths recomputed.
+- _sidebar.md links are root-absolute (`/section/page`): the sidebar renders on every page,
+  so a relative link there would mean something different on each.
 - Attachments are copied across; pages and attachments no longer in docs/ are deleted.
 - Sidebar order follows each folder's .pages `nav` list (awesome-pages format); `...`
   expands to the remaining pages, sorted. Folders without .pages are listed alphabetically.
@@ -60,6 +63,12 @@ def wiki_file(rel: Path) -> Path:
     return Path(wiki_path(rel) + ".md") if rel.suffix == ".md" else rel
 
 
+def page_link(rel: Path, wiki_dir: Path) -> str:
+    """Wiki page link from a page in wiki_dir: page-dir relative, no extension, ./ on siblings."""
+    target = os.path.relpath(wiki_file(rel), wiki_dir)[:-len(".md")]
+    return target if target.startswith(("./", "../")) else "./" + target
+
+
 def rewrite_links(text: str, page: Path, root: Path, flt: docfilter.Filter) -> str:
     """Re-point every resolvable relative link so it is relative to the page's wiki location."""
     page_rel = page.relative_to(root)
@@ -76,7 +85,7 @@ def rewrite_links(text: str, page: Path, root: Path, flt: docfilter.Filter) -> s
             return m.group(0)  # points outside docs/; leave it
         if not resolved.exists() or not flt.allows(rel):
             return m.group(0)
-        new = link_quote(os.path.relpath(wiki_file(rel), wiki_dir))
+        new = link_quote(page_link(rel, wiki_dir) if rel.suffix == ".md" else os.path.relpath(rel, wiki_dir))
         return f"{m.group(1)}{new}{m.group(3) or ''}{m.group(4)}"
 
     return LINK.sub(sub, text)
@@ -140,7 +149,7 @@ def resolve(title, path: Path, root: Path, flt: docfilter.Filter):
 def render(entries, depth=0) -> list:
     lines = []
     for title, link, children in entries:
-        label = f"[{title}]({link}.md)" if link else title   # _sidebar.md sits at the root
+        label = f"[{title}](/{link})" if link else title   # root-absolute: the sidebar shows on every page
         lines.append("  " * depth + f"- {label}")
         lines.extend(render(children, depth + 1))
     return lines
@@ -183,7 +192,7 @@ def sidebar(docs: Path, flt: docfilter.Filter) -> list:
     home = docs / INDEX
     title = (title_of(home) if home.exists() else "") or "Home"
     entries = [e for e in nav_entries(docs, docs, flt) if e[1] != "home"]  # the header link already covers it
-    return [f"**[{title}](home.md)**", ""] + render(entries)
+    return [f"**[{title}](/home)**", ""] + render(entries)
 
 
 def main(docs: Path, wiki: Path, flt: docfilter.Filter = None) -> None:

@@ -142,17 +142,20 @@ def wiki_link_problems(wiki):
 
 
 def link_problem(wiki, page, target):
-    """'dangling', 'bare page link' or None for one link target as seen from its page."""
+    """'dangling', 'md page link', 'bare sibling' or None for one link target seen from its page.
+    A page link must be extension-less (GitLab serves x.md as the raw file) and must start with
+    ./ or ../ (a bare name is resolved from the wiki root); attachments keep their extension."""
     if "://" in target or target.startswith(("mailto:", "/", "#")):
         return None
-    resolved = (page.parent / target.split("#")[0]).resolve()
+    path = target.split("#")[0]
+    resolved = (page.parent / path).resolve()
     if not resolved.is_relative_to(wiki.resolve()):
         return None
-    if not resolved.exists():
-        return "dangling"
-    if resolved.suffix != ".md" and resolved.with_suffix(".md").exists():
-        return "bare page link"
-    return None
+    if resolved.suffix == ".md" and resolved.exists():
+        return "md page link"
+    if resolved.with_suffix(".md").exists():
+        return None if path.startswith(("./", "../")) else "bare sibling"
+    return None if resolved.exists() else "dangling"
 
 
 # ------------------------------------------------------------------ fixtures
@@ -176,13 +179,16 @@ DOCS = {
 }
 
 WIKI_LINKS = {  # the spec: what each docs page's links become in its wiki location
-    "home.md": ["ops.md", "ops/backups.md", "uploads/1/n.png", "dev.md"],
-    "ops.md": ["dev/release.md", "ops/restore.md", "uploads/1/n.png", "home.md", "dev.md", "ops.md"],
-    "ops/backups.md": ["../dev/release.md", "restore.md#steps", "../uploads/1/n.png", "../ops.md", "../home.md",
+    # pages: relative to the page's wiki directory, no extension, ./ on siblings (GitLab serves a
+    # .md link as the raw file and resolves a bare sibling from the wiki root); attachments keep
+    # their extension and relative path
+    "home.md": ["./ops", "./ops/backups", "uploads/1/n.png", "./dev"],
+    "ops.md": ["./dev/release", "./ops/restore", "uploads/1/n.png", "./home", "./dev", "./ops"],
+    "ops/backups.md": ["../dev/release", "./restore#steps", "../uploads/1/n.png", "../ops", "../home",
                        "https://example.com/a", "mailto:a@b.c", "/abs/path", "../../outside.md"],
-    "ops/restore.md": ["backups.md#top"],
-    "dev.md": ["dev/release.md"],
-    "dev/release.md": ["../ops/backups.md"],
+    "ops/restore.md": ["./backups#top"],
+    "dev.md": ["./dev/release"],
+    "dev/release.md": ["../ops/backups"],
 }
 
 
@@ -227,8 +233,8 @@ def test_sync_links_relative_to_wiki_page_dir(docs, tmp_path, page):
 
 
 def test_sync_never_emits_bare_or_dangling_links(docs, tmp_path):
-    """No wiki page may hold a link that fails to resolve from its own directory or that
-    names a page without .md (GitLab resolves a bare name from the wiki root)."""
+    """No wiki page may hold a link that fails to resolve from its own directory, names a page
+    with .md (served raw) or names a sibling page without ./ (resolved from the wiki root)."""
     sync(docs, tmp_path / "wiki")
     assert wiki_link_problems(tmp_path / "wiki") == []
 
@@ -237,33 +243,33 @@ def test_sync_link_to_excluded_page_is_untouched(docs, tmp_path):
     """A link to a page the filter drops stays exactly as written in docs/."""
     sync(docs, tmp_path / "wiki", docfilter.Filter(exclude=["/dev/**"]))
     assert "dev/release.md" not in tree(tmp_path / "wiki")
-    assert links(tmp_path / "wiki/ops/backups.md")[0] == "../dev/release.md"  # as in docs/
+    assert links(tmp_path / "wiki/ops/backups.md")[0] == "../dev/release.md"  # as in docs/: untouched
 
 
 def test_sync_self_link(docs, tmp_path):
-    """A page linking to itself: home.md -> home.md, ops.md -> ops.md, nested -> its own name."""
+    """A page linking to itself: home -> ./home, ops -> ./ops, nested -> ./its-own-name."""
     write(docs, {"index.md": "# Home\n\n[me](index.md)\n", "ops/index.md": "# Ops\n\n[me](index.md)\n",
                  "ops/backups.md": "# B\n\n[me](backups.md#top)\n"})
     sync(docs, tmp_path / "wiki")
-    assert links(tmp_path / "wiki/home.md") == ["home.md"]
-    assert links(tmp_path / "wiki/ops.md") == ["ops.md"]
-    assert links(tmp_path / "wiki/ops/backups.md") == ["backups.md#top"]
+    assert links(tmp_path / "wiki/home.md") == ["./home"]
+    assert links(tmp_path / "wiki/ops.md") == ["./ops"]
+    assert links(tmp_path / "wiki/ops/backups.md") == ["./backups#top"]
 
 
 def test_sync_mutual_links_with_anchors(docs, tmp_path):
     """Two pages linking each other with anchors keep both link and fragment."""
     write(docs, {"dev/a.md": "# A\n\n## Top\n\n[b](b.md#bottom)\n", "dev/b.md": "# B\n\n## Bottom\n\n[a](a.md#top)\n"})
     sync(docs, tmp_path / "wiki")
-    assert links(tmp_path / "wiki/dev/a.md") == ["b.md#bottom"]
-    assert links(tmp_path / "wiki/dev/b.md") == ["a.md#top"]
+    assert links(tmp_path / "wiki/dev/a.md") == ["./b#bottom"]
+    assert links(tmp_path / "wiki/dev/b.md") == ["./a#top"]
 
 
 def test_sync_unicode_page_name_and_link(docs, tmp_path):
     """A unicode file name is kept and a link to it from a relocated section page is recomputed."""
     write(docs, {"ops/Über-cool.md": "# Über\n\n[back](index.md)\n", "ops/index.md": "# Ops\n\n[u](Über-cool.md)\n"})
     sync(docs, tmp_path / "wiki")
-    assert (tmp_path / "wiki/ops/Über-cool.md").read_text() == "# Über\n\n[back](../ops.md)\n"
-    assert links(tmp_path / "wiki/ops.md") == ["ops/Über-cool.md"]
+    assert (tmp_path / "wiki/ops/Über-cool.md").read_text() == "# Über\n\n[back](../ops)\n"
+    assert links(tmp_path / "wiki/ops.md") == ["./ops/Über-cool"]
 
 
 def test_sync_percent_encoded_space_link(docs, tmp_path):
@@ -272,7 +278,7 @@ def test_sync_percent_encoded_space_link(docs, tmp_path):
     write(docs, {"ops/my notes.md": "# Notes\n", "ops/index.md": "# Ops\n\n[n](my%20notes.md)\n"})
     sync(docs, tmp_path / "wiki")
     assert (tmp_path / "wiki/ops/my notes.md").exists()
-    assert links(tmp_path / "wiki/ops.md") == ["ops/my%20notes.md"]
+    assert links(tmp_path / "wiki/ops.md") == ["./ops/my%20notes"]
 
 
 def test_sync_sidebar_links_resolve(docs, tmp_path):
@@ -515,8 +521,8 @@ def test_wiki_rename_arrives_as_delete_plus_add(estate, capsys):
     assert links(repo / "docs/ops/backups.md")[1] == "restore.md#steps"  # untouched, now dangling
     wiki_edit(wiki, {"ops/backups.md": (wiki / "ops/backups.md").read_text() + "edited\n"}, "touch backups", date=T2)
     pull(repo, wiki)
-    assert "unresolved link left as-is: ops/backups.md: restore.md" in capsys.readouterr().out
-    assert links(repo / "docs/ops/backups.md")[1] == "restore.md#steps"
+    assert "unresolved link left as-is: ops/backups.md: ./restore" in capsys.readouterr().out
+    assert links(repo / "docs/ops/backups.md")[1] == "./restore#steps"
 
 
 def test_repo_rename_leaves_no_stale_wiki_page(estate):
@@ -595,7 +601,7 @@ def test_unicode_and_hyphenated_names_pull_and_sync(estate):
     pull(repo, wiki)
     assert (repo / "docs/ops/Über-cool-Seite.md").read_text() == "# Über cool\n\n[b](backups.md)\n"
     ci_sync(repo, wiki, T2)
-    assert (wiki / "ops/Über-cool-Seite.md").read_text() == "# Über cool\n\n[b](backups.md)\n"
+    assert (wiki / "ops/Über-cool-Seite.md").read_text() == "# Über cool\n\n[b](./backups)\n"
 
 
 def test_empty_docs_only_index(tmp_path):
@@ -693,5 +699,5 @@ def test_deploy_normalises_ui_link_forms_in_both_places(estate):
     out = deploy(repo, wiki_bare)
     assert out.returncode == 0, out.stderr + out.stdout
     assert git(repo_bare, "show", "main:docs/ops/backups.md") == "# Backups\n\n[y](restore.md) ![n](../uploads/1/n.png) [h](../index.md)\n"
-    assert git(wiki_bare, "show", "main:ops/backups.md") == "# Backups\n\n[y](restore.md) ![n](../uploads/1/n.png) [h](../home.md)\n"
+    assert git(wiki_bare, "show", "main:ops/backups.md") == "# Backups\n\n[y](./restore) ![n](../uploads/1/n.png) [h](../home)\n"
     assert git(wiki_bare, "log", "-1", "--format=%an", "main").strip() == CI

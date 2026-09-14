@@ -120,13 +120,15 @@ produced from it, untouched except for the three `.pages` files.
 `wiki-sync.py docs wiki` rewrites the wiki checkout:
 
 - `docs/index.md` → `home.md`; `section/index.md` → `section.md`; other pages keep paths.
-- Links stay relative to the page's own directory and keep `.md` on pages
-  (`../engineering/release-process.md`, `backups.md`, `../uploads/3f2a/network.png`), recomputed
-  for the two pages that move. Verified on GitLab 18.9: the wiki renders `other.md` and
-  `../dir/page.md` as page links and normalises `../uploads/x.png`, so the same links open in
-  a clone of the wiki repository (an editor, a file browser) and in the wiki UI. A bare
-  extension-less sibling (`other`) is never written, because GitLab resolves that from the
-  wiki root. `/uploads/...` (project uploads) is left alone in both directions.
+- Page links are relative to the page's own directory with no extension and an explicit
+  `./` on siblings (`../engineering/release-process`, `./restore`, `../home`); attachment
+  links keep their extension (`../uploads/3f2a/network.png`). Measured on GitLab 18.9 with
+  `curl`: a wiki URL ending in `.md` returns the raw file (`text/plain`), the extension-less
+  one returns the rendered page (`text/html`), `../` segments normalise in the browser, and a
+  bare sibling without `./` is resolved from the wiki root. So this is the one form the wiki
+  UI renders correctly from any depth; in a clone of the wiki repository an editor will open
+  the attachments but not follow the extension-less page links (GitLab's own convention).
+  `/uploads/...` (project uploads) is left alone in both directions.
 - Attachments are copied; pages and files no longer in `docs/` are deleted. Hidden files and
   hidden directories under `docs/` (`.pages`, `.git`, tool caches) are never copied; a stray
   `.git` copied into the wiki clone would replace its remote and break the push.
@@ -136,9 +138,9 @@ produced from it, untouched except for the three `.pages` files.
 Round trip on the example (a wiki page's links after import and sync):
 
 ```text
-wiki-export/operations.md    operations/backups   engineering/release-process      uploads/3f2a/network.png
-docs/operations/index.md     backups.md           ../engineering/release-process.md   ../uploads/3f2a/network.png
-wiki/operations.md           operations/backups.md  engineering/release-process.md   uploads/3f2a/network.png
+wiki-export/operations.md    operations/backups     engineering/release-process         uploads/3f2a/network.png
+docs/operations/index.md     backups.md             ../engineering/release-process.md   ../uploads/3f2a/network.png
+wiki/operations.md           ./operations/backups   ./engineering/release-process       uploads/3f2a/network.png
 ```
 
 (The section page moved up one directory on the way back, so its relative links lost one
