@@ -186,6 +186,15 @@ update bot maintains an inventory of `repo:tag@digest`, merging an MR triggers a
 job that pulls those digests through the proxy caches and builds the transfer
 pack. Proven on a self-hosted GitLab.
 
+## 3d. When the destination is a basic registry
+
+[`airgap-tar/`](airgap-tar/) — save/load scripts derived from the Rancher air-gap
+scripts (Apache-2.0), for destinations that **rewrite content digests on push**.
+There the upstream `@sha256:` cannot be the far-side pull reference, so the pin
+becomes a tag *named* for the upstream digest, with the version read from the
+image's own labels as a human-readable alias. Use the OCI-layout flow above when
+the destination preserves digests; use this when it does not.
+
 ## 4. Taking it to a real link
 
 - **Replace the folder with the diode.** The send flow's `PutFile` and the receive flow's

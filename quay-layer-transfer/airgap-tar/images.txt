@@ -1,0 +1,12 @@
+# Images for the basic-registry airgap tar (linux/amd64).
+# Comments and blank lines are ignored.
+#
+# bitnami/redis: public Hub has no version tags (community tier = latest only).
+# sha256-* tags on Hub are Cosign/provenance, NOT Redis. The save script pulls
+# latest (or @sha256:<index>), reads org.opencontainers.image.version, and
+# retags as <version> plus sha256-<Hub-index-digest>. That digest tag is the pin
+# and the upstream-drift key. Semver can stay put across Bitnami rebuilds.
+bitnami/redis:latest
+
+# NiFi still publishes real version tags on docker.io.
+apache/nifi:2.11.0
