@@ -412,3 +412,6 @@ cat /tmp/wiki/_sidebar.md
 
 To see it in a real wiki without touching production: create a throwaway project, clone
 its (empty) wiki, run the sync into that clone, push, open the Wiki tab.
+
+The same scripts are packaged as a reusable CI template, so a consumer repo adds one
+`include:` instead of copying them: [djlongy/gitlab-ci-templates](https://github.com/djlongy/gitlab-ci-templates) (`docs/wiki-sync.yml`, setup in `docs/WIKI_SYNC.md`).
