@@ -15,9 +15,19 @@ for _ in $(seq 1 60); do [ "$(curl -s -o /dev/null -w "%{http_code}" "$url/v2/")
 
 if [ ! -s "$tok" ]; then
   # Only works while no user exists (FEATURE_USER_INITIALIZE); returns an OAuth token for the superuser.
-  resp=$(curl -fsS -X POST "$url/api/v1/user/initialize" -H 'Content-Type: application/json' \
-    -d "{\"username\":\"$user\",\"password\":\"$pass\",\"email\":\"$user@example.com\",\"access_token\":true}") \
-    || { echo "initialize failed (user may already exist; delete .secrets/$side.token only if you know the token)" >&2; exit 1; }
+  # /v2/ answers 401 before /api/v1/user/initialize is wired up, so a fresh stack
+  # returns 403 here for a minute or so. Retry rather than abort: a 403 that is
+  # really "database not empty" still fails, but only after the endpoint is live.
+  body=/tmp/quay-init-$side.$$
+  for _ in $(seq 1 24); do
+    code=$(curl -s -o "$body" -w '%{http_code}' -X POST "$url/api/v1/user/initialize" \
+      -H 'Content-Type: application/json' \
+      -d "{\"username\":\"$user\",\"password\":\"$pass\",\"email\":\"$user@example.com\",\"access_token\":true}")
+    [ "$code" = 200 ] && break
+    sleep 5
+  done
+  [ "$code" = 200 ] || { echo "initialize failed ($code): $(cat "$body")" >&2; rm -f "$body"; exit 1; }
+  resp=$(cat "$body"); rm -f "$body"
   printf '%s' "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' > "$tok"
   echo "$side: superuser $user created, token saved to .secrets/$side.token"
 fi

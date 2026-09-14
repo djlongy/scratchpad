@@ -137,6 +137,40 @@ Run it yourself against a fresh stack:
 scripts/demo.sh
 ```
 
+## 3a. Keeping the far side in step (desired state)
+
+A transfer that only says "add these images" can never express a deletion, so an
+additive mirror drifts: a tag removed upstream lives on the far side forever, and
+a floating tag that moves leaves its old manifest behind, referenced by nothing.
+
+A tag is an independent `name -> digest` row in each registry — **not** an alias.
+Copying `1.2.0` does not make `latest` resolve on the far side even when both name
+the same digest.
+
+So `export.sh` also writes `state.json`: the complete intended tag -> digest map
+for every repository, resent in full on every transfer. It costs a few KB because
+tags are pointers, while layers are megabytes and still cross only once.
+`scripts/reconcile.py` then makes the far side match — add, retarget, delete — and
+is the only writer on the high side.
+
+```bash
+scripts/select-tags.py "$API" demo 3 .secrets/low.token   # content filter + desired state
+scripts/export.sh 3                                       # writes oci/, manifest.json, state.json
+scripts/import.sh                                         # merge, then reconcile
+```
+
+Two safety properties, both deliberate: a run that would delete more than
+`RECONCILE_MAX_DELETE_PCT` (default 50) of a repository's tags refuses unless
+`RECONCILE_FORCE=1`, and repositories absent from `state.json` are left alone —
+because absence is also what a truncated transfer looks like.
+
+**Do not automate a blob prune of the far-side OCI store.** The dedupe ledger
+records a digest when it *sends* it, so a blob pruned from the store is never
+resent and that image becomes unbuildable there, permanently. Reconcile registry
+tags automatically; treat store size as a capacity decision.
+
+Full design, evidence and the runs that proved it: [`docs/desired-state-mirror.md`](docs/desired-state-mirror.md).
+
 ## 4. Taking it to a real link
 
 - **Replace the folder with the diode.** The send flow's `PutFile` and the receive flow's
@@ -170,6 +204,36 @@ scripts/demo.sh
   application release with a rebuilt base image moves the base once for the whole group.
 
 ## 5. Gotchas met building this
+
+**Never POST to `/api/v1/user/initialize` as a probe.** It is one-shot per empty
+database and creates a real superuser, so a diagnostic call burns the path
+`quay-init.sh` needs; the only way back is deleting the Quay database volumes. On
+a fresh stack it also returns 403 for a minute or two *after* `/v2/` already
+answers 401, which is why `quay-init.sh` now retries instead of trusting the
+`/v2/` readiness gate.
+
+**Quay's API v1 needs the OAuth bearer token.** Basic auth with the same
+credentials authenticates registry pull and push but the API rejects it with 401.
+
+**An expired token looks like an empty organisation.** `/repository?namespace=…`
+returns `{"repositories": []}` rather than 401, because private repositories are
+invisible to an unauthenticated caller — so a dead token would silently produce a
+desired state of nothing. `select-tags.py` probes an endpoint that does return 401
+and refuses.
+
+**Docker's classic image store breaks digest equality.** It keeps schema2
+manifests, which an OCI layout cannot hold, so manifests are re-encoded in transit
+and no digest matches. Enable the containerd snapshotter — and note the driver is
+named `overlayfs` there; `overlay2` silently leaves you on the old store. Then set
+`BUILDX_NO_DEFAULT_ATTESTATIONS=1`, because BuildKit's default provenance
+attestation wraps the build in an OCI index and breaks the same comparison one
+level up. Both failures produce a working image with the wrong digest.
+
+**Verify a layout against `dir:`, not a registry.** Pushing a damaged OCI layout to
+a registry that already holds the blobs succeeds, because the client skips
+uploading what the destination has. "The push worked" is not evidence the layout
+is intact.
+
 
 - Quay's `/health/instance` pings `SERVER_HOSTNAME` from inside the container. With a host
   port mapping (`localhost:18081` outside, `8080` inside) that ping fails and the health

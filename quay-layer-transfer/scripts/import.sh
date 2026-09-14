@@ -2,7 +2,7 @@
 # High side: merge every received transfer into the OCI store and push its images into the
 # high Quay. Run after the receive flow has unpacked a transfer under data/high-store/incoming/.
 #   usage: scripts/import.sh                      processes every incoming transfer not yet imported
-# Needs: skopeo, .secrets/high.token is not needed (push uses the superuser login), python3.
+# Needs: skopeo, python3, and .secrets/high.token (the reconcile pass uses the Quay API).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 reg=${HIGH_REGISTRY:-localhost:18082}
@@ -21,10 +21,21 @@ for t in "$incoming"/transfer-*; do
   [ "$before" = "$after" ] || { echo "$name: still being written, skipping"; continue; }
 
   python3 "$here/scripts/oci-merge.py" "$t" "$store"
-  for ref in $(python3 -c 'import json,sys; print("\n".join(i["ref"] for i in json.load(open(sys.argv[1]))["images"]))' "$t/manifest.json"); do
-    skopeo copy -q --dest-tls-verify=false --dest-creds "$user:$pass" "oci:$store:$ref" "docker://$reg/$ref"
-    echo "  imported $reg/$ref"
-  done
+
+  # state.json is the complete desired tag -> digest map, so reconcile is the only
+  # writer: it adds, retargets and deletes in one pass. manifest.json lists only what
+  # this transfer carried, which cannot express a deletion - it stays the fallback for
+  # transfers produced before state.json existed.
+  if [ -f "$t/state.json" ]; then
+    python3 "$here/scripts/reconcile.py" "$t/state.json" "$store" "$reg" "$user" "$pass" "$here/.secrets/high.token"
+  else
+    echo "  $name: no state.json, additive import only"
+    for ref in $(python3 -c 'import json,sys; print("\n".join(i["ref"] for i in json.load(open(sys.argv[1]))["images"]))' "$t/manifest.json"); do
+      skopeo copy -q --dest-tls-verify=false --dest-creds "$user:$pass" "oci:$store:$ref" "docker://$reg/$ref"
+      echo "  imported $reg/$ref"
+    done
+  fi
+
   mv "$t" "$done_dir/$name"
   echo "$name: imported, moved to imported/"
 done

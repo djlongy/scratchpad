@@ -17,20 +17,11 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/oci" "$here/data/low-export"
 
 # --- which images -------------------------------------------------------------------------
-repos=$(curl -fsS -H "$auth" "$api/repository?namespace=$org&limit=100" \
-  | python3 -c 'import json,sys; print("\n".join(r["name"] for r in json.load(sys.stdin)["repositories"]))')
+sel=$(python3 "$here/scripts/select-tags.py" "$api" "$org" "$keep" "$here/.secrets/low.token")
 selected=()
-for repo in $repos; do
-  tags=$(curl -fsS -H "$auth" "$api/repository/$org/$repo/tag/?limit=100&onlyActiveTags=true" \
-    | python3 -c '
-import json, re, sys
-keep = int(sys.argv[1])
-semver = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")           # 1.2.3 or v1.2.3; latest/dev/rc tags are ignored
-tags = [t["name"] for t in json.load(sys.stdin)["tags"] if semver.match(t["name"])]
-tags.sort(key=lambda t: tuple(int(x) for x in semver.match(t).groups()), reverse=True)
-print("\n".join(tags[:keep]))' "$keep")
-  for t in $tags; do selected+=("$org/$repo:$t"); done
-done
+# not mapfile: macOS still ships bash 3.2 and this script runs on the operator's machine
+while IFS= read -r r; do [ -n "$r" ] && selected+=("$r"); done < <(
+  printf '%s' "$sel" | python3 -c 'import json,sys; print("\n".join(json.load(sys.stdin)["selected"]))')
 [ ${#selected[@]} -gt 0 ] || { echo "no semver tags under $org" >&2; exit 1; }
 echo "selected ${#selected[@]} image(s): ${selected[*]}"
 
@@ -56,5 +47,12 @@ PY
 
 blobs=$(find "$work/oci/blobs" -type f | wc -l | tr -d ' ')
 # COPYFILE_DISABLE: macOS tar would add AppleDouble ._* entries, which the flow would count as blobs
-COPYFILE_DISABLE=1 tar -C "$work" -cf "$here/data/low-export/transfer-$stamp.tar" oci manifest.json
+# The desired state of the far side, in full, every time. It is what lets the high
+# side delete a tag that went away upstream: an "add these" message never can.
+printf '%s' "$sel" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+json.dump({"transfer": sys.argv[1], "repos": d["repos"]}, sys.stdout, indent=1)' "$stamp" > "$work/state.json"
+
+COPYFILE_DISABLE=1 tar -C "$work" -cf "$here/data/low-export/transfer-$stamp.tar" oci manifest.json state.json
 echo "wrote data/low-export/transfer-$stamp.tar: ${#selected[@]} images, $blobs blobs, $(du -h "$here/data/low-export/transfer-$stamp.tar" | cut -f1)"
