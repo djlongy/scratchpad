@@ -212,6 +212,14 @@ a fresh stack it also returns 403 for a minute or two *after* `/v2/` already
 answers 401, which is why `quay-init.sh` now retries instead of trusting the
 `/v2/` readiness gate.
 
+**The token `user/initialize` returns expires — do not build a pipeline on it.**
+Both sides' tokens started returning 401 within a few hours of being minted, and
+the registry log says it plainly: `OAuth access with an expired token`. Nothing in
+the generated config sets a lifetime, so this is the default for that token. Fine
+for a lab session, useless for anything scheduled: a recurring job needs a robot
+account or an application-specific token instead, and needs to fail loudly when
+its credential stops working rather than reporting an empty result.
+
 **Quay's API v1 needs the OAuth bearer token.** Basic auth with the same
 credentials authenticates registry pull and push but the API rejects it with 401.
 
