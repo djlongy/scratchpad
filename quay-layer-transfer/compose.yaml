@@ -1,0 +1,109 @@
+# Cross-domain image-layer transfer simulation: a "low side" Quay, a "high side" Quay,
+# one NiFi with a send flow and a receive flow, and a Redis that remembers which layer
+# digests have already crossed. The three folders under ./data are the "diode":
+#   low-export/   export.sh drops OCI archives here            (low side)
+#   diode/        NiFi send flow writes deduplicated archives   (the one-way link)
+#   high-store/   NiFi receive flow unpacks here; import.sh loads Quay from it (high side)
+#
+# Quay needs its own Postgres and Redis per instance (upstream requirement). Ports:
+#   low Quay  http://localhost:18081    high Quay http://localhost:18082    NiFi https://localhost:18090 (admin / nifiadmin1234)
+name: quay-diode
+
+x-quay: &quay
+  image: quay.io/projectquay/quay:3.15.7
+  # Quay's entrypoint runs as root and drops privileges; the config dir must be readable.
+  # /health/instance pings SERVER_HOSTNAME from inside the container, which only resolves
+  # from the host here, so the check uses the registry endpoint (401 = up) instead.
+  healthcheck:
+    test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v2/ | grep -q 401"]
+    interval: 15s
+    timeout: 5s
+    retries: 40
+    start_period: 60s
+
+x-pg: &pg
+  image: postgres:15-alpine
+  environment:
+    POSTGRES_USER: quay
+    POSTGRES_PASSWORD: quaypass
+    POSTGRES_DB: quay
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U quay"]
+    interval: 5s
+    retries: 20
+
+services:
+  low-db:
+    <<: *pg
+    volumes: [low-db:/var/lib/postgresql/data, ./quay/pg-init.sh:/docker-entrypoint-initdb.d/init.sh:ro]
+  low-redis:
+    image: redis:7-alpine
+  low-quay:
+    <<: *quay
+    depends_on:
+      low-db: {condition: service_healthy}
+      low-redis: {condition: service_started}
+    ports: ["18081:8080"]
+    volumes:
+      - ./quay/low:/conf/stack
+      - low-storage:/datastorage
+
+  high-db:
+    <<: *pg
+    volumes: [high-db:/var/lib/postgresql/data, ./quay/pg-init.sh:/docker-entrypoint-initdb.d/init.sh:ro]
+  high-redis:
+    image: redis:7-alpine
+  high-quay:
+    <<: *quay
+    depends_on:
+      high-db: {condition: service_healthy}
+      high-redis: {condition: service_started}
+    ports: ["18082:8080"]
+    volumes:
+      - ./quay/high:/conf/stack
+      - high-storage:/datastorage
+
+  # The transfer ledger: one key per layer digest that has crossed. Lives on the low side.
+  dedupe-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes: [dedupe:/data]
+
+  nifi:
+    image: apache/nifi:2.5.0
+    environment:
+      # NiFi 2.x images are HTTPS-only with a self-signed cert; single-user login.
+      SINGLE_USER_CREDENTIALS_USERNAME: admin
+      SINGLE_USER_CREDENTIALS_PASSWORD: nifiadmin1234   # 12+ characters required
+      NIFI_WEB_PROXY_HOST: localhost:18090              # the Host header the browser/API will send
+      NIFI_JVM_HEAP_INIT: 1g
+      NIFI_JVM_HEAP_MAX: 2g
+    ports: ["18090:8443"]
+    user: "1000:1000"
+    volumes:
+      - ./data/low-export:/data/low-export
+      - ./data/diode:/data/diode
+      - ./data/high-store:/data/high-store
+      - nifi-state:/opt/nifi/nifi-current/state
+      - nifi-db:/opt/nifi/nifi-current/database_repository
+      - nifi-flowfile:/opt/nifi/nifi-current/flowfile_repository
+      - nifi-content:/opt/nifi/nifi-current/content_repository
+      - nifi-conf:/opt/nifi/nifi-current/conf
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ks https://localhost:8443/nifi-api/access/config >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 60s
+
+volumes:
+  low-db: {}
+  low-storage: {}
+  high-db: {}
+  high-storage: {}
+  dedupe: {}
+  nifi-state: {}
+  nifi-db: {}
+  nifi-flowfile: {}
+  nifi-content: {}
+  nifi-conf: {}
