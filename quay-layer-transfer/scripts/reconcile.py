@@ -8,16 +8,26 @@ for every transfer to carry the complete intended tag -> digest map (state.json)
 and for this script to make the far side match it: add what is missing, retarget
 what moved, delete what is no longer wanted.
 
-  usage: reconcile.py STATE_JSON OCI_STORE REGISTRY USER PASS TOKEN_FILE
+  usage: reconcile.py STATE_JSON OCI_STORE REGISTRY USER PASS TOKEN_FILE [APPLIED_FILE]
 
 Scope and safety, both deliberate:
 
 * Only repositories named in state.json are touched. A repository that vanished
   upstream is left alone rather than deleted on the strength of its absence,
   because absence is also what a truncated transfer looks like.
-* A run that would delete more than RECONCILE_MAX_DELETE_PCT (default 50) of a
-  repository's tags refuses and changes nothing, unless RECONCILE_FORCE=1. One
-  corrupt state document should not be able to empty the far side.
+* A state document older than the last one applied is refused. Without this a
+  replayed or out-of-order transfer would quietly revert the mirror to an earlier
+  world, and nothing downstream would notice.
+* A repository whose desired set is EMPTY is refused. That is never a legitimate
+  instruction - a repository with no wanted tags simply would not appear.
+* A run that would delete more than RECONCILE_MAX_DELETE_PCT (default 90) of a
+  repository's tags refuses, unless RECONCILE_FORCE=1. This is a backstop for a
+  well-formed but badly truncated document, not the primary guard: withdrawing one
+  version upstream legitimately removes it plus every floating tag that pointed at
+  it, which is easily most of a small repository's tags.
+
+The primary guard is none of these - it is that import.sh only calls this script
+at all when the transfer passed its completeness check.
 * Tags are reconciled. Blobs in the OCI store are NOT pruned here - see
   prune-store.py for why that cannot be automatic.
 """
@@ -28,7 +38,7 @@ import sys
 import urllib.error
 import urllib.request
 
-MAX_DELETE_PCT = int(os.environ.get("RECONCILE_MAX_DELETE_PCT", "50"))
+MAX_DELETE_PCT = int(os.environ.get("RECONCILE_MAX_DELETE_PCT", "90"))
 FORCE = os.environ.get("RECONCILE_FORCE") == "1"
 
 
@@ -61,11 +71,26 @@ def live_tags(reg, repo, token):
 
 def main():
     state_path, store, reg, user, password, token_file = sys.argv[1:7]
+    applied_file = sys.argv[7] if len(sys.argv) > 7 else None
     token = open(token_file).read().strip()
     state = json.load(open(state_path))
+    stamp = state.get("transfer", "")
+
+    # Transfers can arrive out of order, or be replayed from imported/. Applying an
+    # older desired state would silently roll the mirror back.
+    if applied_file and os.path.exists(applied_file):
+        last = open(applied_file).read().strip()
+        if stamp and last and stamp <= last:
+            print(f"  skipping {stamp}: not newer than the last applied state ({last})")
+            return
+
     added = retargeted = deleted = 0
 
     for repo, desired in state["repos"].items():
+        if not desired:
+            print(f"  REFUSING {repo}: the desired set is empty, which is never a "
+                  f"legitimate instruction", file=sys.stderr)
+            continue
         live = live_tags(reg, repo, token)
         extra = [t for t in live if t not in desired]
 
@@ -104,6 +129,9 @@ def main():
             deleted += 1
 
     print(f"reconciled: {added} added, {retargeted} retargeted, {deleted} deleted")
+    if applied_file and stamp:
+        with open(applied_file, "w") as fh:
+            fh.write(stamp)
 
 
 if __name__ == "__main__":

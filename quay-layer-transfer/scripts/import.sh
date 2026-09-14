@@ -20,14 +20,29 @@ for t in "$incoming"/transfer-*; do
   before=$(find "$t" -type f | wc -l); sleep 3; after=$(find "$t" -type f | wc -l)
   [ "$before" = "$after" ] || { echo "$name: still being written, skipping"; continue; }
 
-  python3 "$here/scripts/oci-merge.py" "$t" "$store"
+  # The completeness check IS the guard on everything destructive below. A transfer
+  # that lost blobs in flight is indistinguishable from one whose desired state says
+  # "delete these", so an incomplete merge means additive-only and no prune. The
+  # transfer stays in incoming/ so a later delivery of the missing blobs completes it.
+  if python3 "$here/scripts/oci-merge.py" "$t" "$store"; then
+    complete=yes
+  else
+    complete=no
+    echo "  $name: incomplete after merge — no reconcile, no prune, left in incoming/ to retry"
+  fi
 
   # state.json is the complete desired tag -> digest map, so reconcile is the only
   # writer: it adds, retargets and deletes in one pass. manifest.json lists only what
   # this transfer carried, which cannot express a deletion - it stays the fallback for
   # transfers produced before state.json existed.
-  if [ -f "$t/state.json" ]; then
-    python3 "$here/scripts/reconcile.py" "$t/state.json" "$store" "$reg" "$user" "$pass" "$here/.secrets/high.token"
+  if [ "$complete" = no ]; then
+    continue
+  elif [ -f "$t/state.json" ]; then
+    python3 "$here/scripts/reconcile.py" "$t/state.json" "$store" "$reg" "$user" "$pass" \
+      "$here/.secrets/high.token" "$here/data/high-store/.applied"
+    # Only now, after the tags that should survive are in place, drop what nothing
+    # wants any more. Guarded again locally: see scripts/prune-store.py.
+    python3 "$here/scripts/prune-store.py" "$t/state.json" "$store"
   else
     echo "  $name: no state.json, additive import only"
     for ref in $(python3 -c 'import json,sys; print("\n".join(i["ref"] for i in json.load(open(sys.argv[1]))["images"]))' "$t/manifest.json"); do

@@ -86,17 +86,106 @@ what the destination has. The damage only shows on a destination that lacks the
 content — a rebuilt Quay, or the standalone copy above. So "the push worked" is
 not evidence the store is intact.
 
-**Therefore the prune splits in two:**
+**The resolution is that the prune must be driven from the LOW side.**
 
-- **Quay tags — safe, automatic.** `reconcile.py` deletes tags that left the
-  desired state, and Quay garbage-collects the manifests they held. This is the
-  orphan prune you want running every transfer.
-- **OCI store blobs — manual, and paired with the ledger.** The store is the
-  durable content cache that justifies the ledger's "already crossed" answer.
-  Pruning it is only safe if the matching digests are cleared from the low-side
-  Redis at the same time, which is an operator action on the low side with no
-  return path to automate it. Treat store size as a capacity decision, not
-  housekeeping.
+The earlier conclusion here was that the far store could only be pruned by hand.
+That was half right: it cannot be pruned *independently*. But the low side already
+holds every fact the decision needs — it authored the desired state, and its export
+layout contains every blob that desired state references. So:
+
+    prunable = (everything the ledger has ever sent) - (everything still wanted)
+
+and the low side can clear those ledger entries itself, in the same breath as it
+tells the far side to drop them. `state.json` grows a `prune` list;
+`scripts/prune-plan.py` computes it on the low side, `scripts/prune-store.py`
+acts on it on the high side.
+
+### The ordering is the safety property
+
+The ledger is cleared **on the low side, before the transfer leaves**. If that
+transfer is then lost, the low side has merely forgotten that it once sent those
+blobs, and the next transfer that needs them sends them again. The reverse order —
+far side deletes first, ledger cleared later — leaves a window where the content is
+gone and the ledger still claims it crossed, which is the unrecoverable state this
+whole design exists to avoid.
+
+### Two stages on the high side, also ordered
+
+1. **Drop unwanted entries from the store's `index.json`.** Deleting a tag from the
+   registry does not remove the OCI store's own record of it, so without this the
+   store can still reach every blob it ever received and stage 2 correctly concludes
+   nothing may go. This was a real bug, found by the test: the first run reported
+   *"pruned 0 blob(s); kept 6 still reachable"*.
+2. **Delete the listed blobs nothing can reach any more**, re-checking each against
+   the freshly pruned index. A digest still reachable is kept, however emphatically
+   the low side asked.
+
+That order means a half-finished prune leaves a store that is merely smaller, never
+one whose index points at blobs that are gone.
+
+### What actually guards a deletion
+
+The percentage guard described in the first version of this document was the wrong
+shape, and the test proved it: withdrawing one version upstream legitimately removes
+that tag **plus every floating tag that pointed at it** — 3 of 4 tags in a small
+repository — and the guard refused a completely valid transfer. A percentage cannot
+tell a legitimate withdrawal from corruption.
+
+What can:
+
+- **The completeness check.** `import.sh` only reconciles or prunes when
+  `oci-merge.py` confirms every blob the transfer's manifest references is present.
+  A truncated transfer is additive-only and stays in `incoming/` to retry. This is
+  the primary guard.
+- **Monotonic transfer stamps.** The high side records the last desired state it
+  applied and refuses anything not newer, so a replayed or out-of-order transfer
+  cannot roll the mirror back to an earlier world.
+- **An empty desired set is refused** for any repository. That is never a legitimate
+  instruction — a repository with no wanted tags would simply not appear.
+- **A 90% deletion backstop** remains for a well-formed but badly truncated
+  document, overridable with `RECONCILE_FORCE=1`.
+
+## Proving there is no catch-22
+
+`scripts/test-lifecycle.sh` destroys the lab and rebuilds it from nothing, then uses
+the semver window itself to drive a blob out of the desired set and pull it back in:
+
+| | Change upstream | Desired set | What must happen |
+|---|---|---|---|
+| T1 | seed 1.0.0, 1.1.0 | {1.1.0, 1.0.0} | everything crosses |
+| T2 | seed 2.0.0 | {2.0.0, 1.1.0} | 1.0.0 falls out, is pruned both sides |
+| T3 | withdraw 2.0.0 | {1.1.0, 1.0.0} | **1.0.0 returns and must cross again** |
+
+T3 is the test that matters. If the ledger and the far store ever disagree, nothing
+crosses and the image is permanently unbuildable over there.
+
+Two consecutive from-scratch runs, **14 passed / 0 failed** each:
+
+```
+== 2. 2.0.0 arrives — 1.0.0 falls out of the window and is pruned
+    ledger: forgot 6 blob(s) no longer wanted; the far side may drop them
+    dropped 2 stale index entries, pruned 6 blob(s), 6 KiB freed
+  PASS the ledger has forgotten the doomed layer (0)
+  PASS the far store no longer holds it
+
+== 3. the catch-22 test — 2.0.0 is withdrawn, so 1.0.0 must come back
+  PASS the forgotten layer was sent again (6 blob(s) crossed)
+  PASS the far store holds it once more
+  PASS the restored image is genuinely usable, not just present
+  PASS digest on the high side matches the low side
+```
+
+Three things the from-scratch requirement caught that a re-run on a warm lab would
+not have:
+
+- The teardown recreated `data/` and destroyed a **default ACL**. NiFi runs as uid
+  1000 and creates the per-transfer directory itself; renaming a directory needs
+  write permission *on that directory*, so `import.sh` could not move it into
+  `imported/`. Setup now sets the ACL explicitly.
+- Container-created files cannot be removed by the runner user, so teardown needs
+  elevation — the one place in the lab where it is warranted.
+- A **vacuous pass**: when the helper that isolates a test layer returned nothing,
+  three later assertions passed against an empty string. The test now aborts instead.
 
 ## Not covered
 

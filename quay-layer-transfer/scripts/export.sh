@@ -49,10 +49,19 @@ blobs=$(find "$work/oci/blobs" -type f | wc -l | tr -d ' ')
 # COPYFILE_DISABLE: macOS tar would add AppleDouble ._* entries, which the flow would count as blobs
 # The desired state of the far side, in full, every time. It is what lets the high
 # side delete a tag that went away upstream: an "add these" message never can.
+# What the far side may now delete. The ledger is cleared HERE, before the transfer
+# leaves, so a lost transfer only ever costs a re-send. See scripts/prune-plan.py.
+prune=$(python3 "$here/scripts/prune-plan.py" "$work/oci" ${REDIS_CLI:-sudo docker compose exec -T dedupe-redis redis-cli} 2>/tmp/prune-plan.err) || {
+  echo "  prune plan skipped: $(tail -1 /tmp/prune-plan.err)" >&2
+  prune=""
+}
+[ -n "$prune" ] && echo "  ledger: forgot $(printf '%s\n' "$prune" | grep -c . ) blob(s) no longer wanted; the far side may drop them"
+
 printf '%s' "$sel" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-json.dump({"transfer": sys.argv[1], "repos": d["repos"]}, sys.stdout, indent=1)' "$stamp" > "$work/state.json"
+prune = [line for line in sys.argv[2].splitlines() if line.strip()]
+json.dump({"transfer": sys.argv[1], "repos": d["repos"], "prune": prune}, sys.stdout, indent=1)' "$stamp" "$prune" > "$work/state.json"
 
 COPYFILE_DISABLE=1 tar -C "$work" -cf "$here/data/low-export/transfer-$stamp.tar" oci manifest.json state.json
 echo "wrote data/low-export/transfer-$stamp.tar: ${#selected[@]} images, $blobs blobs, $(du -h "$here/data/low-export/transfer-$stamp.tar" | cut -f1)"
