@@ -176,7 +176,7 @@ def test_w_all_pages_deleted_in_wiki_is_a_reset_not_a_mass_delete(estate):
 def test_w_force_pushed_empty_branch_is_a_reset(tmp_path, estate):
     """W: someone force-pushes an orphan commit with an empty tree over the wiki branch. Expected:
     same as any wipe: nothing pulled, docs/ intact, wiki reseeded with a CI commit."""
-    repo, wiki, repo_bare, wiki_bare = estate
+    repo, _, repo_bare, wiki_bare = estate
     other = clone(wiki_bare, tmp_path / "wiki-other")
     git(other, "checkout", "-q", "--orphan", "blank")
     git(other, "rm", "-rfq", ".")
@@ -223,7 +223,7 @@ def test_d_page_deleted_in_wiki_but_edited_in_repo_comes_back(estate):
 def test_d_page_deleted_in_repo_since_sync_is_removed_from_wiki_not_resurrected(estate):
     """Guard for the never-synced rule below: a page the repo deleted after the last sync must be
     removed from the wiki, not pulled back as new."""
-    repo, wiki, repo_bare, wiki_bare = estate
+    repo, _, repo_bare, wiki_bare = estate
     (repo / "docs/glossary.md").unlink()
     write(repo, {"docs/index.md": "# Home\n\n[Guide](guide/index.md)\n"})
     commit_all(repo, "drop glossary from docs", DEV, T1)
@@ -380,7 +380,7 @@ def test_a_author_with_empty_email_is_pulled(estate):
 def test_i_two_runs_with_no_changes_create_no_commits(estate):
     """I: nothing changed on either side. Expected: two consecutive runs exit 0 and neither bare
     gains a commit."""
-    repo, wiki, repo_bare, wiki_bare = estate
+    repo, _, repo_bare, wiki_bare = estate
     before = snapshot(repo_bare, wiki_bare)
     ok(deploy(repo, wiki_bare))
     ok(deploy(repo, wiki_bare))

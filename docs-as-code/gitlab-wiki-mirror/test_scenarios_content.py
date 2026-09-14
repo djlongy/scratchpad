@@ -135,22 +135,24 @@ def wiki_link_problems(wiki):
     """Links in wiki pages that do not resolve from the page's own directory, or that reach a
     page without the .md extension. Links outside the wiki, external, mailto and root-absolute
     ones are left to GitLab. Empty list means every link is in the canonical relative form."""
-    problems = []
-    for page in wiki.rglob("*.md"):
-        if page.name.startswith("_") or ".git" in page.parts:
-            continue
-        for target in links(page):
-            if "://" in target or target.startswith(("mailto:", "/", "#")):
-                continue
-            path = target.split("#")[0]
-            resolved = (page.parent / path).resolve()
-            if not resolved.is_relative_to(wiki.resolve()):
-                continue
-            if not resolved.exists():
-                problems.append(f"{page.relative_to(wiki)}: {target} (dangling)")
-            elif resolved.suffix != ".md" and (resolved.with_suffix(".md")).exists():
-                problems.append(f"{page.relative_to(wiki)}: {target} (bare page link)")
-    return problems
+    pages = (p for p in wiki.rglob("*.md") if not p.name.startswith("_") and ".git" not in p.parts)
+    return [f"{page.relative_to(wiki)}: {target} ({why})"
+            for page in pages for target in links(page)
+            if (why := link_problem(wiki, page, target))]
+
+
+def link_problem(wiki, page, target):
+    """'dangling', 'bare page link' or None for one link target as seen from its page."""
+    if "://" in target or target.startswith(("mailto:", "/", "#")):
+        return None
+    resolved = (page.parent / target.split("#")[0]).resolve()
+    if not resolved.is_relative_to(wiki.resolve()):
+        return None
+    if not resolved.exists():
+        return "dangling"
+    if resolved.suffix != ".md" and resolved.with_suffix(".md").exists():
+        return "bare page link"
+    return None
 
 
 # ------------------------------------------------------------------ fixtures
@@ -609,7 +611,7 @@ def test_empty_docs_only_index(tmp_path):
 def test_wiped_wiki_is_reseeded_without_touching_docs(estate):
     """The wiki repo was reset to zero commits: wiki-deploy.sh pulls nothing, deletes nothing in
     docs/, and pushes a full sync."""
-    repo, wiki, repo_bare, wiki_bare = estate
+    repo, _, _, wiki_bare = estate
     subprocess.run(["rm", "-rf", str(wiki_bare)], check=True)
     git(wiki_bare.parent, "init", "-q", "--bare", "-b", "main", str(wiki_bare))
     docs_before, head = snapshot(repo / "docs"), git(repo, "rev-parse", "HEAD")
@@ -652,7 +654,7 @@ def test_not_in_nav_page_is_synced_hidden_and_still_pulled(estate):
 
 def test_deploy_applies_mkdocs_exclude_and_not_in_nav(estate):
     """wiki-deploy.sh reads mkdocs.yml: excluded drafts never reach the wiki, not_in_nav is hidden."""
-    repo, wiki, repo_bare, wiki_bare = estate
+    repo, _, _, wiki_bare = estate
     repo_edit(repo, {"docs/drafts/wip.md": "# WIP\n", "mkdocs.yml": "site_name: t\nexclude_docs: |\n  drafts/\nnot_in_nav: |\n  /glossary.md\n"}, "config")
     out = deploy(repo, wiki_bare)
     assert out.returncode == 0, out.stderr + out.stdout
