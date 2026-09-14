@@ -59,14 +59,57 @@ def api(reg, path, token, method="GET"):
 
 
 def live_tags(reg, repo, token):
-    """Current tag -> digest on the high side, newest revision of each name."""
-    got = api(reg, f"/repository/{repo}/tag/?limit=100&onlyActiveTags=true", token)
+    """Current tag -> digest on the high side, newest revision of each name.
+
+    A repository that does not exist yet answers 403, not 404 - the registry will
+    not tell an unprivileged caller whether a private repo exists. On a first
+    import every repository is in that state, so both mean the same thing here:
+    nothing live to reconcile against, and the push below will create it.
+    """
+    try:
+        got = api(reg, f"/repository/{repo}/tag/?limit=100&onlyActiveTags=true", token)
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return {}
+        raise
     if got is None:
         return {}
     out = {}
     for t in got["tags"]:
         out.setdefault(t["name"], t["manifest_digest"])
     return out
+
+
+def ensure_namespace(reg, repo, token, seen):
+    """Create the destination organisation if it is not there yet.
+
+    Quay creates a repository on first push, but only inside a namespace that
+    already exists; pushing into an absent organisation fails with the rather
+    misleading "authentication required". On a first import every namespace is
+    absent, so make it rather than require an operator to have guessed.
+    """
+    ns = repo.split("/", 1)[0]
+    if ns in seen:
+        return
+    seen.add(ns)
+    try:
+        # api() turns 404 into None rather than raising, so test the value, not the
+        # absence of an exception - that mistake made this look like a no-op.
+        if api(reg, f"/organization/{ns}", token) is not None:
+            return                              # already there
+    except urllib.error.HTTPError as e:
+        if e.code != 403:
+            raise
+    body = json.dumps({"name": ns, "email": f"{ns}@example.invalid"}).encode()
+    req = urllib.request.Request(f"http://{reg}/api/v1/organization/", data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        urllib.request.urlopen(req, timeout=30)
+        print(f"  created namespace {ns}")
+    except urllib.error.HTTPError as e:
+        if e.code != 400:                       # 400 = already exists
+            print(f"  could not create namespace {ns}: {e.code}", file=sys.stderr)
 
 
 def main():
@@ -85,8 +128,10 @@ def main():
             return
 
     added = retargeted = deleted = 0
+    namespaces = set()
 
     for repo, desired in state["repos"].items():
+        ensure_namespace(reg, repo, token, namespaces)
         if not desired:
             print(f"  REFUSING {repo}: the desired set is empty, which is never a "
                   f"legitimate instruction", file=sys.stderr)
@@ -113,7 +158,7 @@ def main():
             except subprocess.CalledProcessError as e:
                 # The store cannot hold content that never crossed. Say so and carry on;
                 # the next transfer that includes this digest will settle it.
-                print(f"  SKIP {ref}: not in the OCI store ({e.stderr.decode().strip()[:120]})",
+                print(f"  SKIP {ref}: not in the OCI store ({e.stderr.decode().strip()[-200:]})",
                       file=sys.stderr)
                 continue
             if tag in live:

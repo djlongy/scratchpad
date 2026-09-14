@@ -60,6 +60,30 @@ LINE = re.compile(r"^(?P<registry>[^/\s]+)/(?P<repo>[^\s:@]+):(?P<tag>[^\s@]+)@(
 DEFAULT_CACHES = "docker.io=hubcache,quay.io=quaycache,registry.k8s.io=k8scache,ghcr.io=ghcrcache"
 
 
+def app_version(layout, ref):
+    """The version the image reports about itself.
+
+    Some publishers ship only a `latest` tag - Bitnami's community images on
+    Docker Hub are the example, where everything else in the tag list is a Cosign
+    artifact rather than the application. A tag of `latest` cannot tell you whether
+    a transfer moved you forward, so read the version out of the image and make it
+    a real tag. Order of preference matches the convention those images follow.
+    """
+    out = subprocess.run(["skopeo", "inspect", f"oci:{layout}:{ref}"],
+                         capture_output=True, text=True)
+    if out.returncode:
+        return ""
+    d = json.loads(out.stdout)
+    labels = d.get("Labels") or {}
+    for key in ("org.opencontainers.image.version", "app.kubernetes.io/version"):
+        if labels.get(key):
+            return labels[key]
+    for env in d.get("Env") or []:
+        if env.startswith("APP_VERSION="):
+            return env.split("=", 1)[1]
+    return ""
+
+
 def parse_inventory(path):
     out = []
     for n, raw in enumerate(Path(path).read_text().splitlines(), 1):
@@ -117,6 +141,13 @@ def main():
         if args.all_platforms:
             cmd.append("--all")
         subprocess.run(cmd + [src, f"oci:{layout}:{ref}"], check=True)
+
+        ver = app_version(layout, ref)
+        if ver and ver != img["tag"]:
+            alias = f"{args.namespace}/{img['repo']}:{ver}"
+            subprocess.run(["skopeo", "copy", "-q", "--preserve-digests",
+                            f"oci:{layout}:{ref}", f"oci:{layout}:{alias}"], check=True)
+            print(f"      + version alias {ver} (the image reports it; the tag did not)")
 
     # describe what crossed, from the layout rather than from what we believe
     index = json.loads((layout / "index.json").read_text())
