@@ -171,6 +171,14 @@ tags automatically; treat store size as a capacity decision.
 
 Full design, evidence and the runs that proved it: [`docs/desired-state-mirror.md`](docs/desired-state-mirror.md).
 
+## 3b. The whole pipeline, end to end
+
+[`docs/pipeline-runbook.md`](docs/pipeline-runbook.md) puts the stages in order —
+deciding versions, approving, pulling, exporting, crossing, reconciling, pruning
+and deploying — and marks which stages were executed against live registries and
+which are recommendations. Read it if you are building this rather than reading
+about it.
+
 ## 4. Taking it to a real link
 
 - **Replace the folder with the diode.** The send flow's `PutFile` and the receive flow's
