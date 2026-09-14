@@ -191,7 +191,7 @@ python3 wiki-import.py wiki-export docs --exclude 'templates/' --include '/opera
 | `lint` | MR, feature branch | `zensical build --clean --strict`: broken links and pages missing from the nav fail |
 | `markdownlint` | MR, feature branch | `markdownlint-cli2` with `.markdownlint.yaml` |
 | `links` | MR, feature branch | `lychee --offline` over `docs/`: file links only, so private hosts do not fail it |
-| `scripts-test` | MR, branch, default branch | the scripts' 137 tests, with `coverage.xml` for a SonarQube job |
+| `scripts-test` | MR, branch, default branch | the scripts' 143 tests, with `coverage.xml` for a SonarQube job |
 | `wiki` | default branch, only if `WIKI_TOKEN` is set | `scripts/wiki-deploy.sh docs wiki`: pull wiki edits into the repo, then sync the repo into the wiki |
 | `deploy-docs` | default branch | GitLab Pages (`pages: publish: site`, GitLab 17.9+); delete this job on an instance without Pages |
 
@@ -242,6 +242,40 @@ requests to the repository" on; that setting covers the project repository only.
 and job-token wiki pushes are open GitLab issues
 ([16261](https://gitlab.com/gitlab-org/gitlab/-/issues/16261),
 [419680](https://gitlab.com/gitlab-org/gitlab/-/issues/419680)).
+
+## Wiki to repo, step by step
+
+The repo-to-wiki half needs nothing beyond the `wiki` job. The wiki-to-repo half needs the
+pipeline to run when a page is saved. Every step is a GitLab setting, no extra service.
+
+1. **Token that starts pipelines.** *Settings > CI/CD > Pipeline trigger tokens > Add new
+   token*, description `wiki-sync`. Copy it now: GitLab shows it once. It can do one thing,
+   start a pipeline on this project.
+2. **Webhook on wiki saves.** *Settings > Webhooks > Add new webhook*.
+   - URL: `https://<gitlab>/api/v4/projects/<project id>/ref/<default branch>/trigger/pipeline?token=<trigger token>`
+     (the project id is on the project's home page under its name).
+   - Trigger: tick **Wiki page events** only.
+   - Enable SSL verification. Save.
+   - *Test > Wiki page events* on the new hook should return 201 and a pipeline appears under
+     *Build > Pipelines* with source `trigger`.
+3. **Token that pushes.** `WIKI_TOKEN` as in the setup list above: a project access token,
+   scope `write_repository`, Maintainer if the default branch is protected, saved as a masked
+   CI variable. This is the identity the `wiki` job pushes with, in both directions.
+4. **Keep the other jobs out.** `.not_for_wiki_sync` in `.gitlab-ci.yml` is already applied
+   to every job except `wiki`, so a trigger pipeline runs one short job.
+5. **Safety net.** *Build > Pipeline schedules > New schedule*, description `wiki sync
+   safety net`, cron `0 * * * *`, target the default branch. It catches a missed webhook and
+   the one case the webhook cannot see: a direct `git push` to `<project>.wiki.git`, which
+   fires no wiki page event.
+6. **Prove it.** Edit any page in the wiki UI and save. Within a minute a pipeline with
+   source `trigger` runs the `wiki` job, and the default branch gains a commit with you as
+   the author, titled `wiki: ` plus the wiki's own commit message, touching only that
+   page's docs file. The wiki then shows a "Sync docs from <sha>" commit by the CI author.
+
+If step 6 shows a pipeline but no commit, read the `wiki` job log: it names the wiki
+commits it found and what it did with each. If step 6 shows no pipeline, the webhook's
+recent deliveries (*Settings > Webhooks > Edit > Recent events*) show the response GitLab
+gave the trigger call.
 
 ## Two-way: wiki edits come back as commits
 
@@ -324,9 +358,12 @@ DRY_RUN=1 scripts/wiki-deploy.sh docs wiki      # report only
 scripts/wiki-deploy.sh docs wiki                # pull, push, sync
 ```
 
-Locally the repo push goes to `origin` with your own credentials; in CI it uses the job
-token. `WIKI_URL` and `REPO_PUSH_URL` override both (the tests point them at `file://`
-repos).
+Locally and in CI alike the repo push goes over https with `WIKI_TOKEN`, never your ssh
+keys and never the checkout's `origin`. A run in an empty `HOME` with no git identity, no
+ssh keys and no credential helper completes without a prompt: git is told not to ask
+(`GIT_TERMINAL_PROMPT=0`), the global and system git configs are ignored, and the token
+lives in a mode-600 temp file removed on exit, so no clone keeps it in `.git/config`.
+`WIKI_URL` and `REPO_PUSH_URL` override the URLs (the tests point them at `file://` repos).
 
 Two things a reused CI build directory can do to this job, both handled: a stray
 `docs/.git` from an earlier job would make every git command act on that nested repo, so
@@ -357,7 +394,7 @@ cases and dry runs.
 
 ```bash
 pip install pyyaml pytest
-python3 -m pytest -q .                          # 137 passed, about 6 minutes
+python3 -m pytest -q .                          # 143 passed, 1 xfailed, about 6 minutes
 ```
 
 Checked with ruff (`E,F,W,B,C90,N,UP,SIM`, clean) and a SonarQube "Sonar way" scan of the
