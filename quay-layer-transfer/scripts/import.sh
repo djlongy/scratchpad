@@ -12,6 +12,27 @@ incoming=$here/data/high-store/incoming
 done_dir=$here/data/high-store/imported
 mkdir -p "$store" "$incoming" "$done_dir"
 
+# --- the return channel (bidirectional mode) --------------------------------------------
+# Publish the digests this store holds where the low side can read them. On a real link
+# this is the one narrow, content-free channel back — a sorted list of hashes, no payload.
+# export.sh then leaves those blobs out of the next archive, which is what lets the send
+# flow be a plain passthrough with no dedupe state of its own.
+#
+# Published on EVERY exit — success, a failed transfer, an empty incoming/ — because a run
+# that merged blobs and then failed on a later transfer has still changed what this side
+# holds, and a stale list has the low side re-send blobs that are already here. Written to
+# a temporary file and moved into place so the low side never reads a half-written list.
+have=$here/data/low-export/have/blobs.txt
+publish_have() {
+  rc=$?
+  mkdir -p "$(dirname "$have")"
+  ls "$store/blobs/sha256" 2>/dev/null | sed 's/^/sha256:/' | sort > "$have.tmp"
+  mv "$have.tmp" "$have"
+  echo "published have/blobs.txt: $(wc -l < "$have" | tr -d ' ') digest(s) the low side need not send again"
+  exit $rc
+}
+trap publish_have EXIT
+
 shopt -s nullglob
 for t in "$incoming"/transfer-*; do
   name=$(basename "$t")

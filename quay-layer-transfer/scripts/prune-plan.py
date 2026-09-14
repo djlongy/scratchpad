@@ -23,9 +23,17 @@ again. The reverse order — far side deletes first, ledger cleared later — le
 a window where the content is gone and the ledger still claims it crossed, which
 is exactly the unrecoverable state this design exists to avoid.
 
+In BIDIRECTIONAL mode none of that applies, because the record of what the far
+side holds is published by the far side itself (have/blobs.txt). Pass that file
+instead of a Redis command: the arithmetic is the same, there is nothing to
+forget locally, and a blob pruned over there simply reappears in the next
+published list and is exported again. Pruning is safe there at any speed.
+
   usage: prune-plan.py OCI_LAYOUT_DIR REDIS_CLI_CMD...
+         prune-plan.py OCI_LAYOUT_DIR HAVE_FILE
          prints the prunable digests, one per line, having removed them from the
-         ledger. Prints nothing when there is nothing to prune.
+         ledger when the ledger is what was given. Prints nothing when there is
+         nothing to prune, or when the have file does not exist yet.
 
 Env:
   PRUNE_MAX_PCT   refuse if more than this share of the ledger would go (default 60)
@@ -56,18 +64,29 @@ def main():
         sys.exit("prune-plan: the export layout holds no blobs; refusing to treat "
                  "that as 'nothing is wanted'")
 
-    keys = {k.strip() for k in redis(redis_cli, "--scan").splitlines() if k.strip()}
+    # One argument that names a file is the far side's published digest list; anything
+    # else is a Redis CLI command. The two carry the same information in opposite
+    # directions: what the low side believes it sent, or what the high side says it has.
+    have = Path(redis_cli[0]) if len(redis_cli) == 1 else None
+    if have is not None:
+        if not have.exists():
+            return                       # first transfer: the far side has published nothing
+        keys = {k.strip().removeprefix("sha256:") for k in have.read_text().splitlines() if k.strip()}
+    else:
+        keys = {k.strip() for k in redis(redis_cli, "--scan").splitlines() if k.strip()}
+
     prunable = sorted(keys - wanted)
     if not prunable:
         return
 
     if not FORCE and len(prunable) * 100 > len(keys) * MAX_PCT:
-        sys.exit(f"prune-plan: {len(prunable)} of {len(keys)} ledger entries would be "
+        sys.exit(f"prune-plan: {len(prunable)} of {len(keys)} recorded blobs would be "
                  f"pruned (> {MAX_PCT}%). Refusing. Set PRUNE_FORCE=1 to override.")
 
-    # Forget first, announce second. A lost transfer must only ever cost a re-send.
-    for i in range(0, len(prunable), 200):
-        redis(redis_cli, "DEL", *prunable[i:i + 200])
+    if have is None:
+        # Forget first, announce second. A lost transfer must only ever cost a re-send.
+        for i in range(0, len(prunable), 200):
+            redis(redis_cli, "DEL", *prunable[i:i + 200])
 
     print("\n".join(prunable))
 

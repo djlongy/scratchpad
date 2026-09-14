@@ -9,12 +9,19 @@ compose file, so the same steps can be lifted onto a real diode.
  LOW SIDE                                       ONE-WAY LINK          HIGH SIDE
  ┌─────────┐  export.sh   ┌────────────┐  NiFi send flow  ┌───────┐  NiFi recv  ┌────────────┐ import.sh ┌─────────┐
  │ Quay    │ ───────────▶ │ low-export │ ───────────────▶ │ diode │ ──────────▶ │ high-store │ ────────▶ │ Quay    │
- │ (low)   │ N, N-1, N-2  │ OCI archive│  unpack, dedupe  │ .tar  │  unpack     │ OCI store  │ skopeo    │ (high)  │
- └─────────┘  per repo    └────────────┘  vs Redis, repack └───────┘             └────────────┘           └─────────┘
-                                                ▲
-                                          Redis: digests
-                                          that have crossed
+ │ (low)   │ N, N-1, N-2  │ OCI archive│                  │ .tar  │  unpack     │ OCI store  │ skopeo    │ (high)  │
+ └─────────┘  per repo    └────────────┘                  └───────┘             └────────────┘           └─────────┘
+                                 ▲                                                     │
+                                 └──────── have/blobs.txt: digests the store holds ◀────┘
+                                           (bidirectional mode — a list of hashes, no payload)
 ```
+
+Two ways to decide what not to send, one command apart:
+
+| | Who dedupes | What crosses | The flow |
+|---|---|---|---|
+| **bidirectional** (default) | `export.sh`, against the far side's published digest list | only blobs the far side does not have | ListFile → FetchFile → PutFile |
+| **oneway** | NiFi, against a Redis ledger of what it has sent | the whole archive, minus what the ledger recognises | + UnpackContent → DetectDuplicate → MergeContent |
 
 What is here:
 
@@ -24,12 +31,13 @@ What is here:
 | [`scripts/quay-config.sh`](scripts/quay-config.sh) | Minimal Quay `config.yaml` for one side (random keys, local storage) |
 | [`scripts/quay-init.sh`](scripts/quay-init.sh) | Waits for a Quay, creates the superuser through the API, keeps its token, creates the organisation |
 | [`scripts/seed-images.sh`](scripts/seed-images.sh) | Builds and pushes a semver image family whose versions share layers (the thing worth deduplicating) |
-| [`scripts/export.sh`](scripts/export.sh) | Low side: newest N semver tags of every repository in the organisation, into one OCI layout archive plus a manifest |
-| [`scripts/nifi-flow.py`](scripts/nifi-flow.py) | Builds the send and receive flows through NiFi's REST API; [`nifi/*.json`](nifi/) are the same flows exported, for upload through the UI |
+| [`scripts/export.sh`](scripts/export.sh) | Low side: newest N semver tags of every repository in the organisation, into one OCI layout archive plus a manifest, minus whatever the far side says it already holds |
+| [`scripts/nifi-flow.py`](scripts/nifi-flow.py) | Builds the send and receive flows through NiFi's REST API, `--mode bidirectional` (default) or `--mode oneway`; [`nifi/*.json`](nifi/) are the oneway flows exported, for upload through the UI |
 | [`scripts/oci-merge.py`](scripts/oci-merge.py) | High side: merge a received transfer into the persistent OCI store, verify every image is complete |
-| [`scripts/import.sh`](scripts/import.sh) | High side: merge, then `skopeo copy` every image of the transfer into the high Quay |
+| [`scripts/import.sh`](scripts/import.sh) | High side: merge, `skopeo copy` every image of the transfer into the high Quay, and publish the store's digest list back for the next export |
 | [`scripts/verify.sh`](scripts/verify.sh) | Digest on high == digest on low, `docker pull` from high, run the container |
-| [`scripts/demo.sh`](scripts/demo.sh) | The three-transfer proof below, unattended |
+| [`scripts/demo.sh`](scripts/demo.sh) | The three-transfer proof below, unattended, in either mode |
+| [`scripts/test-lifecycle.sh`](scripts/test-lifecycle.sh) | Tears the lab down and proves cross → prune → **re-cross**: the check that a blob dropped from the far store can be sent again. `oneway` by construction |
 
 Tools on the operator machine: docker with compose, skopeo, python3, curl. Nothing else;
 the scripts are bash plus stdlib Python.
@@ -43,17 +51,21 @@ mkdir -p data/low-export data/diode data/high-store && chmod 777 data/*   # NiFi
 docker compose up -d                                                       # first run pulls ~2.5 GB
 scripts/quay-init.sh low  http://localhost:18081
 scripts/quay-init.sh high http://localhost:18082
-python3 scripts/nifi-flow.py                                               # builds and starts both flows
+python3 scripts/nifi-flow.py                                               # bidirectional; --mode oneway for the other shape
 ```
 
 Quay answers on `http://localhost:18081` (low) and `18082` (high), user `admin`, password
 `quayadmin123` (override with `QUAY_USER`/`QUAY_PASS` before `quay-init.sh`). NiFi is at
 `https://localhost:18090` (`admin` / `nifiadmin1234`, self-signed certificate). Ports are
-chosen high to stay clear of the usual 8080/8443 tenants; change them in `compose.yaml`
-and the `SERVER_HOSTNAME` passed to `quay-config.sh` together.
+chosen high to stay clear of the usual 8080/8443 tenants. To move them, set `LOW_PORT`,
+`HIGH_PORT` and `NIFI_PORT`, and pass the matching `SERVER_HOSTNAME` to
+`quay-config.sh`, `LOW_REGISTRY` / `HIGH_REGISTRY` to the scripts and `NIFI_URL` to
+`nifi-flow.py` — which is also how you run a second copy of the lab beside the first
+(`docker compose -p lab2 …`).
 
-Quay 3.15 has an arm64 image, so this runs natively on Apple Silicon (tested in a 12 GB
-Colima VM) as well as on x86_64.
+Quay 3.15 has an arm64 image, so this runs natively on Apple Silicon (tested in a 14 GB
+Colima VM) as well as on x86_64. Budget about 3 GB per Quay with the worker caps in
+`compose.yaml`; see §5 for what happens without them.
 
 ## 2. The procedure
 
@@ -74,7 +86,54 @@ digests, tarred as `data/low-export/transfer-<UTC stamp>.tar`.
 Copy that file onto whatever feeds the diode. In the lab that is the same folder NiFi
 watches.
 
-### NiFi send flow (low side)
+In **bidirectional** mode (the default) `export.sh` first reads
+`data/low-export/have/blobs.txt` — the digest list the far side published — and leaves
+every blob it names out of the tar. `manifest.json` still lists **every** layer of every
+image, which is what lets the far side prove a merged image is complete even though most
+of its layers arrived months ago. `TRANSFER_MODE=oneway` skips that step and packs
+everything, leaving the dedupe to NiFi.
+
+### The return channel: `have/blobs.txt`
+
+`import.sh` writes the sorted digests of its OCI store to
+`data/low-export/have/blobs.txt` on **every** exit — a successful import, a failed one, or
+an empty queue — because a run that merged blobs and then failed later has still changed
+what the high side holds, and a stale list makes the low side re-send things that are
+already there. It is written to a temporary name and moved into place, so the exporter
+never reads half a list.
+
+What crosses back is a sorted list of hashes and nothing else: no filenames, no image
+names, no tags, no bytes of content. That is the whole point — it is small enough and
+dull enough to argue for on a link where the default answer to "can anything come back?"
+is no. If the answer really is no, run `oneway` and nothing changes on the low side
+except that the archive is bigger.
+
+The direction of trust is the reason to prefer it where it is allowed. The Redis ledger
+records a digest when NiFi **sends** it, so it describes what the low side believes; a
+transfer lost in flight leaves digests marked as crossed and the far side permanently
+short. `have/blobs.txt` describes what the far side **has**, so a lost transfer corrects
+itself on the next export with no operator action and no `redis-cli del`.
+
+### NiFi send flow (low side) — bidirectional
+
+```bash
+python3 scripts/nifi-flow.py --mode bidirectional --reset
+```
+
+`ListFile` picks up `transfer-*.tar` from `data/low-export` (not recursing, so the
+`have/` folder is never listed as something to send), `FetchFile` moves it to `sent/`, and
+`PutFile` writes it to `data/diode/` under the same basename. Three processors, no state,
+no Redis. The archive crosses byte for byte.
+
+Deduplicating a second time would repeat work the exporter already did, and every
+processor removed is a processor that cannot corrupt an archive — the unpack/merge shape
+below is the one with the timing failure described in §5.
+
+### NiFi send flow (low side) — oneway
+
+```bash
+python3 scripts/nifi-flow.py --mode oneway --reset
+```
 
 `ListFile` picks up `transfer-*.tar`, `FetchFile` moves it to `sent/`, `UnpackContent`
 splits it into one flowfile per entry, and `RouteOnAttribute` sends every entry under
@@ -91,10 +150,12 @@ archive that crosses the link carries only blobs the high side has not got.
 
 ### NiFi receive flow (high side)
 
-`ListFile` on `data/diode/` picks up `*-dedup.tar`, `FetchFile` moves it to `received/`,
-`UnpackContent` splits it, and `PutFile` writes each entry to
-`data/high-store/incoming/<transfer>/<path>`, recreating the archive's tree. That folder
-is the hand-over point to the registry import.
+The same in both modes. `ListFile` on `data/diode/` picks up `transfer-*.tar`, `FetchFile`
+moves it to `received/`, `UnpackContent` splits it, and `PutFile` writes each entry to
+`data/high-store/incoming/<transfer>/<path>`, recreating the archive's tree. The
+per-transfer folder is the archive name with `.tar` and any `-dedup` stripped, so a
+transfer lands under the same name whichever send flow produced it and `import.sh` needs
+no mode of its own. That folder is the hand-over point to the registry import.
 
 ### High side: merge and import
 
@@ -121,21 +182,51 @@ Seed: `demo/app` and `demo/api`, tags `1.0.0 1.1.0 1.2.0 2.0.0`, plus `latest` a
 Each image is four layers: base, runtime (shared by all), app (shared per repository),
 version (unique).
 
-| Transfer | Export selected | Blobs in the export | Blobs that crossed | Redis keys after | High store |
-|---|---|---|---|---|---|
-| 1 | 2.0.0, 1.2.0, 1.1.0 of both repos | 22 | 22 | 22 | 22 blobs, 6 images |
-| 2 | after pushing 2.1.0: 2.1.0, 2.0.0, 1.2.0 | 22 | 6 (2 version layers, 2 configs, 2 manifests) | 28 | 28 blobs, 8 images |
-| 3 | the same export again | 22 | 0 (3 metadata entries only) | 28 | unchanged, import is a no-op |
+The three transfers were run twice, once in each mode, each against a lab torn down to
+nothing first. **The same blobs cross either way. What differs is how much work the low
+side does to achieve it.**
 
-After each transfer `verify.sh` pulled the newest and the N-1 version from the high Quay
-and ran them (`app 2.1.0`, `app 2.0.0`, ...), with the manifest digest identical on both
-sides. `1.0.0`, `latest` and `dev` were never exported.
+`bidirectional` — the exporter leaves out what the far side published, so the file it
+writes *is* the file that crosses:
+
+| Transfer | Packed of 22 | Archive written and crossed | Store after |
+|---|---|---|---|
+| 1 | 22 | **8.0M** | 22 blobs, 8 images |
+| 2 | 6 (16 left out) | **40K** | 22 blobs, 10 images (6 merged, 6 pruned) |
+| 3 | 0 (22 left out) | **24K** | unchanged, import is a no-op |
+
+`oneway` — the exporter packs everything and NiFi drops what the ledger recognises:
+
+| Transfer | Packed of 22 | Archive written | Archive that crosses | Store after |
+|---|---|---|---|---|
+| 1 | 22 | 8.0M | 8.0M (22 blobs) | 22 blobs, 8 images |
+| 2 | 22 | 8.0M | 24K (6 blobs) | 22 blobs, 10 images (6 merged, 6 pruned) |
+| 3 | 22 | 8.0M | 16K (0 blobs) | unchanged, import is a no-op |
+
+Six blobs is the real delta of a patch release here: two version layers, two configs, two
+manifests. `oneway` still builds and writes an 8 MB archive for it, then unpacks 22 blobs,
+looks each up in Redis, and repacks six — on the low side's disk and CPU, and across the
+wire first if the exporter is not on the link's own host. `bidirectional` never builds the
+8 MB: the third transfer, which carries nothing at all, is 24 KB of metadata.
+
+After each transfer `import.sh` reported `missing: none` — the line that says the merged
+image is complete in the store, not merely plausible, even though most of its layers
+arrived in an earlier transfer — and `verify.sh` pulled the newest and the N-1 version
+from the high Quay and ran them, with the manifest digest identical on both sides. Both
+modes finished with a store of 22 blobs and 10 images.
 
 Run it yourself against a fresh stack:
 
 ```bash
-scripts/demo.sh
+python3 scripts/nifi-flow.py --mode bidirectional --reset && scripts/demo.sh
+TRANSFER_MODE=oneway scripts/demo.sh    # after rebuilding the flow with --mode oneway
 ```
+
+`scripts/test-lifecycle.sh` is the other regression: it tears the lab down, drives a blob
+out of the semver window, proves the far store drops it, then withdraws a version upstream
+so the blob is wanted again and must re-cross. That one is `oneway` by construction — it
+asserts what the Redis ledger holds at each step, and in `bidirectional` mode there is no
+ledger to assert on.
 
 ## 3a. Keeping the far side in step (desired state)
 
@@ -164,10 +255,16 @@ Two safety properties, both deliberate: a run that would delete more than
 `RECONCILE_FORCE=1`, and repositories absent from `state.json` are left alone —
 because absence is also what a truncated transfer looks like.
 
-**Do not automate a blob prune of the far-side OCI store.** The dedupe ledger
-records a digest when it *sends* it, so a blob pruned from the store is never
-resent and that image becomes unbuildable there, permanently. Reconcile registry
-tags automatically; treat store size as a capacity decision.
+**Whether a blob prune of the far-side OCI store is safe depends on the mode.**
+In `oneway` the dedupe ledger records a digest when it *sends* it, so a blob
+pruned from the store is never resent and that image becomes unbuildable there,
+permanently. `prune-plan.py` makes it safe by clearing the ledger on the low side
+*before* the transfer leaves — worst case a lost transfer costs a re-send — and
+`test-lifecycle.sh` exists to prove that path end to end. In `bidirectional` the
+whole hazard is gone: the far side republishes `have/blobs.txt` from its store
+after every import, so a blob it no longer holds is simply one the next export
+packs again. `prune-plan.py` takes that file instead of the ledger and has
+nothing to forget.
 
 Full design, evidence and the runs that proved it: [`docs/desired-state-mirror.md`](docs/desired-state-mirror.md).
 
@@ -204,15 +301,22 @@ the destination preserves digests; use this when it does not.
 - **Two NiFi instances.** In the lab both flows live in one NiFi; the exported
   [`nifi/low-side-flow.json`](nifi/low-side-flow.json) and
   [`nifi/high-side-flow.json`](nifi/high-side-flow.json) upload as separate process groups
-  on separate instances (Process Group > Upload). The Redis pool service's connection
-  string is the one value to change on the low side.
-- **Redis is the ledger, and it records on sight.** `DetectDuplicate` writes the digest when
-  it first sees it, not when the far side confirms receipt. On a strict one-way link there
-  is no confirmation, so a transfer lost in flight leaves digests marked as crossed. The
-  high side's `oci-merge.py` reports exactly which blobs are missing; to resend them,
-  delete those keys (`redis-cli del sha256:...`, or `flushall` to resend everything) and
-  export again. Keep Redis persistent (`appendonly yes` in `compose.yaml`) and back it up
-  with the low-side registry.
+  on separate instances (Process Group > Upload). Those two are the `oneway` shape, so the
+  Redis pool service's connection string is the one value to change on the low side; for
+  `bidirectional` there is no service to point anywhere, and `nifi-flow.py --mode
+  bidirectional` builds the three processors in less time than an import takes.
+- **Ask for the return channel before you accept the ledger.** In `oneway` mode Redis is
+  the ledger and it records on sight: `DetectDuplicate` writes the digest when it first
+  sees it, not when the far side confirms receipt. On a strict one-way link there is no
+  confirmation, so a transfer lost in flight leaves digests marked as crossed. The high
+  side's `oci-merge.py` reports exactly which blobs are missing; to resend them, delete
+  those keys (`redis-cli del sha256:...`, or `flushall` to resend everything) and export
+  again — an operator action, on a list a human has to read out of one side's logs and
+  apply on the other. Keep Redis persistent (`appendonly yes` in `compose.yaml`) and back
+  it up with the low-side registry. In `bidirectional` mode none of that exists: the far
+  side states what it holds, so a lost transfer is corrected by the next export on its
+  own. A one-way link that permits a hash list back is a materially better one, and this
+  is the argument to take to whoever owns the link.
 - **Tag policy.** `export.sh` keeps the newest N semver tags per repository. Pre-releases
   (`1.2.3-rc1`) and moving tags (`latest`) are excluded on purpose; widen the regex in
   `export.sh` if the group is versioned differently.
@@ -289,4 +393,14 @@ is intact.
   `export.sh` sets `COPYFILE_DISABLE=1`.
 - Docker Desktop's credential helper (`credsStore: desktop` in `~/.docker/config.json`)
   hung every pull through a second Colima VM's socket; an empty `DOCKER_CONFIG` directory
-  for the lab fixed it.
+  for the lab fixed it. If you point the lab at a non-default daemon, select it with
+  `DOCKER_HOST` and not `DOCKER_CONTEXT`: contexts are stored *inside* `DOCKER_CONFIG`, so
+  the empty directory that fixes the credential helper also makes every named context
+  vanish (`context not found`).
+- **Quay sizes its worker pools from the host CPU count.** On a 6-CPU VM each instance
+  settled at 5.3 GB RSS, so the pair alone wanted more than 10 GB and a second copy of the
+  lab would not start beside the first. `WORKER_COUNT_WEB` / `WORKER_COUNT_REGISTRY` /
+  `WORKER_COUNT_SECSCAN` (set in `compose.yaml`) cap them: with those and 4 CPUs an
+  instance settles at 3.1 GB, both Quays report healthy in about 45 s, and the whole lab
+  fits in a 14 GB VM with room to spare. `QUAY_OVERRIDE_SERVICES` can switch whole
+  services off if you need to go further.

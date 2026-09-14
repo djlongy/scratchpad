@@ -1,18 +1,37 @@
 #!/usr/bin/env python3
 """Build the two NiFi flows through the REST API, then start them. Stdlib only.
 
-usage: nifi-flow.py [--url https://localhost:18090] [--user admin] [--password ...] [--reset]
+usage: nifi-flow.py [--url https://localhost:18090] [--user admin] [--password ...]
+                    [--mode bidirectional|oneway] [--reset]
 
-low-side  (send):  ListFile /data/low-export  -> FetchFile -> UnpackContent(tar)
-                   -> RouteOnAttribute: blobs -> DetectDuplicate (Redis, key = blob digest)
-                                          metadata (index.json, oci-layout, manifest.json) always
-                   -> MergeContent (TAR per original archive) -> UpdateAttribute -> PutFile /data/diode
+The send flow has two shapes. The receive flow is the same either way.
+
+bidirectional (default) — the high side publishes what its store holds to
+  data/low-export/have/blobs.txt and export.sh leaves those blobs out of the archive, so
+  what arrives here already contains only blobs the far side is missing. Nothing in NiFi
+  has to open it:
+
+    ListFile /data/low-export -> FetchFile -> PutFile /data/diode   (object name = basename)
+
+  Deduplicating a second time would repeat work the exporter already did, and every
+  processor removed is a processor that cannot corrupt an archive.
+
+oneway — the original shape, for a strict one-way link with no return channel. NiFi is
+  where the dedupe happens, against a Redis ledger of digests that have crossed:
+
+    ListFile -> FetchFile -> UnpackContent(tar)
+      -> RouteOnAttribute: blobs -> DetectDuplicate (Redis, key = blob digest)
+                           metadata (index.json, oci-layout, manifest.json, state.json) always
+      -> MergeContent (TAR per original archive) -> UpdateAttribute -> PutFile /data/diode
+
 high-side (recv):  ListFile /data/diode -> FetchFile -> UnpackContent(tar)
                    -> PutFile /data/high-store/incoming/<transfer>/<path>
+
 --reset stops, empties and deletes both groups first (idempotent rebuild).
 """
 import argparse
 import json
+import os
 import ssl
 import sys
 import time
@@ -123,8 +142,32 @@ class Nifi:
         self.call("DELETE", f"/process-groups/{pg}?version={g['revision']['version']}&clientId=nifi-flow")
 
 
-def build_low(n, root):
+def build_low(n, root, mode):
     pg = n.group(root, "low-side (send)", 0)
+
+    ls = n.processor(pg, "ListFile", "list exports", 0,
+                     {"Input Directory": LOW["export"], "File Filter": r"transfer-.*\.tar", "Minimum File Age": "5 sec",
+                      # false, so the return channel under low-export/have/ is never listed
+                      # as something to send.
+                      "Recurse Subdirectories": "false"}, schedule="10 sec")
+    fetch = n.processor(pg, "FetchFile", "fetch archive", 1,
+                        {"Completion Strategy": "Move File", "Move Destination Directory": LOW["export"] + "/sent"},
+                        terminate=("not.found", "permission.denied", "failure"))
+
+    if mode == "bidirectional":
+        # Custody passthrough. The archive already holds only what the far side is
+        # missing, so it crosses byte for byte under its own name and the receiving side
+        # never sees a split archive. No Redis service is created: in this mode the far
+        # side's have/blobs.txt IS the ledger, and it is authoritative because it lists
+        # what that store actually holds rather than what this side believes it sent.
+        put = n.processor(pg, "PutFile", "to the diode", 2,
+                          {"Directory": LOW["diode"], "Conflict Resolution Strategy": "fail",
+                           "Create Missing Directories": "true"},
+                          terminate=("success", "failure"))
+        n.connect(pg, ls, fetch, ["success"])
+        n.connect(pg, fetch, put, ["success"])
+        return pg
+
     pool = n.service(pg, "RedisConnectionPoolService", "dedupe redis pool",
                      {"Redis Mode": "Standalone", "Connection String": REDIS})
     n.enable(pool)
@@ -132,12 +175,6 @@ def build_low(n, root):
                       {"redis-connection-pool": pool["id"]})
     n.enable(cache)
 
-    ls = n.processor(pg, "ListFile", "list exports", 0,
-                     {"Input Directory": LOW["export"], "File Filter": r"transfer-.*\.tar", "Minimum File Age": "5 sec",
-                      "Recurse Subdirectories": "false"}, schedule="10 sec")
-    fetch = n.processor(pg, "FetchFile", "fetch archive", 1,
-                        {"Completion Strategy": "Move File", "Move Destination Directory": LOW["export"] + "/sent"},
-                        terminate=("not.found", "permission.denied", "failure"))
     unpack = n.processor(pg, "UnpackContent", "unpack tar", 2, {"Packaging Format": "tar"},
                          terminate=("original", "failure"))
     route = n.processor(pg, "RouteOnAttribute", "blob or metadata", 3,
@@ -174,16 +211,21 @@ def build_low(n, root):
 
 def build_high(n, root):
     pg = n.group(root, "high-side (receive)", 600)
+    # One filter for both modes: bidirectional sends transfer-<stamp>.tar unchanged,
+    # oneway sends transfer-<stamp>-dedup.tar.
     ls = n.processor(pg, "ListFile", "list received archives", 0,
-                     {"Input Directory": HIGH["diode"], "File Filter": r"transfer-.*-dedup\.tar", "Minimum File Age": "5 sec",
+                     {"Input Directory": HIGH["diode"], "File Filter": r"transfer-.*\.tar", "Minimum File Age": "5 sec",
                       "Recurse Subdirectories": "false"}, schedule="10 sec")
     fetch = n.processor(pg, "FetchFile", "fetch archive", 1,
                         {"Completion Strategy": "Move File", "Move Destination Directory": HIGH["diode"] + "/received"},
                         terminate=("not.found", "permission.denied", "failure"))
     unpack = n.processor(pg, "UnpackContent", "unpack tar", 2, {"Packaging Format": "tar"},
                          terminate=("original", "failure"))
+    # The per-transfer directory is the archive name with the suffix stripped, so both
+    # modes land the same transfer under the same name and import.sh needs no mode of
+    # its own. A UTC stamp never contains "-dedup", so the literal replace is safe.
     put = n.processor(pg, "PutFile", "into the store", 3,
-                      {"Directory": HIGH["store"] + "/${segment.original.filename:substringBeforeLast('-dedup.tar')}/${path}",
+                      {"Directory": HIGH["store"] + "/${segment.original.filename:substringBeforeLast('.tar'):replace('-dedup','')}/${path}",
                        "Conflict Resolution Strategy": "replace", "Create Missing Directories": "true"},
                       terminate=("success", "failure"))
     n.connect(pg, ls, fetch, ["success"])
@@ -194,9 +236,12 @@ def build_high(n, root):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--url", default="https://localhost:18090")
+    # NIFI_URL so a lab on non-default ports needs no argument in every caller.
+    ap.add_argument("--url", default=os.environ.get("NIFI_URL", "https://localhost:18090"))
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="nifiadmin1234")
+    ap.add_argument("--mode", choices=("bidirectional", "oneway"), default="bidirectional",
+                    help="send-flow shape: passthrough (default) or the Redis-ledger dedupe")
     ap.add_argument("--reset", action="store_true", help="delete existing low/high groups first")
     args = ap.parse_args()
     n = Nifi(args.url, args.user, args.password)
@@ -218,10 +263,10 @@ def main():
             print(f"removed {name}")
         elif g:
             raise SystemExit(f"{name} exists; use --reset to rebuild")
-    low, high = build_low(n, root), build_high(n, root)
+    low, high = build_low(n, root, args.mode), build_high(n, root)
     n.start(low)
     n.start(high)
-    print(f"started low-side {low} and high-side {high}")
+    print(f"started low-side {low} ({args.mode}) and high-side {high}")
     return 0
 
 
