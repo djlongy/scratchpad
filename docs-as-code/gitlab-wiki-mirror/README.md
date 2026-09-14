@@ -1,7 +1,8 @@
-# Repo docs to GitLab wiki, automatically
+# Repo docs and the GitLab wiki, kept in sync both ways
 
 Keep documentation as Markdown in a git repo, review it through merge requests, and let CI
-publish it to the project's GitLab wiki after every merge. For GitLab instances without
+publish it to the project's GitLab wiki after every merge. Edits made in the wiki UI flow
+back into the repo as commits by the person who made them. For GitLab instances without
 Pages this is the whole publishing story; with Pages it is a second view of the same files.
 
 Companion to the [Material for MkDocs tutorial](../mkdocs-material/). Both build from the
@@ -12,13 +13,17 @@ What is here:
 | File | Purpose |
 |---|---|
 | [`wiki-import.py`](wiki-import.py) | One-time: turn a clone of an existing wiki into a `docs/` tree with relative links |
-| [`wiki-sync.py`](wiki-sync.py) | Every merge: rewrite the wiki from `docs/`, links and attachments included, sidebar from the nav |
+| [`wiki-sync.py`](wiki-sync.py) | Repo → wiki: rewrite the wiki from `docs/`, links and attachments included, sidebar from the nav |
+| [`wiki-pull.py`](wiki-pull.py) | Wiki → repo: every wiki commit since the last sync becomes a repo commit by its author, three-way merged, newer edit wins |
+| [`wiki-deploy.sh`](wiki-deploy.sh) | The job: clone, pull, push (`ci.skip`), sync, push. Same command in CI and from a shell: `scripts/wiki-deploy.sh docs wiki` |
+| [`.env.example`](.env.example) | The variables for a local run; copy to `.env` (gitignored) |
 | [`docfilter.py`](docfilter.py) | Shared include/exclude matching, the MkDocs `exclude_docs` / `not_in_nav` rules; both scripts import it |
-| [`.gitlab-ci.yml`](.gitlab-ci.yml) | The full pipeline: lint on MRs, wiki (and optionally Pages) on the default branch |
+| [`.gitlab-ci.yml`](.gitlab-ci.yml) | The full pipeline: lint on MRs, two-way wiki sync (and optionally Pages) on the default branch |
 | [`example/`](example/) | A two-section wiki as GitLab stores it, and the `docs/` tree the import produces from it |
 
 The scripts are stdlib plus PyYAML, no other dependencies, no assumptions about the instance
-beyond how GitLab lays out a wiki repository. Keep the three `.py` files together (`scripts/`).
+beyond how GitLab lays out a wiki repository. Keep the `.py` files and `wiki-deploy.sh`
+together (`scripts/`).
 
 ## The repo layout to aim for
 
@@ -178,19 +183,27 @@ python3 wiki-import.py wiki-export docs --exclude 'templates/' --include '/opera
 | `lint` | MR, feature branch | `zensical build --clean --strict`: broken links and pages missing from the nav fail |
 | `markdownlint` | MR, feature branch | `markdownlint-cli2` with `.markdownlint.yaml` |
 | `links` | MR, feature branch | `lychee --offline` over `docs/`: file links only, so private hosts do not fail it |
-| `wiki` | default branch, only if `WIKI_TOKEN` is set | clone wiki, refuse over a hand edit, sync, push on change |
+| `wiki` | default branch, only if `WIKI_TOKEN` is set | `scripts/wiki-deploy.sh docs wiki`: pull wiki edits into the repo, then sync the repo into the wiki |
 | `deploy-docs` | default branch | GitLab Pages (`pages: publish: site`, GitLab 17.9+); delete this job on an instance without Pages |
 
 Setup, once per repo:
 
-1. Copy `wiki-sync.py` and `docfilter.py` to `scripts/`, plus `.gitlab-ci.yml`, `requirements.txt`,
+1. Copy the `.py` files and `wiki-deploy.sh` to `scripts/`, plus `.gitlab-ci.yml`, `requirements.txt`,
    `.markdownlint.yaml`, and `mkdocs.yml` (needed by `lint` even if you never publish a
    site; it is what validates the links). `requirements.txt` pins Zensical; the Material
    for MkDocs pins are commented in it as the fallback.
 2. Create a project access token: *Settings > Access tokens*, name `wiki-sync`, scope
    `write_repository`, role Developer. Save it in your secret store first.
 3. *Settings > CI/CD > Variables*: `WIKI_TOKEN`, masked, protected if the default branch is.
-4. Merge to the default branch.
+4. Add `wiki/` and `.env*` to `.gitignore` (the job clones the wiki into `wiki/`; a local run
+   does the same and must never be committed).
+5. Merge to the default branch.
+
+The job pushes pulled wiki edits to the default branch with `CI_JOB_TOKEN`, so *Settings >
+CI/CD > Token Access > "Allow Git push requests to the repository"* must be on, and the
+pipeline's user needs push rights on that branch (Maintainer on a protected branch). The
+push carries `-o ci.skip`, so it starts no pipeline; the same job mirrors the result into
+the wiki straight afterwards.
 
 Without `WIKI_TOKEN` the `wiki` job is skipped by its rule, so the pipeline can land
 before the token exists.
@@ -202,25 +215,68 @@ and job-token wiki pushes are open GitLab issues
 ([16261](https://gitlab.com/gitlab-org/gitlab/-/issues/16261),
 [419680](https://gitlab.com/gitlab-org/gitlab/-/issues/419680)).
 
-## The hand-edit guard
+## Two-way: wiki edits come back as commits
 
-The wiki stays editable in the UI, and someone will use it. The `wiki` job checks the
-author of the wiki's last commit; if it is not `docs ci`, the job fails with the author's
-name and the pipeline goes red. Copy that change into `docs/` through a merge request; the
-next merge overwrites the wiki and the guard passes again. Nothing is lost silently.
+The wiki stays editable in the UI, and someone will use it. Every wiki commit after the
+last CI commit was typed by a person, so `wiki-pull.py` walks those commits and, for each
+changed page:
+
+1. converts it to its `docs/` form (`home.md` → `index.md`, `section.md` beside a
+   `section/` folder → `section/index.md`, links back to relative `.md` links);
+2. three-way merges it with `git merge-file`: base is the page as CI last wrote it, ours is
+   `docs/` now, theirs is the wiki. A clean merge keeps both sides;
+3. on conflict the newer edit wins (the wiki commit's date against the repo's last commit
+   for that file);
+4. a page deleted in the wiki is deleted from `docs/`, unless the repo changed it after the
+   sync, in which case the repo copy stays and the next sync restores the wiki page;
+5. commits the result with the wiki commit's author name, email and date, one repo commit
+   per wiki commit, so `git blame` and the MR history show who wrote what.
+
+Attachments added or removed in the wiki are copied or deleted the same way. `_sidebar.md`
+and GitLab's own `.gitlab/redirects.yml` are wiki furniture and never pulled.
+
+`wiki-deploy.sh` runs the pull first, pushes those commits, and only then rewrites the wiki
+from `docs/`, so a wiki edit is never overwritten before it has landed in the repo. After a
+pull the CI sync commit is written even when the wiki content is already right, because that
+commit is the marker "everything before here is synced".
+
+Run it from a shell exactly as CI does:
+
+```bash
+cp .env.example .env    # host, project path, token
+source .env
+DRY_RUN=1 scripts/wiki-deploy.sh docs wiki      # report only
+scripts/wiki-deploy.sh docs wiki                # pull, push, sync
+```
+
+Locally the repo push goes to `origin` with your own credentials; in CI it uses the job
+token. `WIKI_URL` and `REPO_PUSH_URL` override both (the tests point them at `file://`
+repos).
+
+Two things a reused CI build directory can do to this job, both handled: a stray
+`docs/.git` from an earlier job would make every git command act on that nested repo, so
+the script resolves the repo from the folder above `docs/`, reports and removes the nested
+one in CI, and refuses to run over it locally; and a global git config in the runner image
+is ignored (`GIT_CONFIG_GLOBAL=/dev/null`).
 
 ## Tests and quality
 
-`test_wiki_tools.py` covers all three modules: every link form the import must resolve, the
+`test_wiki_tools.py` covers the import, sync and filter modules: every link form the import must resolve, the
 page and attachment layout, unresolved-link reporting, generated home and section pages
 (including a wiki made of root folders only), sidebar order from `.pages` (`...`, a parent
 label overriding a folder title), stale page and attachment deletion, idempotence, the
 filter grammar, `mkdocs.yml` parsing with `!!python/name` tags present, include/exclude and
 `not_in_nav` behaviour, the command-line entry points, and the import-then-sync round trip.
+`test_wiki_pull.py` builds a repo with an origin and a wiki that CI has synced once, all as
+local git repos, then covers: an edit landing in `docs/` with the wiki author, link and
+section-page rewriting, a clean merge with a non-overlapping repo edit, conflicts won by
+the newer side in both directions, delete plus new page plus attachment, a delete refused
+because the repo edited the page, wiki furniture ignored, idempotence across a second sync,
+dry run, and `wiki-deploy.sh` end to end (round trip, dry run, the nested `docs/.git` case).
 
 ```bash
 pip install pyyaml pytest
-python3 -m pytest -q test_wiki_tools.py        # 25 passed
+python3 -m pytest -q .                          # 37 passed
 ```
 
 Checked with ruff (`E,F,W,B,C90,N,UP,SIM`, clean) and a SonarQube "Sonar way" scan of the
