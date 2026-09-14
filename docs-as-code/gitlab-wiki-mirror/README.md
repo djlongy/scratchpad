@@ -120,11 +120,13 @@ produced from it, untouched except for the three `.pages` files.
 `wiki-sync.py docs wiki` rewrites the wiki checkout:
 
 - `docs/index.md` → `home.md`; `section/index.md` → `section.md`; other pages keep paths.
-- `.md` links → root-absolute wiki paths without extension (`/operations/backups`).
-  These resolve from any page depth.
-- Attachment links → wiki-root-relative without a leading slash (`uploads/3f2a/network.png`),
-  the form GitLab writes itself. A leading slash would point at the project's uploads, and
-  `../uploads/...` does not resolve from a nested page.
+- Links stay relative to the page's own directory and keep `.md` on pages
+  (`../engineering/release-process.md`, `backups.md`, `../uploads/3f2a/network.png`), recomputed
+  for the two pages that move. Verified on GitLab 18.9: the wiki renders `other.md` and
+  `../dir/page.md` as page links and normalises `../uploads/x.png`, so the same links open in
+  a clone of the wiki repository (an editor, a file browser) and in the wiki UI. A bare
+  extension-less sibling (`other`) is never written, because GitLab resolves that from the
+  wiki root. `/uploads/...` (project uploads) is left alone in both directions.
 - Attachments are copied; pages and files no longer in `docs/` are deleted. Hidden files and
   hidden directories under `docs/` (`.pages`, `.git`, tool caches) are never copied; a stray
   `.git` copied into the wiki clone would replace its remote and break the push.
@@ -134,10 +136,14 @@ produced from it, untouched except for the three `.pages` files.
 Round trip on the example (a wiki page's links after import and sync):
 
 ```text
-wiki-export/operations.md    operations/backups   engineering/release-process   uploads/3f2a/network.png
-docs/operations/index.md     backups.md                       ../engineering/release-process.md   ../uploads/3f2a/network.png
-wiki/operations.md           /operations/backups  /engineering/release-process  uploads/3f2a/network.png
+wiki-export/operations.md    operations/backups   engineering/release-process      uploads/3f2a/network.png
+docs/operations/index.md     backups.md           ../engineering/release-process.md   ../uploads/3f2a/network.png
+wiki/operations.md           operations/backups.md  engineering/release-process.md   uploads/3f2a/network.png
 ```
+
+(The section page moved up one directory on the way back, so its relative links lost one
+`../`.) CRLF pages and files without a trailing newline cross unchanged; names with spaces
+are percent-encoded in links, unicode names are not.
 
 ## Filters: the same options as MkDocs
 
@@ -193,16 +199,18 @@ Setup, once per repo:
    site; it is what validates the links). `requirements.txt` pins Zensical; the Material
    for MkDocs pins are commented in it as the fallback.
 2. Create a project access token: *Settings > Access tokens*, name `wiki-sync`, scope
-   `write_repository`, role Developer. Save it in your secret store first.
+   `write_repository`, role Maintainer if the default branch is protected (the token pushes
+   pulled wiki edits to it), Developer otherwise. Save it in your secret store first.
 3. *Settings > CI/CD > Variables*: `WIKI_TOKEN`, masked, protected if the default branch is.
 4. Add `wiki/` and `.env*` to `.gitignore` (the job clones the wiki into `wiki/`; a local run
    does the same and must never be committed).
 5. Merge to the default branch.
 
-The job pushes pulled wiki edits to the default branch with `CI_JOB_TOKEN`, so *Settings >
-CI/CD > Token Access > "Allow Git push requests to the repository"* must be on, and the
-pipeline's user needs push rights on that branch (Maintainer on a protected branch). The
-push carries `-o ci.skip`, so it starts no pipeline; the same job mirrors the result into
+The script never uses anyone's ssh keys or the checkout's `origin`: every clone and push
+goes over https with `WIKI_TOKEN`, as a service account would, and git is told never to
+prompt. In CI without a `WIKI_TOKEN` the repo push falls back to `CI_JOB_TOKEN` (then
+*Settings > CI/CD > Token Access > "Allow Git push requests to the repository"* must be on).
+The push carries `-o ci.skip`, so it starts no pipeline; the same job mirrors the result into
 the wiki straight afterwards.
 
 Without `WIKI_TOKEN` the `wiki` job is skipped by its rule, so the pipeline can land
@@ -236,9 +244,30 @@ Attachments added or removed in the wiki are copied or deleted the same way. `_s
 and GitLab's own `.gitlab/redirects.yml` are wiki furniture and never pulled.
 
 `wiki-deploy.sh` runs the pull first, pushes those commits, and only then rewrites the wiki
-from `docs/`, so a wiki edit is never overwritten before it has landed in the repo. After a
-pull the CI sync commit is written even when the wiki content is already right, because that
-commit is the marker "everything before here is synced".
+from `docs/`, so a wiki edit is never overwritten before it has landed in the repo. The CI
+sync commit is written whenever the wiki's tip is not already a CI commit, even when the
+content is right, because that commit is the marker "everything before here is synced".
+
+Cases the scripts settle on purpose (each has a test):
+
+- **Wiped wiki.** A wiki with no commits, or with no pages left after the human commits
+  (everything deleted in the UI, an empty branch force-pushed), is a reset: nothing is pulled,
+  no docs file is deleted, the wiki is reseeded from `docs/`. Deleting one page still
+  propagates to `docs/`.
+- **Newer edit wins, in both directions.** A page deleted in the repo after a wiki edit stays
+  deleted; deleted before the wiki edit, the wiki edit restores it. A page created and deleted
+  in the wiki within the same batch ends deleted.
+- **Someone edits the wiki while the job runs.** The wiki push is rejected as
+  non-fast-forward, and the whole cycle runs again (clone, pull, push, sync; `SYNC_ATTEMPTS`,
+  default 3) so the late edit is pulled too. If it keeps failing the job exits non-zero with
+  the wiki untouched; the edits are still in the wiki for the next run.
+- **Someone pushes to the docs branch while the job runs.** The repo push is rejected, the
+  pulled commits are rebased onto the new tip and pushed again; a conflict aborts the rebase
+  and fails the job before the wiki is touched.
+- **A person using the CI's display name** is still a person: the sync marker is matched on
+  name and email.
+- **Non-ASCII page names**, names with spaces, CRLF pages, 150-file wiki commits, a detached
+  HEAD checkout (CI) pushing to the branch, dry runs in every state.
 
 Run it from a shell exactly as CI does:
 
@@ -273,10 +302,16 @@ section-page rewriting, a clean merge with a non-overlapping repo edit, conflict
 the newer side in both directions, delete plus new page plus attachment, a delete refused
 because the repo edited the page, wiki furniture ignored, idempotence across a second sync,
 dry run, and `wiki-deploy.sh` end to end (round trip, dry run, the nested `docs/.git` case).
+`test_scenarios_content.py` (74 tests) walks every link form a person can type in the wiki
+UI from root, section and nested pages, attachments, renames, unicode and CRLF, filters,
+byte-identical round trips. `test_scenarios_races.py` (25 tests) drives `wiki-deploy.sh`
+end to end against bare repos whose `pre-receive` hook pushes a competing commit and rejects
+the first push, to prove the retry and rebase paths, plus wipes, resets, attribution edge
+cases and dry runs.
 
 ```bash
 pip install pyyaml pytest
-python3 -m pytest -q .                          # 37 passed
+python3 -m pytest -q .                          # 137 passed, about 6 minutes
 ```
 
 Checked with ruff (`E,F,W,B,C90,N,UP,SIM`, clean) and a SonarQube "Sonar way" scan of the

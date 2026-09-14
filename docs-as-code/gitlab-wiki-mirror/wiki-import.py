@@ -30,12 +30,18 @@ import os
 import re
 import shutil
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import docfilter  # noqa: E402
 
 LINK = re.compile(r"(\]\()([^)#\s]+?)(#[^)]*)?(\))")
+
+
+def link_quote(path: str) -> str:
+    """Percent-encode only what breaks a Markdown link target; unicode names stay readable."""
+    return re.sub(r"[ %#?]", lambda m: urllib.parse.quote(m.group()), path)
 INDEX = "index.md"
 
 
@@ -53,9 +59,17 @@ def new_location(rel: Path, wiki: Path) -> Path:
 
 
 def resolve_target(target: str, page: Path, wiki: Path, flt: docfilter.Filter):
-    """Return the wiki-relative path of a link target, or None."""
+    """Return the wiki-relative path of a link target, or None.
+
+    GitLab resolves `./x`, `../x` and anything ending in .md against the page's own directory,
+    and a bare `x` or `/x` against the wiki root. Try it that way round first, then the other,
+    so a sibling and a root page with the same name are told apart the way the UI does.
+    """
+    target = urllib.parse.unquote(target)
     stripped = target.lstrip("/")
-    for base in (wiki, page.parent):
+    page_dir_first = target.startswith(("./", "../")) or target.endswith(".md")
+    bases = (page.parent, wiki) if page_dir_first else (wiki, page.parent)
+    for base in bases:
         for name in (stripped, stripped + ".md", target, target + ".md"):
             candidate = base / name
             try:
@@ -70,14 +84,14 @@ def resolve_target(target: str, page: Path, wiki: Path, flt: docfilter.Filter):
 def rewrite(text: str, page: Path, wiki: Path, dest: Path, unresolved: list, flt: docfilter.Filter) -> str:
     def sub(m):
         target = m.group(2)
-        if "://" in target or target.startswith("mailto:"):
-            return m.group(0)
+        if "://" in target or target.startswith(("mailto:", "/uploads/")):
+            return m.group(0)   # /uploads/ is the project's upload area, not the wiki's
         found = resolve_target(target, page, wiki, flt)
         if found is None:
             unresolved.append(f"{page.relative_to(wiki)}: {target}")
             return m.group(0)
         new_target = new_location(found, wiki) if is_page(found) else found
-        rel = os.path.relpath(new_target, dest.parent)
+        rel = link_quote(os.path.relpath(new_target, dest.parent))
         return f"{m.group(1)}{rel}{m.group(3) or ''}{m.group(4)}"
 
     return LINK.sub(sub, text)

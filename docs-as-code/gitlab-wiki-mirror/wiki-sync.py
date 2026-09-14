@@ -5,12 +5,11 @@ usage: wiki-sync.py DOCS_DIR WIKI_DIR [--include P]... [--exclude P]... [--confi
 
 - docs/index.md becomes home.md (the wiki front page); section/index.md becomes section.md
   so the wiki titles the page "section" instead of "index"; every other page keeps its path.
-- Links to *.md are rewritten to root-absolute wiki paths (/section/page). GitLab resolves
-  relative wiki links against the wiki root, not the page's directory, so relative links
-  only work from top-level pages; root-absolute ones work from anywhere.
-- Links to attachments (any non-Markdown file under docs/, e.g. uploads/) are rewritten to
-  the wiki-root-relative form GitLab itself uses (uploads/abc/file.png, no leading slash).
-  A leading slash would point at the project's uploads instead of the wiki's.
+- Links stay relative to the page's own directory and keep the .md extension on pages,
+  recomputed for the two pages that move (index.md -> home.md, section/index.md ->
+  section.md). GitLab renders `other.md`, `../dir/page.md` and `../uploads/x/f.png` from
+  any depth, and a clone of the wiki repo opens the same links in an editor. A bare
+  extension-less sibling (`other`) is never written: GitLab resolves that from the wiki root.
 - Attachments are copied across; pages and attachments no longer in docs/ are deleted.
 - Sidebar order follows each folder's .pages `nav` list (awesome-pages format); `...`
   expands to the remaining pages, sorted. Folders without .pages are listed alphabetically.
@@ -18,7 +17,9 @@ usage: wiki-sync.py DOCS_DIR WIKI_DIR [--include P]... [--exclude P]... [--confi
   only matches, not_in_nav keeps the page but drops it from the sidebar (see docfilter.py).
 """
 import argparse
+import os
 import re
+import urllib.parse
 import shutil
 import sys
 from pathlib import Path
@@ -29,6 +30,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import docfilter  # noqa: E402
 
 LINK = re.compile(r"(\]\()([^)#\s]+?)(#[^)]*)?(\))")
+
+
+def link_quote(path: str) -> str:
+    """Percent-encode only what breaks a Markdown link target; unicode names stay readable."""
+    return re.sub(r"[ %#?]", lambda m: urllib.parse.quote(m.group()), path)
 INDEX = "index.md"
 PAGES = ".pages"
 REST = "..."
@@ -49,19 +55,28 @@ def wiki_path(rel: Path) -> str:
     return str(rel.with_suffix(""))
 
 
+def wiki_file(rel: Path) -> Path:
+    """Where a docs file lands in the wiki clone (pages move for home and section indexes)."""
+    return Path(wiki_path(rel) + ".md") if rel.suffix == ".md" else rel
+
+
 def rewrite_links(text: str, page: Path, root: Path, flt: docfilter.Filter) -> str:
+    """Re-point every resolvable relative link so it is relative to the page's wiki location."""
+    page_rel = page.relative_to(root)
+    wiki_dir = wiki_file(page_rel).parent
+
     def sub(m):
         target = m.group(2)
         if "://" in target or target.startswith(("mailto:", "/")):
             return m.group(0)
-        resolved = (page.parent / target).resolve()
+        resolved = (page.parent / urllib.parse.unquote(target)).resolve()   # "my%20notes.md" is a file with a space
         try:
             rel = resolved.relative_to(root.resolve())
         except ValueError:
             return m.group(0)  # points outside docs/; leave it
         if not resolved.exists() or not flt.allows(rel):
             return m.group(0)
-        new = "/" + wiki_path(rel) if rel.suffix == ".md" else str(rel)
+        new = link_quote(os.path.relpath(wiki_file(rel), wiki_dir))
         return f"{m.group(1)}{new}{m.group(3) or ''}{m.group(4)}"
 
     return LINK.sub(sub, text)
@@ -125,7 +140,7 @@ def resolve(title, path: Path, root: Path, flt: docfilter.Filter):
 def render(entries, depth=0) -> list:
     lines = []
     for title, link, children in entries:
-        label = f"[{title}](/{link})" if link else title
+        label = f"[{title}]({link}.md)" if link else title   # _sidebar.md sits at the root
         lines.append("  " * depth + f"- {label}")
         lines.extend(render(children, depth + 1))
     return lines
@@ -151,9 +166,10 @@ def copy_tree(docs: Path, wiki: Path, flt: docfilter.Filter) -> tuple:
         if not src.is_file() or any(part.startswith(".") for part in rel.parts) or not flt.allows(rel):
             continue
         if src.suffix == ".md":
-            dst = wiki / (wiki_path(rel) + ".md")
+            dst = wiki / wiki_file(rel)
             dst.parent.mkdir(parents=True, exist_ok=True)
-            dst.write_text(rewrite_links(src.read_text(), src, docs, flt))
+            # bytes in, bytes out: read_text() would turn CRLF pages into LF ones
+            dst.write_bytes(rewrite_links(src.read_bytes().decode(), src, docs, flt).encode())
             pages += 1
         else:
             dst = wiki / rel
@@ -167,7 +183,7 @@ def sidebar(docs: Path, flt: docfilter.Filter) -> list:
     home = docs / INDEX
     title = (title_of(home) if home.exists() else "") or "Home"
     entries = [e for e in nav_entries(docs, docs, flt) if e[1] != "home"]  # the header link already covers it
-    return [f"**[{title}](/home)**", ""] + render(entries)
+    return [f"**[{title}](home.md)**", ""] + render(entries)
 
 
 def main(docs: Path, wiki: Path, flt: docfilter.Filter = None) -> None:

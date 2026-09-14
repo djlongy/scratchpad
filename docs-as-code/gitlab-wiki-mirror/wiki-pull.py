@@ -22,10 +22,15 @@ wiki-sync restores the wiki page).
 Each wiki commit becomes one repo commit carrying that wiki commit's author name, email and
 date, so attribution follows the person who edited the wiki. Nothing is pushed here; the caller
 (wiki-deploy.sh) pushes. Prints what it did; exit 0 (also when there is nothing to do), 1 on error.
+
+A wiki with no commits, or with no pages left after the human commits (everything deleted in
+the UI, or an empty branch force-pushed), is a reset: nothing is pulled and nothing is deleted
+from docs/; the caller reseeds the wiki from docs/. Deleting one page still propagates.
 """
 import argparse
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -46,6 +51,7 @@ def load(name):
 wiki_import = load("wiki-import")
 
 CI_AUTHOR = "docs ci"
+CI_EMAIL = ""   # empty: match on the name alone
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 EPOCH = "1970-01-01T00:00:00+00:00"
 INDEX = "index.md"
@@ -61,6 +67,15 @@ def git(repo, *args, env=None):
     return result.stdout
 
 
+def has_commits(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode == 0
+
+
+def page_count(wiki):
+    """Markdown pages in the wiki checkout, ignoring _sidebar.md and hidden paths."""
+    return sum(1 for p in wiki.rglob("*.md") if not p.name.startswith("_") and not any(x.startswith(".") for x in p.relative_to(wiki).parts))
+
+
 def show(repo, rev, path):
     """File bytes at rev, or None if it does not exist there."""
     result = subprocess.run(["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True)
@@ -71,10 +86,16 @@ def when(iso):
     return datetime.fromisoformat(iso.replace("Z", "+00:00"))
 
 
-def last_ci_commit(wiki, ci_author):
-    """(hash, committer date) of the newest CI commit in the wiki; the empty tree if there is none."""
-    # --author matches "Name <email>"; anchor on the name so "ci" does not match "cindy".
-    out = git(wiki, "log", "-1", "--format=%H%x00%cI", f"--author=^{ci_author} <").strip()
+def last_ci_commit(wiki, ci_author, ci_email=CI_EMAIL):
+    """(hash, committer date) of the newest CI commit in the wiki; the empty tree if there is none.
+
+    A person can pick the CI's display name in GitLab, so the email is matched too when known.
+    """
+    if not has_commits(wiki):
+        return EMPTY_TREE, EPOCH
+    # --author matches "Name <email>" as a regex; anchor both ends so "ci" cannot match "cindy".
+    pattern = f"^{re.escape(ci_author)} <{re.escape(ci_email)}>$" if ci_email else f"^{re.escape(ci_author)} <"
+    out = git(wiki, "log", "-1", "--format=%H%x00%cI", f"--author={pattern}", "--perl-regexp").strip()
     return tuple(out.split("\x00")) if out else (EMPTY_TREE, EPOCH)
 
 
@@ -87,7 +108,8 @@ def human_commits(wiki, base):
 
 def changed_files(wiki, commit):
     """(status, path) per file in one wiki commit; renames come through as delete + add."""
-    out = git(wiki, "show", "--name-status", "--format=", "--no-renames", commit)
+    # core.quotePath=false: otherwise a non-ASCII page name comes back octal-escaped in quotes
+    out = git(wiki, "-c", "core.quotePath=false", "show", "--name-status", "--format=", "--no-renames", commit)
     return [tuple(line.split("\t", 1)) for line in out.splitlines() if line]
 
 
@@ -105,17 +127,21 @@ def merge_file(base, ours, theirs, label):
 
 
 class Puller:
-    def __init__(self, repo, docs, wiki, flt, ci_author, dry_run):
+    def __init__(self, repo, docs, wiki, flt, ci_author, ci_email, dry_run):
         self.repo, self.docs, self.wiki, self.flt = repo, docs, wiki, flt
         self.ci_author, self.dry_run = ci_author, dry_run
-        self.base, self.base_date = last_ci_commit(wiki, ci_author)
+        self.base, self.base_date = last_ci_commit(wiki, ci_author, ci_email)
         self.pulled = 0
+        self.pulled_paths = set()   # written by this run: a later delete in the same batch is not a repo edit
 
     # --- repo side helpers ---------------------------------------------------------------
     def repo_rel(self, dest):
         return str(self.docs.relative_to(self.repo) / dest)
 
     def repo_edited_since_sync(self, dest):
+        """Did the repo change this file after CI last synced, other than through this run's own pulls?"""
+        if dest in self.pulled_paths:
+            return False
         # Strictly after the CI commit: the repo commit CI synced from can share its second.
         out = git(self.repo, "log", "-1", "--format=%cI", "--", self.repo_rel(dest)).strip()
         return bool(out) and when(out) > when(self.base_date)
@@ -142,9 +168,17 @@ class Puller:
 
     # --- one wiki commit -------------------------------------------------------------------
     def run(self):
+        """Apply every human wiki commit since the last sync; a wiped wiki is a reset, not a mass delete."""
+        if not has_commits(self.wiki):
+            print("wiki is empty (no commits): nothing to pull, it will be seeded from docs/")
+            return
         commits = human_commits(self.wiki, self.base)
         if not commits:
             print("wiki has no edits since the last sync")
+            return
+        if page_count(self.wiki) == 0:
+            print(f"wiki holds no pages after {len(commits)} commit(s): treating it as wiped, "
+                  "nothing is pulled or deleted, it will be reseeded from docs/")
             return
         for commit in commits:
             self.apply(*commit)
@@ -163,6 +197,7 @@ class Puller:
         if not touched:
             return
         self.pulled += len(touched)
+        self.pulled_paths.update(touched)
         if self.dry_run:
             print(f"dry-run: would commit {len(touched)} file(s) as {name} <{email}>: {subject}")
             return
@@ -194,7 +229,10 @@ class Puller:
         if ours == theirs:
             return None
         if ours is None:
-            return theirs, "new"
+            if base is not None and self.repo_last_edit(dest) > date:
+                print(f"keep   {dest}: deleted in repo after the wiki edit, repo wins")
+                return None
+            return theirs, "new" if base is None else "restored, wiki edit is newer than the repo delete"
         if base == ours:
             return theirs, "fast-forward"
         merged, clean = merge_file(base, ours, theirs, f"wiki ({who})")
@@ -236,14 +274,14 @@ class Puller:
         return rel
 
 
-def main(docs, wiki, flt=None, ci_author=CI_AUTHOR, dry_run=False, repo=None):
+def main(docs, wiki, flt=None, ci_author=CI_AUTHOR, dry_run=False, repo=None, ci_email=CI_EMAIL):
     flt = flt or docfilter.Filter()
     if not (wiki / ".git").exists():
         raise SystemExit(f"{wiki} is not a git clone of the wiki")
     if (docs / ".git").exists():
         raise SystemExit(f"{docs}/.git exists: docs/ must be a plain folder of the repo, not a nested repository")
     repo = Path(repo or git(docs.parent, "rev-parse", "--show-toplevel").strip()).resolve()
-    Puller(repo, docs.resolve(), wiki.resolve(), flt, ci_author, dry_run).run()
+    Puller(repo, docs.resolve(), wiki.resolve(), flt, ci_author, ci_email, dry_run).run()
     return 0
 
 
@@ -252,11 +290,13 @@ def cli(argv=None):
     parser.add_argument("docs", type=Path)
     parser.add_argument("wiki", type=Path)
     parser.add_argument("--ci-author", default=CI_AUTHOR, help="author name wiki-sync.py commits as")
+    parser.add_argument("--ci-email", default=CI_EMAIL, help="its email; when given, both must match")
     parser.add_argument("--repo", type=Path, help="repo to commit into (default: the one containing DOCS_DIR)")
     parser.add_argument("--dry-run", action="store_true", help="report, change nothing")
     docfilter.add_arguments(parser)
     args = parser.parse_args(argv)
-    sys.exit(main(args.docs.resolve(), args.wiki.resolve(), docfilter.from_args(args), args.ci_author, args.dry_run, args.repo))
+    sys.exit(main(args.docs.resolve(), args.wiki.resolve(), docfilter.from_args(args), args.ci_author, args.dry_run,
+                  args.repo, args.ci_email))
 
 
 if __name__ == "__main__":

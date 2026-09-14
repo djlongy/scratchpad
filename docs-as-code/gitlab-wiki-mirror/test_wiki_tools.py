@@ -110,15 +110,15 @@ def test_import_root_folders_only(tmp_path, capsys):
     out = tmp_path / "out"
     out.mkdir()
     wiki_sync.main(docs, out)
-    assert links(out / "Operations/stuff01.md") == ["/Engineering/stuff02", "Operations/attachments/diagram.png"]
+    assert links(out / "Operations/stuff01.md") == ["../Engineering/stuff02.md", "attachments/diagram.png"]
     assert (out / "_sidebar.md").read_text() == (
-        "**[Home](/home)**\n\n"
-        "- [Engineering](/Engineering)\n"
-        "  - [Stuff 02](/Engineering/stuff02)\n"
-        "- [Operations](/Operations)\n"
-        "  - [deeper](/Operations/deeper)\n"
-        "    - [Stuff 03](/Operations/deeper/stuff03)\n"
-        "  - [Stuff 01](/Operations/stuff01)\n"
+        "**[Home](home.md)**\n\n"
+        "- [Engineering](Engineering.md)\n"
+        "  - [Stuff 02](Engineering/stuff02.md)\n"
+        "- [Operations](Operations.md)\n"
+        "  - [deeper](Operations/deeper.md)\n"
+        "    - [Stuff 03](Operations/deeper/stuff03.md)\n"
+        "  - [Stuff 01](Operations/stuff01.md)\n"
     )
 
 
@@ -155,10 +155,10 @@ def test_sync_layout_and_links(docs, tmp_path, capsys):
     got = sorted(str(p.relative_to(wiki)) for p in wiki.rglob("*") if p.is_file())
     assert got == ["_sidebar.md", "dev.md", "dev/alpha.md", "dev/zeta.md", "glossary.md", "home.md",
                    "ops.md", "ops/backups.md", "ops/onboarding.md", "uploads/1/n.png"]
-    assert links(wiki / "home.md") == ["/ops", "/glossary"]
-    assert links(wiki / "ops.md") == ["/ops/backups", "/dev", "uploads/1/n.png", "https://example.com",
-                                      "/ops/backups#restore", "../../outside.md"]
-    assert links(wiki / "ops/backups.md") == ["/home"]
+    assert links(wiki / "home.md") == ["ops.md", "glossary.md"]
+    assert links(wiki / "ops.md") == ["ops/backups.md", "dev.md", "uploads/1/n.png", "https://example.com",
+                                      "ops/backups.md#restore", "../../outside.md"]
+    assert links(wiki / "ops/backups.md") == ["../home.md"]
     assert "synced 8 pages, 1 attachments, sidebar 7 lines" in capsys.readouterr().out
 
 
@@ -167,14 +167,14 @@ def test_sync_sidebar_follows_pages_files(docs, tmp_path):
     wiki.mkdir()
     wiki_sync.main(docs, wiki)
     assert (wiki / "_sidebar.md").read_text() == (
-        "**[Team docs](/home)**\n\n"
-        "- [Ops](/ops)\n"  # the parent's explicit label wins over the folder's own title:
-        "  - [Onboarding](/ops/onboarding)\n"
-        "  - [Backups](/ops/backups)\n"
-        "- [Dev](/dev)\n"
-        "  - [Alpha](/dev/alpha)\n"
-        "  - [Zeta](/dev/zeta)\n"
-        "- [Glossary](/glossary)\n"
+        "**[Team docs](home.md)**\n\n"
+        "- [Ops](ops.md)\n"  # the parent's explicit label wins over the folder's own title:
+        "  - [Onboarding](ops/onboarding.md)\n"
+        "  - [Backups](ops/backups.md)\n"
+        "- [Dev](dev.md)\n"
+        "  - [Alpha](dev/alpha.md)\n"
+        "  - [Zeta](dev/zeta.md)\n"
+        "- [Glossary](glossary.md)\n"
     )
 
 
@@ -215,7 +215,7 @@ def test_sync_defaults_without_pages_or_home(tmp_path):
     wiki.mkdir()
     wiki_sync.main(docs, wiki)
     assert (wiki / "_sidebar.md").read_text() == (
-        "**[Home](/home)**\n\n- [Ay](/a)\n- [Bee](/b)\n  - [One](/b/one)\n  - [Two](/b/two)\n"
+        "**[Home](home.md)**\n\n- [Ay](a.md)\n- [Bee](b.md)\n  - [One](b/one.md)\n  - [Two](b/two.md)\n"
     )
 
 
@@ -225,8 +225,8 @@ def test_round_trip_import_then_sync(wiki, tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     wiki_sync.main(docs, out)
-    assert links(out / "ops.md") == ["/ops/backups", "/dev/release", "uploads/1/n.png"]
-    assert links(out / "dev/release.md") == ["uploads/1/p.png", "/ops/backups#restore"]
+    assert links(out / "ops.md") == ["ops/backups.md", "dev/release.md", "uploads/1/n.png"]
+    assert links(out / "dev/release.md") == ["../uploads/1/p.png", "../ops/backups.md#restore"]
     assert (out / "uploads/1/n.png").read_bytes() == b"\x89PNG"
 
 
@@ -279,7 +279,7 @@ def test_sync_exclude_and_include(docs, tmp_path):
     wiki_sync.main(docs, only, docfilter.Filter(include=["/ops/**", "/index.md"], exclude=["*.tmp"]))
     got = sorted(str(p.relative_to(only)) for p in only.rglob("*") if p.is_file())
     assert got == ["_sidebar.md", "home.md", "ops.md", "ops/backups.md", "ops/onboarding.md"]
-    assert links(only / "home.md") == ["/ops", "glossary.md"]  # link to an excluded page stays as written
+    assert links(only / "home.md") == ["ops.md", "glossary.md"]  # link to an excluded page stays as written
 
 
 def test_sync_not_in_nav_keeps_page_but_hides_it(docs, tmp_path):
