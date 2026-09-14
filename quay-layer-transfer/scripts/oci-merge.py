@@ -59,10 +59,11 @@ def main(received, store):
                 missing.append(f"{image['ref']} {digest}")
     print(f"transfer {manifest['transfer']}: {added} blob(s) added, {verified} already present, "
           f"{len(incoming)} manifest(s) indexed, store now {len(index['manifests'])} image(s)")
-    if missing:
-        print("missing blobs:\n  " + "\n  ".join(missing))
-        return 1
-    return 0
+    # Printed on every run, not only on failure. With a deduplicated archive most of an
+    # image's layers are not in the transfer at all, so "missing: none" is the only line
+    # that says the merge produced a complete image rather than a plausible-looking one.
+    print("missing: " + (", ".join(missing) if missing else "none"))
+    return 1 if missing else 0
 
 
 if __name__ == "__main__":

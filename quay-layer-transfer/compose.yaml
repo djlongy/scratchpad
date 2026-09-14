@@ -7,10 +7,24 @@
 #
 # Quay needs its own Postgres and Redis per instance (upstream requirement). Ports:
 #   low Quay  http://localhost:18081    high Quay http://localhost:18082    NiFi https://localhost:18090 (admin / nifiadmin1234)
+#
+# All three are overridable so a second copy of the lab can run beside the first:
+#   LOW_PORT=28081 HIGH_PORT=28082 NIFI_PORT=28090 docker compose -p lab2 up -d
+# Move LOW_REGISTRY / HIGH_REGISTRY and the SERVER_HOSTNAME passed to quay-config.sh
+# with them; every script reads those two variables.
 name: quay-diode
 
 x-quay: &quay
   image: quay.io/projectquay/quay:3.15.7
+  environment:
+    # Quay sizes its gunicorn worker pools from the host CPU count, so on a many-core
+    # machine one instance settles at about 5.3 GB RSS (measured) and two of them will
+    # not fit beside anything else. These caps are the supported knob and bring the pair
+    # comfortably inside a small VM; QUAY_OVERRIDE_SERVICES can switch whole services off
+    # if you need to go further.
+    WORKER_COUNT_WEB: "2"
+    WORKER_COUNT_REGISTRY: "2"
+    WORKER_COUNT_SECSCAN: "1"
   # Quay's entrypoint runs as root and drops privileges; the config dir must be readable.
   # /health/instance pings SERVER_HOSTNAME from inside the container, which only resolves
   # from the host here, so the check uses the registry endpoint (401 = up) instead.
@@ -43,7 +57,7 @@ services:
     depends_on:
       low-db: {condition: service_healthy}
       low-redis: {condition: service_started}
-    ports: ["18081:8080"]
+    ports: ["${LOW_PORT:-18081}:8080"]
     volumes:
       - ./quay/low:/conf/stack
       - low-storage:/datastorage
@@ -58,7 +72,7 @@ services:
     depends_on:
       high-db: {condition: service_healthy}
       high-redis: {condition: service_started}
-    ports: ["18082:8080"]
+    ports: ["${HIGH_PORT:-18082}:8080"]
     volumes:
       - ./quay/high:/conf/stack
       - high-storage:/datastorage
@@ -75,10 +89,10 @@ services:
       # NiFi 2.x images are HTTPS-only with a self-signed cert; single-user login.
       SINGLE_USER_CREDENTIALS_USERNAME: admin
       SINGLE_USER_CREDENTIALS_PASSWORD: nifiadmin1234   # 12+ characters required
-      NIFI_WEB_PROXY_HOST: localhost:18090              # the Host header the browser/API will send
+      NIFI_WEB_PROXY_HOST: localhost:${NIFI_PORT:-18090}              # the Host header the browser/API will send
       NIFI_JVM_HEAP_INIT: 1g
       NIFI_JVM_HEAP_MAX: 2g
-    ports: ["18090:8443"]
+    ports: ["${NIFI_PORT:-18090}:8443"]
     user: "1000:1000"
     volumes:
       - ./data/low-export:/data/low-export

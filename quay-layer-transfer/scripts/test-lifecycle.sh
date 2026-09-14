@@ -17,7 +17,16 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd); cd "$here"
 LOW=${LOW_REGISTRY:-localhost:18081}; HIGH=${HIGH_REGISTRY:-localhost:18082}
 U=${QUAY_USER:-admin}; P=${QUAY_PASS:-quayadmin123}; ORG=${QUAY_ORG:-demo}
-DC="sudo docker compose"
+# This test is oneway-only: it asserts what the Redis ledger holds at each step, and in
+# bidirectional mode there is no ledger — the far side's have/blobs.txt is the record, and
+# the catch-22 this test exists to catch cannot form there. See README §2.
+MODE=oneway
+export TRANSFER_MODE=$MODE   # so export.sh packs everything and leaves the dedupe to NiFi
+# The teardown needs to delete directories NiFi wrote into as uid 1000, which on Linux
+# needs elevation and on a desktop VM whose mount maps ownership does not. Override both
+# when elevation is unnecessary or unavailable: DOCKER_COMPOSE='docker compose' SUDO_CMD=
+DC=${DOCKER_COMPOSE:-sudo docker compose}
+SUDO=${SUDO_CMD-sudo}
 pass=0; fail=0
 
 ok(){ printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
@@ -33,7 +42,8 @@ wait_transfer(){ # wait for the receive flow to land a transfer, then import
   for i in $(seq 1 60); do ls data/high-store/incoming/ 2>/dev/null | grep -q . && break; sleep 5; done
   ls data/high-store/incoming/ 2>/dev/null | grep -q . || { echo "transfer never arrived"; exit 1; }
   local inc; inc=$(ls -dt data/high-store/incoming/transfer-* | head -1)
-  CROSSED=$(tar -tf "data/diode/received/$(basename "$inc").tar" | grep -c 'blobs/sha256/' || true)
+  # oneway repacks and renames the archive; the incoming directory drops that suffix.
+  CROSSED=$(tar -tf "data/diode/received/$(basename "$inc")-dedup.tar" | grep -cE 'blobs/sha256/[0-9a-f]' || true)
   scripts/import.sh >/tmp/import.log 2>&1 || { echo "import failed:"; tail -20 /tmp/import.log; exit 1; }
 }
 
@@ -69,7 +79,7 @@ step "0. tear everything down and rebuild from nothing"
 $DC down -v >/dev/null 2>&1 || true
 # NiFi writes into these as uid 1000, so a plain rm cannot clear them. Teardown is
 # destructive by definition; this is the one place elevation is warranted.
-sudo rm -rf data/low-export data/diode data/high-store
+$SUDO rm -rf data/low-export data/diode data/high-store
 rm -f .secrets/low.token .secrets/high.token
 mkdir -p data/low-export data/diode data/high-store && chmod 777 data data/*
 # NiFi runs as uid 1000 and creates the per-transfer directory itself. Renaming a
@@ -77,7 +87,7 @@ mkdir -p data/low-export data/diode data/high-store && chmod 777 data data/*
 # imported/ fails unless new subdirectories inherit rights for this user. A default
 # ACL is the least invasive way to grant that; Linux only, and a no-op elsewhere.
 if command -v setfacl >/dev/null 2>&1; then
-  sudo setfacl -R -m "u:$(id -un):rwx" -d -m "u:$(id -un):rwx" data/low-export data/diode data/high-store
+  $SUDO setfacl -R -m "u:$(id -un):rwx" -d -m "u:$(id -un):rwx" data/low-export data/diode data/high-store
 fi
 scripts/quay-config.sh low  "$LOW"  >/dev/null
 scripts/quay-config.sh high "$HIGH" >/dev/null
@@ -89,7 +99,7 @@ for i in $(seq 1 60); do
 done
 scripts/quay-init.sh low  "http://$LOW"  >/dev/null
 scripts/quay-init.sh high "http://$HIGH" >/dev/null
-python3 scripts/nifi-flow.py --reset >/dev/null
+python3 scripts/nifi-flow.py --mode "$MODE" --reset >/dev/null
 echo "  rebuilt: both registries initialised, both flows running"
 chk "ledger starts empty" "$(redis dbsize | tr -d '\r')" "0"
 
@@ -114,7 +124,7 @@ chk "that layer is in the ledger" "$(redis exists "$DOOMED" | tr -d '\r')" "1"
 
 step "2. 2.0.0 arrives — 1.0.0 falls out of the window and is pruned"
 scripts/seed-images.sh 2.0.0 >/dev/null 2>&1
-scripts/export.sh 2 >/tmp/e2.log 2>&1; grep -E 'ledger:|wrote' /tmp/e2.log | sed 's/^/  /'
+scripts/export.sh 2 >/tmp/e2.log 2>&1; grep -E 'prune plan:|ledger:|wrote' /tmp/e2.log | sed 's/^/  /'
 wait_transfer
 grep -q 'pruned' /tmp/import.log && grep 'pruned' /tmp/import.log | tail -1 | sed 's/^/  /' || true
 chk "high side moved to the new window" "$(high_tags app)" "1.1.0 2.0.0"
