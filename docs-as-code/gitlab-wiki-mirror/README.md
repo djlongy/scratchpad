@@ -263,6 +263,32 @@ changed page:
 Attachments added or removed in the wiki are copied or deleted the same way. `_sidebar.md`
 and GitLab's own `.gitlab/redirects.yml` are wiki furniture and never pulled.
 
+### The relationship is recorded, not inferred
+
+The layout rule is not invertible on its own: a wiki page `compute/kubernetes` beside a
+folder `compute/kubernetes/` is the section's `index.md`, but if that folder holds only
+`.pages` (which the wiki never sees) the wiki has no folder and the page looks plain. So
+every sync writes `.gitlab/docs-map.json` into the wiki, `wiki path → docs path` for every
+page it wrote, committed with the sync. The pull reads that file at the last CI commit and
+maps an edited or deleted page back exactly, at any depth, before any rule runs. Users never
+open it; GitLab keeps its own metadata in the same folder; a dot file is not a page.
+
+What is still a rule, because no record can exist:
+
+- A page **created** in the wiki UI at `X` becomes `docs/X/index.md` when a section `X/`
+  exists on either side, else `docs/X.md`.
+- A page **renamed** in the wiki (a delete plus an add that git pairs by content, `-M25%`)
+  becomes a `git mv` in `docs/`, so history follows the page; the new path follows the rule.
+  A rename that also rewrites most of the page falls below the pairing threshold and lands as
+  a delete plus a new file.
+- A page **copied** in the UI is a new page. If two wiki pages would land on one docs file,
+  the pull refuses with both paths and exits non-zero; the cycle stops before the wiki is
+  rewritten, so both pages stay where they are for a person to decide.
+
+On the docs side the sync refuses two files that would become one wiki page
+(`a/b.md` next to `a/b/index.md`). Front matter was considered for carrying the record
+inside each page and rejected: a wiki UI edit strips it.
+
 `wiki-deploy.sh` runs the pull first, pushes those commits, and only then rewrites the wiki
 from `docs/`, so a wiki edit is never overwritten before it has landed in the repo. The CI
 sync commit is written whenever the wiki's tip is not already a CI commit, even when the

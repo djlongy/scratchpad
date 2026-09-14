@@ -50,11 +50,15 @@ def is_page(p: Path) -> bool:
 
 
 def new_location(rel: Path, wiki: Path) -> Path:
-    """Where a wiki page lands in docs/."""
+    """Where a wiki page lands in docs/: the exact inverse of wiki-sync.py's wiki_path.
+
+    home.md -> index.md; a page beside a folder of the same name, at any depth
+    (compute/kubernetes.md beside compute/kubernetes/), is that section's index.md.
+    """
     if str(rel) == "home.md":
         return Path(INDEX)
-    if rel.parent == Path(".") and (wiki / rel.stem).is_dir():
-        return Path(rel.stem) / INDEX  # root page with children becomes the section index
+    if (wiki / rel.parent / rel.stem).is_dir():
+        return rel.parent / rel.stem / INDEX
     return rel
 
 

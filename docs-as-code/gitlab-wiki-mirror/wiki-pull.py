@@ -29,6 +29,7 @@ from docs/; the caller reseeds the wiki from docs/. Deleting one page still prop
 """
 import argparse
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -52,6 +53,7 @@ wiki_import = load("wiki-import")
 
 CI_AUTHOR = "docs ci"
 CI_EMAIL = ""   # empty: match on the name alone
+DOCS_MAP = ".gitlab/docs-map.json"   # written by wiki-sync.py: wiki page -> docs file
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 EPOCH = "1970-01-01T00:00:00+00:00"
 INDEX = "index.md"
@@ -107,10 +109,31 @@ def human_commits(wiki, base):
 
 
 def changed_files(wiki, commit):
-    """(status, path) per file in one wiki commit; renames come through as delete + add."""
+    """(status, path, old_path) per file in one wiki commit. A rename git can pair by content
+    (-M25%) comes through as ("R", new, old); everything else has old_path None."""
     # core.quotePath=false: otherwise a non-ASCII page name comes back octal-escaped in quotes
-    out = git(wiki, "-c", "core.quotePath=false", "show", "--name-status", "--format=", "--no-renames", commit)
-    return [tuple(line.split("\t", 1)) for line in out.splitlines() if line]
+    out = git(wiki, "-c", "core.quotePath=false", "show", "--name-status", "--format=", "-M25%", commit)
+    rows = []
+    for line in out.splitlines():
+        if not line:
+            continue
+        parts = line.split("\t")
+        if parts[0].startswith("R"):
+            rows.append(("R", parts[2], parts[1]))
+        else:
+            rows.append((parts[0], parts[1], None))
+    return rows
+
+
+def docs_map_at(wiki, rev):
+    """The wiki page -> docs file record as CI last wrote it; empty when absent or unreadable."""
+    raw = show(wiki, rev, DOCS_MAP)
+    if raw is None:
+        return {}
+    try:
+        return dict(json.loads(raw.decode()).get("pages", {}))
+    except (ValueError, AttributeError):
+        return {}
 
 
 def merge_file(base, ours, theirs, label):
@@ -131,8 +154,10 @@ class Puller:
         self.repo, self.docs, self.wiki, self.flt = repo, docs, wiki, flt
         self.ci_author, self.dry_run = ci_author, dry_run
         self.base, self.base_date = last_ci_commit(wiki, ci_author, ci_email)
+        self.docs_map = docs_map_at(wiki, self.base)   # recorded relationships, the authority
         self.pulled = 0
         self.pulled_paths = set()   # written by this run: a later delete in the same batch is not a repo edit
+        self.claimed = {}           # docs path -> wiki page that wrote it this run (two claimants = refuse)
 
     # --- repo side helpers ---------------------------------------------------------------
     def repo_rel(self, dest):
@@ -150,9 +175,37 @@ class Puller:
         out = git(self.repo, "log", "-1", "--format=%aI", "--", self.repo_rel(dest)).strip()
         return when(out) if out else when(EPOCH)
 
+    def dest_for(self, rel):
+        """docs/ path for a wiki page. `rel` is a wiki-relative Path from changed_files (git's own
+        listing), never user input.
+
+        Recorded first: a page CI wrote is in .gitlab/docs-map.json and maps back exactly, at any
+        depth, whatever the folders look like. Only a page born in the wiki UI falls to the rule:
+        it is a section index when the section exists on either side (a wiki folder of that name,
+        or a docs folder of that name, which may hold only .pages or attachments the wiki never
+        sees), else a plain page. home.md is always index.md. A docs page X.md beside a folder X/
+        with its own index.md cannot occur: wiki-sync.py refuses to write such a tree."""
+        if str(rel) in self.docs_map:
+            return Path(self.docs_map[str(rel)])
+        if str(rel) == "home.md":
+            return Path(INDEX)
+        section = rel.parent / rel.stem
+        if (self.docs / section).is_dir() or (self.wiki / section).is_dir():
+            return section / INDEX
+        return rel
+
+    def claim(self, dest, rel):
+        """Two wiki pages may not land on one docs file in a run: a copy made in the UI onto a
+        path whose rule already points at a mapped file. Refusing leaves both wiki pages in
+        place (the caller stops before the wiki is rewritten) and puts the decision on a person."""
+        other = self.claimed.get(dest)
+        if other is not None and other != rel:
+            raise SystemExit(f"wiki pages {other} and {rel} both map to docs/{dest}; rename one in the wiki")
+        self.claimed[dest] = rel
+
     def convert(self, text, rel):
         """Wiki page text -> (docs-relative path, docs-form text)."""
-        dest = wiki_import.new_location(rel, self.wiki)
+        dest = self.dest_for(rel)
         unresolved = []
         out = wiki_import.rewrite(text, self.wiki / rel, self.wiki, dest, unresolved, self.flt)
         for u in unresolved:
@@ -160,10 +213,9 @@ class Puller:
         return dest, out
 
     def docs_file_for(self, rel):
-        """Where a (possibly deleted) wiki page lives in docs/, or None."""
-        candidates = [wiki_import.new_location(rel, self.wiki), rel]
-        if rel.parent == Path("."):
-            candidates.insert(1, Path(rel.stem) / INDEX)
+        """Where a (possibly deleted) wiki page lives in docs/, or None. The section may be gone
+        with the page, so both mappings are tried: the section index, then the plain path."""
+        candidates = [self.dest_for(rel), rel.parent / rel.stem / INDEX, rel]
         return next((c for c in candidates if (self.docs / c).exists()), None)
 
     # --- one wiki commit -------------------------------------------------------------------
@@ -186,10 +238,13 @@ class Puller:
 
     def apply(self, chash, name, email, date, subject):
         touched = []
-        for status, path in changed_files(self.wiki, chash):
+        for status, path, old_path in changed_files(self.wiki, chash):
             rel = Path(path)
             if rel.name.startswith("_") or any(p.startswith(".") for p in rel.parts) or not self.flt.allows(rel):
-                continue  # _sidebar.md, GitLab's .gitlab/redirects.yml and excluded paths are wiki furniture
+                continue  # _sidebar.md, GitLab's .gitlab/ files and excluded paths are wiki furniture
+            if status == "R":
+                touched.extend(self.pull_rename(Path(old_path), rel, chash))
+                continue
             dest = self.pull_page(status, rel, chash, when(date), name) if rel.suffix == ".md" \
                 else self.pull_attachment(status, rel, chash)
             if dest:
@@ -206,10 +261,32 @@ class Puller:
         git(self.repo, "commit", "-q", "-m", f"wiki: {subject}\n\nPulled from wiki commit {chash[:8]} by {name}.", env=env)
         print(f"committed {len(touched)} file(s) as {name} <{email}>: {subject}")
 
+    def pull_rename(self, old, new, chash):
+        """A page renamed in the wiki: move its docs file (history follows) and write the new
+        content there. The old page's docs file is the recorded one; the new path is unrecorded
+        by definition, so it follows the rule."""
+        source = self.docs_file_for(old)
+        touched = []
+        if new.suffix != ".md":
+            touched += [d for d in (self.pull_attachment("D", old, chash), self.pull_attachment("A", new, chash)) if d]
+            return touched
+        dest, theirs = self.convert(show(self.wiki, chash, str(new)).decode(), new)
+        self.claim(dest, new)
+        print(f"rename {old} -> {new}: docs {source} -> {dest}")
+        if not self.dry_run:
+            (self.docs / dest).parent.mkdir(parents=True, exist_ok=True)
+            if source and source != dest:
+                git(self.repo, "mv", "-k", self.repo_rel(source), self.repo_rel(dest))
+            (self.docs / dest).write_text(theirs)
+        # the old path is already staged by git mv (and gone from disk), so only dest is re-added
+        touched.append(dest)
+        return touched
+
     def pull_page(self, status, rel, chash, date, who):
         if status == "D":
             return self.delete_page(rel, who)
         dest, theirs = self.convert(show(self.wiki, chash, str(rel)).decode(), rel)
+        self.claim(dest, rel)
         target = self.docs / dest
         ours = target.read_text() if target.exists() else None
         base_wiki = show(self.wiki, self.base, str(rel))

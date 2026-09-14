@@ -1,5 +1,6 @@
 """Tests for wiki-pull.py and wiki-deploy.sh against local git repos. Run: python3 -m pytest -q"""
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -153,6 +154,105 @@ def test_pull_keeps_repo_edited_page_deleted_in_wiki(estate, capsys):
     pull(repo, wiki)
     assert (repo / "docs/glossary.md").exists()
     assert "keep" in capsys.readouterr().out
+
+
+def test_pull_nested_section_page_lands_on_its_index(estate):
+    """docs/guide/index.md is wiki/guide.md; one level deeper, docs/guide/k8s/index.md is
+    wiki/guide/k8s.md beside wiki/guide/k8s/. Editing that page in the wiki must update the
+    index.md, not create docs/guide/k8s.md beside it."""
+    repo, wiki, *_ = estate
+    write(repo, {"docs/guide/k8s/index.md": "# K8s\n\nrepo\n", "docs/guide/k8s/notes.md": "# Notes\n"})
+    commit_all(repo, "nested section", DEV, T1)
+    wiki_sync.main(repo / "docs", wiki)
+    commit_all(wiki, "Sync docs from 1111111", (CI, "ci@example.com"), T1)
+    git(wiki, "push", "-q", "origin", "HEAD:main")
+    assert (wiki / "guide/k8s.md").exists() and (wiki / "guide/k8s/notes.md").exists()
+    wiki_edit(wiki, {"guide/k8s.md": "# K8s\n\nrepo\nwiki side\n"}, "Update k8s", date=T2)
+    pull(repo, wiki)
+    assert (repo / "docs/guide/k8s/index.md").read_text() == "# K8s\n\nrepo\nwiki side\n"
+    assert not (repo / "docs/guide/k8s.md").exists()
+    # after the CI sync that follows every pull, deleting that page in the wiki removes the index
+    commit_all(wiki, "Sync docs from 2222222", (CI, "ci@example.com"))
+    git(wiki, "push", "-q", "origin", "HEAD:main")
+    wiki_edit(wiki, {}, "drop k8s", delete=["guide/k8s.md"], date=T3)
+    pull(repo, wiki)
+    assert not (repo / "docs/guide/k8s/index.md").exists() and (repo / "docs/guide/k8s/notes.md").exists()
+
+
+def test_pull_section_page_with_only_hidden_children_lands_on_its_index(estate):
+    """docs/guide/k8s/ holds index.md and .pages only, so the wiki has no guide/k8s/ folder. A wiki
+    edit of guide/k8s (and a rename to it) must still land on docs/guide/k8s/index.md."""
+    repo, wiki, *_ = estate
+    write(repo, {"docs/guide/k8s/index.md": "# K8s\n", "docs/guide/k8s/.pages": "title: K8s\n"})
+    commit_all(repo, "section with hidden child only", DEV, T1)
+    wiki_sync.main(repo / "docs", wiki)
+    commit_all(wiki, "Sync docs from 1111111", (CI, "ci@example.com"), T1)
+    git(wiki, "push", "-q", "origin", "HEAD:main")
+    assert not (wiki / "guide/k8s").exists()
+    wiki_edit(wiki, {"guide/k8s.md": "# K8s\n\nwiki side\n"}, "Update k8s", date=T2)
+    pull(repo, wiki)
+    assert (repo / "docs/guide/k8s/index.md").read_text() == "# K8s\n\nwiki side\n"
+    assert not (repo / "docs/guide/k8s.md").exists()
+
+
+def ci_sync(repo, wiki, msg="Sync docs", date=None):
+    """What wiki-deploy.sh does after a pull: regenerate the wiki (map included) as the CI author."""
+    wiki_sync.main(repo / "docs", wiki)
+    commit_all(wiki, msg, (CI, "ci@example.com"), date)
+    git(wiki, "push", "-q", "origin", "HEAD:main")
+
+
+def test_pull_uses_the_recorded_map_before_any_rule(estate):
+    """docs/guide/k8s/index.md becomes wiki/guide/k8s.md and the sync records that. After the folder
+    stops existing on both sides (its only sibling was deleted in docs), the record still maps a
+    wiki edit of guide/k8s back to the index, where the rule alone would say guide/k8s.md."""
+    repo, wiki, *_ = estate
+    write(repo, {"docs/guide/k8s/index.md": "# K8s\n", "docs/guide/k8s/notes.md": "# N\n"})
+    commit_all(repo, "section", DEV, T1)
+    ci_sync(repo, wiki, date=T1)
+    m = json.loads((wiki / ".gitlab/docs-map.json").read_text())["pages"]
+    assert m["guide/k8s.md"] == "guide/k8s/index.md" and m["home.md"] == "index.md"
+    wiki_edit(wiki, {"guide/k8s.md": "# K8s\n\nwiki side\n"}, "Update k8s", date=T2, delete=["guide/k8s/notes.md"])
+    (repo / "docs/guide/k8s/notes.md").unlink()
+    commit_all(repo, "drop notes", DEV, T2)
+    pull(repo, wiki)
+    assert (repo / "docs/guide/k8s/index.md").read_text() == "# K8s\n\nwiki side\n"
+    assert not (repo / "docs/guide/k8s.md").exists()
+
+
+def test_pull_rename_in_wiki_moves_the_docs_file_with_history(estate):
+    """guide/setup renamed to guide/install in the wiki (git pairs the delete and add) becomes a
+    git mv in docs/, so `git log --follow` still reaches the original commits."""
+    repo, wiki, *_ = estate
+    write(wiki, {"guide/install.md": "# Setup\n\nline one\nline two\nline three\nrenamed\n"})
+    (wiki / "guide/setup.md").unlink()
+    commit_all(wiki, "rename setup to install", ALICE, T1)
+    git(wiki, "push", "-q", "origin", "HEAD:main")
+    pull(repo, wiki)
+    assert not (repo / "docs/guide/setup.md").exists()
+    assert (repo / "docs/guide/install.md").read_text().endswith("renamed\n")
+    history = git(repo, "log", "--follow", "--format=%s", "--", "docs/guide/install.md").split("\n")
+    assert "docs" in history  # the fixture's original commit is reachable through the rename
+
+
+def test_pull_refuses_two_wiki_pages_claiming_one_docs_file(estate):
+    """A page created in the wiki at guide/glossary while docs/guide/glossary/ exists maps to
+    docs/guide/glossary/index.md; a second page guide/glossary/index also maps there. Refuse."""
+    repo, wiki, *_ = estate
+    write(repo, {"docs/guide/glossary/index.md": "# G\n", "docs/guide/glossary/terms.md": "# T\n"})
+    commit_all(repo, "glossary section", DEV, T1)
+    ci_sync(repo, wiki, date=T1)
+    wiki_edit(wiki, {"guide/glossary.md": "# G\n\nedited\n", "guide/glossary/index.md": "# copy\n"}, "copy", date=T2)
+    with pytest.raises(SystemExit, match="both map to docs/guide/glossary/index.md"):
+        pull(repo, wiki)
+
+
+def test_sync_refuses_two_docs_pages_that_share_a_wiki_page(estate):
+    """docs/guide/k8s.md next to docs/guide/k8s/index.md would both become wiki/guide/k8s.md."""
+    repo, wiki, *_ = estate
+    write(repo, {"docs/guide/k8s/index.md": "# K8s\n", "docs/guide/k8s.md": "# dup\n"})
+    with pytest.raises(SystemExit, match="would both become wiki page guide/k8s"):
+        wiki_sync.main(repo / "docs", wiki)
 
 
 def test_pull_page_created_then_deleted_in_the_same_batch(estate):

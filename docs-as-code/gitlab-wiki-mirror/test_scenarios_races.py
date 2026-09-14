@@ -94,7 +94,8 @@ def commits(bare, branch="main", fmt="%H"):
 
 def tree(bare, branch="main"):
     """Set of paths in the branch's tree."""
-    return set(git(bare, "ls-tree", "-r", "--name-only", branch).split()) if head(bare, branch) else set()
+    paths = git(bare, "ls-tree", "-r", "--name-only", branch).split() if head(bare, branch) else []
+    return {p for p in paths if not p.startswith(".gitlab/")}   # .gitlab/ is sync furniture
 
 
 def blob(bare, path, branch="main"):

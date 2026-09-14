@@ -14,12 +14,16 @@ usage: wiki-sync.py DOCS_DIR WIKI_DIR [--include P]... [--exclude P]... [--confi
 - _sidebar.md links are root-absolute (`/section/page`): the sidebar renders on every page,
   so a relative link there would mean something different on each.
 - Attachments are copied across; pages and attachments no longer in docs/ are deleted.
+- .gitlab/docs-map.json records, for every page written, which docs/ file it came from, so the
+  reverse direction (wiki-pull.py) never has to infer where an edited page belongs. GitLab's own
+  .gitlab/redirects.yml in the same folder is left alone.
 - Sidebar order follows each folder's .pages `nav` list (awesome-pages format); `...`
   expands to the remaining pages, sorted. Folders without .pages are listed alphabetically.
 - Filtering follows MkDocs: --exclude and exclude_docs skip paths entirely, --include keeps
   only matches, not_in_nav keeps the page but drops it from the sidebar (see docfilter.py).
 """
 import argparse
+import json
 import os
 import re
 import urllib.parse
@@ -41,6 +45,7 @@ def link_quote(path: str) -> str:
 INDEX = "index.md"
 PAGES = ".pages"
 REST = "..."
+DOCS_MAP = Path(".gitlab/docs-map.json")   # wiki page -> docs file, written by every sync
 
 
 def title_of(md: Path) -> str:
@@ -156,18 +161,35 @@ def render(entries, depth=0) -> list:
 
 
 def clear(wiki: Path) -> None:
-    """Remove every file except the repo metadata, then any directories left empty."""
+    """Remove every synced file, then any directories left empty. .git and GitLab's own .gitlab/
+    (redirects.yml, written when a page is renamed in the UI) are kept; the map is rewritten."""
+    keep = {".git", ".gitlab"}
     for old in wiki.rglob("*"):
-        if ".git" not in old.parts and old.is_file():
+        if not keep & set(old.parts) and old.is_file():
             old.unlink()
-    for empty in sorted((d for d in wiki.rglob("*") if d.is_dir() and ".git" not in d.parts), reverse=True):
+    for empty in sorted((d for d in wiki.rglob("*") if d.is_dir() and not keep & set(d.parts)), reverse=True):
         if not any(empty.iterdir()):
             empty.rmdir()
 
 
+def check_collisions(docs: Path, flt: docfilter.Filter) -> None:
+    """Two docs pages may not land on one wiki page (a/b.md next to a/b/index.md would)."""
+    seen = {}
+    for src in sorted(docs.rglob("*.md")):
+        rel = src.relative_to(docs)
+        if any(part.startswith(".") for part in rel.parts) or not flt.allows(rel):
+            continue
+        target = wiki_path(rel)
+        if target in seen:
+            raise SystemExit(f"{rel} and {seen[target]} would both become wiki page {target}: rename one")
+        seen[target] = rel
+
+
 def copy_tree(docs: Path, wiki: Path, flt: docfilter.Filter) -> tuple:
     """Write pages (renamed, links rewritten) and copy attachments. Returns (pages, attachments)."""
+    check_collisions(docs, flt)
     pages = attachments = 0
+    docs_map = {}
     for src in docs.rglob("*"):
         rel = src.relative_to(docs)
         # Hidden files AND hidden directories are skipped: .pages, .git, .cache, tool caches.
@@ -179,13 +201,21 @@ def copy_tree(docs: Path, wiki: Path, flt: docfilter.Filter) -> tuple:
             dst.parent.mkdir(parents=True, exist_ok=True)
             # bytes in, bytes out: read_text() would turn CRLF pages into LF ones
             dst.write_bytes(rewrite_links(src.read_bytes().decode(), src, docs, flt).encode())
+            docs_map[str(wiki_file(rel))] = str(rel)
             pages += 1
         else:
             dst = wiki / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
             attachments += 1
+    write_docs_map(wiki, docs_map)
     return pages, attachments
+
+
+def write_docs_map(wiki: Path, pages: dict) -> None:
+    """The relationship record: which docs/ file each wiki page was written from."""
+    (wiki / DOCS_MAP).parent.mkdir(parents=True, exist_ok=True)
+    (wiki / DOCS_MAP).write_text(json.dumps({"version": 1, "pages": dict(sorted(pages.items()))}, indent=1) + "\n")
 
 
 def sidebar(docs: Path, flt: docfilter.Filter) -> list:

@@ -74,7 +74,8 @@ def remove(root, *rels):
 
 def tree(root):
     """Sorted relative paths of every file under root, minus git metadata."""
-    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts)
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                  if p.is_file() and ".git" not in p.parts and ".gitlab" not in p.parts)  # .gitlab/ is sync furniture
 
 
 def snapshot(root):
@@ -126,9 +127,10 @@ def deploy(repo, wiki_bare, **extra):
 
 
 def bare_files(bare):
-    """Files on the single branch of a bare repo (empty when it has no commits)."""
+    """Files on the single branch of a bare repo (empty when it has no commits), minus .gitlab/."""
     refs = git(bare, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
-    return sorted(git(bare, "ls-tree", "-r", "--name-only", refs[0]).split()) if refs else []
+    paths = git(bare, "ls-tree", "-r", "--name-only", refs[0]).split() if refs else []
+    return sorted(p for p in paths if not p.startswith(".gitlab/"))   # .gitlab/ is sync furniture
 
 
 def wiki_link_problems(wiki):

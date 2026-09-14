@@ -153,7 +153,7 @@ def test_sync_layout_and_links(docs, tmp_path, capsys):
     wiki.mkdir()
     wiki_sync.main(docs, wiki)
     got = sorted(str(p.relative_to(wiki)) for p in wiki.rglob("*") if p.is_file())
-    assert got == ["_sidebar.md", "dev.md", "dev/alpha.md", "dev/zeta.md", "glossary.md", "home.md",
+    assert got == [".gitlab/docs-map.json", "_sidebar.md", "dev.md", "dev/alpha.md", "dev/zeta.md", "glossary.md", "home.md",
                    "ops.md", "ops/backups.md", "ops/onboarding.md", "uploads/1/n.png"]
     assert links(wiki / "home.md") == ["./ops", "./glossary"]
     assert links(wiki / "ops.md") == ["./ops/backups", "./dev", "uploads/1/n.png", "https://example.com",
@@ -196,6 +196,21 @@ def test_sync_skips_hidden_directories(docs, tmp_path):
     wiki_sync.main(docs, wiki)
     assert (wiki / ".git/config").read_text().startswith("[remote \"origin\"]")
     assert not (wiki / ".cache").exists() and not (wiki / "ops/.hidden").exists()
+
+
+def test_sync_writes_the_docs_map_and_keeps_gitlab_redirects(docs, tmp_path):
+    """Every page written is recorded wiki path -> docs path; GitLab's .gitlab/redirects.yml survives."""
+    wiki = tmp_path / "wiki"
+    write(wiki, {".gitlab/redirects.yml": "old: new\n", "stale.md": "# gone\n"})
+    wiki_sync.main(docs, wiki)
+    import json
+    m = json.loads((wiki / ".gitlab/docs-map.json").read_text())
+    assert m["version"] == 1
+    assert m["pages"]["home.md"] == "index.md"
+    assert m["pages"]["ops.md"] == "ops/index.md"
+    assert m["pages"]["ops/backups.md"] == "ops/backups.md"
+    assert (wiki / ".gitlab/redirects.yml").read_text() == "old: new\n"
+    assert not (wiki / "stale.md").exists()
 
 
 def test_sync_is_idempotent(docs, tmp_path):
@@ -278,7 +293,7 @@ def test_sync_exclude_and_include(docs, tmp_path):
     only.mkdir()
     wiki_sync.main(docs, only, docfilter.Filter(include=["/ops/**", "/index.md"], exclude=["*.tmp"]))
     got = sorted(str(p.relative_to(only)) for p in only.rglob("*") if p.is_file())
-    assert got == ["_sidebar.md", "home.md", "ops.md", "ops/backups.md", "ops/onboarding.md"]
+    assert got == [".gitlab/docs-map.json", "_sidebar.md", "home.md", "ops.md", "ops/backups.md", "ops/onboarding.md"]
     assert links(only / "home.md") == ["./ops", "glossary.md"]  # link to an excluded page stays as written
 
 
