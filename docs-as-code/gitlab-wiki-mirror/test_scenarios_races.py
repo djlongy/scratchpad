@@ -494,3 +494,22 @@ def test_dry_run_commits_nothing_in_any_state(tmp_path, estate, state):
     assert snapshot(repo_bare, target) == before, result.stdout
     assert docs_pages(repo) == pages_before
     assert git(repo, "status", "--porcelain").strip() == ""
+
+
+def test_w_wiped_wiki_reseeds_without_mkdocs_yml(estate):
+    """W: no mkdocs.yml in the repo (so wiki-sync.py gets no --config) and a wiki whose pages were all
+    deleted. bash 3.2 (macOS /bin/bash) treats an empty array expansion as unbound under set -u, so the
+    deploy used to die between "treating it as wiped" and the reseed, and only when run locally."""
+    repo, wiki, repo_bare, wiki_bare = estate
+    cfg = Path(repo) / "mkdocs.yml"
+    if cfg.exists():
+        cfg.unlink()
+        commit_all(repo, "drop mkdocs.yml", DEV, T2)
+        git(repo, "push", "-q", "origin", "main")
+    wiki_edit(wiki, {}, "wipe", delete=["home.md", "guide.md", "guide/setup.md", "glossary.md", "_sidebar.md"])
+    repo_before = head(repo_bare)
+    result = ok(deploy(repo, wiki_bare))
+    assert "unbound variable" not in result.stderr
+    assert tree(wiki_bare) == WIKI_PAGES
+    assert commits(wiki_bare, fmt="%an")[0] == CI
+    assert head(repo_bare) == repo_before

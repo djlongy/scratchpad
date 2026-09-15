@@ -120,7 +120,7 @@ pull_wiki_edits() {
   local args=(--ci-author "$ci_name" --ci-email "$ci_email" --repo "$repo")
   [ -f "$config" ] && args+=(--config "$config")
   [ "$dry" = 1 ] && args+=(--dry-run)
-  python3 "$scripts/wiki-pull.py" "$docs" "$wiki" "${args[@]}"
+  python3 "$scripts/wiki-pull.py" "$docs" "$wiki" ${args[@]+"${args[@]}"}
   after=$(git -C "$repo" rev-parse HEAD)
 }
 
@@ -139,7 +139,7 @@ push_repo() {
 sync_wiki() {
   local args=()
   [ -f "$config" ] && args+=(--config "$config")
-  python3 "$scripts/wiki-sync.py" "$docs" "$wiki" "${args[@]}"
+  python3 "$scripts/wiki-sync.py" "$docs" "$wiki" ${args[@]+"${args[@]}"}
   git -C "$wiki" config user.name  "$ci_name"
   git -C "$wiki" config user.email "$ci_email"
   git -C "$wiki" add -A
