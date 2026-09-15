@@ -1,0 +1,71 @@
+# templates/container-list-rke2/contract.yml
+schema_version: 1
+name: container-list-rke2
+kind: component
+status: experimental
+introduced_in: '0.1.0'
+minimum_gitlab: '17.0'
+path: templates/container-list-rke2/template.yml
+
+purpose: >-
+  Resolve the container image references of one RKE2 release into a single
+  sorted, deduplicated list, from a release manifest in the consumer checkout.
+
+jobs:
+  - name: '<instance>:container-list-rke2'
+    stage_input: stage
+    default_stage: verify
+
+inputs_summary:
+  required: [instance]
+  optional:
+    - stage
+    - config-file
+    - release-base-url
+    - execution-image
+    - egress-proxy
+    - no-proxy
+    - runner-tags
+    - run-rules
+
+producers: []
+
+outputs:
+  - path: .ci-artifacts/<instance>/container-list-rke2/images.txt
+    format: >-
+      One upstream reference per line, `registry/repo:tag`, sorted and
+      deduplicated across every list named in the manifest. Empty when
+      config-file is empty, so the mirror works from its other list files
+      alone.
+    retention: 30 days
+    when: on_success
+
+authentication:
+  secrets: []
+  network:
+    - release-base-url over HTTPS, directly or through egress-proxy
+
+failure_behaviour:
+  - 'empty config-file: an empty images.txt and exit 0, no network call'
+  - 'missing or unparseable config-file: exit 1 before any network call'
+  - 'config-file resolving outside the checkout: exit 1'
+  - 'any release list that cannot be downloaded: curl --fail, job fails'
+  - an empty result is not treated as success by consumers; the mirror component
+    fails when the assembled reference set is empty
+
+compatibility:
+  gitlab: '>=17.0 for typed spec:inputs with regex validation'
+  runner: 'shell-capable Linux executor'
+  execution_image: >-
+    docker.io/library/alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+    (alpine 3.21, amd64 index digest verified with skopeo inspect on 2026-09-15)
+
+limitations:
+  - The default execution image installs curl and python3 with apk at run time.
+    That is not a fully pinned runtime under section 12 of the standard. A
+    purpose-built image under images/ removes it; until then the alpine digest
+    pins the package index the job resolves against.
+
+verification:
+  - yaml-parsed
+  - gitlab-linted

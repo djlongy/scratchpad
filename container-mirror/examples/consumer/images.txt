@@ -1,0 +1,4 @@
+# One reference per line. A tag alone is enough; a tag plus a digest pins the
+# content and is what Renovate keeps current.
+docker.io/library/alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+docker.io/bitnamilegacy/redis:8.2.0@sha256:942271e7b024af7464a6de564d453a35bf4e674afe81333e6fe6c5141b100e84

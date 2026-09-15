@@ -1,0 +1,43 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump every reference in images.txt, tag and digest together.",
+      "fileMatch": [
+        "^images\\.txt$"
+      ],
+      "matchStrings": [
+        "^(?<depName>[^\\s#:]+):(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[0-9a-f]{64}))?\\s*$"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Bump the shared CI tag the pipeline is included at.",
+      "fileMatch": [
+        "^\\.gitlab-ci\\.yml$"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s*\\n\\s*ref:\\s*'(?<currentValue>[^']+)'"
+      ]
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchFileNames": [
+        "images.txt"
+      ],
+      "commitMessageTopic": "mirrored image {{depName}}",
+      "labels": [
+        "container-mirror"
+      ]
+    }
+  ]
+}

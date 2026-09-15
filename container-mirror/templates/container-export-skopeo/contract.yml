@@ -1,0 +1,145 @@
+# templates/container-export-skopeo/contract.yml
+schema_version: 1
+name: container-export-skopeo
+kind: component
+status: experimental
+introduced_in: '0.1.0'
+minimum_gitlab: '17.0'
+path: templates/container-export-skopeo/template.yml
+
+purpose: >-
+  Pull an already-mirrored reference set out of a registry into one OCI layout,
+  describe it in a transfer manifest, drop every blob the receiving side already
+  holds, and upload the remainder as one tar object.
+
+jobs:
+  - name: '<instance>:container-export-skopeo'
+    stage_input: stage
+    default_stage: publish
+
+inputs_summary:
+  required:
+    - instance
+    - list-job
+    - mirror-job
+    - list-files
+    - repository-prefix
+    - s3-endpoint
+    - s3-bucket
+    - s3-prefix
+    - have-key
+    - registry    # unless vault-addr is set
+  optional:
+    - stage
+    - arch
+    - vault-addr
+    - vault-role
+    - vault-kv-path
+    - vault-s3-kv-path
+    - vault-field-registry
+    - vault-field-user
+    - vault-field-token
+    - vault-s3-field-access-key
+    - vault-s3-field-secret-key
+    - ca-bundle-url
+    - execution-image
+    - egress-proxy
+    - no-proxy
+    - runner-tags
+    - run-rules
+
+producers:
+  - input: list-job
+    artifacts: true
+    optional: false
+    note: The reference list this job pulls, the same one the mirror was given.
+  - input: mirror-job
+    artifacts: false
+    optional: false
+    note: >-
+      Gate only. Nothing is exported unless the mirror succeeded, and the gate
+      sits in the transitive chain of this publishing job rather than being
+      implied by a shared stage.
+
+outputs:
+  - path: .ci-artifacts/<instance>/container-export-skopeo/manifest.json
+    format: >-
+      A transfer stamp and one entry per image, each carrying the reference, the
+      manifest digest, the config digest and every layer digest. Layers are
+      listed even when the blob was excluded from the archive, which is what
+      lets the receiving side prove completeness against its own store.
+    retention: 30 days
+    when: always
+  - path: s3://<s3-bucket>/<s3-prefix>/transfer-<stamp>.tar
+    format: >-
+      tar of an OCI image layout, whose reference names are
+      `<repository-prefix>/<path>:<tag>`, plus manifest.json, minus the blobs
+      named by have-key.
+    retention: owned by the receiving side, not by CI
+
+delta_contract: >-
+  have-key is read with s3api get-object, not head-object: some S3 gateways
+  answer HeadObject with HTTP 400, which reads as "no object" and would silently
+  send the full set every run. A genuine NoSuchKey means send everything; any
+  other error fails the job with exit 2.
+
+media_type: >-
+  Copies out of the registry use --preserve-digests, so the layout, the source
+  registry and the receiving registry all report the same digest for a
+  reference. This holds only because the mirror component wrote OCI manifests.
+
+authentication:
+  default_mode: >-
+    CI/CD variables. REGISTRY_USER and REGISTRY_PASSWORD hold the registry
+    credential, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY the object-store
+    credential; mask all four. The registry input must be set.
+  vault_mode: >-
+    Selected by a non-empty vault-addr. The job then logs in with the GitLab ID
+    token VAULT_JWT and reads vault-kv-path and vault-s3-kv-path; all three
+    inputs are required and the job exits 1 without them. Every KV path and
+    field name is an input with no site-specific default.
+  identity: GitLab ID token VAULT_JWT, audience = vault-addr (Vault mode only)
+  secrets:
+    - 'variables: REGISTRY_USER, REGISTRY_PASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY'
+    - 'or vault-kv-path fields for the registry host, robot name and robot token'
+    - 'or vault-s3-kv-path fields for the object-store access and secret keys'
+  handling: >-
+    Same as container-mirror-skopeo. In Vault mode both Vault responses are
+    removed from the filesystem before the script stage; only credential
+    lengths are printed.
+  network:
+    - the source registry
+    - s3-endpoint
+    - vault-addr, in Vault mode
+    - ca-bundle-url, when set
+
+failure_behaviour:
+  - 'either credential source incomplete: exit 1 before any registry call'
+  - 'vault-addr set without vault-role, vault-kv-path or vault-s3-kv-path: exit 1'
+  - 'Vault login returning no token: exit 1 before any registry call'
+  - 'a list file that is absent, absolute or traverses out of the checkout: exit 1'
+  - 'an empty assembled reference set: exit 1'
+  - 'a reference in the list that is absent from the layout: KeyError in the manifest step, job fails; the archive is never uploaded'
+  - 'have-key unreadable for any reason other than NoSuchKey: exit 2'
+
+compatibility:
+  gitlab: '>=17.0 for typed spec:inputs with regex validation'
+  runner: >-
+    shell-capable Linux executor with disk for the whole layout; the RKE2 set is
+    roughly 1.4 GB uncompressed
+  execution_image: >-
+    docker.io/library/alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+    (alpine 3.21, amd64 index digest verified with skopeo inspect on 2026-09-15)
+
+limitations:
+  - list-files is a validated space-separated string for the same reason as in
+    container-mirror-skopeo.
+  - The default execution image installs skopeo, tar and an S3 client with apk
+    at run time.
+  - The component uploads one object. A receiving side that needs the archive
+    split is responsible for splitting it.
+
+verification:
+  - yaml-parsed
+  - gitlab-linted
+  - integration-tested

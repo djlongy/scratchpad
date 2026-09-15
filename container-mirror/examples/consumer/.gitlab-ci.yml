@@ -1,0 +1,25 @@
+# The whole consumer configuration: one include, its inputs, and images.txt
+# beside it in the repository.
+#
+# Project CI/CD variables, all masked:
+#   REGISTRY_USER, REGISTRY_PASSWORD            the destination registry
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY    the object store
+
+include:
+  - project: 'platform/ci-mirror-templates'
+    # renovate: datasource=gitlab-tags depName=platform/ci-mirror-templates
+    ref: '0.1.0'
+    file: '/pipelines/container-mirror.yml'
+    inputs:
+      instance: mirror
+      changes-paths:
+        - 'images.txt'
+        - '.gitlab-ci.yml'
+      extra-list-files: images.txt
+      registry: registry.example.com
+      repository-prefix: mirror
+      arch: linux-amd64
+      s3-endpoint: 'https://s3.example.com'
+      s3-bucket: transfer
+      s3-prefix: export
+      have-key: have/blobs.txt

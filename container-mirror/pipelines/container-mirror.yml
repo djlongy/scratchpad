@@ -1,0 +1,222 @@
+# pipelines/container-mirror.yml
+#
+# Resolve a release image list, mirror every reference into a registry, and ship
+# to an object store only the layers the receiving side does not already hold.
+# Merge requests resolve and inspect without writing anything; the default
+# branch and schedules mirror and export.
+#
+# Credentials come from CI/CD variables:
+#
+#   REGISTRY_USER, REGISTRY_PASSWORD            the destination registry
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY    the object store
+#
+# Setting vault-addr replaces all four with a Vault JWT login; vault-role,
+# vault-kv-path and vault-s3-kv-path are then required.
+
+#### Consumer interface ####
+spec:
+  inputs:
+    instance:
+      type: string
+      description: Workload identifier; every job name starts with it.
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    changes-paths:
+      type: array
+      description: >-
+        Paths that make this pipeline eligible on a merge request or a branch
+        push. Schedules ignore it. A narrowed list must still name
+        `.gitlab-ci.yml`, or a bump of the shared-CI ref runs nothing.
+      default:
+        - '**/*'
+    config-file:
+      type: string
+      description: >-
+        RKE2 release manifest read by the list job. Empty resolves no release
+        and the mirror works from extra-list-files alone.
+      default: ''
+    extra-list-files:
+      type: string
+      description: >-
+        Space-separated relative paths of additional reference lists in the
+        consumer checkout, mirrored alongside the resolved release list.
+      default: images.txt
+    registry:
+      type: string
+      description: >-
+        Destination registry host. Required unless vault-addr is set, in which
+        case an empty value is read from Vault.
+      default: ''
+    repository-prefix:
+      type: string
+      description: Path under the registry every reference is placed in.
+    arch:
+      type: string
+      description: Platform selected from a multi-platform reference.
+      default: linux-amd64
+    s3-endpoint:
+      type: string
+      description: S3 API endpoint the transfer archive is uploaded to.
+    s3-bucket:
+      type: string
+      description: Bucket holding the transfer prefix and the checksum list.
+    s3-prefix:
+      type: string
+      description: Key prefix the archive is uploaded under.
+    have-key:
+      type: string
+      description: Object key listing the blobs the receiving side already holds.
+    vault-addr:
+      type: string
+      description: >-
+        Vault API base URL, also the JWT audience. Empty, the default, keeps
+        both jobs on the CI/CD variables named in the header comment.
+      default: ''
+    vault-role:
+      type: string
+      description: Vault JWT role the CI identity logs in with. Vault mode only.
+      default: ''
+    vault-kv-path:
+      type: string
+      description: KV v2 path holding the registry credential. Vault mode only.
+      default: ''
+    vault-field-registry:
+      type: string
+      description: Field holding the registry host.
+      default: registry
+    vault-field-user:
+      type: string
+      description: Field holding the robot account name.
+      default: username
+    vault-field-token:
+      type: string
+      description: Field holding the robot token.
+      default: token
+    vault-s3-kv-path:
+      type: string
+      description: KV v2 path holding the S3 credential. Vault mode only.
+      default: ''
+    vault-s3-field-access-key:
+      type: string
+      description: Field holding the S3 access key id.
+      default: access_key
+    vault-s3-field-secret-key:
+      type: string
+      description: Field holding the S3 secret key.
+      default: secret_key
+    ca-bundle-url:
+      type: string
+      description: Optional PEM bundle trusted before any registry call.
+      default: ''
+    egress-proxy:
+      type: string
+      description: HTTP CONNECT proxy for outbound traffic.
+      default: ''
+    no-proxy:
+      type: string
+      description: NO_PROXY value applied alongside egress-proxy.
+      default: ''
+    execution-image:
+      type: string
+      description: Approved execution image pinned by digest.
+      default: docker.io/library/alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+    runner-tags:
+      type: array
+      description: Approved runner selection.
+      default: []
+---
+
+#### Pipeline ownership ####
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - when: never
+
+stages:
+  - verify
+  - publish
+
+#### Components at the same shared-CI revision ####
+include:
+  - local: '/templates/container-list-rke2/template.yml'
+    inputs:
+      instance: $[[ inputs.instance ]]
+      stage: verify
+      config-file: $[[ inputs.config-file ]]
+      execution-image: $[[ inputs.execution-image ]]
+      egress-proxy: $[[ inputs.egress-proxy ]]
+      no-proxy: $[[ inputs.no-proxy ]]
+      runner-tags: $[[ inputs.runner-tags ]]
+      run-rules:
+        - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+          changes: $[[ inputs.changes-paths ]]
+        - if: '$CI_PIPELINE_SOURCE == "schedule"'
+        - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+          changes: $[[ inputs.changes-paths ]]
+
+  - local: '/templates/container-mirror-skopeo/template.yml'
+    inputs:
+      instance: $[[ inputs.instance ]]
+      stage: publish
+      list-job: $[[ inputs.instance ]]:container-list-rke2
+      list-files: .ci-artifacts/$[[ inputs.instance ]]/container-list-rke2/images.txt $[[ inputs.extra-list-files ]]
+      registry: $[[ inputs.registry ]]
+      repository-prefix: $[[ inputs.repository-prefix ]]
+      arch: $[[ inputs.arch ]]
+      vault-addr: $[[ inputs.vault-addr ]]
+      vault-role: $[[ inputs.vault-role ]]
+      vault-kv-path: $[[ inputs.vault-kv-path ]]
+      vault-field-registry: $[[ inputs.vault-field-registry ]]
+      vault-field-user: $[[ inputs.vault-field-user ]]
+      vault-field-token: $[[ inputs.vault-field-token ]]
+      ca-bundle-url: $[[ inputs.ca-bundle-url ]]
+      execution-image: $[[ inputs.execution-image ]]
+      egress-proxy: $[[ inputs.egress-proxy ]]
+      no-proxy: $[[ inputs.no-proxy ]]
+      runner-tags: $[[ inputs.runner-tags ]]
+      # A merge request proves the references resolve without writing to the
+      # registry. Inputs are fixed at pipeline creation, so the mode is carried
+      # by a rule variable rather than the dry-run input.
+      run-rules:
+        - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+          changes: $[[ inputs.changes-paths ]]
+          variables:
+            CI_TPL_DRY_RUN: 'true'
+        - if: '$CI_PIPELINE_SOURCE == "schedule"'
+        - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+          changes: $[[ inputs.changes-paths ]]
+
+  - local: '/templates/container-export-skopeo/template.yml'
+    inputs:
+      instance: $[[ inputs.instance ]]
+      stage: publish
+      list-job: $[[ inputs.instance ]]:container-list-rke2
+      mirror-job: $[[ inputs.instance ]]:container-mirror-skopeo
+      list-files: .ci-artifacts/$[[ inputs.instance ]]/container-list-rke2/images.txt $[[ inputs.extra-list-files ]]
+      registry: $[[ inputs.registry ]]
+      repository-prefix: $[[ inputs.repository-prefix ]]
+      arch: $[[ inputs.arch ]]
+      s3-endpoint: $[[ inputs.s3-endpoint ]]
+      s3-bucket: $[[ inputs.s3-bucket ]]
+      s3-prefix: $[[ inputs.s3-prefix ]]
+      have-key: $[[ inputs.have-key ]]
+      vault-addr: $[[ inputs.vault-addr ]]
+      vault-role: $[[ inputs.vault-role ]]
+      vault-kv-path: $[[ inputs.vault-kv-path ]]
+      vault-field-registry: $[[ inputs.vault-field-registry ]]
+      vault-field-user: $[[ inputs.vault-field-user ]]
+      vault-field-token: $[[ inputs.vault-field-token ]]
+      vault-s3-kv-path: $[[ inputs.vault-s3-kv-path ]]
+      vault-s3-field-access-key: $[[ inputs.vault-s3-field-access-key ]]
+      vault-s3-field-secret-key: $[[ inputs.vault-s3-field-secret-key ]]
+      ca-bundle-url: $[[ inputs.ca-bundle-url ]]
+      execution-image: $[[ inputs.execution-image ]]
+      egress-proxy: $[[ inputs.egress-proxy ]]
+      no-proxy: $[[ inputs.no-proxy ]]
+      runner-tags: $[[ inputs.runner-tags ]]
+      # Nothing leaves the low side from a merge request.
+      run-rules:
+        - if: '$CI_PIPELINE_SOURCE == "schedule"'
+        - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+          changes: $[[ inputs.changes-paths ]]

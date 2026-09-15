@@ -1,0 +1,137 @@
+# templates/container-list-rke2/template.yml
+
+#### Public interface ####
+spec:
+  inputs:
+    instance:
+      type: string
+      description: Unique workload instance used in the job name.
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    stage:
+      type: string
+      description: Stage supplied by the owning composition.
+      default: verify
+    config-file:
+      type: string
+      description: >-
+        Release manifest in the consumer checkout. Plain YAML with a scalar
+        `version`, a scalar `arch` and a `lists` sequence; `#` comments allowed.
+        Empty, the default, resolves no release and writes an empty list, which
+        is how a consumer that keeps its own reference file uses the mirror
+        without pinning an RKE2 release.
+      default: ''
+      regex: '^([A-Za-z0-9._][A-Za-z0-9._/-]*)?$'
+    release-base-url:
+      type: string
+      description: >-
+        Release download root. The job fetches
+        `<base>/<version>/rke2-images-<list>.<arch>.txt` for every list.
+      default: https://github.com/rancher/rke2/releases/download
+    execution-image:
+      type: string
+      description: Approved execution image pinned by digest. Needs apk, curl and python3.
+      default: docker.io/library/alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+      regex: '^.+@sha256:[0-9a-f]{64}$'
+    egress-proxy:
+      type: string
+      description: HTTP CONNECT proxy for outbound traffic. Empty means direct egress.
+      default: ''
+    no-proxy:
+      type: string
+      description: NO_PROXY value applied alongside egress-proxy.
+      default: ''
+    runner-tags:
+      type: array
+      description: Runner selection from the estate profile.
+      default: []
+    run-rules:
+      type: array
+      description: Job eligibility set by the composition.
+      default:
+        - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+        - if: '$CI_PIPELINE_SOURCE == "schedule"'
+        - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+---
+
+#### Executable capability ####
+"$[[ inputs.instance ]]:container-list-rke2":
+  stage: $[[ inputs.stage ]]
+  image:
+    name: $[[ inputs.execution-image ]]
+    entrypoint: ['']
+  tags: $[[ inputs.runner-tags ]]
+  variables:
+    CI_TPL_CONFIG_FILE: $[[ inputs.config-file ]]
+    CI_TPL_BASE_URL: $[[ inputs.release-base-url ]]
+    CI_TPL_EGRESS_PROXY: $[[ inputs.egress-proxy ]]
+    CI_TPL_NO_PROXY: $[[ inputs.no-proxy ]]
+    CI_TPL_OUT_DIR: .ci-artifacts/$[[ inputs.instance ]]/container-list-rke2
+  dependencies: []
+  before_script:
+    - |
+      set -eu
+      if [ -n "$CI_TPL_EGRESS_PROXY" ]; then
+        HTTP_PROXY=$CI_TPL_EGRESS_PROXY; HTTPS_PROXY=$CI_TPL_EGRESS_PROXY
+        http_proxy=$CI_TPL_EGRESS_PROXY; https_proxy=$CI_TPL_EGRESS_PROXY
+        NO_PROXY=$CI_TPL_NO_PROXY; no_proxy=$CI_TPL_NO_PROXY
+        export HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy
+        echo "egress: via proxy $CI_TPL_EGRESS_PROXY"
+      else
+        echo "egress: direct"
+      fi
+      apk add --no-cache curl python3 ca-certificates >/dev/null
+  script:
+    - |
+      set -eu
+      out=$CI_PROJECT_DIR/$CI_TPL_OUT_DIR
+      mkdir -p "$out"
+      if [ -z "$CI_TPL_CONFIG_FILE" ]; then
+        : > "$out/images.txt"
+        echo "no release manifest, 0 ref(s) -> $CI_TPL_OUT_DIR/images.txt"
+        exit 0
+      fi
+      project_root=$(cd "$CI_PROJECT_DIR" && pwd -P)
+      cfg=$CI_PROJECT_DIR/$CI_TPL_CONFIG_FILE
+      [ -f "$cfg" ] || { echo "ERROR: config-file $CI_TPL_CONFIG_FILE not found" >&2; exit 1; }
+      case "$(cd "$(dirname "$cfg")" && pwd -P)" in
+        "$project_root"|"$project_root"/*) ;;
+        *) echo 'ERROR: config-file escapes the checkout' >&2; exit 1 ;;
+      esac
+      work=$(mktemp -d)
+      python3 - "$cfg" > "$work/parsed" <<'PY'
+      import sys
+
+      cfg, lists = {}, []
+      for raw in open(sys.argv[1]):
+          line = raw.split('#', 1)[0].strip()
+          if not line:
+              continue
+          if line.startswith('- '):
+              lists.append(line[2:].strip())
+              continue
+          key, _, value = line.partition(':')
+          if value.strip():
+              cfg[key.strip()] = value.strip()
+      print(cfg['version'], cfg['arch'], ' '.join(lists))
+      PY
+      read -r version arch lists < "$work/parsed"
+      [ -n "${version:-}" ] && [ -n "${arch:-}" ] && [ -n "${lists:-}" ] \
+        || { echo "ERROR: cannot parse $CI_TPL_CONFIG_FILE" >&2; exit 1; }
+      # The release tag carries a '+'. It is legal in a URL path but several
+      # proxies rewrite it to a space, so encode it.
+      encoded=$(printf '%s' "$version" | sed 's/+/%2B/g')
+      : > "$work/raw"
+      for list in $lists; do
+        curl -fsSL --retry 3 "$CI_TPL_BASE_URL/$encoded/rke2-images-$list.$arch.txt" >> "$work/raw"
+      done
+      grep -v '^[[:space:]]*$' "$work/raw" | sort -u > "$out/images.txt"
+      echo "$version ($arch), lists: $lists"
+      echo "$(wc -l < "$out/images.txt" | tr -d ' ') ref(s) -> $CI_TPL_OUT_DIR/images.txt"
+  artifacts:
+    paths:
+      - .ci-artifacts/$[[ inputs.instance ]]/container-list-rke2/
+    when: on_success
+    expire_in: 30 days
+  rules: $[[ inputs.run-rules ]]
+  allow_failure: false
+  interruptible: true

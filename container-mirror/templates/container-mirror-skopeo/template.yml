@@ -1,0 +1,303 @@
+# templates/container-mirror-skopeo/template.yml
+
+#### Public interface ####
+spec:
+  inputs:
+    instance:
+      type: string
+      description: Unique workload instance used in the job name.
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    stage:
+      type: string
+      description: Stage supplied by the owning composition.
+      default: publish
+    list-job:
+      type: string
+      description: >-
+        Job that produces the reference list artifact this job consumes.
+        Required: a mirror always copies a list somebody else resolved.
+      regex: '^[a-z][a-z0-9-]{0,47}:[a-z][a-z0-9-]{0,63}$'
+    list-files:
+      type: string
+      description: >-
+        Space-separated relative paths holding references, read in order. A path
+        may sit in the consumer checkout or in the list-job artifact. One
+        reference per line, `registry/repo:tag` or `registry/repo:tag@sha256:...`;
+        `#` comments and blank lines are ignored. GitLab cannot interpolate an
+        array input into a runtime variable, so this is a validated string.
+      regex: '^[A-Za-z0-9._][A-Za-z0-9._/-]*( +[A-Za-z0-9._][A-Za-z0-9._/-]*)* *$'
+    registry:
+      type: string
+      description: >-
+        Destination registry host. Required unless vault-addr is set, in which
+        case an empty value is read from Vault using vault-field-registry.
+      default: ''
+    repository-prefix:
+      type: string
+      description: >-
+        Path under the registry that every mirrored reference is placed in. The
+        upstream registry host is stripped and the remaining path appended.
+      regex: '^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$'
+    arch:
+      type: string
+      description: Platform selected from a multi-platform reference, as `<os>-<cpu>`.
+      default: linux-amd64
+      regex: '^[a-z0-9]+-[a-z0-9]+$'
+    dry-run:
+      type: boolean
+      description: >-
+        Inspect every reference instead of copying it, which proves the
+        reference exists and its digest resolves without writing to the
+        registry. The composition may also set CI_TPL_DRY_RUN from a rule.
+        Only a merge request may inspect: on any other pipeline source the job
+        refuses to start rather than report success having written nothing.
+      default: false
+    vault-addr:
+      type: string
+      description: >-
+        Vault API base URL, also the JWT audience. Empty is the default and
+        selects the CI variables REGISTRY_USER and REGISTRY_PASSWORD instead.
+        A non-empty value switches the job to a Vault JWT login and makes
+        vault-role and vault-kv-path required.
+      default: ''
+      regex: '^(https://.+)?$'
+    vault-role:
+      type: string
+      description: Vault JWT role the CI identity logs in with. Vault mode only.
+      default: ''
+    vault-kv-path:
+      type: string
+      description: >-
+        KV v2 read path holding the registry credential, as `<mount>/<path>`.
+        Vault mode only.
+      default: ''
+      regex: '^([A-Za-z0-9._-]+/[A-Za-z0-9._/-]+)?$'
+    vault-field-registry:
+      type: string
+      description: Field holding the registry host. Ignored when `registry` is set.
+      default: registry
+    vault-field-user:
+      type: string
+      description: Field holding the robot account name.
+      default: username
+    vault-field-token:
+      type: string
+      description: Field holding the robot token. Never echoed, never on a command line.
+      default: token
+    ca-bundle-url:
+      type: string
+      description: >-
+        Optional PEM bundle fetched into the trust store before any registry
+        call, for a registry issued by an internal authority. Empty skips it.
+      default: ''
+    execution-image:
+      type: string
+      description: Approved execution image pinned by digest. Needs apk, curl, python3 and skopeo.
+      default: docker.io/library/alpine@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+      regex: '^.+@sha256:[0-9a-f]{64}$'
+    egress-proxy:
+      type: string
+      description: HTTP CONNECT proxy for outbound traffic. Empty means direct egress.
+      default: ''
+    no-proxy:
+      type: string
+      description: NO_PROXY value applied alongside egress-proxy.
+      default: ''
+    runner-tags:
+      type: array
+      description: Runner selection from the estate profile.
+      default: []
+    run-rules:
+      type: array
+      description: Job eligibility set by the composition.
+      default:
+        - if: '$CI_PIPELINE_SOURCE == "schedule"'
+        - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+---
+
+#### Executable capability ####
+"$[[ inputs.instance ]]:container-mirror-skopeo":
+  stage: $[[ inputs.stage ]]
+  image:
+    name: $[[ inputs.execution-image ]]
+    entrypoint: ['']
+  tags: $[[ inputs.runner-tags ]]
+  id_tokens:
+    VAULT_JWT:
+      aud: $[[ inputs.vault-addr ]]
+  variables:
+    CI_TPL_LIST_FILES: $[[ inputs.list-files ]]
+    CI_TPL_REGISTRY: $[[ inputs.registry ]]
+    CI_TPL_PREFIX: $[[ inputs.repository-prefix ]]
+    CI_TPL_ARCH: $[[ inputs.arch ]]
+    CI_TPL_DRY_RUN: $[[ inputs.dry-run ]]
+    CI_TPL_VAULT_ADDR: $[[ inputs.vault-addr ]]
+    CI_TPL_VAULT_ROLE: $[[ inputs.vault-role ]]
+    CI_TPL_VAULT_KV_PATH: $[[ inputs.vault-kv-path ]]
+    CI_TPL_FIELD_REGISTRY: $[[ inputs.vault-field-registry ]]
+    CI_TPL_FIELD_USER: $[[ inputs.vault-field-user ]]
+    CI_TPL_FIELD_TOKEN: $[[ inputs.vault-field-token ]]
+    CI_TPL_CA_BUNDLE_URL: $[[ inputs.ca-bundle-url ]]
+    CI_TPL_EGRESS_PROXY: $[[ inputs.egress-proxy ]]
+    CI_TPL_NO_PROXY: $[[ inputs.no-proxy ]]
+    CI_TPL_OUT_DIR: .ci-artifacts/$[[ inputs.instance ]]/container-mirror-skopeo
+  needs:
+    - job: $[[ inputs.list-job ]]
+      artifacts: true
+  before_script:
+    - |
+      set -eu
+      if [ -n "$CI_TPL_EGRESS_PROXY" ]; then
+        HTTP_PROXY=$CI_TPL_EGRESS_PROXY; HTTPS_PROXY=$CI_TPL_EGRESS_PROXY
+        http_proxy=$CI_TPL_EGRESS_PROXY; https_proxy=$CI_TPL_EGRESS_PROXY
+        NO_PROXY=$CI_TPL_NO_PROXY; no_proxy=$CI_TPL_NO_PROXY
+        export HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy
+        echo "egress: via proxy $CI_TPL_EGRESS_PROXY"
+      else
+        echo "egress: direct"
+      fi
+      apk add --no-cache curl python3 skopeo ca-certificates >/dev/null
+    - |
+      set -eu
+      if [ -n "$CI_TPL_CA_BUNDLE_URL" ]; then
+        curl -sf "$CI_TPL_CA_BUNDLE_URL" -o /usr/local/share/ca-certificates/ci-tpl-bundle.crt
+        update-ca-certificates >/dev/null 2>&1
+        echo "trusted: $(grep -c 'BEGIN CERTIFICATE' /usr/local/share/ca-certificates/ci-tpl-bundle.crt) extra certificate(s)"
+      fi
+    - |
+      set -eu
+      # Two credential sources. Plain CI variables by default, a Vault JWT login
+      # when vault-addr is set. Nothing here is echoed; only lengths are
+      # reported.
+      if [ -n "$CI_TPL_VAULT_ADDR" ]; then
+        [ -n "$CI_TPL_VAULT_ROLE" ] && [ -n "$CI_TPL_VAULT_KV_PATH" ] \
+          || { echo 'ERROR: vault-addr is set, so vault-role and vault-kv-path are required' >&2; exit 1; }
+        VAULT_TOKEN=$(curl -sf -X POST -H 'Content-Type: application/json' \
+          -d "{\"jwt\":\"${VAULT_JWT}\",\"role\":\"${CI_TPL_VAULT_ROLE}\"}" \
+          "${CI_TPL_VAULT_ADDR}/v1/auth/jwt/login" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["auth"]["client_token"])')
+        [ -n "$VAULT_TOKEN" ] || { echo 'ERROR: Vault JWT login returned no token' >&2; exit 1; }
+        echo "Vault token obtained (length ${#VAULT_TOKEN})"
+        mount=${CI_TPL_VAULT_KV_PATH%%/*}
+        secret=${CI_TPL_VAULT_KV_PATH#*/}
+        curl -sf -H "X-Vault-Token: ${VAULT_TOKEN}" \
+          "${CI_TPL_VAULT_ADDR}/v1/${mount}/data/${secret}" > /tmp/ci-tpl-secret.json
+        chmod 600 /tmp/ci-tpl-secret.json
+        field() { python3 -c 'import json,sys; print(json.load(open("/tmp/ci-tpl-secret.json"))["data"]["data"][sys.argv[1]])' "$1"; }
+        [ -n "$CI_TPL_REGISTRY" ] || CI_TPL_REGISTRY=$(field "$CI_TPL_FIELD_REGISTRY")
+        CI_TPL_USER=$(field "$CI_TPL_FIELD_USER")
+        CI_TPL_TOKEN=$(field "$CI_TPL_FIELD_TOKEN")
+        rm -f /tmp/ci-tpl-secret.json
+      else
+        [ -n "$CI_TPL_REGISTRY" ] \
+          || { echo 'ERROR: the registry input is required unless vault-addr is set' >&2; exit 1; }
+        CI_TPL_USER=${REGISTRY_USER:-}
+        CI_TPL_TOKEN=${REGISTRY_PASSWORD:-}
+        [ -n "$CI_TPL_USER" ] && [ -n "$CI_TPL_TOKEN" ] \
+          || { echo 'ERROR: set the CI variables REGISTRY_USER and REGISTRY_PASSWORD, or set vault-addr' >&2; exit 1; }
+      fi
+      export CI_TPL_REGISTRY CI_TPL_USER CI_TPL_TOKEN
+      echo "registry: ${CI_TPL_REGISTRY} (user ${CI_TPL_USER}, credential length ${#CI_TPL_TOKEN})"
+      # Built by python from the environment so the token never reaches a
+      # command line, a process listing, or the job log.
+      mkdir -p /tmp/ci-tpl-docker
+      DOCKER_CONFIG=/tmp/ci-tpl-docker
+      export DOCKER_CONFIG
+      python3 - > "$DOCKER_CONFIG/config.json" <<'PY'
+      import base64, json, os, sys
+      pair = "%s:%s" % (os.environ["CI_TPL_USER"], os.environ["CI_TPL_TOKEN"])
+      auth = base64.b64encode(pair.encode()).decode()
+      json.dump({"auths": {os.environ["CI_TPL_REGISTRY"]: {"auth": auth}}}, sys.stdout)
+      PY
+      chmod 600 "$DOCKER_CONFIG/config.json"
+  script:
+    - |
+      set -eu
+      DOCKER_CONFIG=/tmp/ci-tpl-docker
+      export DOCKER_CONFIG
+      authfile=$DOCKER_CONFIG/config.json
+      os=${CI_TPL_ARCH%%-*}
+      cpu=${CI_TPL_ARCH##*-}
+      # CI_TPL_DRY_RUN decides whether anything is written, and a CI variable set
+      # at project or group level outranks a job variable. Unguarded, one such
+      # variable turns every mirror into a green no-op that nobody notices.
+      case "$CI_TPL_DRY_RUN" in
+        true|false) ;;
+        *) echo "ERROR: CI_TPL_DRY_RUN must be true or false, got '$CI_TPL_DRY_RUN'" >&2; exit 1 ;;
+      esac
+      if [ "$CI_TPL_DRY_RUN" = "true" ] && [ "${CI_PIPELINE_SOURCE:-}" != "merge_request_event" ]; then
+        echo "ERROR: CI_TPL_DRY_RUN is true on a $CI_PIPELINE_SOURCE pipeline; only a merge request may inspect instead of copying" >&2
+        exit 1
+      fi
+      out=$CI_PROJECT_DIR/$CI_TPL_OUT_DIR
+      mkdir -p "$out"
+      project_root=$(cd "$CI_PROJECT_DIR" && pwd -P)
+      work=$(mktemp -d)
+      : > "$work/refs"
+      for f in $CI_TPL_LIST_FILES; do
+        case "$f" in
+          /*|*..*) echo "ERROR: list file $f is absolute or traverses" >&2; exit 1 ;;
+        esac
+        p=$CI_PROJECT_DIR/$f
+        [ -f "$p" ] || { echo "ERROR: list file $f not found" >&2; exit 1; }
+        case "$(cd "$(dirname "$p")" && pwd -P)" in
+          "$project_root"|"$project_root"/*) ;;
+          *) echo "ERROR: list file $f escapes the checkout" >&2; exit 1 ;;
+        esac
+        sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$p" >> "$work/refs"
+      done
+      [ -s "$work/refs" ] || { echo 'ERROR: no references to mirror' >&2; exit 1; }
+      echo "== $(wc -l < "$work/refs" | tr -d ' ') reference(s), dry run: $CI_TPL_DRY_RUN"
+      : > "$out/digests.txt"
+      while read -r ref; do
+        [ -n "$ref" ] || continue
+        name=${ref%%@*}
+        last=${name##*/}
+        case $last in
+          *:*) tag=${last##*:}; repo=${name%:*} ;;
+          *)   tag=latest;      repo=$name ;;
+        esac
+        case $ref in
+          *@sha256:*) src=$repo@${ref#*@} ;;
+          *)          src=$name ;;
+        esac
+        # Destination path: the upstream path with the registry host stripped,
+        # placed under the repository prefix.
+        path=$repo
+        case ${path%%/*} in
+          *.* | *:* | localhost) path=${path#*/} ;;
+        esac
+        dest=$CI_TPL_REGISTRY/$CI_TPL_PREFIX/$path:$tag
+        attempt=1
+        while : ; do
+          if [ "$CI_TPL_DRY_RUN" = "true" ]; then
+            digest=$(skopeo inspect --override-os "$os" --override-arch "$cpu" \
+              --format '{{.Digest}}' "docker://$src") && break
+          else
+            # --format oci, not --preserve-digests: the export step stores these
+            # manifests in an OCI layout, which takes OCI media types only.
+            skopeo copy -q --retry-times 3 --format oci \
+              --override-os "$os" --override-arch "$cpu" \
+              --dest-authfile "$authfile" "docker://$src" "docker://$dest" &&
+              digest=$(skopeo inspect --authfile "$authfile" --override-os "$os" \
+                --override-arch "$cpu" --format '{{.Digest}}' "docker://$dest") && break
+          fi
+          # Public registries answer now and then with a 502. Three failed rounds
+          # is a real outage, or a pinned digest the registry does not have.
+          [ "$attempt" -lt 3 ] || { echo "failed three times: $ref" >&2; exit 1; }
+          echo "retry $attempt for $ref" >&2
+          sleep $((attempt * 20))
+          attempt=$((attempt + 1))
+        done
+        printf '%s\t%s\n' "$dest" "$digest" >> "$out/digests.txt"
+        echo "$dest $digest"
+      done < "$work/refs"
+      echo "== $(wc -l < "$out/digests.txt" | tr -d ' ') reference(s) -> $CI_TPL_OUT_DIR/digests.txt"
+  artifacts:
+    paths:
+      - .ci-artifacts/$[[ inputs.instance ]]/container-mirror-skopeo/
+    when: always
+    expire_in: 30 days
+  rules: $[[ inputs.run-rules ]]
+  allow_failure: false
+  interruptible: false
