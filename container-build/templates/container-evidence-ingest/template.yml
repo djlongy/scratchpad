@@ -1,0 +1,162 @@
+# container-evidence-ingest — ship the SBOM and the vulnerability report
+#
+# Emits, both only when enabled is true:
+#   <instance>:container-evidence-ingest:sbom
+#   <instance>:container-evidence-ingest:vuln
+#
+# Sinks come from image.env and CI variables: webhook, Dependency-Track,
+# an Artifactory repository, Splunk HEC. Both jobs are no-ops when no sink
+# is configured.
+#
+# Each job needs its GATE, not just the build, so a failed gate stops its
+# own delivery and nothing is ever shipped to a sink as though it passed.
+# allow_failure is about delivery: a sink being down does not un-verify an
+# image, and these jobs are not in the publish job's needs.
+
+spec:
+  inputs:
+    instance:
+      description: Job-name namespace. Must match the build this evidence describes.
+      type: string
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    enabled:
+      description: Set to true to ship evidence to the configured sinks. A string, not a boolean, because it is interpolated inside a rules expression.
+      type: string
+      default: "false"
+      options: ["true", "false"]
+    stage:
+      description: Stage these jobs run in.
+      type: string
+      default: publish
+    build-job:
+      description: Exact name of the job that produced build.env and image.json.
+      type: string
+    sbom-job:
+      description: Exact name of the job that produced the built image's CycloneDX SBOM.
+      type: string
+    vuln-job:
+      description: Exact name of the job that produced the vulnerability report.
+      type: string
+    runner-tags:
+      description: Runner tags.
+      type: array
+      default: []
+    runtime-image:
+      description: Execution image.
+      type: string
+      default: "alpine:3.20"
+    context:
+      description: Build context, relative to the repository root.
+      type: string
+      default: "."
+    image-env-file:
+      description: Configuration file sourced by every script, relative to the build context.
+      type: string
+      default: "image.env"
+    image-name:
+      description: Image name. Empty takes it from image.env.
+      type: string
+      default: ""
+    template-project:
+      description: Path of the container-build-template project on this GitLab instance.
+      type: string
+      default: ""
+    template-url:
+      description: Full git clone URL of the container-build-template repository, for a consumer whose instance is not the one hosting it. Set, it is cloned with no token and template-project is ignored. Empty keeps the same-instance job-token clone.
+      type: string
+      default: ""
+    template-ref:
+      description: Pinned ref of that project.
+      type: string
+      default: ""
+
+---
+
+".ci:$[[ inputs.instance ]]:container-evidence-ingest:setup":
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  stage: $[[ inputs.stage ]]
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && "$[[ inputs.enabled ]]" == "true"'
+    - if: '$CI_COMMIT_TAG && "$[[ inputs.enabled ]]" == "true"'
+
+"$[[ inputs.instance ]]:container-evidence-ingest:sbom":
+  extends: ".ci:$[[ inputs.instance ]]:container-evidence-ingest:setup"
+  needs:
+    - job: $[[ inputs.build-job ]]
+      artifacts: true
+    - job: $[[ inputs.sbom-job ]]
+      artifacts: true
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/ingest/sbom-post.sh"
+
+"$[[ inputs.instance ]]:container-evidence-ingest:vuln":
+  extends: ".ci:$[[ inputs.instance ]]:container-evidence-ingest:setup"
+  needs:
+    - job: $[[ inputs.build-job ]]
+      artifacts: true
+    - job: $[[ inputs.vuln-job ]]
+      artifacts: true
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/ingest/vuln-post.sh"

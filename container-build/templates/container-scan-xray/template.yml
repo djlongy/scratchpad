@@ -1,0 +1,245 @@
+# container-scan-xray — JFrog Xray scan and SBOM, advisory only
+#
+# Emits, all four only when mode is "advisory":
+#   <instance>:container-scan-xray:vuln-upstream
+#   <instance>:container-scan-xray:sbom-upstream
+#   <instance>:container-scan-xray:vuln-built
+#   <instance>:container-scan-xray:sbom-built
+#
+# ADVISORY BY DESIGN. Every job carries allow_failure: true, so an Xray
+# policy verdict is recorded in the artifact and reported, and never blocks
+# the pipeline. The mode input offers "off" and "advisory" and nothing else,
+# because a blocking gate has to appear in the publish job's needs list, and
+# that list is static YAML: a needs entry naming a job that mode "off" never
+# creates fails the pipeline. The mandatory gates are container-sbom-syft
+# and container-vuln-grype.
+#
+# To promote Xray to a real gate, add its built-image jobs to the
+# publish needs in pipelines/container.yml and make Xray unconditional there.
+#
+# Needs a privileged runner: the scripts pull images through a docker daemon.
+
+spec:
+  inputs:
+    instance:
+      description: Job-name namespace. Must match the build these scans describe.
+      type: string
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    mode:
+      description: Set to off to disable Xray entirely, or advisory to record verdicts without blocking.
+      type: string
+      default: "off"
+      options: ["off", "advisory"]
+    upstream-stage:
+      description: Stage for the two upstream scans.
+      type: string
+      default: verify
+    built-stage:
+      description: Stage for the two built-image scans.
+      type: string
+      default: scan
+    build-job:
+      description: Exact name of the job that produced build.env and image.json.
+      type: string
+    runner-tags:
+      description: Runner tags. The runner must allow privileged services.
+      type: array
+      default: []
+    docker-cli-image:
+      description: Docker CLI image, digest-pinned.
+      type: string
+      default: "docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c"
+    docker-dind-image:
+      description: Docker-in-Docker service image, digest-pinned.
+      type: string
+      default: "docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+    context:
+      description: Build context, relative to the repository root.
+      type: string
+      default: "."
+    image-env-file:
+      description: Configuration file sourced by every script, relative to the build context.
+      type: string
+      default: "image.env"
+    image-name:
+      description: Image name. Empty takes it from image.env.
+      type: string
+      default: ""
+    upstream-ref:
+      description: Full upstream image reference. Empty takes it from image.env.
+      type: string
+      default: ""
+    fail-on-severity:
+      description: Severity recorded as a policy breach in the report. Advisory, so it never fails the pipeline.
+      type: string
+      default: ""
+    jf-binary-url:
+      description: JFrog CLI binary URL for an air-gapped install. Empty uses the script's default.
+      type: string
+      default: ""
+    template-project:
+      description: Path of the container-build-template project on this GitLab instance.
+      type: string
+      default: ""
+    template-url:
+      description: Full git clone URL of the container-build-template repository, for a consumer whose instance is not the one hosting it. Set, it is cloned with no token and template-project is ignored. Empty keeps the same-instance job-token clone.
+      type: string
+      default: ""
+    template-ref:
+      description: Pinned ref of that project.
+      type: string
+      default: ""
+    evidence-expire-in:
+      description: Artifact retention for the Xray reports.
+      type: string
+      default: "1 month"
+    build-changes:
+      description: Paths that make these jobs run.
+      type: array
+      default: ["**/*"]
+
+---
+
+".ci:$[[ inputs.instance ]]:container-scan-xray:setup":
+  image: $[[ inputs.docker-cli-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  services:
+    - name: $[[ inputs.docker-dind-image ]]
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    UPSTREAM_REF: $[[ inputs.upstream-ref ]]
+    XRAY_FAIL_ON_SEVERITY: $[[ inputs.fail-on-severity ]]
+    JF_BINARY_URL: $[[ inputs.jf-binary-url ]]
+    # Keep the jf home inside the project so the cache below can persist
+    # the Xray Analyzer Manager, around 300MB, across job runs. Without
+    # this every Xray job re-downloads it and fills the runner disk.
+    JFROG_CLI_HOME_DIR: "${CI_PROJECT_DIR}/.jfrog-cli-home"
+  cache:
+    # Static key shared across branches so the first Xray job's analyzer
+    # download is reused by every later one. Bump the suffix when the jf
+    # CLI version changes.
+    key: jfrog-deps-cache-v1
+    paths:
+      - .jfrog-cli-home/dependencies/
+    policy: pull-push
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+  # The verdict is evidence, not a gate. See the header.
+  allow_failure: true
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    when: always
+  # Each rule pairs the pipeline condition with the mode input, so mode
+  # "off" leaves every branch of this template unmatched and no job is
+  # created at all.
+  rules:
+    - if: '$FORCE_ALL == "true" && "$[[ inputs.mode ]]" == "advisory"'
+    - if: '$CI_COMMIT_TAG && "$[[ inputs.mode ]]" == "advisory"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && "$[[ inputs.mode ]]" == "advisory"'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && "$[[ inputs.mode ]]" == "advisory"'
+      changes: $[[ inputs.build-changes ]]
+
+# Upstream scans run before the build so a critical finding in the image
+# we rebuild from is visible without waiting for it. SCAN_SUBJECT=upstream
+# keeps the resolution chain off the build record, which does not exist yet.
+"$[[ inputs.instance ]]:container-scan-xray:vuln-upstream":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: $[[ inputs.upstream-stage ]]
+  dependencies: []
+  variables:
+    SCAN_SUBJECT: "upstream"
+  script:
+    - bash "${CBT}/scripts/scan/xray-vuln.sh"
+
+"$[[ inputs.instance ]]:container-scan-xray:sbom-upstream":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: $[[ inputs.upstream-stage ]]
+  dependencies: []
+  variables:
+    SCAN_SUBJECT: "upstream"
+  script:
+    - bash "${CBT}/scripts/scan/xray-sbom.sh"
+
+# Built-image scans cover what consumers pull, including cert injection and
+# the Dockerfile's fork region.
+"$[[ inputs.instance ]]:container-scan-xray:vuln-built":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: $[[ inputs.built-stage ]]
+  needs:
+    - job: $[[ inputs.build-job ]]
+      artifacts: true
+  variables:
+    SCAN_SUBJECT: "built"
+  script:
+    - bash "${CBT}/scripts/scan/xray-vuln.sh"
+
+"$[[ inputs.instance ]]:container-scan-xray:sbom-built":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: $[[ inputs.built-stage ]]
+  needs:
+    - job: $[[ inputs.build-job ]]
+      artifacts: true
+  variables:
+    SCAN_SUBJECT: "built"
+  script:
+    - bash "${CBT}/scripts/scan/xray-sbom.sh"

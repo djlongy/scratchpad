@@ -1,0 +1,50 @@
+# Build context filter. Everything the Dockerfile COPYs must stay OUT of
+# this list: certs/, inject-certs.sh, install-ca-certificates.sh, plus
+# whatever your own FORK EDITS region copies (e.g. config/).
+# Keep in step with the .build-changes path gate in .gitlab-ci.yml.
+
+# Version control and agent state
+.git
+.gitignore
+.agent
+.claude
+.playwright-mcp
+.scannerwork
+
+# Documentation and CI definitions — never copied into an image
+docs
+bamboo-specs
+examples
+pipelines
+templates
+*.md
+LICENSE
+.gitlab-ci.yml
+renovate.json
+sonar-project.properties
+
+# Template self-test and developer scratch space
+scripts/test
+local
+.bin
+
+# The CI execution image — built from runtime/Dockerfile with runtime/ as
+# its own context, never copied into the product image.
+runtime
+
+# Pipeline outputs — regenerated every run, never an input
+.cbt-template
+artifacts
+build.env
+sbom.cdx.json
+vuln-scan.json
+image.json
+image.oci.tar
+image.build-metadata.json
+*.log
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea
+.vscode

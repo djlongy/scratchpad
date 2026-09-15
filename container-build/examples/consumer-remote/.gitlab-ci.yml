@@ -1,0 +1,57 @@
+# The whole pipeline for one image, when the template is NOT on this GitLab
+# instance. Copy this file, edit the values, done. Use
+# ../consumer/.gitlab-ci.yml instead when the template is a project on the
+# same instance — that form clones with CI_JOB_TOKEN and needs no public URL.
+#
+# Two things differ from the same-instance form.
+#
+#   1. include:remote fetches ONE file over plain HTTPS. A nested
+#      include:local inside it has no project context and GitLab rejects it,
+#      so the file to include is pipelines/container.flat.yml, the generated
+#      single-file form, never pipelines/container.yml.
+#   2. template-url replaces template-project. The jobs clone that URL with
+#      no token, so the repository has to be readable without credentials.
+#
+# The URL, template-url and template-ref must all name the same pinned tag.
+# include:remote takes no authentication, and the file it fetches must end
+# in .yml or .yaml. Needs GitLab 17.0 or later for include:inputs.
+
+include:
+  - remote: 'https://raw.githubusercontent.com/djlongy/container-build-template/v1.1.0/pipelines/container.flat.yml'
+    inputs:
+      instance: nginx
+      image-name: nginx
+
+      template-url: 'https://github.com/djlongy/container-build-template.git'
+      template-ref: 'v1.1.0'
+
+      upstream-ref: 'REPLACE_WITH_UPSTREAM_IMAGE_REFERENCE'
+
+      registry-kind: harbor
+      candidate-registry: 'REPLACE_WITH_CANDIDATE_REGISTRY_HOST'
+      candidate-repository: 'REPLACE_WITH_CANDIDATE_PROJECT'
+      release-registry: 'REPLACE_WITH_RELEASE_REGISTRY_HOST'
+      release-repository: 'REPLACE_WITH_RELEASE_PROJECT'
+
+      runtime-image: 'REPLACE_WITH_RUNTIME_IMAGE_AT_DIGEST'
+      runner-tags:
+        - REPLACE_WITH_PRIVILEGED_RUNNER_TAG
+
+      evidence-expire-in: 1 month
+      xray-mode: "off"
+      ingest-enabled: "false"
+      cosign-enabled: "false"
+
+      # This list is the build context, and it also decides whether a
+      # pipeline is created at all. Every path the Dockerfile reads
+      # belongs here, or a change to it silently ships nothing. The two
+      # cert helpers are staged from the template when this repository
+      # does not carry them; list them anyway so a vendored copy rebuilds.
+      build-changes:
+        - Dockerfile
+        - image.env
+        - .gitlab-ci.yml
+        - .dockerignore
+        - certs/**/*
+        - install-ca-certificates.sh
+        - inject-certs.sh

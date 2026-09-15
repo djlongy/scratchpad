@@ -1,0 +1,257 @@
+# container-sbom-syft — the authoritative CycloneDX SBOM producer
+#
+# Emits:
+#   <instance>:container-sbom-syft:upstream   SBOM of the image we rebuild FROM
+#   <instance>:container-sbom-syft:built      SBOM of the image this pipeline built
+#
+# Outputs: <context>/artifacts/<image instance>/sbom.cdx.json, plus the
+# subject record beside it. The two jobs write different artifact roots
+# (scripts/lib/artifact-names.sh keys the root on SCAN_SUBJECT), so an
+# upstream SBOM can never be mistaken for the built one.
+#
+# The built job is a MANDATORY gate. It carries no allow_failure, and the
+# composition's publish job names it in needs. Both jobs run without a
+# docker daemon: syft reads the OCI archive from the build, or pulls the
+# candidate digest using the registry auth written below.
+
+spec:
+  inputs:
+    instance:
+      description: Job-name namespace. Must match the build this SBOM describes.
+      type: string
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    upstream-stage:
+      description: Stage for the upstream SBOM job.
+      type: string
+      default: verify
+    built-stage:
+      description: Stage for the built-image SBOM job.
+      type: string
+      default: scan
+    build-job:
+      description: Exact name of the job that produced build.env, image.json and the OCI archive.
+      type: string
+    runner-tags:
+      description: Runner tags. No privileged services needed.
+      type: array
+      default: []
+    runtime-image:
+      description: Execution image. runtime/Dockerfile builds one carrying syft already.
+      type: string
+      default: "alpine:3.20"
+    context:
+      description: Build context, relative to the repository root.
+      type: string
+      default: "."
+    image-env-file:
+      description: Configuration file sourced by every script, relative to the build context.
+      type: string
+      default: "image.env"
+    image-name:
+      description: Image name. Empty takes it from image.env.
+      type: string
+      default: ""
+    upstream-ref:
+      description: Full upstream image reference. Empty takes it from image.env.
+      type: string
+      default: ""
+    template-project:
+      description: Path of the container-build-template project on this GitLab instance.
+      type: string
+      default: ""
+    template-url:
+      description: Full git clone URL of the container-build-template repository, for a consumer whose instance is not the one hosting it. Set, it is cloned with no token and template-project is ignored. Empty keeps the same-instance job-token clone.
+      type: string
+      default: ""
+    template-ref:
+      description: Pinned ref of that project.
+      type: string
+      default: ""
+    evidence-expire-in:
+      description: Artifact retention for the SBOM.
+      type: string
+      default: "1 month"
+    build-changes:
+      description: Paths that make these jobs run.
+      type: array
+      default: ["**/*"]
+
+---
+
+".ci:$[[ inputs.instance ]]:container-sbom-syft:setup":
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    UPSTREAM_REF: $[[ inputs.upstream-ref ]]
+    SYFT_INSTALLER_URL: "https://raw.githubusercontent.com/anchore/syft/main/install.sh"
+    SYFT_VERSION: ""
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    # ── Locate the template scripts ────────────────────────────────
+    # Every scan script derives TEMPLATE_ROOT from its own location and
+    # PROJECT_ROOT from the working directory, so a shallow clone beside
+    # the checkout drives the consumer's files with nothing copied.
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+    # ── image.env into this shell ──────────────────────────────────
+    # The runner's default shell is busybox sh, which cannot run the
+    # bash-only load-image-env.sh, so this is the same algorithm in POSIX:
+    # snapshot non-empty shell vars, source the file, restore the snapshot.
+    # Only the registry-auth block below reads these; the scan scripts load
+    # the file themselves.
+    - |
+      if [ -f "${IMAGE_ENV_FILE}" ]; then
+        _IMG_KEYS=$(grep -oE '^[A-Z_][A-Z0-9_]*=' "${IMAGE_ENV_FILE}" | sed 's/=$//' | sort -u)
+        _IMG_SNAP=$(mktemp)
+        for k in $_IMG_KEYS; do
+          eval "_v=\"\${${k}:-}\""
+          if [ -n "${_v}" ]; then
+            # Tab separator — base64 output never contains tabs but does
+            # contain `=` padding.
+            printf '%s\t%s\n' "${k}" "$(printf '%s' "${_v}" | base64 | tr -d '\n')" >> "${_IMG_SNAP}"
+          fi
+        done
+        set -a; . "./${IMAGE_ENV_FILE}"; set +a
+        while read -r _line; do
+          _rk="${_line%%	*}"   # literal TAB inside the braces
+          _rv="${_line#*	}"
+          _rdec=$(printf '%s' "${_rv}" | base64 -d)
+          eval "${_rk}=\"\${_rdec}\""
+          export "${_rk}"
+        done < "${_IMG_SNAP}"
+        rm -f "${_IMG_SNAP}"
+        unset _IMG_KEYS _IMG_SNAP _v _line _rk _rv _rdec
+      fi
+    # ── Registry auth for a daemonless pull ────────────────────────
+    # Same upstream-auth resolution as scripts/lib/docker-login.sh:
+    # explicit UPSTREAM_REGISTRY_* → else same-domain ARTIFACTORY_* →
+    # else anonymous. Artifactory credentials never reach a public
+    # registry. See README "Required CI variables".
+    - |
+      _UPS_REF="${UPSTREAM_REGISTRY:-${UPSTREAM_REF:-}}"
+      _UPS_HOST="${_UPS_REF%%/*}"
+      _UPS_USER=""; _UPS_PASS=""; _UPS_SRC=""
+      if [ -n "${UPSTREAM_REGISTRY_USER:-}" ] && [ -n "${UPSTREAM_REGISTRY_PASSWORD:-}" ]; then
+        _UPS_USER="${UPSTREAM_REGISTRY_USER}"; _UPS_PASS="${UPSTREAM_REGISTRY_PASSWORD}"; _UPS_SRC="UPSTREAM_REGISTRY_USER"
+      elif [ -n "${ARTIFACTORY_USER:-}" ] && [ -n "${_UPS_HOST}" ]; then
+        _ART_SECRET="${ARTIFACTORY_TOKEN:-${ARTIFACTORY_PASSWORD:-}}"
+        _ART_HOST="${ARTIFACTORY_URL#*://}"; _ART_HOST="${_ART_HOST%%/*}"
+        _ART_APEX=$(printf '%s' "${_ART_HOST}" | rev | cut -d. -f1,2 | rev)
+        if [ -n "${_ART_SECRET}" ] && [ -n "${_ART_HOST}" ]; then
+          case "${_UPS_HOST}" in
+            "${_ART_HOST}"|"${_ART_APEX}"|*".${_ART_APEX}")
+              _UPS_USER="${ARTIFACTORY_USER}"; _UPS_PASS="${_ART_SECRET}"; _UPS_SRC="ARTIFACTORY_USER (same domain)" ;;
+          esac
+        fi
+      fi
+      if [ -n "${_UPS_HOST}" ] && [ -n "${_UPS_USER}" ] && [ -n "${_UPS_PASS}" ]; then
+        AUTH=$(printf '%s:%s' "${_UPS_USER}" "${_UPS_PASS}" | base64 | tr -d '\n')
+        mkdir -p "${HOME}/.docker"
+        printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${_UPS_HOST}" "${AUTH}" > "${HOME}/.docker/config.json"
+        chmod 600 "${HOME}/.docker/config.json"
+        echo "→ wrote ~/.docker/config.json for ${_UPS_HOST} (${_UPS_SRC})"
+      else
+        echo "→ no upstream creds for ${_UPS_HOST:-<none>} — base image pulled anonymously"
+      fi
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]
+
+# Early visibility on the upstream's component graph, before the build
+# spends runner time. Its own artifact root, so it never overwrites the
+# built image's SBOM.
+"$[[ inputs.instance ]]:container-sbom-syft:upstream":
+  extends: ".ci:$[[ inputs.instance ]]:container-sbom-syft:setup"
+  stage: $[[ inputs.upstream-stage ]]
+  dependencies: []
+  variables:
+    SCAN_SUBJECT: "upstream"
+  script:
+    - bash "${CBT}/scripts/scan/syft-sbom.sh"
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    when: always
+
+# The gate. SCAN_SUBJECT=built means scripts/lib/scan-common.sh resolves
+# the subject from the build record and fails when there is none, rather
+# than quietly describing the upstream image.
+"$[[ inputs.instance ]]:container-sbom-syft:built":
+  extends: ".ci:$[[ inputs.instance ]]:container-sbom-syft:setup"
+  stage: $[[ inputs.built-stage ]]
+  needs:
+    - job: $[[ inputs.build-job ]]
+      artifacts: true
+  variables:
+    SCAN_SUBJECT: "built"
+  script:
+    # build.env is dotenv-clean, so set -a auto-exports it into the
+    # spawned bash subshell. GitLab also injects it via reports.dotenv;
+    # this is belt and braces.
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/scan/syft-sbom.sh"
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    reports:
+      cyclonedx: "$[[ inputs.context ]]/artifacts/*/sbom.cdx.json"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    when: always

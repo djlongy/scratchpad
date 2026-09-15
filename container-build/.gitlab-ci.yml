@@ -1,0 +1,146 @@
+# ─── THIS TEMPLATE'S OWN PIPELINE ──────────────────────────────────
+# Two halves. Above the include: static analysis of the framework, which
+# only this repository runs. Below it: the same composition every consumer
+# includes, pointed at the self-test fixture, so the template is validated
+# by the thing it ships rather than by a second copy of it.
+#
+# There is no inline build, scan or ingest job here any more. They live in
+# pipelines/container.yml and templates/*/template.yml. A consumer's file
+# is the include block at the bottom and nothing else — see
+# examples/consumer/.gitlab-ci.yml.
+#
+# The self-test builds Dockerfile.example against image.env.example and
+# sets no candidate destination, so it pushes nothing, signs nothing and
+# ingests nothing. Everything it produces stays in the artifacts.
+# ───────────────────────────────────────────────────────────────────
+
+# ── Path gates ─────────────────────────────────────────────────────
+# One list. It IS the build context, so anything the Dockerfile COPYs has
+# to appear here or a change to it silently ships nothing, and it is also
+# what pipelines/container.yml gates the whole pipeline on. runtime/ is in
+# it so editing the execution image creates a pipeline for the
+# runtime-image job below; the product build runs too, which is the price
+# of never producing a job-less pipeline.
+.build-changes: &build-changes
+  - image.env
+  - image.env.example
+  - Dockerfile
+  - Dockerfile.example
+  - .dockerignore
+  - inject-certs.sh
+  - install-ca-certificates.sh
+  - scripts/**/*
+  - certs/**/*
+  - .gitlab-ci.yml
+  - pipelines/**/*
+  - templates/**/*
+  - runtime/**/*
+
+# GitLab has no ${A:-B} form in image:, so the fallback is this variable's
+# default value. Override it as a project or group CI variable to run the
+# framework jobs on a pre-baked runtime image.
+variables:
+  RUNTIME_IMAGE: "alpine:3.20"
+
+.framework-rules: &framework-rules
+  - if: '$FORCE_ALL == "true"'
+  - if: '$CI_COMMIT_TAG'
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    changes: *build-changes
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    changes: *build-changes
+
+# ═══════════════════════════════════════════════════════════════════
+# Static analysis of the framework itself
+# ═══════════════════════════════════════════════════════════════════
+# shellcheck always runs: no infrastructure, no secrets.
+
+shellcheck:
+  stage: verify
+  image: koalaman/shellcheck-alpine:stable
+  dependencies: []
+  script:
+    - shellcheck --version
+    # -x follows sourced libs. Errors and warnings fail; info and style
+    # stay advisory.
+    - shellcheck -x -S warning $(find . -name '*.sh' -type f | sort)
+  rules: *framework-rules
+
+regression:
+  stage: verify
+  image: ${RUNTIME_IMAGE}
+  dependencies: []
+  before_script:
+    # bash, because the suite and build.sh are bash rather than busybox sh.
+    # git, because build.sh derives the tag suffix and the reproducible
+    # timestamp from HEAD. jq, because the identity record is JSON and the
+    # scenarios read it back. python3, because the Renovate scenario replays
+    # renovate.json's own matchStrings. The suite puts crane and docker stubs on PATH
+    # and reaches no registry, so it needs no credentials and no dind.
+    # Guarded, because a pre-baked runtime image carries all three and runs
+    # as a non-root user that cannot apk add.
+    - command -v bash >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || apk add --no-cache bash git jq python3
+  script:
+    # Resets image.env from scripts/test/image.env.fixture as it goes and
+    # removes it again on exit, so it cannot leave a synthesized config
+    # behind for a later job.
+    - bash scripts/test/regression.sh
+  rules: *framework-rules
+
+# Builds the execution image so runtime/Dockerfile cannot rot unnoticed.
+# Nothing is pushed and nothing is kept: the OCI archive goes to a temp
+# path inside the job. Publishing is the consumer's call, runtime/README.md
+# says how.
+runtime-image:
+  stage: verify
+  image: "docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c"
+  dependencies: []
+  services:
+    - name: "docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_BUILDKIT: "1"
+  script:
+    # type=oci needs the docker-container driver; the default docker driver
+    # only exports to the daemon's own image store.
+    - docker buildx create --use --driver docker-container --name cbt-runtime-builder
+    - docker buildx build --platform linux/amd64 --output type=oci,dest=/tmp/runtime-image.oci.tar -f runtime/Dockerfile runtime/
+    - ls -lh /tmp/runtime-image.oci.tar
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - runtime/**/*
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - runtime/**/*
+
+# ═══════════════════════════════════════════════════════════════════
+# Consumer number one
+# ═══════════════════════════════════════════════════════════════════
+# include:local, because the composition lives in this repository. A real
+# consumer writes include:project with a pinned ref, and also passes
+# template-project and template-ref so the jobs can fetch scripts/. This
+# repository already has scripts/ in the checkout, so both stay empty.
+#
+# The flat file, not pipelines/container.yml: it is the form a consumer on
+# another host gets over include:remote, and it is generated, so CI has to
+# run the generated thing rather than its source. The regression job fails
+# when it is stale.
+include:
+  - local: pipelines/container.flat.yml
+    inputs:
+      instance: self-test
+      dockerfile: Dockerfile.example
+      image-env-file: image.env.example
+      # No candidate destination: build without pushing, hand the OCI
+      # archive to the scan jobs, publish nothing anywhere.
+      candidate-registry: ""
+      release-registry: ""
+      xray-mode: "off"
+      ingest-enabled: "false"
+      cosign-enabled: "false"
+      build-changes: *build-changes

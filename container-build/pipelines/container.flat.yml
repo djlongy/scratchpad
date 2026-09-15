@@ -1,0 +1,1167 @@
+# ─── GENERATED FILE — DO NOT EDIT ──────────────────────────────────
+# Produced by scripts/ci/flatten.sh from pipelines/container.yml and
+# templates/*/template.yml. Edit those, then regenerate:
+#
+#   bash scripts/ci/flatten.sh --write
+#
+# This is pipelines/container.yml with its nested includes inlined, for
+# consumers that reach the template over include:remote, where a nested
+# include:local cannot resolve. Same inputs, same jobs, same behaviour.
+# ───────────────────────────────────────────────────────────────────
+# container — the complete build, scan and promote pipeline for one image
+#
+# The only file a consumer includes. It owns workflow and stages, picks one
+# builder and one authoritative SBOM producer, forwards every input into the
+# templates beside it, and owns the two jobs that no template may own: the
+# dormant signing job and the promotion job that holds the release
+# credentials.
+#
+# Consumer shape, nothing else in their .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'platform/container-build-template'
+#       ref: 'v1.2.3'
+#       file: '/pipelines/container.yml'
+#       inputs:
+#         instance: nginx
+#         template-project: 'platform/container-build-template'
+#         template-ref: 'v1.2.3'
+#
+# template-project and template-ref must name the same project and ref as the
+# include itself. The jobs shallow-clone that project to get scripts/, because
+# a consumer repository owns only a Dockerfile and image.env. See the header of
+# templates/container-build/template.yml.
+#
+# A consumer on another instance or another host instead includes
+# pipelines/container.flat.yml over include:remote and sets template-url to a
+# git clone URL. This file cannot be consumed that way: include:remote gives
+# its nested includes no project context, so the include:local entries below
+# would not resolve. scripts/ci/flatten.sh generates the flat form from this
+# file and the templates, and scripts/test/regression.sh keeps them in step.
+# See examples/consumer-remote/.gitlab-ci.yml and docs/standard/REFERENCE.md §6.
+#
+# Minimum GitLab 17.0 (CI/CD inputs generally available). Components are not
+# used: they cannot be referenced across instances, so a pinned
+# include:project is the portable form.
+#
+# Job graph:
+#   verify   <i>:container-sbom-syft:upstream
+#            <i>:container-scan-xray:vuln-upstream      (xray-mode: advisory)
+#            <i>:container-scan-xray:sbom-upstream      (xray-mode: advisory)
+#            <i>:container-vuln-grype:db-sync           (ARTIFACTORY_GRYPE_DB_REPO set)
+#   build    <i>:container-build
+#   test     consumer smoke tests, if any
+#   scan     <i>:container-sbom-syft:built     ← build          MANDATORY GATE
+#            <i>:container-vuln-grype          ← build, sbom    MANDATORY GATE
+#            <i>:container-scan-xray:vuln-built  ← build        advisory
+#            <i>:container-scan-xray:sbom-built  ← build        advisory
+#   attest   <i>:container-attest-cosign       ← build, sbom, grype  (cosign-enabled)
+#   publish  <i>:container-publish             ← build, sbom, grype
+#            <i>:container-evidence-ingest:sbom  ← build, sbom  (ingest-enabled)
+#            <i>:container-evidence-ingest:vuln  ← build, grype (ingest-enabled)
+
+spec:
+  inputs:
+
+    # ── Identity ────────────────────────────────────────────────────
+    instance:
+      description: Job-name namespace for this image. Required. Two images in one pipeline use two instances.
+      type: string
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    image-name:
+      description: Image name. Empty takes it from image.env, then from the upstream image leaf.
+      type: string
+      default: ""
+
+    # ── Where the template's scripts come from ──────────────────────
+    template-project:
+      description: Path of the container-build-template project on this GitLab instance, e.g. platform/container-build-template. Must match the project this file was included from. Empty is valid only when the consumer repository already carries scripts/.
+      type: string
+      default: ""
+    template-url:
+      description: Full git clone URL of the container-build-template repository, for a consumer whose instance is not the one hosting it. Set, it is cloned with no token and template-project is ignored. Empty keeps the same-instance job-token clone.
+      type: string
+      default: ""
+    template-ref:
+      description: Pinned ref of that project. Must match the ref this file was included at.
+      type: string
+      default: ""
+
+    # ── What is built ───────────────────────────────────────────────
+    dockerfile:
+      description: Dockerfile path, relative to the build context.
+      type: string
+      default: "Dockerfile"
+    context:
+      description: Build context, relative to the repository root. Holds the Dockerfile, image.env, certs and every artifact.
+      type: string
+      default: "."
+    image-env-file:
+      description: Configuration file sourced by every script, relative to the build context.
+      type: string
+      default: "image.env"
+    upstream-ref:
+      description: Full upstream image reference to rebuild from, e.g. docker.io/library/nginx:1.25.3-alpine. Empty takes it from image.env.
+      type: string
+      default: ""
+
+    # ── Destinations ────────────────────────────────────────────────
+    # Candidate and release are separate on purpose. The build job can
+    # reach the candidate only; promotion to the release destination is
+    # the publish job, and only the publish job names release credentials.
+    registry-kind:
+      description: Push backend used for the candidate destination.
+      type: string
+      default: "harbor"
+      options: ["harbor", "artifactory_jcr", "artifactory_pro"]
+    candidate-registry:
+      description: Candidate registry. For registry-kind harbor the docker host; for the artifactory kinds the Artifactory base URL with scheme, while the docker push host stays ARTIFACTORY_PUSH_HOST in image.env. Empty means the build pushes nothing and the image travels on as an OCI archive.
+      type: string
+      default: ""
+    candidate-repository:
+      description: Candidate repository or project inside that registry.
+      type: string
+      default: ""
+    release-registry:
+      description: Release registry host or URL. Read by the publish job only.
+      type: string
+      default: ""
+    release-repository:
+      description: Release repository or project inside that registry. Read by the publish job only.
+      type: string
+      default: ""
+
+    # ── Execution ───────────────────────────────────────────────────
+    runtime-image:
+      description: Execution image for the shell jobs. Build one from runtime/Dockerfile and publish it, and no job downloads a tool while it runs.
+      type: string
+      default: "alpine:3.20"
+    docker-cli-image:
+      description: Docker CLI image for the build and Xray jobs, digest-pinned.
+      type: string
+      default: "docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c"
+    docker-dind-image:
+      description: Docker-in-Docker service image, digest-pinned. Needs a privileged runner.
+      type: string
+      default: "docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+    runner-tags:
+      description: Runner tags for every job in this pipeline.
+      type: array
+      default: []
+
+    # ── Gates and evidence ──────────────────────────────────────────
+    scan-fail-on-severity:
+      description: Comma-separated severities that fail the Grype gate. A finding counts only at a severity named here, so the list is cumulative and critical,high does not cover a medium. Empty is not advisory mode — the script falls back to critical,high. To record a verdict without failing the pipeline, set scan-advisory.
+      type: string
+      default: "critical"
+      options: ["critical", "critical,high", "critical,high,medium", "critical,high,medium,low", "critical,high,medium,low,negligible"]
+    scan-advisory:
+      description: Set to true to record the Grype verdict without failing the pipeline. The only way to not gate — an unreadable report or a crashed scanner never downgrades the gate on its own.
+      type: string
+      default: "false"
+      options: ["true", "false"]
+    xray-mode:
+      description: Set to off to disable Xray, or advisory to record its verdicts without blocking. Xray cannot be a blocking gate here, see templates/container-scan-xray/template.yml.
+      type: string
+      default: "off"
+      options: ["off", "advisory"]
+    xray-fail-on-severity:
+      description: Severity recorded as a policy breach in the Xray report. Advisory, so it never fails the pipeline.
+      type: string
+      default: ""
+    jf-binary-url:
+      description: JFrog CLI binary URL for an air-gapped Xray install. Empty uses the script's default.
+      type: string
+      default: ""
+    evidence-expire-in:
+      description: Artifact retention for the identity record, the image archive, the SBOM and the vulnerability report. One value, so the identity never expires before the evidence naming it.
+      type: string
+      default: "1 month"
+    ingest-enabled:
+      description: Set to true to ship the SBOM and vulnerability report to the sinks configured in image.env.
+      type: string
+      default: "false"
+      options: ["true", "false"]
+    cosign-enabled:
+      description: Set to true to sign the built image and attest its evidence. Needs COSIGN_KEY as a file-type CI variable.
+      type: string
+      default: "false"
+      options: ["true", "false"]
+    cosign-url:
+      description: cosign binary URL. Override for an internal mirror.
+      type: string
+      default: "https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64"
+
+    # ── Source eligibility ──────────────────────────────────────────
+    build-changes:
+      description: Paths that create a pipeline and run its jobs. This list is the build context, so every path the Dockerfile reads belongs here, and .gitlab-ci.yml too if a change to the pipeline itself should rebuild. Defaults to everything, so nothing ever ships silently unbuilt.
+      type: array
+      default: ["**/*"]
+
+---
+
+stages:
+  - verify        # upstream scans, static analysis, database mirror
+  - build
+  - test          # consumer smoke tests against the built image
+  - scan          # the built image: SBOM gate, vulnerability gate
+  - attest        # signing and attestation
+  - publish       # promotion to the release registry, evidence delivery
+
+# One path list gates both the pipeline and the jobs inside it. Two lists
+# let a commit match the pipeline gate and no job, and GitLab marks that
+# job-less pipeline failed. A path worth a pipeline is a path worth a
+# build, so build-changes is the only list. Its default is everything.
+workflow:
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]
+
+# Air-gap knobs. Every one is overridable as a project or group CI variable;
+# the defaults point at public sources. Splunk and Dependency-Track sinks,
+# and the Grype database mirror, stay in image.env where the scripts read them.
+variables:
+  ALPINE_IMAGE: "alpine:3.20"
+  ARTIFACTORY_GRYPE_DB_REPO: ""
+  BUILD_DEBUG: "false"
+  # Read by scan-common.sh's gate in whichever scan job runs. Pipeline
+  # level because the scan templates take no advisory input of their own.
+  SCAN_ADVISORY: $[[ inputs.scan-advisory ]]
+
+# ─── inlined from templates/container-build/template.yml ───
+"$[[ inputs.instance ]]:container-build":
+  stage: build
+  image: $[[ inputs.docker-cli-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  services:
+    - name: $[[ inputs.docker-dind-image ]]
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_BUILDKIT: "1"
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    CBT_DOCKERFILE: $[[ inputs.dockerfile ]]
+    CBT_CANDIDATE_REGISTRY: $[[ inputs.candidate-registry ]]
+    CBT_CANDIDATE_REPOSITORY: $[[ inputs.candidate-repository ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    UPSTREAM_REF: $[[ inputs.upstream-ref ]]
+    REGISTRY_KIND: $[[ inputs.registry-kind ]]
+    # crane reads the upstream config for base.digest and the restored user.
+    CRANE_URL: "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz"
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    # ── Locate the template scripts ────────────────────────────────
+    # A consumer repo owns a Dockerfile and image.env, not scripts/.
+    # build.sh derives TEMPLATE_ROOT from its own location and
+    # PROJECT_ROOT from the working directory, so a shallow clone beside
+    # the checkout drives the consumer's files with nothing copied.
+    # Skipped when scripts/build.sh is already here, which is this
+    # template building itself.
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - |
+      # crane — sudoless install into $HOME/.local/bin. -f fails fast on an
+      # HTTP error body so tar never sees HTML.
+      mkdir -p "${HOME}/.local/bin"
+      export PATH="${HOME}/.local/bin:${PATH}"
+      if command -v crane >/dev/null 2>&1; then
+        echo "→ crane $(crane version) already on PATH — skipping download"
+      elif [ -n "${ARTIFACTORY_USER:-}" ] && [ -n "${ARTIFACTORY_PASSWORD:-}" ]; then
+        curl -fsL -u "${ARTIFACTORY_USER}:${ARTIFACTORY_PASSWORD}" "${CRANE_URL}" | tar xz -C "${HOME}/.local/bin/" crane
+      else
+        curl -fsL "${CRANE_URL}" | tar xz -C "${HOME}/.local/bin/" crane
+      fi
+    # PROJECT_ROOT is the working directory for every script.
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+    # ── Cert helpers ───────────────────────────────────────────────
+    # Dockerfile.example COPYs these two out of the build context. A
+    # consumer repository owns three files, so stage them from the
+    # template checkout when they are not already here. A consumer that
+    # vendored its own copies keeps them.
+    - |
+      for _h in install-ca-certificates.sh inject-certs.sh; do
+        if [ -f "${_h}" ]; then
+          echo "→ ${_h} already in the build context — keeping the consumer's copy"
+        else
+          cp "${CBT}/${_h}" "${_h}"
+          chmod +x "${_h}"
+          echo "→ staged ${_h} from the template checkout"
+        fi
+      done
+  script:
+    # An empty candidate destination is the no-push path: build.sh exports
+    # an OCI layout archive and hands downstream jobs its manifest digest.
+    # A candidate destination pushes by digest through the REGISTRY_KIND
+    # backend. Neither path can reach the release registry — the publish
+    # job holds those credentials.
+    #
+    # Limitation: build.sh --push loads into the daemon and pushes, and does
+    # not also write image.oci.tar. Downstream scans read the candidate
+    # digest instead, which is the same image. Exporting both needs a
+    # change in scripts/build.sh, out of scope here.
+    - |
+      if [ -n "${CBT_CANDIDATE_REGISTRY}" ]; then
+        case "${REGISTRY_KIND}" in
+          harbor)
+            export HARBOR_REGISTRY="${CBT_CANDIDATE_REGISTRY}"
+            export HARBOR_PROJECT="${CBT_CANDIDATE_REPOSITORY}"
+            ;;
+          artifactory_jcr|artifactory_pro)
+            export ARTIFACTORY_URL="${CBT_CANDIDATE_REGISTRY}"
+            export ARTIFACTORY_TEAM="${CBT_CANDIDATE_REPOSITORY}"
+            ;;
+        esac
+        echo "→ candidate destination set → build + push by digest"
+        bash "${CBT}/scripts/build.sh" --push --dockerfile "${CBT_DOCKERFILE}" --env-file "${IMAGE_ENV_FILE}"
+      else
+        echo "→ no candidate destination → build WITHOUT push, export OCI archive"
+        bash "${CBT}/scripts/build.sh" --dockerfile "${CBT_DOCKERFILE}" --env-file "${IMAGE_ENV_FILE}"
+      fi
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/build.env"
+      - "$[[ inputs.context ]]/image.json"
+      - "$[[ inputs.context ]]/image.oci.tar"
+    reports:
+      dotenv: "$[[ inputs.context ]]/build.env"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]
+
+# ─── inlined from templates/container-sbom-syft/template.yml ───
+".ci:$[[ inputs.instance ]]:container-sbom-syft:setup":
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    UPSTREAM_REF: $[[ inputs.upstream-ref ]]
+    SYFT_INSTALLER_URL: "https://raw.githubusercontent.com/anchore/syft/main/install.sh"
+    SYFT_VERSION: ""
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    # ── Locate the template scripts ────────────────────────────────
+    # Every scan script derives TEMPLATE_ROOT from its own location and
+    # PROJECT_ROOT from the working directory, so a shallow clone beside
+    # the checkout drives the consumer's files with nothing copied.
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+    # ── image.env into this shell ──────────────────────────────────
+    # The runner's default shell is busybox sh, which cannot run the
+    # bash-only load-image-env.sh, so this is the same algorithm in POSIX:
+    # snapshot non-empty shell vars, source the file, restore the snapshot.
+    # Only the registry-auth block below reads these; the scan scripts load
+    # the file themselves.
+    - |
+      if [ -f "${IMAGE_ENV_FILE}" ]; then
+        _IMG_KEYS=$(grep -oE '^[A-Z_][A-Z0-9_]*=' "${IMAGE_ENV_FILE}" | sed 's/=$//' | sort -u)
+        _IMG_SNAP=$(mktemp)
+        for k in $_IMG_KEYS; do
+          eval "_v=\"\${${k}:-}\""
+          if [ -n "${_v}" ]; then
+            # Tab separator — base64 output never contains tabs but does
+            # contain `=` padding.
+            printf '%s\t%s\n' "${k}" "$(printf '%s' "${_v}" | base64 | tr -d '\n')" >> "${_IMG_SNAP}"
+          fi
+        done
+        set -a; . "./${IMAGE_ENV_FILE}"; set +a
+        while read -r _line; do
+          _rk="${_line%%	*}"   # literal TAB inside the braces
+          _rv="${_line#*	}"
+          _rdec=$(printf '%s' "${_rv}" | base64 -d)
+          eval "${_rk}=\"\${_rdec}\""
+          export "${_rk}"
+        done < "${_IMG_SNAP}"
+        rm -f "${_IMG_SNAP}"
+        unset _IMG_KEYS _IMG_SNAP _v _line _rk _rv _rdec
+      fi
+    # ── Registry auth for a daemonless pull ────────────────────────
+    # Same upstream-auth resolution as scripts/lib/docker-login.sh:
+    # explicit UPSTREAM_REGISTRY_* → else same-domain ARTIFACTORY_* →
+    # else anonymous. Artifactory credentials never reach a public
+    # registry. See README "Required CI variables".
+    - |
+      _UPS_REF="${UPSTREAM_REGISTRY:-${UPSTREAM_REF:-}}"
+      _UPS_HOST="${_UPS_REF%%/*}"
+      _UPS_USER=""; _UPS_PASS=""; _UPS_SRC=""
+      if [ -n "${UPSTREAM_REGISTRY_USER:-}" ] && [ -n "${UPSTREAM_REGISTRY_PASSWORD:-}" ]; then
+        _UPS_USER="${UPSTREAM_REGISTRY_USER}"; _UPS_PASS="${UPSTREAM_REGISTRY_PASSWORD}"; _UPS_SRC="UPSTREAM_REGISTRY_USER"
+      elif [ -n "${ARTIFACTORY_USER:-}" ] && [ -n "${_UPS_HOST}" ]; then
+        _ART_SECRET="${ARTIFACTORY_TOKEN:-${ARTIFACTORY_PASSWORD:-}}"
+        _ART_HOST="${ARTIFACTORY_URL#*://}"; _ART_HOST="${_ART_HOST%%/*}"
+        _ART_APEX=$(printf '%s' "${_ART_HOST}" | rev | cut -d. -f1,2 | rev)
+        if [ -n "${_ART_SECRET}" ] && [ -n "${_ART_HOST}" ]; then
+          case "${_UPS_HOST}" in
+            "${_ART_HOST}"|"${_ART_APEX}"|*".${_ART_APEX}")
+              _UPS_USER="${ARTIFACTORY_USER}"; _UPS_PASS="${_ART_SECRET}"; _UPS_SRC="ARTIFACTORY_USER (same domain)" ;;
+          esac
+        fi
+      fi
+      if [ -n "${_UPS_HOST}" ] && [ -n "${_UPS_USER}" ] && [ -n "${_UPS_PASS}" ]; then
+        AUTH=$(printf '%s:%s' "${_UPS_USER}" "${_UPS_PASS}" | base64 | tr -d '\n')
+        mkdir -p "${HOME}/.docker"
+        printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${_UPS_HOST}" "${AUTH}" > "${HOME}/.docker/config.json"
+        chmod 600 "${HOME}/.docker/config.json"
+        echo "→ wrote ~/.docker/config.json for ${_UPS_HOST} (${_UPS_SRC})"
+      else
+        echo "→ no upstream creds for ${_UPS_HOST:-<none>} — base image pulled anonymously"
+      fi
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]
+
+# Early visibility on the upstream's component graph, before the build
+# spends runner time. Its own artifact root, so it never overwrites the
+# built image's SBOM.
+"$[[ inputs.instance ]]:container-sbom-syft:upstream":
+  extends: ".ci:$[[ inputs.instance ]]:container-sbom-syft:setup"
+  stage: verify
+  dependencies: []
+  variables:
+    SCAN_SUBJECT: "upstream"
+  script:
+    - bash "${CBT}/scripts/scan/syft-sbom.sh"
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    when: always
+
+# The gate. SCAN_SUBJECT=built means scripts/lib/scan-common.sh resolves
+# the subject from the build record and fails when there is none, rather
+# than quietly describing the upstream image.
+"$[[ inputs.instance ]]:container-sbom-syft:built":
+  extends: ".ci:$[[ inputs.instance ]]:container-sbom-syft:setup"
+  stage: scan
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+  variables:
+    SCAN_SUBJECT: "built"
+  script:
+    # build.env is dotenv-clean, so set -a auto-exports it into the
+    # spawned bash subshell. GitLab also injects it via reports.dotenv;
+    # this is belt and braces.
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/scan/syft-sbom.sh"
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    reports:
+      cyclonedx: "$[[ inputs.context ]]/artifacts/*/sbom.cdx.json"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    when: always
+
+# ─── inlined from templates/container-vuln-grype/template.yml ───
+".ci:$[[ inputs.instance ]]:container-vuln-grype:setup":
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    GRYPE_INSTALLER_URL: "https://raw.githubusercontent.com/anchore/grype/main/install.sh"
+    GRYPE_VERSION: ""
+    GRYPE_DB_MIRROR_SUBPATH: "grype-db/v6"
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    # ── Locate the template scripts ────────────────────────────────
+    # Every scan script derives TEMPLATE_ROOT from its own location and
+    # PROJECT_ROOT from the working directory, so a shallow clone beside
+    # the checkout drives the consumer's files with nothing copied.
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+
+# Only materialises when a mirror repository is configured. Not a gate:
+# grype falls back to Anchore's public CDN when this job is absent, which
+# is why the gate below names it optional.
+"$[[ inputs.instance ]]:container-vuln-grype:db-sync":
+  extends: ".ci:$[[ inputs.instance ]]:container-vuln-grype:setup"
+  stage: verify
+  dependencies: []
+  script:
+    - bash "${CBT}/scripts/sync/mirror-grype-db.sh"
+  rules:
+    - if: '$ARTIFACTORY_GRYPE_DB_REPO != "" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$ARTIFACTORY_GRYPE_DB_REPO != "" && $CI_PIPELINE_SOURCE == "schedule"'
+    - when: never
+
+"$[[ inputs.instance ]]:container-vuln-grype":
+  extends: ".ci:$[[ inputs.instance ]]:container-vuln-grype:setup"
+  stage: scan
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-sbom-syft:built"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-vuln-grype:db-sync"
+      optional: true
+  variables:
+    SCAN_SUBJECT: "built"
+    GRYPE_FAIL_ON_SEVERITY: $[[ inputs.scan-fail-on-severity ]]
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/scan/grype-vuln.sh"
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    when: always              # a failed gate still hands over its evidence
+    expire_in: $[[ inputs.evidence-expire-in ]]
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]
+
+# ─── inlined from templates/container-scan-xray/template.yml ───
+".ci:$[[ inputs.instance ]]:container-scan-xray:setup":
+  image: $[[ inputs.docker-cli-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  services:
+    - name: $[[ inputs.docker-dind-image ]]
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    UPSTREAM_REF: $[[ inputs.upstream-ref ]]
+    XRAY_FAIL_ON_SEVERITY: $[[ inputs.xray-fail-on-severity ]]
+    JF_BINARY_URL: $[[ inputs.jf-binary-url ]]
+    # Keep the jf home inside the project so the cache below can persist
+    # the Xray Analyzer Manager, around 300MB, across job runs. Without
+    # this every Xray job re-downloads it and fills the runner disk.
+    JFROG_CLI_HOME_DIR: "${CI_PROJECT_DIR}/.jfrog-cli-home"
+  cache:
+    # Static key shared across branches so the first Xray job's analyzer
+    # download is reused by every later one. Bump the suffix when the jf
+    # CLI version changes.
+    key: jfrog-deps-cache-v1
+    paths:
+      - .jfrog-cli-home/dependencies/
+    policy: pull-push
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+  # The verdict is evidence, not a gate. See the header.
+  allow_failure: true
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    when: always
+  # Each rule pairs the pipeline condition with the mode input, so mode
+  # "off" leaves every branch of this template unmatched and no job is
+  # created at all.
+  rules:
+    - if: '$FORCE_ALL == "true" && "$[[ inputs.xray-mode ]]" == "advisory"'
+    - if: '$CI_COMMIT_TAG && "$[[ inputs.xray-mode ]]" == "advisory"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && "$[[ inputs.xray-mode ]]" == "advisory"'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && "$[[ inputs.xray-mode ]]" == "advisory"'
+      changes: $[[ inputs.build-changes ]]
+
+# Upstream scans run before the build so a critical finding in the image
+# we rebuild from is visible without waiting for it. SCAN_SUBJECT=upstream
+# keeps the resolution chain off the build record, which does not exist yet.
+"$[[ inputs.instance ]]:container-scan-xray:vuln-upstream":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: verify
+  dependencies: []
+  variables:
+    SCAN_SUBJECT: "upstream"
+  script:
+    - bash "${CBT}/scripts/scan/xray-vuln.sh"
+
+"$[[ inputs.instance ]]:container-scan-xray:sbom-upstream":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: verify
+  dependencies: []
+  variables:
+    SCAN_SUBJECT: "upstream"
+  script:
+    - bash "${CBT}/scripts/scan/xray-sbom.sh"
+
+# Built-image scans cover what consumers pull, including cert injection and
+# the Dockerfile's fork region.
+"$[[ inputs.instance ]]:container-scan-xray:vuln-built":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: scan
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+  variables:
+    SCAN_SUBJECT: "built"
+  script:
+    - bash "${CBT}/scripts/scan/xray-vuln.sh"
+
+"$[[ inputs.instance ]]:container-scan-xray:sbom-built":
+  extends: ".ci:$[[ inputs.instance ]]:container-scan-xray:setup"
+  stage: scan
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+  variables:
+    SCAN_SUBJECT: "built"
+  script:
+    - bash "${CBT}/scripts/scan/xray-sbom.sh"
+
+# ─── inlined from templates/container-evidence-ingest/template.yml ───
+".ci:$[[ inputs.instance ]]:container-evidence-ingest:setup":
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  stage: publish
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && "$[[ inputs.ingest-enabled ]]" == "true"'
+    - if: '$CI_COMMIT_TAG && "$[[ inputs.ingest-enabled ]]" == "true"'
+
+"$[[ inputs.instance ]]:container-evidence-ingest:sbom":
+  extends: ".ci:$[[ inputs.instance ]]:container-evidence-ingest:setup"
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-sbom-syft:built"
+      artifacts: true
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/ingest/sbom-post.sh"
+
+"$[[ inputs.instance ]]:container-evidence-ingest:vuln":
+  extends: ".ci:$[[ inputs.instance ]]:container-evidence-ingest:setup"
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-vuln-grype"
+      artifacts: true
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/ingest/vuln-post.sh"
+
+# ═══════════════════════════════════════════════════════════════════
+# ATTEST — cosign signature and attestations
+# ═══════════════════════════════════════════════════════════════════
+# Dormant until cosign-enabled is true AND COSIGN_KEY exists as a
+# file-type CI variable, Vault transit or a KMS reference in preference
+# to a raw private key. Disabled means the job is never created, not
+# that it runs and passes: allow_failure is not a substitute for a rule.
+# Signing is not a promotion gate today, so the publish job does not
+# name it in needs.
+"$[[ inputs.instance ]]:container-attest-cosign":
+  stage: attest
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-sbom-syft:built"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-vuln-grype"
+      artifacts: true
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    COSIGN_URL: $[[ inputs.cosign-url ]]
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - |
+      mkdir -p "${HOME}/.local/bin"
+      export PATH="${HOME}/.local/bin:${PATH}"
+      if ! command -v cosign >/dev/null 2>&1; then
+        curl -fsL "${COSIGN_URL}" -o "${HOME}/.local/bin/cosign"
+        chmod +x "${HOME}/.local/bin/cosign"
+      fi
+      cosign version
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+  script:
+    - set -a; . ./build.env; set +a
+    - |
+      if [ -z "${COSIGN_KEY:-}" ]; then
+        echo "ERROR: cosign-enabled is true but COSIGN_KEY is not set." >&2
+        echo "       Add it as a file-type, masked, protected CI variable." >&2
+        exit 1
+      fi
+    - |
+      # Sign the image this pipeline built, by digest. IMAGE_REF is an
+      # oci-archive: path on the no-candidate path, which cosign cannot
+      # sign — signing needs a registry, so it needs a candidate push.
+      TARGET="${IMAGE_DIGEST:-}"
+      case "${TARGET}" in
+        ""|oci-archive:*)
+          echo "ERROR: nothing to sign. The build produced an OCI archive rather than a" >&2
+          echo "       registry digest. Set candidate-registry so the image is pushed first." >&2
+          exit 1 ;;
+      esac
+      cosign sign --key "${COSIGN_KEY}" --yes --tlog-upload=false \
+        -a "ci.build=${CI_JOB_ID}" \
+        -a "ci.pipeline=${CI_PIPELINE_ID}" \
+        -a "git.commit=${CI_COMMIT_SHA}" \
+        "${TARGET}"
+      SBOM_PATH="$(ls artifacts/*/"${SBOM_FILE:-sbom.cdx.json}" 2>/dev/null | head -1)"
+      VULN_PATH="$(ls artifacts/*/"${VULN_SCAN_FILE:-vuln-scan.json}" 2>/dev/null | head -1)"
+      [ -n "${SBOM_PATH}" ] && cosign attest --key "${COSIGN_KEY}" --yes --tlog-upload=false \
+        --type cyclonedx --predicate "${SBOM_PATH}" "${TARGET}"
+      [ -n "${VULN_PATH}" ] && cosign attest --key "${COSIGN_KEY}" --yes --tlog-upload=false \
+        --type vuln --predicate "${VULN_PATH}" "${TARGET}"
+  rules:
+    - if: '$CI_COMMIT_TAG && "$[[ inputs.cosign-enabled ]]" == "true"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && "$[[ inputs.cosign-enabled ]]" == "true"'
+
+# ═══════════════════════════════════════════════════════════════════
+# PUBLISH — promote the candidate to the release registry
+# ═══════════════════════════════════════════════════════════════════
+# The only job that reads release credentials. Its needs list carries
+# every mandatory gate, because a DAG job runs as soon as its own needs
+# are satisfied: a gate that fails in an earlier stage but is absent from
+# this list would not stop promotion. Stage names prove nothing.
+#
+# Promotion preserves the digest — the released image is the one that was
+# scanned, byte for byte, not a rebuild. scripts/publish/promote.sh owns
+# that copy: it verifies the gate evidence against the candidate digest,
+# copies by digest with crane, and reads the destination back.
+#
+# resource_group serialises this job per instance, so a re-run and a
+# pipeline on a newer commit cannot copy two different digests onto one
+# release tag at the same time.
+"$[[ inputs.instance ]]:container-publish":
+  stage: publish
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  resource_group: "$[[ inputs.instance ]]:container-publish"
+  needs:
+    - job: "$[[ inputs.instance ]]:container-build"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-sbom-syft:built"
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-vuln-grype"
+      artifacts: true
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    REGISTRY_KIND: $[[ inputs.registry-kind ]]
+    RELEASE_REGISTRY: $[[ inputs.release-registry ]]
+    RELEASE_REPOSITORY: $[[ inputs.release-repository ]]
+    # Release credentials, referenced nowhere else in this pipeline. Set
+    # them as masked AND protected CI variables so only protected branches
+    # and tags can read them.
+    RELEASE_REGISTRY_USER: "${CBT_RELEASE_REGISTRY_USER}"
+    RELEASE_REGISTRY_PASSWORD: "${CBT_RELEASE_REGISTRY_PASSWORD}"
+    # Dormant with the attest job, and for the same reason: no signer
+    # identity is provisioned. True makes a valid candidate signature a
+    # precondition of the copy.
+    COSIGN_ENABLED: $[[ inputs.cosign-enabled ]]
+    # crane copies the candidate to the release registry by digest.
+    CRANE_URL: "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz"
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - |
+      # crane — sudoless install into $HOME/.local/bin. -f fails fast on an
+      # HTTP error body so tar never sees HTML.
+      mkdir -p "${HOME}/.local/bin"
+      export PATH="${HOME}/.local/bin:${PATH}"
+      if command -v crane >/dev/null 2>&1; then
+        echo "→ crane $(crane version) already on PATH — skipping download"
+      elif [ -n "${ARTIFACTORY_USER:-}" ] && [ -n "${ARTIFACTORY_PASSWORD:-}" ]; then
+        curl -fsL -u "${ARTIFACTORY_USER}:${ARTIFACTORY_PASSWORD}" "${CRANE_URL}" | tar xz -C "${HOME}/.local/bin/" crane
+      else
+        curl -fsL "${CRANE_URL}" | tar xz -C "${HOME}/.local/bin/" crane
+      fi
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/publish/promote.sh"
+  artifacts:
+    name: "release-$[[ inputs.instance ]]-${CI_COMMIT_SHORT_SHA}"
+    when: always
+    expire_in: $[[ inputs.evidence-expire-in ]]
+    paths:
+      - "$[[ inputs.context ]]/artifacts/*/release.json"
+  # An empty release-registry is nowhere to promote to, and an empty
+  # candidate-registry means the build produced an OCI archive, which
+  # promote.sh refuses because there is no source registry to copy from.
+  # Either one missing means the job is not created. Same reason as the
+  # attest job above: a disabled job is absent, not created and failed.
+  # Without this a consumer that builds and scans without promoting can
+  # never have a green pipeline.
+  rules:
+    - if: '$CI_COMMIT_TAG && "$[[ inputs.release-registry ]]" != "" && "$[[ inputs.candidate-registry ]]" != ""'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && "$[[ inputs.release-registry ]]" != "" && "$[[ inputs.candidate-registry ]]" != ""'

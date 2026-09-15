@@ -1,0 +1,52 @@
+# The whole pipeline for one image. Copy this file, edit the values, done.
+#
+# This repository owns two files: Dockerfile and image.env. No scripts, no
+# stages, no jobs. Registry URLs and credentials are CI variables, masked
+# and protected — see README.md beside this file.
+#
+# ref, template-ref and the project path must all name the same pinned
+# revision of the template. The jobs shallow-clone that project with
+# CI_JOB_TOKEN to get its scripts, so the template project's CI/CD job
+# token allowlist has to include this project.
+
+include:
+  - project: 'REPLACE_WITH_TEMPLATE_PROJECT_PATH'
+    ref: 'REPLACE_WITH_PINNED_TEMPLATE_REF'
+    file: '/pipelines/container.yml'
+    inputs:
+      instance: nginx
+      image-name: nginx
+
+      template-project: 'REPLACE_WITH_TEMPLATE_PROJECT_PATH'
+      template-ref: 'REPLACE_WITH_PINNED_TEMPLATE_REF'
+
+      upstream-ref: 'REPLACE_WITH_UPSTREAM_IMAGE_REFERENCE'
+
+      registry-kind: harbor
+      candidate-registry: 'REPLACE_WITH_CANDIDATE_REGISTRY_HOST'
+      candidate-repository: 'REPLACE_WITH_CANDIDATE_PROJECT'
+      release-registry: 'REPLACE_WITH_RELEASE_REGISTRY_HOST'
+      release-repository: 'REPLACE_WITH_RELEASE_PROJECT'
+
+      runtime-image: 'REPLACE_WITH_RUNTIME_IMAGE_AT_DIGEST'
+      runner-tags:
+        - REPLACE_WITH_PRIVILEGED_RUNNER_TAG
+
+      evidence-expire-in: 1 month
+      xray-mode: "off"
+      ingest-enabled: "false"
+      cosign-enabled: "false"
+
+      # This list is the build context, and it also decides whether a
+      # pipeline is created at all. Every path the Dockerfile reads
+      # belongs here, or a change to it silently ships nothing. The two
+      # cert helpers are staged from the template when this repository
+      # does not carry them; list them anyway so a vendored copy rebuilds.
+      build-changes:
+        - Dockerfile
+        - image.env
+        - .gitlab-ci.yml
+        - .dockerignore
+        - certs/**/*
+        - install-ca-certificates.sh
+        - inject-certs.sh

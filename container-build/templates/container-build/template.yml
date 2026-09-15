@@ -1,0 +1,248 @@
+# container-build — build one image, always emit its identity record
+#
+# Emits: <instance>:container-build
+#
+# Outputs, all under the build context directory:
+#   image.json       authoritative identity record (scripts/lib/image-identity.sh)
+#   build.env        dotenv copy of the same identity, imported by GitLab
+#   image.oci.tar    the image itself, on the no-candidate-push path
+#
+# The job pushes to the CANDIDATE destination only, and only when
+# candidate-registry is set. It never holds release credentials: promotion
+# to the release registry is the composition's publish job.
+#
+# Requires a privileged runner: docker:dind over plain TCP with TLS off,
+# matching runners that do not mount /certs/client.
+
+spec:
+  inputs:
+    instance:
+      description: Job-name namespace. One per image built by this pipeline.
+      type: string
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    stage:
+      description: Stage this job runs in.
+      type: string
+      default: build
+    runner-tags:
+      description: Runner tags. The runner must allow privileged services.
+      type: array
+      default: []
+    docker-cli-image:
+      description: Docker CLI image, digest-pinned.
+      type: string
+      default: "docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c"
+    docker-dind-image:
+      description: Docker-in-Docker service image, digest-pinned.
+      type: string
+      default: "docker:27-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce"
+    context:
+      description: Build context, relative to the repository root. Holds the Dockerfile, image.env and certs.
+      type: string
+      default: "."
+    dockerfile:
+      description: Dockerfile path, relative to the build context.
+      type: string
+      default: "Dockerfile"
+    image-env-file:
+      description: Configuration file sourced by every script, relative to the build context.
+      type: string
+      default: "image.env"
+    image-name:
+      description: Image name. Empty takes it from image.env, then from the upstream image leaf.
+      type: string
+      default: ""
+    upstream-ref:
+      description: Full upstream image reference to rebuild from. Empty takes it from image.env.
+      type: string
+      default: ""
+    registry-kind:
+      description: Push backend for the candidate destination.
+      type: string
+      default: "harbor"
+      options: ["harbor", "artifactory_jcr", "artifactory_pro"]
+    candidate-registry:
+      description: Candidate registry host or URL. Empty means no push at all, and the image travels on as an OCI archive.
+      type: string
+      default: ""
+    candidate-repository:
+      description: Candidate repository or project inside that registry.
+      type: string
+      default: ""
+    template-project:
+      description: Path of the container-build-template project on this GitLab instance. Empty is valid only when the checkout already carries scripts/.
+      type: string
+      default: ""
+    template-url:
+      description: Full git clone URL of the container-build-template repository, for a consumer whose instance is not the one hosting it. Set, it is cloned with no token and template-project is ignored. Empty keeps the same-instance job-token clone.
+      type: string
+      default: ""
+    template-ref:
+      description: Pinned ref of that project. Must match the ref this file was included at.
+      type: string
+      default: ""
+    evidence-expire-in:
+      description: Artifact retention for the identity record and the image archive.
+      type: string
+      default: "1 month"
+    build-changes:
+      description: Paths that make this job run. Every path the Dockerfile reads belongs here.
+      type: array
+      default: ["**/*"]
+
+---
+
+"$[[ inputs.instance ]]:container-build":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.docker-cli-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  services:
+    - name: $[[ inputs.docker-dind-image ]]
+      alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_BUILDKIT: "1"
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    CBT_DOCKERFILE: $[[ inputs.dockerfile ]]
+    CBT_CANDIDATE_REGISTRY: $[[ inputs.candidate-registry ]]
+    CBT_CANDIDATE_REPOSITORY: $[[ inputs.candidate-repository ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    UPSTREAM_REF: $[[ inputs.upstream-ref ]]
+    REGISTRY_KIND: $[[ inputs.registry-kind ]]
+    # crane reads the upstream config for base.digest and the restored user.
+    CRANE_URL: "https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz"
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    # ── Locate the template scripts ────────────────────────────────
+    # A consumer repo owns a Dockerfile and image.env, not scripts/.
+    # build.sh derives TEMPLATE_ROOT from its own location and
+    # PROJECT_ROOT from the working directory, so a shallow clone beside
+    # the checkout drives the consumer's files with nothing copied.
+    # Skipped when scripts/build.sh is already here, which is this
+    # template building itself.
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - |
+      # crane — sudoless install into $HOME/.local/bin. -f fails fast on an
+      # HTTP error body so tar never sees HTML.
+      mkdir -p "${HOME}/.local/bin"
+      export PATH="${HOME}/.local/bin:${PATH}"
+      if command -v crane >/dev/null 2>&1; then
+        echo "→ crane $(crane version) already on PATH — skipping download"
+      elif [ -n "${ARTIFACTORY_USER:-}" ] && [ -n "${ARTIFACTORY_PASSWORD:-}" ]; then
+        curl -fsL -u "${ARTIFACTORY_USER}:${ARTIFACTORY_PASSWORD}" "${CRANE_URL}" | tar xz -C "${HOME}/.local/bin/" crane
+      else
+        curl -fsL "${CRANE_URL}" | tar xz -C "${HOME}/.local/bin/" crane
+      fi
+    # PROJECT_ROOT is the working directory for every script.
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+    # ── Cert helpers ───────────────────────────────────────────────
+    # Dockerfile.example COPYs these two out of the build context. A
+    # consumer repository owns three files, so stage them from the
+    # template checkout when they are not already here. A consumer that
+    # vendored its own copies keeps them.
+    - |
+      for _h in install-ca-certificates.sh inject-certs.sh; do
+        if [ -f "${_h}" ]; then
+          echo "→ ${_h} already in the build context — keeping the consumer's copy"
+        else
+          cp "${CBT}/${_h}" "${_h}"
+          chmod +x "${_h}"
+          echo "→ staged ${_h} from the template checkout"
+        fi
+      done
+  script:
+    # An empty candidate destination is the no-push path: build.sh exports
+    # an OCI layout archive and hands downstream jobs its manifest digest.
+    # A candidate destination pushes by digest through the REGISTRY_KIND
+    # backend. Neither path can reach the release registry — the publish
+    # job holds those credentials.
+    #
+    # Limitation: build.sh --push loads into the daemon and pushes, and does
+    # not also write image.oci.tar. Downstream scans read the candidate
+    # digest instead, which is the same image. Exporting both needs a
+    # change in scripts/build.sh, out of scope here.
+    - |
+      if [ -n "${CBT_CANDIDATE_REGISTRY}" ]; then
+        case "${REGISTRY_KIND}" in
+          harbor)
+            export HARBOR_REGISTRY="${CBT_CANDIDATE_REGISTRY}"
+            export HARBOR_PROJECT="${CBT_CANDIDATE_REPOSITORY}"
+            ;;
+          artifactory_jcr|artifactory_pro)
+            export ARTIFACTORY_URL="${CBT_CANDIDATE_REGISTRY}"
+            export ARTIFACTORY_TEAM="${CBT_CANDIDATE_REPOSITORY}"
+            ;;
+        esac
+        echo "→ candidate destination set → build + push by digest"
+        bash "${CBT}/scripts/build.sh" --push --dockerfile "${CBT_DOCKERFILE}" --env-file "${IMAGE_ENV_FILE}"
+      else
+        echo "→ no candidate destination → build WITHOUT push, export OCI archive"
+        bash "${CBT}/scripts/build.sh" --dockerfile "${CBT_DOCKERFILE}" --env-file "${IMAGE_ENV_FILE}"
+      fi
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/build.env"
+      - "$[[ inputs.context ]]/image.json"
+      - "$[[ inputs.context ]]/image.oci.tar"
+    reports:
+      dotenv: "$[[ inputs.context ]]/build.env"
+    expire_in: $[[ inputs.evidence-expire-in ]]
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]

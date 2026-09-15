@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "dockerfile": {
+    "enabled": false,
+    "description": "DISABLED ON PURPOSE. The Dockerfile (and Dockerfile.example) carry ARG defaults like `ARG UPSTREAM_IMAGE=nginx` + `ARG CERT_BUILDER_IMAGE=docker.io/library/alpine:3.20` purely as fallbacks for direct `docker build .` invocations without the template's build.sh. In every real build, build.sh passes --build-arg from image.env, so those defaults are dead. Letting the dockerfile manager track them generates noise MRs ('bump nginx in Dockerfile.example') that nobody cares about. The customManager below tracks the ONE place that matters: UPSTREAM_REF in image.env."
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the upstream image straight from image.env's UPSTREAM_REF URL. datasource is fixed (docker); depName, tag, and the pinned digest are parsed out of the URL itself — no per-repo `# renovate:` hint to keep in sync. build.sh writes UPSTREAM_REF in the pinned repo:tag@sha256:… form, which this matches: the greedy depName group [^\"@\\s]+ stops at the `@` and backtracks to the last `:`, so registry ports (registry:5000/app) stay in depName, the tag lands in currentValue, and the digest in currentDigest. A digest-only ref (no `:tag`) is deliberately NOT matched — it carries no version for Renovate to bump. Covered by the renovate-extracts-repo-and-tag-from-a-pinned-ref scenario in scripts/test/regression.sh, which runs this exact pattern.",
+      "fileMatch": [
+        "(^|/)image\\.env(\\.example)?$"
+      ],
+      "matchStrings": [
+        "UPSTREAM_REF=\"?(?<depName>[^\"@\\s]+):(?<currentValue>[^\"@:/\\s]+)(?:@(?<currentDigest>sha256:[a-f0-9]+))?\"?"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the images this repository pins by digest: DOCKER_CLI_IMAGE and DOCKER_DIND_IMAGE in .gitlab-ci.yml, and the two FROM lines in runtime/Dockerfile. Same shape as the UPSTREAM_REF pattern above — depName, tag and digest come straight out of the pinned repo:tag@sha256:… value, so there is no per-line `# renovate:` hint to keep in sync. The built-in dockerfile manager is disabled above, so without this entry the runtime image's base would never be bumped and its digest pin would quietly rot.",
+      "fileMatch": [
+        "^\\.gitlab-ci\\.yml$",
+        "(^|/)runtime/Dockerfile$"
+      ],
+      "matchStrings": [
+        "(?:DOCKER_CLI_IMAGE|DOCKER_DIND_IMAGE): \"(?<depName>[^\"@\\s]+):(?<currentValue>[^\"@:/\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)\"",
+        "FROM (?:--platform=\\S+ )?(?<depName>[^@\\s]+):(?<currentValue>[^@:/\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Upstream base image bumps — auto-open MRs",
+      "matchManagers": ["custom.regex"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "labels": ["upstream-bump", "dependencies"],
+      "automerge": false
+    }
+  ],
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "chore(deps):",
+  "prBodyTemplate": "{{{header}}}\n\n{{{table}}}\n\n{{{notes}}}\n\n{{{changelogs}}}\n\n{{{configDescription}}}\n\n{{{controls}}}\n\n{{{footer}}}"
+}

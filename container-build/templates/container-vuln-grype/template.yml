@@ -1,0 +1,198 @@
+# container-vuln-grype — the vulnerability gate
+#
+# Emits:
+#   <instance>:container-vuln-grype           the gate
+#   <instance>:container-vuln-grype:db-sync   optional air-gap DB mirror
+#
+# Grype matches the CycloneDX SBOM against its vulnerability database and
+# writes <context>/artifacts/<image instance>/vuln-scan.json. It re-pulls
+# nothing, so it needs no registry credentials.
+#
+# The gate carries no allow_failure. Set fail-on-severity to make a finding
+# fail the job; leave it empty and the verdict is recorded but not enforced.
+# Either way the composition's publish job names this job in needs, so a
+# failed scan stops promotion.
+#
+# db-sync mirrors the Anchore database into an Artifactory generic repo so
+# the gate never reaches grype.anchore.io. It is a convenience, not a gate:
+# without it grype fetches from Anchore's public CDN.
+
+spec:
+  inputs:
+    instance:
+      description: Job-name namespace. Must match the build and SBOM this scan describes.
+      type: string
+      regex: '^[a-z][a-z0-9-]{0,47}$'
+    stage:
+      description: Stage for the gate.
+      type: string
+      default: scan
+    db-sync-stage:
+      description: Stage for the database mirror. Must be earlier than the gate's stage.
+      type: string
+      default: verify
+    build-job:
+      description: Exact name of the job that produced build.env and image.json.
+      type: string
+    sbom-job:
+      description: Exact name of the job that produced the built image's CycloneDX SBOM.
+      type: string
+    runner-tags:
+      description: Runner tags. No privileged services needed.
+      type: array
+      default: []
+    runtime-image:
+      description: Execution image. runtime/Dockerfile builds one carrying grype already.
+      type: string
+      default: "alpine:3.20"
+    context:
+      description: Build context, relative to the repository root.
+      type: string
+      default: "."
+    image-env-file:
+      description: Configuration file sourced by every script, relative to the build context.
+      type: string
+      default: "image.env"
+    image-name:
+      description: Image name. Empty takes it from image.env.
+      type: string
+      default: ""
+    fail-on-severity:
+      description: Comma-separated severities that fail the gate. A finding counts only at a severity named here, so the list is cumulative and critical,high does not cover a medium. Empty is not advisory mode — the script falls back to critical,high. Advisory reporting is SCAN_ADVISORY.
+      type: string
+      default: "critical"
+      options: ["critical", "critical,high", "critical,high,medium", "critical,high,medium,low", "critical,high,medium,low,negligible"]
+    template-project:
+      description: Path of the container-build-template project on this GitLab instance.
+      type: string
+      default: ""
+    template-url:
+      description: Full git clone URL of the container-build-template repository, for a consumer whose instance is not the one hosting it. Set, it is cloned with no token and template-project is ignored. Empty keeps the same-instance job-token clone.
+      type: string
+      default: ""
+    template-ref:
+      description: Pinned ref of that project.
+      type: string
+      default: ""
+    evidence-expire-in:
+      description: Artifact retention for the vulnerability report.
+      type: string
+      default: "1 month"
+    build-changes:
+      description: Paths that make these jobs run.
+      type: array
+      default: ["**/*"]
+
+---
+
+".ci:$[[ inputs.instance ]]:container-vuln-grype:setup":
+  image: $[[ inputs.runtime-image ]]
+  tags: $[[ inputs.runner-tags ]]
+  variables:
+    CBT_TEMPLATE_PROJECT: $[[ inputs.template-project ]]
+    CBT_TEMPLATE_URL: $[[ inputs.template-url ]]
+    CBT_TEMPLATE_REF: $[[ inputs.template-ref ]]
+    CBT_CONTEXT: $[[ inputs.context ]]
+    IMAGE_ENV_FILE: $[[ inputs.image-env-file ]]
+    IMAGE_NAME: $[[ inputs.image-name ]]
+    GRYPE_INSTALLER_URL: "https://raw.githubusercontent.com/anchore/grype/main/install.sh"
+    GRYPE_VERSION: ""
+    GRYPE_DB_MIRROR_SUBPATH: "grype-db/v6"
+  before_script:
+    # ── Tools ──────────────────────────────────────────────────────
+    # First, because the clone below needs git. This block is identical
+    # in every job of this standard, so no job can be short of a tool
+    # another one has. Skipped entirely when runtime-image already
+    # carries them. python3 and openssl are read by
+    # scripts/push-backends/artifactory.sh (build-info-merge.py).
+    - |
+      if command -v bash >/dev/null 2>&1 \
+         && command -v git >/dev/null 2>&1 \
+         && command -v curl >/dev/null 2>&1 \
+         && command -v openssl >/dev/null 2>&1 \
+         && command -v jq >/dev/null 2>&1 \
+         && command -v python3 >/dev/null 2>&1; then
+        echo "→ tools already on PATH — skipping apk add (pre-baked image)"
+      else
+        apk add --no-cache bash git curl openssl jq python3
+      fi
+      echo "→ tools ready before the clone: $(git --version)"
+    # ── Locate the template scripts ────────────────────────────────
+    # Every scan script derives TEMPLATE_ROOT from its own location and
+    # PROJECT_ROOT from the working directory, so a shallow clone beside
+    # the checkout drives the consumer's files with nothing copied.
+    - |
+      # Where the template scripts come from, in order: this checkout
+      # (the template building itself), an explicit clone URL when the
+      # template is hosted on another instance or another host, then the
+      # same-instance job-token clone. Identical in every job of this
+      # standard, so no job can locate the scripts differently.
+      if [ -f scripts/build.sh ]; then
+        CBT="${CI_PROJECT_DIR}"
+        echo "→ template scripts already in the checkout: ${CBT}"
+      else
+        if [ -n "${CBT_TEMPLATE_URL:-}" ]; then
+          CBT_CLONE_URL="${CBT_TEMPLATE_URL}"
+        elif [ -n "${CBT_TEMPLATE_PROJECT:-}" ]; then
+          CBT_CLONE_URL="https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${CBT_TEMPLATE_PROJECT}.git"
+        else
+          echo "ERROR: this repository has no scripts/build.sh, and both template-url and" >&2
+          echo "       template-project are empty. Set template-url to a git clone URL when" >&2
+          echo "       the template is hosted elsewhere, or template-project to its path on" >&2
+          echo "       this GitLab instance, and template-ref to the ref you included it at." >&2
+          exit 1
+        fi
+        rm -rf "${CI_PROJECT_DIR}/.cbt-template"
+        git clone --quiet --depth 1 --branch "${CBT_TEMPLATE_REF}" \
+          "${CBT_CLONE_URL}" "${CI_PROJECT_DIR}/.cbt-template"
+        CBT="${CI_PROJECT_DIR}/.cbt-template"
+        # A clone URL can carry userinfo, which is a credential. Mask it the
+        # same way scripts/scan/grype-vuln.sh masks its database URL.
+        CBT_CLONE_SAFE="$(printf '%s' "${CBT_CLONE_URL}" | sed -E 's#(https?://)[^/@[:space:]]+@#\1***:***@#g')"
+        echo "→ cloned ${CBT_CLONE_SAFE}@${CBT_TEMPLATE_REF} into ${CBT}"
+      fi
+      export CBT
+    - cd "${CI_PROJECT_DIR}/${CBT_CONTEXT}"
+
+# Only materialises when a mirror repository is configured. Not a gate:
+# grype falls back to Anchore's public CDN when this job is absent, which
+# is why the gate below names it optional.
+"$[[ inputs.instance ]]:container-vuln-grype:db-sync":
+  extends: ".ci:$[[ inputs.instance ]]:container-vuln-grype:setup"
+  stage: $[[ inputs.db-sync-stage ]]
+  dependencies: []
+  script:
+    - bash "${CBT}/scripts/sync/mirror-grype-db.sh"
+  rules:
+    - if: '$ARTIFACTORY_GRYPE_DB_REPO != "" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$ARTIFACTORY_GRYPE_DB_REPO != "" && $CI_PIPELINE_SOURCE == "schedule"'
+    - when: never
+
+"$[[ inputs.instance ]]:container-vuln-grype":
+  extends: ".ci:$[[ inputs.instance ]]:container-vuln-grype:setup"
+  stage: $[[ inputs.stage ]]
+  needs:
+    - job: $[[ inputs.build-job ]]
+      artifacts: true
+    - job: $[[ inputs.sbom-job ]]
+      artifacts: true
+    - job: "$[[ inputs.instance ]]:container-vuln-grype:db-sync"
+      optional: true
+  variables:
+    SCAN_SUBJECT: "built"
+    GRYPE_FAIL_ON_SEVERITY: $[[ inputs.fail-on-severity ]]
+  script:
+    - set -a; . ./build.env; set +a
+    - bash "${CBT}/scripts/scan/grype-vuln.sh"
+  artifacts:
+    paths:
+      - "$[[ inputs.context ]]/artifacts/"
+    when: always              # a failed gate still hands over its evidence
+    expire_in: $[[ inputs.evidence-expire-in ]]
+  rules:
+    - if: '$FORCE_ALL == "true"'
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes: $[[ inputs.build-changes ]]
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes: $[[ inputs.build-changes ]]
