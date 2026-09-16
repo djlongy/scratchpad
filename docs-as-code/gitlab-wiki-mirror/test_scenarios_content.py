@@ -92,6 +92,11 @@ def sync(docs, wiki, flt=None):
 
 
 def pull(repo, wiki, **kw):
+    # These fixtures commit the CI sync as `CI`, and that author name is how
+    # wiki-pull recognises the last sync. Pin it here rather than leaning on the
+    # module default, which the upstream library ships set to its own project's
+    # derived name; wiki-deploy.sh derives this one from CI_PROJECT_PATH.
+    kw.setdefault("ci_author", CI)
     return wiki_pull.main(repo / "docs", wiki, **kw)
 
 

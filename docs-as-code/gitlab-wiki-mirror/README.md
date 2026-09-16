@@ -8,6 +8,29 @@ Pages this is the whole publishing story; with Pages it is a second view of the 
 Companion to the [Material for MkDocs tutorial](../mkdocs-material/). Both build from the
 same `docs/` tree.
 
+## Use the component library instead, if you can
+
+This folder is the technique in its rawest form: a handful of scripts you copy into a repo.
+It is **not** the way to adopt it if you have a choice.
+
+The same code is packaged as a GitLab CI component in
+**[djlongy/gitlab-ci-templates](https://github.com/djlongy/gitlab-ci-templates)**, where a
+consuming repository's whole `.gitlab-ci.yml` is three lines and the component carries its
+runtime embedded, so there is nothing to copy and nothing to keep up to date. It also adds
+the thing standalone scripts cannot have: the job repairs its own wiki webhook and trigger
+token on every default-branch run, so a project that is renamed or moved keeps working.
+
+- Adoption, end to end, for a reader with no context:
+  [`docs/howto/docs-wiki-sync.md`](https://github.com/djlongy/gitlab-ci-templates/blob/main/docs/howto/docs-wiki-sync.md)
+- Getting the library onto your own GitLab, and the two ways to include it:
+  [`docs/howto/consuming-the-library.md`](https://github.com/djlongy/gitlab-ci-templates/blob/main/docs/howto/consuming-the-library.md)
+
+**Keep reading here if you cannot include a library at all** — an air-gapped instance with
+no mirror of it, a repository that must vendor everything it runs, or a single project where
+a component is more machinery than the job is worth. The scripts below are a **verbatim copy
+of that library's `runtime/wiki/`**, kept byte-identical so the two cannot drift; that is why
+a comment in `wiki-deploy.sh` still names the library's path layout.
+
 What is here:
 
 | File | Purpose |
@@ -18,12 +41,16 @@ What is here:
 | [`wiki-deploy.sh`](wiki-deploy.sh) | The job: clone, pull, push (`ci.skip`), sync, push. Same command in CI and from a shell: `scripts/wiki-deploy.sh docs wiki` |
 | [`.env.example`](.env.example) | The variables for a local run; copy to `.env` (gitignored) |
 | [`docfilter.py`](docfilter.py) | Shared include/exclude matching, the MkDocs `exclude_docs` / `not_in_nav` rules; both scripts import it |
+| [`reconcile.py`](reconcile.py) | Creates and repairs the wiki webhook and its pipeline trigger token; writes only on a difference |
+| [`wiki-bootstrap.sh`](wiki-bootstrap.sh) | First-time wiring for one project: runs `reconcile.py`, then creates the hourly safety-net schedule |
+| [`httpjson.py`](httpjson.py) | The tiny stdlib HTTP/JSON helper `reconcile.py` imports |
 | [`.gitlab-ci.yml`](.gitlab-ci.yml) | The full pipeline: lint on MRs, two-way wiki sync (and optionally Pages) on the default branch |
 | [`example/`](example/) | A two-section wiki as GitLab stores it, and the `docs/` tree the import produces from it |
 
 The scripts are stdlib plus PyYAML, no other dependencies, no assumptions about the instance
 beyond how GitLab lays out a wiki repository. Keep the `.py` files and `wiki-deploy.sh`
-together (`scripts/`).
+together (`scripts/`); `reconcile.py` imports `httpjson.py` from beside it, so those two move
+as a pair.
 
 ## The repo layout to aim for
 
@@ -191,13 +218,14 @@ python3 wiki-import.py wiki-export docs --exclude 'templates/' --include '/opera
 | `lint` | MR, feature branch | `zensical build --clean --strict`: broken links and pages missing from the nav fail |
 | `markdownlint` | MR, feature branch | `markdownlint-cli2` with `.markdownlint.yaml` |
 | `links` | MR, feature branch | `lychee --offline` over `docs/`: file links only, so private hosts do not fail it |
-| `scripts-test` | MR, branch, default branch | the scripts' 143 tests, with `coverage.xml` for a SonarQube job |
+| `scripts-test` | MR, branch, default branch | the scripts' 149 tests, with `coverage.xml` for a SonarQube job |
 | `wiki` | default branch, only if `WIKI_TOKEN` is set | `scripts/wiki-deploy.sh docs wiki`: pull wiki edits into the repo, then sync the repo into the wiki |
 | `deploy-docs` | default branch | GitLab Pages (`pages: publish: site`, GitLab 17.9+); delete this job on an instance without Pages |
 
 Setup, once per repo:
 
-1. Copy the `.py` files and `wiki-deploy.sh` to `scripts/`, plus `.gitlab-ci.yml`, `requirements.txt`,
+1. Copy the `.py` files, `wiki-deploy.sh` and `wiki-bootstrap.sh` to `scripts/`, plus
+   `.gitlab-ci.yml`, `requirements.txt`,
    `.markdownlint.yaml`, and `mkdocs.yml` (needed by `lint` even if you never publish a
    site; it is what validates the links). `requirements.txt` pins Zensical; the Material
    for MkDocs pins are commented in it as the fallback.
@@ -208,6 +236,43 @@ Setup, once per repo:
 4. Add `wiki/` and `.env*` to `.gitignore` (the job clones the wiki into `wiki/`; a local run
    does the same and must never be committed).
 5. Merge to the default branch.
+6. Optional, to make **wiki edits** start a pipeline rather than waiting for the next push:
+
+   ```bash
+   GITLAB_HOST=gitlab.example.com GITLAB_TOKEN=<api-scope token> \
+     scripts/wiki-bootstrap.sh group/my-repo
+   ```
+
+   It creates the wiki-page-events webhook, the pipeline trigger token the webhook URL
+   carries, and an hourly schedule as a safety net for a missed delivery. It looks each one
+   up first and reports "already present", so it is safe to run again.
+
+### The webhook is a project setting, and it rots
+
+That webhook URL contains the project id and the default branch name. Rename the project,
+move it to another group, change the default branch or move the server, and the URL stops
+resolving. **Nothing fails**: the hourly schedule keeps the job green while wiki edits
+quietly stop arriving, and the only repair is for somebody to remember to run the script
+again.
+
+`reconcile.py` is what fixes that. It rebuilds the URL the hook must have from
+`CI_API_V4_URL`, `CI_PROJECT_ID` and `CI_DEFAULT_BRANCH`, compares, and writes only on a
+difference, so a second run reports `webhook already correct` and writes nothing. Run it
+from the job on every default-branch run and the wiring repairs itself:
+
+```bash
+WIKI_ADMIN_TOKEN=<api-scope token> python3 scripts/reconcile.py
+```
+
+It needs the `api` scope, which the sync itself does not, so give it its own variable rather
+than widening `WIKI_TOKEN`. It owns its own trigger token, identified by the description
+`wiki-sync` and by its creator, because GitLab shows a trigger token in full only to the user
+who made it and shortens everybody else's to four characters; a token you created by hand is
+therefore unusable from the job. It reports one rather than deleting a credential that is not
+its to delete, and it never prints a token, including the one inside the hook URL.
+
+The component library does this for you, gated by one input. That is the main reason to
+prefer it over copying these files.
 
 The script never uses anyone's ssh keys or the checkout's `origin`: every clone and push
 goes over https with `WIKI_TOKEN`, as a service account would, and git is told never to
