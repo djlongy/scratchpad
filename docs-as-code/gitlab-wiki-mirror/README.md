@@ -265,11 +265,18 @@ WIKI_ADMIN_TOKEN=<api-scope token> python3 scripts/reconcile.py
 ```
 
 It needs the `api` scope, which the sync itself does not, so give it its own variable rather
-than widening `WIKI_TOKEN`. It owns its own trigger token, identified by the description
-`wiki-sync` and by its creator, because GitLab shows a trigger token in full only to the user
-who made it and shortens everybody else's to four characters; a token you created by hand is
-therefore unusable from the job. It reports one rather than deleting a credential that is not
-its to delete, and it never prints a token, including the one inside the hook URL.
+than widening `WIKI_TOKEN`. It never prints a token, including the one inside the hook URL.
+
+**It keeps the trigger token the webhook already carries** and rewrites only the address
+around it, minting one only when there is none to keep. That is not politeness. A pipeline
+started by a trigger token runs **as that token's owner** and sees only the variables that
+identity can see, so if `WIKI_TOKEN` is a group-level protected variable and the repair
+swapped in a token owned by a project access token's bot, the triggered pipeline could no
+longer see it: every rule requires `$WIKI_TOKEN`, no job would match, and a wiki edit would
+produce a failed pipeline containing nothing. Repairing a hostname must not change who the
+delivery runs as. GitLab returns the hook URL verbatim, token included, so the value is
+readable whoever created it and the repair never needs to own anything. When it does mint a
+token, because there is no webhook or the URL carries none, it says so in the log.
 
 The component library does this for you, gated by one input. That is the main reason to
 prefer it over copying these files.

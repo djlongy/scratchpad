@@ -21,7 +21,7 @@ The token comes from the environment and never from an argument: an argument is
 readable in `ps`, and Python prints the whole argv back when a subprocess times
 out. `WIKI_ADMIN_TOKEN` is used when set, `WIKI_TOKEN` otherwise.
 
-What it owns, and how it recognises its own work:
+What it repairs, and what it deliberately does not touch:
 
   hook     the project webhook whose `name` is `wiki-sync`. `name` has been a
            webhook field since GitLab 17.1, it survives a URL change, and the
@@ -29,14 +29,28 @@ What it owns, and how it recognises its own work:
            project is adopted rather than duplicated. Matching on the URL, which
            is what the bootstrap script used to do, cannot work here: the URL is
            the thing being repaired.
-  trigger  a pipeline trigger token whose description is `wiki-sync` AND whose
-           owner is the identity this job authenticates as. Ownership is not
-           decoration. GitLab returns a trigger token's value in full only to
-           the user who created it and shortens everybody else's to four
-           characters, so a token created by a human operator is unusable here:
-           the job cannot put a four-character stub into the hook URL. It
-           creates its own instead, and leaves the operator's alone, because
-           deleting another user's credential is not this job's call.
+  trigger  whatever token that hook's URL already carries. It is copied across
+           unchanged and the address around it is rewritten. GitLab returns the
+           hook URL verbatim, token included, so the value is readable even when
+           the trigger belongs to somebody else and `GET /triggers` would show
+           only four characters of it.
+
+Keeping the token is not politeness, it is correctness. A pipeline started by a
+trigger token runs as that token's OWNER, and it sees only the variables that
+identity can see. A group-level protected `WIKI_TOKEN` is visible to a group
+member and not to a project access token bot, which belongs to the project
+alone. Replacing a working token with one this job owns therefore produces
+trigger pipelines with no jobs at all: every `run-rules` entry requires
+`$WIKI_TOKEN`, none matches, and GitLab records a failed pipeline with nothing
+in it. Measured on GitLab 18.9.1-ee against one wiki-sync consumer: a pipeline
+triggered through a project bot's token was created with zero jobs, while the
+same commit and the same hook seconds later, triggered through a group member's
+token, ran `docs:docs-wiki-sync` green. So the one thing this must never do while
+repairing a broken address is change who the delivery runs as.
+
+A token is minted only when there is none to keep: no hook at all, or a hook
+whose URL carries no token. That path says so in the job log, because it does
+change the identity.
 
 Failure semantics (section 10.1). The first call is a capability probe. An
 authorization failure there is a fact about the token, not an outage: the run
@@ -172,43 +186,53 @@ def desired_url(project: Project, branch: str, token: str) -> str:
     )
 
 
+def token_in(url: str) -> str:
+    """The trigger token already carried by a hook URL, or "" when it has none."""
+    _, separator, token = url.partition("?token=")
+    return urllib.parse.unquote(token.split("&", 1)[0]) if separator else ""
+
+
+def mint_token(project: Project, report: list[str]) -> str:
+    """A trigger token this job owns, created only when the hook supplies none.
+
+    This is the rare path. It changes which identity a wiki edit's pipeline runs
+    as, which is a decision with consequences (see the module docstring), so it
+    happens only when there is no token to keep.
+    """
+    user_id = project.identity()
+    trigger = owned_trigger(project.triggers(), user_id)
+    if trigger is not None:
+        report.append(f"trigger  already present (id {trigger['id']})")
+        return trigger["token"]
+
+    trigger = project.call(
+        "POST",
+        f"/projects/{project.project_id}/triggers",
+        {"description": TRIGGER_DESCRIPTION},
+    )
+    if not trigger.get("token"):
+        raise ReconcileError("the new trigger token came back without a value")
+    report.append(
+        f"trigger  created (id {trigger['id']}); a wiki edit's pipeline now runs as "
+        "this job's own identity, which must be able to see every variable the sync "
+        "needs"
+    )
+    return trigger["token"]
+
+
 def reconcile(project: Project, branch: str) -> list[str]:
-    """Bring the hook and the trigger token to the state described above."""
+    """Repair the hook's address while keeping the trigger token it already has."""
     report: list[str] = []
 
     # The capability probe. Everything after this point is a real failure.
     hooks = project.hooks()
-    user_id = project.identity()
-    triggers = project.triggers()
-
-    trigger = owned_trigger(triggers, user_id)
-    if trigger is None:
-        trigger = project.call(
-            "POST",
-            f"/projects/{project.project_id}/triggers",
-            {"description": TRIGGER_DESCRIPTION},
-        )
-        if not trigger.get("token"):
-            raise ReconcileError("the new trigger token came back without a value")
-        report.append(f"trigger  created (id {trigger['id']})")
-    else:
-        report.append(f"trigger  already present (id {trigger['id']})")
-
-    foreign = [
-        other
-        for other in triggers
-        if other.get("description") == TRIGGER_DESCRIPTION and other.get("id") != trigger["id"]
-    ]
-    for other in foreign:
-        owner = (other.get("owner") or {}).get("username", "another user")
-        report.append(
-            f"trigger  id {other['id']} has the same description but belongs to {owner}; "
-            "this job cannot read its value and will not delete it. Remove it by hand "
-            "once no webhook uses it."
-        )
-
-    url = desired_url(project, branch, trigger["token"])
     existing = next((hook for hook in hooks if hook.get("name") == HOOK_NAME), None)
+
+    kept = token_in(str(existing.get("url", ""))) if existing else ""
+    if kept:
+        report.append("trigger  keeping the token the webhook already carries")
+    token = kept or mint_token(project, report)
+    url = desired_url(project, branch, token)
 
     if existing is None:
         created = project.call(
