@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Two-way sync between docs/ in this repo and the project's GitLab wiki.
 #
-#   usage: scripts/wiki-deploy.sh DOCS_DIR WIKI_DIR        e.g. scripts/wiki-deploy.sh docs wiki
+#   usage: runtime/wiki/wiki-deploy.sh DOCS_DIR WIKI_DIR        e.g. runtime/wiki/wiki-deploy.sh docs wiki
 #
 # One cycle:
 #   1. clone the wiki into WIKI_DIR (recreated every run; keep it gitignored)
@@ -120,7 +120,13 @@ pull_wiki_edits() {
   local args=(--ci-author "$ci_name" --ci-email "$ci_email" --repo "$repo")
   [ -f "$config" ] && args+=(--config "$config")
   [ "$dry" = 1 ] && args+=(--dry-run)
-  python3 "$scripts/wiki-pull.py" "$docs" "$wiki" ${args[@]+"${args[@]}"}
+  # `|| return 1` is not decoration. cycle() is called from an `if`, so `set -e`
+  # is off for everything below it and a function returns the status of its LAST
+  # command. Without this, wiki-pull.py could die and `after=$(git rev-parse)`
+  # would still succeed, the pull would be skipped and the job would go green:
+  # A consumer's job did exactly that, with wiki-pull.py raising
+  # FileNotFoundError for the wiki-import.py the embed marker had left out.
+  python3 "$scripts/wiki-pull.py" "$docs" "$wiki" ${args[@]+"${args[@]}"} || return 1
   after=$(git -C "$repo" rev-parse HEAD)
 }
 
@@ -139,7 +145,9 @@ push_repo() {
 sync_wiki() {
   local args=()
   [ -f "$config" ] && args+=(--config "$config")
-  python3 "$scripts/wiki-sync.py" "$docs" "$wiki" ${args[@]+"${args[@]}"}
+  # Same reason as pull_wiki_edits: a failed regeneration must not be followed
+  # by `git add -A` and a commit of whatever half-written tree it left.
+  python3 "$scripts/wiki-sync.py" "$docs" "$wiki" ${args[@]+"${args[@]}"} || return 1
   git -C "$wiki" config user.name  "$ci_name"
   git -C "$wiki" config user.email "$ci_email"
   git -C "$wiki" add -A

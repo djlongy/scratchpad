@@ -354,3 +354,31 @@ def test_cli_entrypoints(docs, tmp_path):
     back = tmp_path / "back"
     wiki_import.cli([str(wiki), str(back), "--exclude", "_sidebar.md"])
     assert (back / "ops/index.md").exists()
+
+
+# --- reconcile.py in the flat layout ----------------------------------------
+#
+# The library keeps reconcile.py in runtime/wiki/ and httpjson.py one directory
+# above it. Here every script sits in one folder, so the sibling import is the
+# one thing the flat copy can get wrong, and it would fail only when somebody
+# actually runs the webhook repair. These two exercise it cheaply.
+
+reconcile = load("reconcile")
+
+
+def test_reconcile_imports_httpjson_from_the_same_folder():
+    assert reconcile.HOOK_NAME == "wiki-sync"
+    assert reconcile.HttpError is not None
+
+
+def test_reconcile_never_prints_the_trigger_token():
+    url = "https://gitlab.example.com/api/v4/projects/7/ref/main/trigger/pipeline?token=glptt-secret"
+    assert reconcile.elide_token(url).endswith("?token=<token>")
+    assert "glptt-secret" not in reconcile.elide_token(url)
+
+
+def test_reconcile_builds_the_hook_url_from_the_jobs_own_environment():
+    project = reconcile.Project("https://gitlab.example.com/api/v4", "7", "t")
+    assert reconcile.desired_url(project, "main", "abc") == (
+        "https://gitlab.example.com/api/v4/projects/7/ref/main/trigger/pipeline?token=abc"
+    )

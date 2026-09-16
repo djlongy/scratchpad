@@ -51,7 +51,7 @@ def load(name):
 
 wiki_import = load("wiki-import")
 
-CI_AUTHOR = "docs ci"
+CI_AUTHOR = "docs-site ci"
 CI_EMAIL = ""   # empty: match on the name alone
 DOCS_MAP = ".gitlab/docs-map.json"   # written by wiki-sync.py: wiki page -> docs file
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
