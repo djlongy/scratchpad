@@ -219,6 +219,20 @@ the wiki straight afterwards.
 Without `WIKI_TOKEN` the `wiki` job is skipped by its rule, so the pipeline can land
 before the token exists.
 
+**Shell-executor runners, no registry, no internet.** Nothing here needs a container image:
+`wiki-deploy.sh` and the three Python scripts are stdlib plus PyYAML, and a shell executor
+runs them on the host. Drop the `image:` key from the `wiki` job, install PyYAML from the
+distribution (`dnf install python3-pyyaml`, `apt-get install python3-yaml`) or from an
+internal index with `PIP_INDEX_URL`, and the job never reaches the network except to talk
+to GitLab. Beware one trap if you keep a `requirements.txt` with `--require-hashes`: the
+hashes name specific wheels, so a set built for one interpreter fails on a host running
+another — EL9 ships Python 3.9, and PyYAML 5.4.1 from AppStream works as well as 6.0.2.
+The packaged version of the same technique, as a GitLab component with an `executor`
+input, is in
+[djlongy/gitlab-ci-templates](https://github.com/djlongy/gitlab-ci-templates) under
+`templates/docs-wiki-sync/`.
+
+
 **A wiki edit does not start a pipeline by itself.** Pipelines start on a push to the repo,
 a schedule or a trigger, so without one more piece an edit made in the wiki UI waits for the
 next repo push. Two pieces, both native:
