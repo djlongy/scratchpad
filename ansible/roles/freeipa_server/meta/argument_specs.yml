@@ -260,6 +260,9 @@ argument_specs:
           Conditional forward zones (ipadnsforwardzone). Each item needs name;
           optional forwarders (list of IP strings or {ip_address, port} dicts),
           forwardpolicy (only|first|none), skip_overlap_check, state.
+      freeipa_server_dns_alias_records:
+        type: list
+        description: Supplemental service address records. Explicit records take priority.
       freeipa_server_dns_records:
         type: list
         description: DNS records (ipadnsrecord), single or whole-zone `records:` bulk form. Minimal item = zone_name + name + record_type + record_value; add create_reverse true for the PTR (add-time only — never retro-creates for existing records). Do NOT re-declare installer-owned realm plumbing (SRV/_kerberos TXT/ipa-ca) from an export.
