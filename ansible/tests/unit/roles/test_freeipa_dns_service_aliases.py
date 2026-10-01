@@ -52,3 +52,19 @@ def test_service_aliases():
     with pytest.raises(AnsibleFilterError, match="Invalid service DNS name"):
         aliases({"npm_ip": "10.0.0.2", "npm_proxy_hosts": [{"domain_names": ["bad name.example.test"]}]},
                 "example.test", "example.internal", ["example.internal"], [])
+
+
+def test_delegated_cluster_names_stay_owned_by_the_cluster():
+    aliases = load("dns_aliases").freeipa_dns_service_aliases
+    catalogue = {"npm_ip": "10.0.0.2", "npm_proxy_hosts": [{"domain_names": [
+        "api.ns.svc.cluster-a.example.test", "svc.cluster-a.example.test",
+        "cluster-a-ingress.example.test", "*.apps.cluster-a.example.test",
+        "wiki.apps.cluster-a.example.test", "wiki.example.test",
+    ]}]}
+    records = aliases(catalogue, "example.test", "example.internal", ["example.internal"], [
+        "svc.cluster-a.example.internal", "cluster-a-ingress.example.internal",
+        "apps.cluster-a.example.internal",
+    ])
+    assert records == [{"zone_name": "example.internal.", "records": [
+        {"record_name": "wiki", "a_record": ["10.0.0.2"], "create_reverse": False},
+    ]}]

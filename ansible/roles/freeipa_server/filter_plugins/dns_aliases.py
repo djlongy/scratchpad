@@ -41,12 +41,12 @@ def freeipa_dns_service_aliases(catalogue, public_domain, internal_domain, zones
         name = name.lower().rstrip(".")
         if not name.endswith("." + public_domain):
             continue
-        if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)+", name):
-            raise AnsibleFilterError(f"Invalid service DNS name: {name}")
         target = name[:-len(public_domain)] + internal_domain
         if any(target == d.rstrip(".") or target.endswith("." + d.rstrip("."))
                for d in excluded_domains):
             continue
+        if not re.fullmatch(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)+", name):
+            raise AnsibleFilterError(f"Invalid service DNS name: {name}")
         zone = next((z for z in hosted if target.endswith("." + z)), None)
         if zone is None:
             raise AnsibleFilterError(f"No hosted internal zone for {target}")
