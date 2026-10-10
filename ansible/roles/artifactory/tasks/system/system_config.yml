@@ -50,7 +50,7 @@
       {{ ('REJECTED blocks (review): ' ~ _ap_sysyaml.rejected) if (_ap_sysyaml.rejected | default({})) else '' }}
   when:
     - _ap_sysyaml is defined
-    - (_ap_sysyaml.dropped | default({})) or (_ap_sysyaml.rejected | default({}))
+    - (_ap_sysyaml.dropped | default({}) | length > 0) or (_ap_sysyaml.rejected | default({}) | length > 0)
 
 - name: "System_config | Fail if blocks were rejected and fail-fast is set"
   ansible.builtin.fail:

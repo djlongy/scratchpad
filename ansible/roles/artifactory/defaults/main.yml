@@ -399,9 +399,9 @@ artifactory_ldap_groups: []
 #     sub_tree: true
 
 # ── SSO singletons (SAML / OAuth / Crowd) ─────────────────────────────────
-# Each is a single config object. Leave empty to skip. Backup captures the
-# live config; apply POSTs it back. Secrets (client secrets, certs) are NOT
-# fully returned by GET — supply them at apply time via vars/Vault.
+# Each is a single config object. Leave empty to skip. OAuth providers are
+# managed separately by name; backup captures them inside oauth_config.providers.
+# GET masks secrets — supply them at apply time via vars/Vault.
 artifactory_saml_config: {}
 artifactory_oauth_config: {}
 artifactory_crowd_config: {}

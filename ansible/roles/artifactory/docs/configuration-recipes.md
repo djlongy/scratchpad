@@ -141,21 +141,22 @@ Idempotent by name (create-if-absent). The list endpoint is a `POST` (with a
 pagination body), not a GET. Report *data* only populates once Xray's
 vulnerability DB has finished its initial sync.
 
-## OAuth / OIDC SSO — known gap (provider add is UI-only)
+## OAuth / OIDC SSO
 
-`artifactory_oauth_config` posts to `/artifactory/api/oauth`, which sets the
-**global** OAuth settings (enabled, persistUsers, allowUserToAccessProfile) but
-does **not** persist providers. The provider-add endpoints are all dead:
+`artifactory_oauth_config` accepts global settings and an optional `providers`
+list. The role reads existing providers, creates missing names with
+`PUT /artifactory/api/oauth/provider`, updates existing names with `POST` to that
+endpoint, then applies global settings through `POST /artifactory/api/oauth`.
+It verifies provider fields by readback; unrelated providers are preserved.
+The global endpoint alone returns success but does not create providers.
 
-| endpoint | result |
-|---|---|
-| `POST/PUT /artifactory/api/oauth/<name>` | 404 Not Found |
-| `POST /access/api/v1/oidc/configurations` | 405 (this API is for CI **token-exchange**, not interactive login) |
-| `/ui/api/v1/admin/security/oauth/...` | 200 but returns the SPA `index.html` — not a real API; POST → 404 |
+Supply each provider's name, enabled flag, providerType, client id, secret and
+provider endpoints. OpenID Connect uses `providerType: openId`; a public PKCE
+client uses `pkce: true` and an empty secret. Store confidential client secrets
+in Vault and supply them at apply time: readback cannot validate masked secrets.
+The role reapplies supplied providers, including secrets, on each run.
 
-So **add the OAuth provider in the UI** (Administration → Security → SSO → OAuth →
-New) using the IdP's client id/secret + endpoints. Everything else (global enable,
-the IdP-side OAuth2 provider + application, e.g. Authentik) is configurable
-normally. When JFrog exposes a stable provider REST endpoint, wire it into
-`tasks/integrations/sso.yml` (per-provider create/update, like the SAML/Crowd PUT
-fix). The global settings the role already applies are correct.
+Native provider creation and a real Keycloak/FreeIPA PKCE session were tested
+on the disposable 7.146.17 lab. Other releases and confidential clients still
+need runtime validation. `/access/api/v1/oidc/configurations` configures CI token
+exchange, rather than interactive SSO.
