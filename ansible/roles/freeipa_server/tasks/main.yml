@@ -170,6 +170,7 @@
         - (freeipa_server_dns_zones | length > 0) or
           (freeipa_server_dns_forward_zones | length > 0) or
           (freeipa_server_dns_records | length > 0) or
+          (freeipa_server_dns_alias_records | length > 0) or
           (freeipa_server_forwarders | length > 0) or
           (freeipa_server_no_forwarders | bool)
       tags: [dns]
