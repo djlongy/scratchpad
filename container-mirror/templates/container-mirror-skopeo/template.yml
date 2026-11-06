@@ -249,8 +249,19 @@ spec:
       [ -s "$work/refs" ] || { echo 'ERROR: no references to mirror' >&2; exit 1; }
       echo "== $(wc -l < "$work/refs" | tr -d ' ') reference(s), dry run: $CI_TPL_DRY_RUN"
       : > "$out/digests.txt"
+      # skopeo inspect reads an image config, so it refuses a Helm chart or any
+      # other OCI artifact that skopeo copy handles fine. For those the digest
+      # is the sha256 of the raw manifest.
+      digest_of() {
+        skopeo inspect "$@" --format '{{.Digest}}' 2>/dev/null && return
+        skopeo inspect --raw "$@" > "$work/manifest" &&
+          echo "sha256:$(sha256sum < "$work/manifest" | cut -d' ' -f1)"
+      }
       while read -r ref; do
         [ -n "$ref" ] || continue
+        case $ref in
+          *://*) echo "ERROR: $ref is a URL, not an image reference. List a Helm chart by its OCI reference, registry/path:version" >&2; exit 1 ;;
+        esac
         name=${ref%%@*}
         last=${name##*/}
         case $last in
@@ -271,16 +282,16 @@ spec:
         attempt=1
         while : ; do
           if [ "$CI_TPL_DRY_RUN" = "true" ]; then
-            digest=$(skopeo inspect --override-os "$os" --override-arch "$cpu" \
-              --format '{{.Digest}}' "docker://$src") && break
+            digest=$(digest_of --override-os "$os" --override-arch "$cpu" \
+              "docker://$src") && break
           else
             # --format oci, not --preserve-digests: the export step stores these
             # manifests in an OCI layout, which takes OCI media types only.
             skopeo copy -q --retry-times 3 --format oci \
               --override-os "$os" --override-arch "$cpu" \
               --dest-authfile "$authfile" "docker://$src" "docker://$dest" &&
-              digest=$(skopeo inspect --authfile "$authfile" --override-os "$os" \
-                --override-arch "$cpu" --format '{{.Digest}}' "docker://$dest") && break
+              digest=$(digest_of --authfile "$authfile" --override-os "$os" \
+                --override-arch "$cpu" "docker://$dest") && break
           fi
           # Public registries answer now and then with a 502. Three failed rounds
           # is a real outage, or a pinned digest the registry does not have.

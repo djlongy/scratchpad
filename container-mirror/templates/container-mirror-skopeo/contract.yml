@@ -63,7 +63,9 @@ reference_format: >-
   pins a digest is fetched by that digest. skopeo cannot parse a tag and a
   digest in one reference, so the component splits them and fetches
   `repo@digest`; a digest the registry does not hold fails as `manifest
-  unknown` and the job exits non-zero.
+  unknown` and the job exits non-zero. A Helm chart or other OCI artifact is
+  copied the same way; its recorded digest is the sha256 of its manifest. A
+  line containing `://`, such as a chart repository URL, exits non-zero.
 
 media_type: >-
   Copies are made with `--format oci`, not `--preserve-digests`. The export

@@ -1,0 +1,6 @@
+# Helm charts, one OCI reference per line, in the same format as images.txt.
+# A chart repository the runner cannot reach (charts.example.org/release) is
+# republished as OCI on a registry it can reach first, for example by a
+# scheduled GitHub Action pushing to ghcr.io/<owner>/charts/<chart>. List the
+# OCI copy here, never the https:// repository URL.
+ghcr.io/acme/charts/cert-manager:v1.21.3
