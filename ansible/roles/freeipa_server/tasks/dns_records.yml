@@ -89,6 +89,11 @@
 # record (flat items via _dns_flat_reverse; bulk `records:` entries via the
 # freeipa_dns_reverse_defaulted filter). A per-record create_reverse always wins,
 # and non-address records are never touched (create_reverse is A/AAAA-only).
+- name: DNS | Merge explicit records with service aliases
+  ansible.builtin.set_fact:
+    _freeipa_dns_records_effective: >-
+      {{ freeipa_server_dns_records | freeipa_dns_merge_records(freeipa_server_dns_alias_records) }}
+
 - name: DNS | Manage records (single, multi, or bulk — one task)
   freeipa.ansible_freeipa.ipadnsrecord:
     zone_name: "{{ item.zone_name }}"
@@ -104,6 +109,6 @@
       {{ true if (freeipa_server_dns_create_reverse | bool
                   and (item.record_type | default('') | upper) in ['A', 'AAAA'])
          else omit }}
-  loop: "{{ freeipa_server_dns_records }}"
+  loop: "{{ _freeipa_dns_records_effective }}"
   loop_control:
     label: "{{ item.zone_name }}/{{ item.name | default('(bulk)') }} {{ item.record_type | default('') }}"
