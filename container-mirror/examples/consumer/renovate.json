@@ -6,9 +6,10 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Bump every reference in images.txt, tag and digest together.",
+      "description": "Bump every reference in images.txt and charts.txt, tag and digest together. A Helm chart on an OCI registry is looked up as a docker package.",
       "fileMatch": [
-        "^images\\.txt$"
+        "^images\\.txt$",
+        "^charts\\.txt$"
       ],
       "matchStrings": [
         "^(?<depName>[^\\s#:]+):(?<currentValue>[^\\s@]+)(?:@(?<currentDigest>sha256:[0-9a-f]{64}))?\\s*$"
@@ -35,6 +36,18 @@
         "images.txt"
       ],
       "commitMessageTopic": "mirrored image {{depName}}",
+      "labels": [
+        "container-mirror"
+      ]
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchFileNames": [
+        "charts.txt"
+      ],
+      "commitMessageTopic": "mirrored chart {{depName}}",
       "labels": [
         "container-mirror"
       ]

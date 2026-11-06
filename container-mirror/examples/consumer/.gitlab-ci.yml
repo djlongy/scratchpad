@@ -14,8 +14,9 @@ include:
       instance: mirror
       changes-paths:
         - 'images.txt'
+        - 'charts.txt'
         - '.gitlab-ci.yml'
-      extra-list-files: images.txt
+      extra-list-files: images.txt charts.txt
       registry: registry.example.com
       repository-prefix: mirror
       arch: linux-amd64

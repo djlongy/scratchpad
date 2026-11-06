@@ -105,6 +105,31 @@ A bump merge request changes one line:
 The merge request pipeline dry-runs it. Merge, and the default branch mirrors
 and exports it.
 
+## 8. Helm charts
+
+A Helm chart on an OCI registry is an OCI artifact, and the mirror copies it
+like an image. List it in `charts.txt` (or `images.txt`) as
+`registry/path:version`. No flag or separate job is needed:
+
+```text
+ghcr.io/acme/charts/cert-manager:v1.21.3
+```
+
+Install from your registry with
+`helm install cert-manager oci://registry.example.com/mirror/acme/charts/cert-manager --version v1.21.3`.
+
+An `https://` chart repository URL is not a reference. The mirror job stops on
+one with an error naming the line, because skopeo would otherwise read the
+scheme as a registry host. Many chart repositories, including the ones Artifact
+Hub links to, publish only an `index.yaml` over HTTP. If the runner cannot
+reach them, republish the charts as OCI on a registry it can reach first,
+for example with a scheduled GitHub Action that runs `helm pull` and
+`helm push oci://ghcr.io/<owner>/charts` for each chart. Then list the OCI copy.
+
+Renovate looks up an OCI chart through the `docker` datasource, not the `helm`
+one, which reads `index.yaml` repositories only. The example `renovate.json`
+covers both list files with the same manager.
+
 ## Inputs
 
 Of `pipelines/container-mirror.yml`.
