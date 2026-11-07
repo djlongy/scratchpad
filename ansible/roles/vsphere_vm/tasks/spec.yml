@@ -9,6 +9,10 @@
       {{ inventory_hostname }} has no vsphere_vm_template — set it in host_vars or the
       group's group_vars (it is the source template to clone).
     quiet: true
+  # ISO mode installs onto a blank VM, so there is no template to clone. The
+  # estate default sets vsphere_vm_template for every host, which would make
+  # this assert pass and then silently mislead the plan report.
+  when: not (vsphere_vm_provision_via_iso | default(false) | bool)
   delegate_to: localhost
   become: false
 
@@ -16,14 +20,19 @@
   ansible.builtin.set_fact:
     _vsphere_guest:
       name: "{{ vsphere_vm_name | default(canonical_hostname | default(inventory_hostname)) }}"
-      template: "{{ vsphere_vm_template }}"
+      # Reported as '(none)' rather than the estate default in ISO mode, so the
+      # plan never claims a template that is not being cloned.
+      template: >-
+        {{ '' if (vsphere_vm_provision_via_iso | bool) else vsphere_vm_template }}
       # Native hardware dict; optional vsphere_vm_cpu / vsphere_vm_memory fold on top.
       hardware: >-
         {{ vsphere_vm_hardware
            | combine({'num_cpus': vsphere_vm_cpu | int}
                      if (vsphere_vm_cpu is defined) else {})
            | combine({'memory_mb': vsphere_vm_memory | int}
-                     if (vsphere_vm_memory is defined) else {}) }}
+                     if (vsphere_vm_memory is defined) else {})
+           | combine({'memory_reservation_lock': true}
+                     if (vsphere_vm_memory_reservation_lock | bool) else {}) }}
       disk: "{{ vsphere_vm_disk }}"
       # folder = absolute (vmware_guest); folder_path = relative (vmware.vmware.folder).
       # Both derived from vsphere_vm_folder — never parse one from the other.
@@ -35,8 +44,30 @@
       customization: "{{ vsphere_vm_customization | default(_derived_cust) }}"
       provision_via_guestinfo: "{{ vsphere_vm_provision_via_guestinfo | bool }}"
       guestinfo_userdata: "{{ vsphere_vm_guestinfo_userdata | default('') }}"
-      tags: "{{ vsphere_vm_tags }}"
+      tags: "{{ vsphere_vm_tag_defaults | combine(vsphere_vm_tags) }}"
+      # ── ISO-boot ────────────────────────────────────────────────────────────
+      provision_via_iso: "{{ vsphere_vm_provision_via_iso | bool }}"
+      guest_id: "{{ vsphere_vm_guest_id }}"
+      installer_iso: "{{ vsphere_vm_installer_iso }}"
+      extra_isos: "{{ vsphere_vm_extra_isos }}"
+      boot_firmware: "{{ vsphere_vm_boot_firmware }}"
+      secure_boot: "{{ vsphere_vm_secure_boot | default(false, true) | bool }}"
+      # Merged into a clone's hardware: Secure Boot only when inventory sets it.
+      clone_secure_boot: >-
+        {{ {} if vsphere_vm_secure_boot is none
+           else {'secure_boot': vsphere_vm_secure_boot | bool} }}
+      seed_src_dir: "{{ vsphere_vm_seed_iso_src_dir }}"
+      seed_enabled: "{{ (vsphere_vm_seed_iso_src_dir | default('') | length) > 0 }}"
+      # Single-line on purpose: a folded scalar turns the wrap into a SPACE, so
+      # "…-01\n-seed.iso" would render as "…-01 -seed.iso" and every path breaks.
+      seed_iso_name: "{{ _vsphere_vm_objname }}-seed.iso"
+      # Datastore-relative path. vmware_guest's cdrom wants the "[ds] " prefix;
+      # the upload wants this bare form — derive both, never parse one from the other.
+      seed_iso_rel_path: "{{ vsphere_vm_seed_remote_dir }}/{{ _vsphere_vm_objname }}-seed.iso"
   vars:
+    # vCenter object name, computed once — several ISO-mode fields derive from it.
+    _vsphere_vm_objname: >-
+      {{ vsphere_vm_name | default(canonical_hostname | default(inventory_hostname)) }}
     # Gateway: explicit → auto (first usable of ansible_host subnet) → omit (unrouted).
     _base_nic:
       name: "{{ vsphere_vm_network }}"
@@ -45,7 +76,7 @@
       netmask: "{{ vsphere_vm_netmask }}"
     # Last-octet arithmetic is only correct for /24–/32 (host bits entirely in
     # the 4th octet). Shorter masks need a real network-base calculation — refuse
-    # rather than emit a wrong gateway (e.g. 10.0.1.50/16 → 10.0.1.1).
+    # rather than emit a wrong gateway (e.g. 10.50.1.50/16 → 10.50.1.1).
     _auto_gw: >-
       {{ ((ansible_host.split('.')[:3] | join('.')) ~ '.' ~
           ((ansible_host.split('.')[3] | int)

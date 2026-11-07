@@ -1,0 +1,216 @@
+---
+# PCI passthrough for this guest.
+#
+# There is no module for this. community.vmware.vmware_host_passthrough enables
+# a device ON THE HOST; nothing in the collection attaches one to a VM, so this
+# shells out to govc. Kept in its own file so a guest with no devices costs one
+# skipped include rather than N skipped tasks.
+#
+# Why this exists at all: the device attach, the memory reservation it requires
+# and the Secure Boot state were hand-made on two separate GPU guests, and a
+# rebuild silently produced a VM with no card and no error.
+
+# govc addresses a VM by inventory path, and the role already derives both
+# halves. Deriving it here rather than parsing it back out of anything.
+- name: Passthrough | Derive this guest's inventory path
+  ansible.builtin.set_fact:
+    _vsphere_vm_path: "{{ _vsphere_guest.folder }}/{{ _vsphere_guest.name }}"
+
+- name: Passthrough | Require govc on the controller
+  ansible.builtin.command: govc version
+  register: _vsphere_govc
+  check_mode: false  # read-only probe
+  changed_when: false
+  failed_when: _vsphere_govc.rc != 0
+  delegate_to: localhost
+  become: false
+
+- name: Passthrough | Read the devices this guest already holds
+  ansible.builtin.command: >-
+    govc device.info -vm {{ _vsphere_vm_path | quote }} -json
+  register: _vsphere_pci_now
+  check_mode: false  # read-only probe
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  environment: &govc_env
+    GOVC_URL: "https://{{ vsphere_vm_server }}"
+    GOVC_USERNAME: "{{ vsphere_vm_username }}"
+    GOVC_PASSWORD: "{{ vsphere_vm_password }}"
+    GOVC_INSECURE: "{{ '1' if not (vsphere_vm_validate_certs | bool) else '0' }}"
+    GOVC_DATACENTER: "{{ vsphere_vm_datacenter }}"
+  no_log: true
+
+- name: Passthrough | Work out which declared devices are missing
+  ansible.builtin.set_fact:
+    _vsphere_pci_held: >-
+      {{ (_vsphere_pci_now.stdout | from_json).devices
+         | selectattr('type', 'search', '(?i)passthrough')
+         | map(attribute='backing.id') | list }}
+  no_log: true
+
+- name: Passthrough | Report
+  ansible.builtin.debug:
+    msg: >-
+      declared={{ vsphere_vm_pci_passthrough }}
+      held={{ _vsphere_pci_held }}
+      missing={{ vsphere_vm_pci_passthrough | difference(_vsphere_pci_held) }}
+
+# Two VMs can hold the same PCI address and NOTHING warns you: the first to
+# power on wins and the other dies with "Module 'DevicePowerOn' power on
+# failed", which reads like a dead card. Refuse rather than create that.
+- name: Passthrough | Fail if another VM already claims a declared device
+  when: (vsphere_vm_pci_passthrough | difference(_vsphere_pci_held) | length) > 0
+  block:
+    # A literal block, not a folded one: `>-` keeps the newline before every
+    # more-indented line, so bash saw a line starting with `|` and failed.
+    # runtime.host matches a managed object reference, never a host name; given
+    # the name it matches nothing and this check passed without looking.
+    - name: Passthrough | List every VM's passthrough claims on this host
+      ansible.builtin.shell: |
+        set -euo pipefail
+        host_ref=$(govc find -i / -type h -name {{ vsphere_vm_esxi_host | quote }})
+        test -n "$host_ref"
+        govc find / -type m -runtime.host "$host_ref" | while IFS= read -r vm; do
+          govc device.info -vm "$vm" -json | VM="$vm" python3 -c '
+        import json, os, sys
+        for d in json.load(sys.stdin)["devices"]:
+            if "passthrough" in d.get("type", "").lower():
+                print(os.environ["VM"], d["backing"]["id"])'
+        done
+      args:
+        executable: /bin/bash
+      register: _vsphere_pci_claims
+      check_mode: false  # read-only probe
+      changed_when: false
+      delegate_to: localhost
+      become: false
+      environment: *govc_env
+      no_log: true
+
+    - name: Passthrough | Refuse to double-claim a device
+      ansible.builtin.assert:
+        that:
+          - _vsphere_pci_claims.stdout_lines
+            | reject('search', _vsphere_vm_path | regex_escape)
+            | select('search', item | regex_escape) | list | length == 0
+        fail_msg: >-
+          {{ item }} is already attached to another VM on {{ vsphere_vm_esxi_host }}.
+          Two VMs holding one address is not rejected by vSphere: the first to power
+          on wins and the second fails with DevicePowerOn. Detach it there first.
+      loop: "{{ vsphere_vm_pci_passthrough | difference(_vsphere_pci_held) }}"
+
+- name: Passthrough | Preview declared PCI settings without changing the VM
+  vmware.vmware.vm_advanced_settings: &pci_settings
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+    settings: "{{ vsphere_vm_pci_settings }}"
+    state: present
+  check_mode: true
+  register: _vsphere_vm_pci_settings_probe
+  delegate_to: localhost
+  become: false
+  when: vsphere_vm_pci_settings | length > 0
+
+- name: Passthrough | Determine whether an offline reconfiguration is needed
+  ansible.builtin.set_fact:
+    _vsphere_vm_pci_reconfigure: >-
+      {{ (vsphere_vm_pci_passthrough | difference(_vsphere_pci_held) | length > 0)
+         or (_vsphere_vm_pci_settings_probe.changed | default(false)) }}
+
+# The attach is a reconfigure vSphere only accepts while the guest is off, so
+# this phase owns the power state rather than failing on a fresh build. Guarded
+# on device or PCI-setting drift, so a converged guest is never power-cycled.
+- name: Passthrough | Power off before attaching
+  community.vmware.vmware_guest:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+    state: shutdownguest
+    state_change_timeout: "{{ vsphere_vm_power_timeout | default(300) }}"
+  delegate_to: localhost
+  become: false
+  when: _vsphere_vm_pci_reconfigure | bool
+  failed_when: false          # a guest with no tools, or already off, is fine
+
+- name: Passthrough | Confirm it is off before reconfiguring
+  community.vmware.vmware_guest:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+    state: poweredoff
+  delegate_to: localhost
+  become: false
+  when: _vsphere_vm_pci_reconfigure | bool
+
+- name: Passthrough | Apply declared PCI settings while powered off
+  vmware.vmware.vm_advanced_settings: *pci_settings
+  delegate_to: localhost
+  become: false
+  when:
+    - vsphere_vm_pci_settings | length > 0
+    - _vsphere_vm_pci_reconfigure | bool
+
+- name: Passthrough | Attach the missing devices (guest is powered off)
+  ansible.builtin.command: >-
+    govc device.pci.add -vm {{ _vsphere_vm_path | quote }} {{ item | quote }}
+  loop: "{{ vsphere_vm_pci_passthrough | difference(_vsphere_pci_held) }}"
+  register: _vsphere_pci_added
+  changed_when: _vsphere_pci_added.rc == 0
+  delegate_to: localhost
+  become: false
+  environment: *govc_env
+  no_log: true
+
+# Read-back, because a govc exit code is not proof the device is on the VM.
+- name: Passthrough | Verify every declared device is now held
+  ansible.builtin.command: >-
+    govc device.info -vm {{ _vsphere_vm_path | quote }} -json
+  register: _vsphere_pci_after
+  check_mode: false  # read-only probe
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  environment: *govc_env
+  no_log: true
+
+- name: Passthrough | Power back on after attaching
+  community.vmware.vmware_guest:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+    state: poweredon
+  delegate_to: localhost
+  become: false
+  when:
+    - _vsphere_vm_pci_reconfigure | bool
+    # Off during a fresh create: the staged first boot powers it on.
+    - _vsphere_passthrough_power_on | default(true) | bool
+
+- name: Passthrough | Assert the declared set is attached
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_pci_passthrough
+        | difference((_vsphere_pci_after.stdout | from_json).devices
+                     | selectattr('type', 'search', '(?i)passthrough')
+                     | map(attribute='backing.id') | list)
+        | length == 0
+    fail_msg: "declared PCI devices are still not attached after the add"
+    success_msg: "all declared PCI devices are attached"

@@ -11,12 +11,18 @@ vsphere_vm_username: "administrator@vsphere.local"
 vsphere_vm_password_field: "admin_password"
 vsphere_vm_password: ""                        # non-empty bypasses Vault lookup
 vsphere_vm_validate_certs: false
+# Optional existing datastore artifact to register as the source template.
+vsphere_vm_template_path: ""
+# Optional recovery point before downstream guest hardening.
+vsphere_vm_snapshot_name: ""
+# Empty preserves the source image boot order; a declared change restarts a powered-on VM.
+vsphere_vm_boot_order: []
 
 # ── Placement ────────────────────────────────────────────────────────────────
-# vsphere_vm_datacenter: "Datacenter"
-# vsphere_vm_cluster: "Cluster"               # OR vsphere_vm_esxi_host
+# vsphere_vm_datacenter: "dc1"
+# vsphere_vm_cluster: "cluster1"              # OR vsphere_vm_esxi_host (host-bound hardware only)
 # vsphere_vm_esxi_host: "192.0.2.11"
-# vsphere_vm_resource_pool: "Resources"       # pool name (not path)
+# vsphere_vm_resource_pool: "pool1"           # pool name (not path)
 # Folder relative to DC VM root — no leading slash, no /DC/vm prefix. Nested ok.
 vsphere_vm_folder: ""
 vsphere_vm_datastore: ""
@@ -71,6 +77,74 @@ vsphere_vm_connect_gather_delay: 10
 # guest device (default ens192/ens224/…); override with interface: when needed.
 vsphere_vm_provision_via_guestinfo: false
 
+# ── ISO-boot (third mode) — build a guest that has no template ───────────────
+# GOSC and GuestInfo both CLONE an existing template. ISO mode creates a blank
+# VM and lets an installer ISO run unattended against an answer file carried on
+# a small seed ISO. It exists because building a template by hand is exactly the
+# unreproduced hand step this repo bars: the whole guest must come from code.
+#
+# The seed CONTENT is not this role's business. A calling role renders whatever
+# its OS installer expects (kickstart, autounattend.xml, preseed, first-boot
+# scripts) into a directory and points vsphere_vm_seed_iso_src_dir at it; this
+# role only burns that directory to an ISO, uploads it, and attaches it. That
+# keeps the role OS-agnostic — it never learns what an answer file looks like.
+#
+# Mutually exclusive with vsphere_vm_provision_via_guestinfo (preflight asserts).
+vsphere_vm_provision_via_iso: false
+# Installer ISO, in vSphere datastore-path form: "[datastore] dir/file.iso".
+vsphere_vm_installer_iso: ""
+# Extra read-only ISOs attached after the seed (e.g. a guest-tools image), same
+# datastore-path form. Order is preserved; they follow the installer + seed.
+vsphere_vm_extra_isos: []
+# Directory ON THE CONTROLLER whose contents become the seed ISO. Empty = no
+# seed ISO (installer boots interactively — almost never what you want).
+vsphere_vm_seed_iso_src_dir: ""
+# Volume label. Installers find their answer file by scanning volumes, and some
+# match on the label (EL wants OEMDRV; Windows Setup scans regardless).
+vsphere_vm_seed_iso_label: "SEED"
+vsphere_vm_seed_iso_tool: "xorriso"          # xorriso | hdiutil
+vsphere_vm_seed_local_dir: "/tmp/vsphere-vm-seed"
+# Datastore directory the seed ISO is uploaded into (under the datastore root).
+vsphere_vm_seed_remote_dir: "iso/seeds"
+# Delete the seed ISO from the datastore once the guest is reachable. Answer
+# files carry the local admin password in the clear, so the default is to shred.
+vsphere_vm_seed_iso_cleanup: true
+# vSphere guestId for the blank VM — the installer does NOT set this, vCenter
+# only uses it to pick sane device defaults. `govc vm.create -g` lists valid ids.
+# Clones also accept an explicit compatible guestId before first power-on.
+vsphere_vm_guest_id: ""
+# EFI is required by every currently supported Windows Server and is the sane
+# default for modern Linux too.
+vsphere_vm_boot_firmware: "efi"
+# Secure Boot. Unset: an ISO-mode VM gets it off (unattended installs that
+# side-load VMXNET3/PVSCSI drivers fail closed under it) and a clone keeps the
+# template's setting. Set true/false to enforce it on a clone as well.
+vsphere_vm_secure_boot: null
+
+# ── PCI passthrough + the settings it requires ──────────────────────────────
+# Host PCI addresses to attach to this guest, e.g. ["0000:01:00.0"]. Empty
+# means the whole passthrough phase is skipped.
+# A guest holding a passthrough device CANNOT have its memory ballooned, so
+# vSphere requires the full reservation below; set both or the VM will not
+# power on. Secure Boot is separate but bites the same workloads: a DKMS-built
+# NVIDIA module is unsigned and the kernel refuses it with "Key was rejected by
+# service".
+vsphere_vm_pci_passthrough: []
+# VMX settings required by the declared PCI devices; drift triggers an offline reconfigure.
+vsphere_vm_pci_settings: {}
+vsphere_vm_memory_reservation_lock: false
+# Console keystrokes sent right after the ISO-mode power-on, to answer a
+# firmware boot prompt the guest cannot answer for itself. UEFI Windows media
+# needs this: unanswered, "Press any key to boot from CD or DVD..." times out
+# and the VM lands in the Boot Manager instead of installing.
+# The prompt is short and its timing moves with POST duration, so the key is
+# sent across the whole window rather than at a guessed instant; presses that
+# arrive late are ignored by an already-running unattended installer.
+# Set count to 0 for media that boots unprompted (most Linux installers).
+vsphere_vm_iso_boot_key: "ENTER"
+vsphere_vm_iso_boot_key_count: 60
+vsphere_vm_iso_boot_key_interval: 1.5
+
 # ── Per-host identity (host-centric: each play host builds its own VM) ───────
 # Optional except template. Defaults computed per host when unset:
 #   vsphere_vm_name     → vCenter object (canonical_hostname / inventory_hostname)
@@ -82,7 +156,14 @@ vsphere_vm_gateway_auto: false # true + no gateway → first usable of ansible_h
 vsphere_vm_dns: []
 
 # ── Tags {Category: tag} — role ensures category/tag then associates ─────────
+# Effective tags = vsphere_vm_tag_defaults combined with vsphere_vm_tags (host
+# wins). A build refuses to start until every required category is set, and,
+# when a taxonomy is given, until every value is one it lists. A list value is
+# for a multiple-cardinality category.
 vsphere_vm_tags: {}
+vsphere_vm_tag_defaults: {}
+vsphere_vm_tags_required: [Environment, Site, OS, Service, PatchWave, RebootPolicy]
+vsphere_vm_tag_taxonomy: {}
 
 # ── Destructive gates (never leave true in inventory; pass via -e) ───────────
 # -e vsphere_vm_force_redeploy=true           # wipe + rebuild, play continues

@@ -87,7 +87,7 @@
         template: "{{ _vsphere_guest.template }}"
         datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
         state: poweredoff
-        hardware: "{{ _vsphere_guest.hardware }}"
+        hardware: "{{ _vsphere_guest.hardware | combine(_vsphere_guest.clone_secure_boot) }}"
         disk: "{{ _vsphere_guest.disk }}"
         networks: "{{ _vsphere_guest.networks }}"
         customization: "{{ _vsphere_guest.customization }}"
@@ -111,6 +111,35 @@
         label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
       when: _vsphere_vm_absent | bool
 
+    # A new guest gets its PCI devices while it is still off. Attached after
+    # the first power-on, the attach has to shut the guest down, which kills
+    # guest customization mid-run and leaves the VM with no address.
+    - name: Create | Attach declared PCI devices before the first power-on
+      ansible.builtin.include_tasks:
+        file: passthrough.yml
+      vars:
+        _vsphere_passthrough_power_on: false
+      when:
+        - _vsphere_vm_absent | bool
+        - (vsphere_vm_pci_passthrough | default([]) | length) > 0
+
+    - name: Create | Set the declared compatible guest identity before first power-on
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: present
+        guest_id: "{{ _vsphere_guest.guest_id }}"
+      when:
+        - _vsphere_vm_absent | bool
+        - _vsphere_guest.guest_id | length > 0
+
+    - name: Create | Set the declared boot order before first power-on
+      ansible.builtin.include_tasks: boot.yml
+      when:
+        - _vsphere_vm_absent | bool
+        - vsphere_vm_boot_order | length > 0
+
     - name: Create | Power on (staged first boot)
       community.vmware.vmware_guest_powerstate:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -119,6 +148,25 @@
       when:
         - _vsphere_vm_absent | bool
         - _vsphere_guest.state == 'poweredon'
+
+    # state poweredon on an existing VM only sets power, so hardware drift is
+    # applied here, and only while the VM is off: hot changes need hot add.
+    # Shut the guest down first to resize an existing VM.
+    - name: Create | Apply declared hardware to the powered-off VM
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: present
+        guest_id: "{{ _vsphere_guest.guest_id | default(omit, true) }}"
+        hardware: "{{ _vsphere_guest.hardware | combine(_vsphere_guest.clone_secure_boot) }}"
+      register: _vsphere_hw_applied
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_hw_applied is succeeded
+      when:
+        - not (_vsphere_vm_absent | bool)
+        - _vsphere_probe.instance.hw_power_status | default('') == 'poweredOff'
 
     - name: Create | Reconcile the existing VM ({{ _vsphere_guest.name }})
       community.vmware.vmware_guest:
@@ -131,6 +179,7 @@
         template: "{{ _vsphere_guest.template }}"
         datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
         state: "{{ _vsphere_guest.state }}"
+        guest_id: "{{ _vsphere_guest.guest_id | default(omit, true) }}"
         hardware: "{{ _vsphere_guest.hardware }}"
         disk: "{{ _vsphere_guest.disk }}"
         networks: "{{ _vsphere_guest.networks }}"
@@ -211,6 +260,7 @@
         folder: "{{ _vsphere_guest.folder }}"
         name: "{{ _vsphere_guest.name }}"
         state: poweredoff
+        guest_id: "{{ _vsphere_guest.guest_id | default(omit, true) }}"
         hardware: "{{ _vsphere_guest.hardware }}"
         disk: "{{ _vsphere_guest.disk }}"
       when: _vsphere_gi_absent | bool
@@ -249,6 +299,12 @@
         label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
       when: _vsphere_gi_absent | bool
 
+    - name: Create | Set the declared boot order before first power-on
+      ansible.builtin.include_tasks: boot.yml
+      when:
+        - _vsphere_gi_absent | bool
+        - vsphere_vm_boot_order | length > 0
+
     - name: Create | Power on (GuestInfo first boot — only when desired state is poweredon)
       community.vmware.vmware_guest_powerstate:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -259,6 +315,22 @@
         - _vsphere_guest.state == 'poweredon'
 
     # ── Reconcile existing GuestInfo VM (no power cycle, no cloud-init rewrite) ──
+    - name: Create | Apply declared hardware to the powered-off GuestInfo VM
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: present
+        guest_id: "{{ _vsphere_guest.guest_id | default(omit, true) }}"
+        hardware: "{{ _vsphere_guest.hardware }}"
+      register: _vsphere_gi_hw_applied
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_gi_hw_applied is succeeded
+      when:
+        - not (_vsphere_gi_absent | bool)
+        - _vsphere_gi_probe.instance.hw_power_status | default('') == 'poweredOff'
+
     - name: Create | Reconcile the existing GuestInfo VM ({{ _vsphere_guest.name }})
       community.vmware.vmware_guest:
         datacenter: "{{ vsphere_vm_datacenter }}"
@@ -268,6 +340,7 @@
         folder: "{{ _vsphere_guest.folder }}"
         name: "{{ _vsphere_guest.name }}"
         state: "{{ _vsphere_guest.state }}"
+        guest_id: "{{ _vsphere_guest.guest_id | default(omit, true) }}"
         hardware: "{{ _vsphere_guest.hardware }}"
         disk: "{{ _vsphere_guest.disk }}"
         networks: "{{ _vsphere_guest.networks }}"
@@ -297,40 +370,3 @@
       {{ out }}
   delegate_to: localhost
   become: false
-
-# Tags: ensure category/tag (throttle:1 for shared names), then associate.
-- name: Create | Apply vSphere tags ({{ _vsphere_guest.name }})
-  when: _vsphere_guest.tags | length > 0
-  delegate_to: localhost
-  become: false
-  block:
-    - name: Create | Ensure tag categories exist
-      community.vmware.vmware_category:
-        category_name: "{{ item.key }}"
-        category_cardinality: single
-        state: present
-      loop: "{{ _vsphere_guest.tags | dict2items }}"
-      loop_control:
-        label: "{{ item.key }}"
-      throttle: 1
-
-    - name: Create | Look up tag category IDs
-      community.vmware.vmware_category_info:
-      register: _vsphere_catinfo
-
-    - name: Create | Ensure each tag exists in its category
-      community.vmware.vmware_tag:
-        tag_name: "{{ item.value }}"
-        category_id: "{{ (_vsphere_catinfo.tag_category_info | selectattr('category_name', 'eq', item.key) | first).category_id }}"
-        state: present
-      loop: "{{ _vsphere_guest.tags | dict2items }}"
-      loop_control:
-        label: "{{ item.key }}:{{ item.value }}"
-      throttle: 1
-
-    - name: Create | Associate tags with the VM
-      community.vmware.vmware_tag_manager:
-        object_name: "{{ _vsphere_guest.name }}"
-        object_type: VirtualMachine
-        tag_names: "{{ (_vsphere_guest.tags.keys() | list) | zip(_vsphere_guest.tags.values() | list) | map('join', ':') | list }}"
-        state: present

@@ -1,0 +1,353 @@
+---
+# ISO-boot mode — create a blank VM and let an installer run unattended.
+#
+# Unlike the GOSC and GuestInfo paths there is no template and therefore no
+# clone: vmware_guest is asked to create a VM from nothing, with the installer
+# ISO and a seed ISO (carrying the answer file) attached as CD-ROMs. The guest
+# OS configures ITSELF from that answer file — this role never customises it,
+# because outside a clone vCenter has no guest to customise.
+#
+# Everything here is first-boot-only and gated on the VM being genuinely absent.
+# Re-running must not re-upload an answer file or power-cycle a live guest.
+
+- name: Create ISO | Ensure this VM's (nested) folder path exists
+  vmware.vmware.folder:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    relative_path: "{{ _vsphere_guest.folder_path }}"
+    folder_type: vm
+    state: present
+  when: _vsphere_guest.folder_path | length > 0
+  throttle: 1
+  delegate_to: localhost
+  become: false
+
+- name: Create ISO | Build and boot the VM
+  delegate_to: localhost
+  become: false
+
+  vars:
+    # IDE controllers hold two units each, so media are laid out
+    # ctrl0/unit0 = installer, ctrl0/unit1 = seed, then extras spill onto ctrl1.
+    # Order matters: the installer must be first so an empty disk boots it.
+    _vsphere_iso_media: >-
+      {{ [_vsphere_guest.installer_iso]
+         + ([('[' ~ _vsphere_guest.datastore ~ '] ' ~ _vsphere_guest.seed_iso_rel_path)]
+            if _vsphere_guest.seed_enabled else [])
+         + _vsphere_guest.extra_isos }}
+    _vsphere_iso_cdroms: >-
+      {%- set out = [] -%}
+      {%- for p in _vsphere_iso_media -%}
+      {%-   set _ = out.append({'controller_type': 'ide',
+              'controller_number': (loop.index0 // 2),
+              'unit_number': (loop.index0 % 2),
+              'state': 'present', 'type': 'iso', 'iso_path': p}) -%}
+      {%- endfor -%}
+      {{ out }}
+    # Same drives, no media. `type: none` keeps the CD-ROM devices (removing them
+    # outright would make every later reconcile look like a hardware change) and
+    # only releases the ISO files.
+    _vsphere_iso_cdroms_ejected: >-
+      {%- set out = [] -%}
+      {%- for p in _vsphere_iso_media -%}
+      {%-   set _ = out.append({'controller_type': 'ide',
+              'controller_number': (loop.index0 // 2),
+              'unit_number': (loop.index0 % 2),
+              'state': 'present', 'type': 'none'}) -%}
+      {%- endfor -%}
+      {{ out }}
+  block:
+
+    # Same fail-closed existence branch as the other two modes. A probe ERROR
+    # must never read as "absent" — that would create a second VM alongside a
+    # healthy one, and in ISO mode that means re-running a destructive installer.
+    - name: Create ISO | Probe whether this VM already exists (name + folder)
+      community.vmware.vmware_guest_info:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        folder: "{{ _vsphere_guest.folder }}"
+      register: _vsphere_iso_probe
+      failed_when: false
+
+    - name: Create ISO | Fail closed if the existence probe neither found nor cleanly missed
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_vsphere_iso_probe.instance is defined)
+            or (
+              ('Unable to find' in (_vsphere_iso_probe.msg | default('')))
+              or ('Unable to gather information' in (_vsphere_iso_probe.msg | default('')))
+              or ('does not exist' in (_vsphere_iso_probe.msg | default('') | lower))
+              or ('not found' in (_vsphere_iso_probe.msg | default('') | lower))
+              or ('could not find' in (_vsphere_iso_probe.msg | default('') | lower))
+            )
+        fail_msg: >-
+          Could not determine whether {{ _vsphere_guest.name }} exists in folder
+          {{ _vsphere_guest.folder }} — vCenter said:
+          {{ _vsphere_iso_probe.msg | default('(no message)') }}.
+          Refusing to treat a probe error as "absent" — in ISO mode that would
+          re-run an OS installer.
+        quiet: true
+
+    - name: Create ISO | Refuse a probe result that does not match inventory name + folder
+      ansible.builtin.assert:
+        that:
+          - _vsphere_iso_probe.instance.hw_name | default('') == _vsphere_guest.name
+          - >-
+            (_vsphere_iso_probe.instance.hw_folder | default('') | trim('/'))
+            == (_vsphere_guest.folder | trim('/'))
+        fail_msg: >-
+          Existence probe found a VM but it does not match inventory placement —
+          refusing ensure. expected name={{ _vsphere_guest.name }}
+          folder={{ _vsphere_guest.folder }}; found
+          name={{ _vsphere_iso_probe.instance.hw_name | default('') }}
+          folder={{ _vsphere_iso_probe.instance.hw_folder | default('') }}.
+        quiet: true
+      when: _vsphere_iso_probe.instance is defined
+
+    - name: Create ISO | Mark whether the install-from-media create is needed
+      ansible.builtin.set_fact:
+        _vsphere_iso_absent: "{{ _vsphere_iso_probe.instance is not defined }}"
+
+    # ── Seed ISO — built from whatever the calling role rendered ──────────────
+    - name: Create ISO | Build and upload the seed ISO
+      when:
+        - _vsphere_iso_absent | bool
+        - _vsphere_guest.seed_enabled | bool
+      block:
+
+        - name: Create ISO | Ensure the local seed build directory exists
+          ansible.builtin.file:
+            path: "{{ vsphere_vm_seed_local_dir }}"
+            state: directory
+            # Answer files carry the local administrator password in the clear.
+            mode: "0700"
+
+        - name: Create ISO | Burn the seed directory to an ISO (xorriso)
+          ansible.builtin.command:
+            argv:
+              - xorrisofs
+              - -output
+              - "{{ vsphere_vm_seed_local_dir }}/{{ _vsphere_guest.seed_iso_name }}"
+              - -volid
+              - "{{ vsphere_vm_seed_iso_label }}"
+              - -joliet
+              - -rational-rock
+              - "{{ _vsphere_guest.seed_src_dir }}"
+            creates: "{{ vsphere_vm_seed_local_dir }}/{{ _vsphere_guest.seed_iso_name }}"
+          when: vsphere_vm_seed_iso_tool == 'xorriso'
+
+        # hdiutil has no single "volume name" flag — the ISO9660 and Joliet
+        # names are set separately, and an installer that matches on label reads
+        # whichever filesystem it mounted. Set both to the same string.
+        - name: Create ISO | Burn the seed directory to an ISO (hdiutil, macOS)
+          ansible.builtin.command:
+            argv:
+              - hdiutil
+              - makehybrid
+              - -iso
+              - -joliet
+              - -iso-volume-name
+              - "{{ vsphere_vm_seed_iso_label }}"
+              - -joliet-volume-name
+              - "{{ vsphere_vm_seed_iso_label }}"
+              - -o
+              - "{{ vsphere_vm_seed_local_dir }}/{{ _vsphere_guest.seed_iso_name }}"
+              - "{{ _vsphere_guest.seed_src_dir }}"
+            creates: "{{ vsphere_vm_seed_local_dir }}/{{ _vsphere_guest.seed_iso_name }}"
+          when: vsphere_vm_seed_iso_tool == 'hdiutil'
+
+        # vsphere_copy PUTs to an exact path and 400s if the directory is
+        # missing, so the directory is ensured separately rather than inferred.
+        - name: Create ISO | Ensure the seed directory exists on the datastore
+          community.vmware.vsphere_file:
+            hostname: "{{ vsphere_vm_server }}"
+            username: "{{ vsphere_vm_username }}"
+            password: "{{ vsphere_vm_password }}"
+            validate_certs: "{{ vsphere_vm_validate_certs }}"
+            datacenter: "{{ vsphere_vm_datacenter }}"
+            datastore: "{{ _vsphere_guest.datastore }}"
+            path: "{{ vsphere_vm_seed_remote_dir }}"
+            state: directory
+          throttle: 1
+
+        - name: Create ISO | Upload the seed ISO to the datastore
+          community.vmware.vsphere_copy:
+            hostname: "{{ vsphere_vm_server }}"
+            username: "{{ vsphere_vm_username }}"
+            password: "{{ vsphere_vm_password }}"
+            validate_certs: "{{ vsphere_vm_validate_certs }}"
+            datacenter: "{{ vsphere_vm_datacenter }}"
+            datastore: "{{ _vsphere_guest.datastore }}"
+            src: "{{ vsphere_vm_seed_local_dir }}/{{ _vsphere_guest.seed_iso_name }}"
+            path: "{{ _vsphere_guest.seed_iso_rel_path }}"
+
+    # ── The VM itself ────────────────────────────────────────────────────────
+    # Created powered-off so the NIC can be forced start-connected before the
+    # installer runs; an unattended install that comes up with a dead NIC cannot
+    # be recovered without console work (the vSphere GOSC NIC lesson applies
+    # here too, even though nothing is being customised).
+    - name: Create ISO | Create the blank VM with installer + seed media attached
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        cluster: "{{ vsphere_vm_cluster | default(omit) }}"
+        esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        guest_id: "{{ _vsphere_guest.guest_id }}"
+        datastore: "{{ _vsphere_guest.datastore | default(omit, true) }}"
+        state: poweredoff
+        hardware: >-
+          {{ _vsphere_guest.hardware
+             | combine({'boot_firmware': _vsphere_guest.boot_firmware,
+                        'secure_boot': _vsphere_guest.secure_boot}) }}
+        disk: "{{ _vsphere_guest.disk }}"
+        networks: "{{ _vsphere_guest.networks }}"
+        cdrom: "{{ _vsphere_iso_cdroms }}"
+      register: _vsphere_iso_created
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_iso_created is succeeded
+      when: _vsphere_iso_absent | bool
+
+    - name: Create ISO | Assert each vNIC start-connected before the installer boots
+      community.vmware.vmware_guest_network:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        label: "Network adapter {{ _vsphere_guest.networks.index(item) + 1 }}"
+        network_name: "{{ item.name }}"
+        connected: true
+        start_connected: true
+        state: present
+      loop: "{{ _vsphere_guest.networks }}"
+      loop_control:
+        label: "nic{{ _vsphere_guest.networks.index(item) + 1 }} → {{ item.name }}"
+      when: _vsphere_iso_absent | bool
+
+    - name: Create ISO | Power on (the unattended install starts here)
+      community.vmware.vmware_guest_powerstate:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: powered-on
+      when:
+        - _vsphere_iso_absent | bool
+        - _vsphere_guest.state == 'poweredon'
+
+    # UEFI Windows media prints "Press any key to boot from CD or DVD..." and,
+    # unanswered, falls through the boot order into the firmware Boot Manager —
+    # where the VM sits forever looking like a slow install. The guest cannot
+    # answer its own boot prompt, so the keypress is injected at the console
+    # through the hypervisor. Live-proven on this estate 2026-08-04: without it
+    # the build stopped at the Boot Manager every time.
+    - name: Create ISO | Answer the firmware boot prompt at the console
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ role_path }}/files/vsphere_boot_keystrokes.py"
+          - --host
+          - "{{ vsphere_vm_server }}"
+          - --vm
+          - "{{ _vsphere_guest.name }}"
+          - --key
+          - "{{ vsphere_vm_iso_boot_key }}"
+          - --count
+          - "{{ vsphere_vm_iso_boot_key_count }}"
+          - --interval
+          - "{{ vsphere_vm_iso_boot_key_interval }}"
+      environment:
+        VSPHERE_USER: "{{ vsphere_vm_username }}"
+        VSPHERE_PASSWORD: "{{ vsphere_vm_password }}"
+      register: _vsphere_iso_keys
+      changed_when: false
+      when:
+        - _vsphere_iso_absent | bool
+        - _vsphere_guest.state == 'poweredon'
+        - vsphere_vm_iso_boot_key_count | int > 0
+
+    - name: Create ISO | Report that the install is running unattended
+      ansible.builtin.debug:
+        msg: >-
+          {{ _vsphere_guest.name }} is powered on and installing from
+          {{ _vsphere_guest.installer_iso }}. Nothing else in this role waits for
+          it — the guest reboots one or more times on its own. Downstream roles
+          reach it over its management transport once the answer file has
+          configured the network and enabled remote management.
+      when: _vsphere_iso_absent | bool
+
+    # ── Reconcile an existing ISO-built VM ───────────────────────────────────
+    # Deliberately narrow: hardware and power state only. It must NOT touch
+    # cdrom (re-attaching installer media risks a reinstall on next boot) and
+    # must not re-upload the seed.
+    - name: Create ISO | Reconcile the existing VM ({{ _vsphere_guest.name }})
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        cluster: "{{ vsphere_vm_cluster | default(omit) }}"
+        esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        resource_pool: "{{ vsphere_vm_resource_pool | default(omit) }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: "{{ _vsphere_guest.state }}"
+        hardware: "{{ _vsphere_guest.hardware }}"
+        disk: "{{ _vsphere_guest.disk }}"
+        networks: "{{ _vsphere_guest.networks }}"
+        wait_for_ip_address: false
+      register: _vsphere_iso_reconciled
+      retries: "{{ vsphere_vm_create_retries }}"
+      delay: "{{ vsphere_vm_create_delay }}"
+      until: _vsphere_iso_reconciled is succeeded
+      when: not (_vsphere_iso_absent | bool)
+
+    # The seed ISO holds the local administrator password in the clear and sits
+    # on a datastore every ESXi host can read. It cannot be deleted in the same
+    # run that creates the VM — the installer is still reading it — so it is
+    # shredded on the NEXT converge, once the VM is known to already exist.
+    # That makes "run it twice" the documented finish, and the second run is the
+    # convergence check the production bar asks for anyway.
+    # The datastore file cannot be deleted while a CD-ROM still points at it —
+    # vCenter answers the delete with a bare "Internal Server Error", which reads
+    # like a permissions problem and is actually a file lock. Eject first.
+    # Ejecting the installer media at the same time is deliberate: leaving
+    # bootable install media attached to a finished server is how a machine that
+    # loses its boot disk quietly reinstalls itself.
+    - name: Create ISO | Eject the install media (post-install)
+      community.vmware.vmware_guest:
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        cdrom: "{{ _vsphere_iso_cdroms_ejected }}"
+      when:
+        - not (_vsphere_iso_absent | bool)
+        - _vsphere_guest.seed_enabled | bool
+        - vsphere_vm_seed_iso_cleanup | bool
+
+    - name: Create ISO | Remove the seed ISO from the datastore (post-install)
+      community.vmware.vsphere_file:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        datastore: "{{ _vsphere_guest.datastore }}"
+        path: "{{ _vsphere_guest.seed_iso_rel_path }}"
+        state: absent
+      register: _vsphere_seed_shred
+      failed_when:
+        - _vsphere_seed_shred is failed
+        - "'not found' not in (_vsphere_seed_shred.msg | default('') | lower)"
+      when:
+        - not (_vsphere_iso_absent | bool)
+        - _vsphere_guest.seed_enabled | bool
+        - vsphere_vm_seed_iso_cleanup | bool
+
+    - name: Create ISO | Remove the locally built seed ISO
+      ansible.builtin.file:
+        path: "{{ vsphere_vm_seed_local_dir }}/{{ _vsphere_guest.seed_iso_name }}"
+        state: absent
+      when:
+        - not (_vsphere_iso_absent | bool)
+        - _vsphere_guest.seed_enabled | bool
+        - vsphere_vm_seed_iso_cleanup | bool

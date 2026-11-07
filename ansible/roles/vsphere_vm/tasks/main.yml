@@ -17,6 +17,24 @@
       ansible.builtin.import_tasks: preflight.yml
       tags: [vsphere_vm, preflight, always]   # always: password for create/redeploy/destroy
 
+    - name: Register the declared local template artifact
+      community.vmware.vmware_guest_register_operation:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        esxi_hostname: "{{ vsphere_vm_esxi_host | default(omit) }}"
+        folder: "/{{ vsphere_vm_datacenter }}/vm"
+        name: "{{ vsphere_vm_template }}"
+        path: "{{ vsphere_vm_template_path }}"
+        template: true
+        state: present
+      delegate_to: localhost
+      become: false
+      when: vsphere_vm_template_path | length > 0
+      tags: [vm_template]
+
     - name: Build this host's guest spec
       ansible.builtin.import_tasks: spec.yml
       tags: [vsphere_vm, always]
@@ -41,12 +59,77 @@
 
     - name: Ensure this host's VM (idempotent — reconciles if it already exists)
       ansible.builtin.import_tasks: create.yml
-      when: _vsphere_to_create | bool
+      when:
+        - _vsphere_to_create | bool
+        - not (vsphere_vm_provision_via_iso | default(false) | bool)
       tags: [vsphere_vm, create, redeploy]
+      module_defaults: *vcenter_connection
+
+    # After create: the guest exists and the spec is applied, so a device can be
+    # attached. include_tasks so a guest with no declared devices is ONE skip.
+    - name: Attach declared PCI devices to this guest
+      ansible.builtin.include_tasks:
+        file: passthrough.yml
+        apply:
+          tags: [vsphere_vm, passthrough]
+      when: (vsphere_vm_pci_passthrough | default([]) | length) > 0
+      tags: [vsphere_vm, passthrough]
+
+    # Third mode: no template exists, so the guest is installed from media.
+    # Kept in its own file because it shares almost nothing with the clone
+    # paths — different vCenter call, no customization, first-boot-only media.
+    - name: Ensure this host's VM from installer media (ISO mode)
+      ansible.builtin.import_tasks: create_iso.yml
+      when:
+        - _vsphere_to_create | bool
+        - vsphere_vm_provision_via_iso | default(false) | bool
+      tags: [vsphere_vm, create, redeploy]
+      module_defaults: *vcenter_connection
+
+    - name: Verify the declared compatible guest identity
+      when:
+        - _vsphere_desired_present | bool
+        - vsphere_vm_guest_id | length > 0
+        - not ansible_check_mode
+      tags: [vm_guest_id, verify]
+      block:
+        - name: Read the configured guest identity from vCenter
+          community.vmware.vmware_guest_info:
+            hostname: "{{ vsphere_vm_server }}"
+            username: "{{ vsphere_vm_username }}"
+            password: "{{ vsphere_vm_password }}"
+            validate_certs: "{{ vsphere_vm_validate_certs }}"
+            datacenter: "{{ vsphere_vm_datacenter }}"
+            folder: "{{ _vsphere_guest.folder }}"
+            name: "{{ _vsphere_guest.name }}"
+            schema: vsphere
+            properties: [config.guestId]
+          register: _vsphere_identity_result
+          delegate_to: localhost
+          become: false
+        - name: Assert the configured guest identity matches inventory
+          ansible.builtin.assert:
+            that:
+              - _vsphere_identity_result.instance.config.guestId == vsphere_vm_guest_id
+            quiet: true
+
+    - name: Tag this host's VM in vCenter
+      ansible.builtin.import_tasks: tags.yml
+      when:
+        - _vsphere_to_create | bool
+        - _vsphere_guest.tags | length > 0
+      tags: [vsphere_vm, create, redeploy, vm_tags]
       module_defaults: *vcenter_connection
 
     # include_tasks so vsphere_vm_connect_nics:false is one skip (not N). apply: carries tags.
     # module_defaults cannot ride TaskInclude — connection is set inside connect.yml.
+    - name: Reconcile the declared guest boot order
+      ansible.builtin.import_tasks: boot.yml
+      when:
+        - _vsphere_desired_present | bool
+        - vsphere_vm_boot_order | length > 0
+      tags: [boot]
+
     - name: Reconnect and verify this host's VM NICs
       ansible.builtin.include_tasks:
         file: connect.yml
@@ -72,3 +155,52 @@
         - vsphere_vm_force_destroy | default(false) | bool
       tags: [vsphere_vm, destroy]
       module_defaults: *vcenter_connection
+
+    - name: Preserve the requested recovery snapshot
+      community.vmware.vmware_guest_snapshot:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+        state: present
+        snapshot_name: "{{ vsphere_vm_snapshot_name }}"
+        memory_dump: false
+        quiesce: false
+      delegate_to: localhost
+      become: false
+      when:
+        - vsphere_vm_snapshot_name | length > 0
+        - _vsphere_desired_present | bool
+      tags: [snapshot]
+
+    - name: Read the requested recovery snapshots
+      community.vmware.vmware_guest_snapshot_info:
+        hostname: "{{ vsphere_vm_server }}"
+        username: "{{ vsphere_vm_username }}"
+        password: "{{ vsphere_vm_password }}"
+        validate_certs: "{{ vsphere_vm_validate_certs }}"
+        datacenter: "{{ vsphere_vm_datacenter }}"
+        folder: "{{ _vsphere_guest.folder }}"
+        name: "{{ _vsphere_guest.name }}"
+      register: _vsphere_snapshot_result
+      delegate_to: localhost
+      become: false
+      when:
+        - vsphere_vm_snapshot_name | length > 0
+        - _vsphere_desired_present | bool
+        - not ansible_check_mode
+      tags: [snapshot, verify]
+
+    - name: Verify the requested recovery snapshot exists
+      ansible.builtin.assert:
+        that:
+          - vsphere_vm_snapshot_name in (_vsphere_snapshot_result.guest_snapshots.snapshots | map(attribute='name') | list)
+        quiet: true
+      when:
+        - vsphere_vm_snapshot_name | length > 0
+        - _vsphere_desired_present | bool
+        - not ansible_check_mode
+      tags: [snapshot, verify]

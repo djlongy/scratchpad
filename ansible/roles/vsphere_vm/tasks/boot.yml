@@ -1,0 +1,51 @@
+---
+- name: Boot | Resolve the guest within its declared folder
+  community.vmware.vmware_guest_info:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+  register: _vsphere_boot_guest
+  delegate_to: localhost
+  become: false
+
+- name: Boot | Apply the declared device order
+  community.vmware.vmware_guest_boot_manager:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    moid: "{{ _vsphere_boot_guest.instance.moid }}"
+    boot_order: "{{ vsphere_vm_boot_order }}"
+    enter_bios_setup: false
+  register: _vsphere_vm_boot_result
+  delegate_to: localhost
+  become: false
+
+- name: Boot | Restart the guest after a device-order change
+  community.vmware.vmware_guest_powerstate:
+    hostname: "{{ vsphere_vm_server }}"
+    username: "{{ vsphere_vm_username }}"
+    password: "{{ vsphere_vm_password }}"
+    validate_certs: "{{ vsphere_vm_validate_certs }}"
+    datacenter: "{{ vsphere_vm_datacenter }}"
+    folder: "{{ _vsphere_guest.folder }}"
+    name: "{{ _vsphere_guest.name }}"
+    state: restarted
+  delegate_to: localhost
+  become: false
+  when:
+    - _vsphere_vm_boot_result is changed
+    - _vsphere_guest.state == 'poweredon'
+    - _vsphere_boot_guest.instance.hw_power_status == 'poweredOn'
+    - not ansible_check_mode
+
+- name: Boot | Verify the declared device order
+  ansible.builtin.assert:
+    that:
+      - _vsphere_vm_boot_result.vm_boot_status.current_boot_order == vsphere_vm_boot_order
+    quiet: true
+  when: not ansible_check_mode

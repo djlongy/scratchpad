@@ -12,10 +12,46 @@
     name: "{{ _vsphere_guest.name }}"
     folder: "{{ _vsphere_guest.folder }}"
   register: _vsphere_existing
-  # Module fails on missing VM — absorb so destroy/redeploy stay idempotent.
+  # Absorbed so a genuine "VM is not there" can proceed to a no-op delete. This
+  # is NOT a blanket tolerate: the classification below re-raises anything that
+  # is not a positive not-found. Never leave this failed_when standing alone.
   failed_when: false
   changed_when: false
   check_mode: false
+  delegate_to: localhost
+  become: false
+
+# A failed_when rescue rewrites `failed` to false for BOTH outcomes, so `is
+# failed` cannot tell them apart downstream. Test what the module actually
+# said instead: a successful lookup returns `instance`, and the only tolerable
+# failure is the module's own non-existing-VM message. Anything else — auth,
+# TLS, name resolution, a dead API endpoint — is an unknown VM state and must
+# stop the run rather than be read as absence.
+#
+# Fails closed by construction: if upstream rewords that message, a real
+# not-found starts aborting rather than a real outage starting to delete.
+- name: Identify | Classify the lookup outcome — found, absent, or not answered
+  ansible.builtin.set_fact:
+    _vsphere_lookup_found: "{{ _vsphere_existing.instance is defined }}"
+    _vsphere_lookup_absent: >-
+      {{ 'non-existing vm' in (_vsphere_existing.msg | default('') | lower) }}
+  delegate_to: localhost
+  become: false
+
+- name: Identify | Abort when vCenter did not answer the lookup
+  ansible.builtin.fail:
+    msg: >-
+      vCenter lookup for {{ _vsphere_guest.name }} did not complete, so whether
+      the VM exists is UNKNOWN — refusing to treat that as "already absent".
+      Server {{ vsphere_vm_server }}, datacenter {{ vsphere_vm_datacenter }},
+      folder {{ _vsphere_guest.folder }}. Module said:
+      {{ _vsphere_existing.msg | default('(no message)') }}.
+      Check vCenter is up and reachable and that the credentials are valid,
+      then re-run. Proceeding would let a destroy no-op silently, and a
+      force_redeploy skip its delete and degrade into an ensure.
+  when:
+    - not _vsphere_lookup_found
+    - not _vsphere_lookup_absent
   delegate_to: localhost
   become: false
 

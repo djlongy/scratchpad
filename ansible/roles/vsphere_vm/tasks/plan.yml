@@ -27,7 +27,13 @@
               ('DESTROY' if g.state == 'absent' else 'BUILD / ENSURE') ~ ']') -%}
       {%-   set _ = L.append('    vCenter VM name : ' ~ g.name) -%}
       {%-   set _ = L.append('    guest hostname  : ' ~ (g.customization.hostname | default('(none)'))) -%}
-      {%-   set _ = L.append('    template        : ' ~ g.template) -%}
+      {%-   set _ = L.append('    template        : ' ~ (g.template or '(none — installed from media)')) -%}
+      {%-   if g.provision_via_iso -%}
+      {%-     set _ = L.append('    installer ISO   : ' ~ g.installer_iso) -%}
+      {%-     set _ = L.append('    seed ISO        : ' ~
+                ((g.seed_iso_rel_path ~ '  (from ' ~ g.seed_src_dir ~ ')')
+                 if g.seed_enabled else '(none — INTERACTIVE installer)')) -%}
+      {%-   endif -%}
       {%-   set _ = L.append('    nics (' ~ (g.networks | length) ~ '):') -%}
       {%-   for n in g.networks -%}
       {%-     set _if = n.interface | default('ens' ~ (192 + 32 * loop.index0)) -%}
@@ -44,7 +50,8 @@
       {%-   set _ = L.append('    disks           : ' ~
               (g.disk | map(attribute='size_gb') | join(' GB, ')) ~ ' GB') -%}
       {%-   set _ = L.append('    mode            : ' ~
-              ('GuestInfo (cloud-init)' if g.provision_via_guestinfo else 'GOSC')) -%}
+              ('ISO boot (unattended install, no template)' if g.provision_via_iso
+               else ('GuestInfo (cloud-init)' if g.provision_via_guestinfo else 'GOSC'))) -%}
       {%- endfor -%}
       {%- set _ = L.append('=' * 84) -%}
       {{ L }}

@@ -1,7 +1,24 @@
 ---
 # Wait for guest SSH + gather facts so on-guest roles can follow in the same play.
 
-- name: Handoff | Wait for the new guest to answer SSH
+- name: Handoff | Wait for the guest SSH listener
+  ansible.builtin.wait_for:
+    # Delegation changes connection vars to localhost; probe the original guest.
+    host: "{{ hostvars[inventory_hostname].ansible_ssh_host | default(hostvars[inventory_hostname].ansible_host | default(inventory_hostname)) }}"
+    port: "{{ hostvars[inventory_hostname].ansible_port | default(22) }}"
+    timeout: "{{ vsphere_vm_ssh_timeout }}"
+  delegate_to: localhost
+  become: false
+
+- name: Handoff | Create an absolute managed temporary directory
+  ansible.builtin.raw: >-
+    install -d -m 0700 -o {{ ansible_user | default('ansible') | quote }}
+    {{ ansible_remote_tmp | quote }}
+  become: true  # root: a fixed directory under /var/lib may be requested
+  changed_when: false
+  when: ansible_remote_tmp | default('') is match('^/')
+
+- name: Handoff | Verify the managed SSH connection
   ansible.builtin.wait_for_connection:
     timeout: "{{ vsphere_vm_ssh_timeout }}"
   become: false

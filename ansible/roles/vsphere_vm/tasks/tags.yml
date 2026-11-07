@@ -1,0 +1,89 @@
+---
+# Tag the guest after either create path (clone or ISO). Categories and tags are
+# created here when missing, so the role works in a vCenter without a managed taxonomy.
+# A list value (multiple-cardinality category) becomes one tag per item.
+
+- name: Tags | Flatten this guest's tags into category/tag pairs
+  ansible.builtin.set_fact:
+    _vsphere_tag_pairs: >-
+      {%- set out = [] -%}
+      {%- for cat, val in _vsphere_guest.tags.items() -%}
+      {%-   for v in ([val] if val is string else val) -%}
+      {%-     set _ = out.append({'category': cat, 'tag': v | string}) -%}
+      {%-   endfor -%}
+      {%- endfor -%}
+      {{ out }}
+  delegate_to: localhost
+  become: false
+
+- name: Tags | Ensure tag categories exist
+  community.vmware.vmware_category:
+    category_name: "{{ item.key }}"
+    category_cardinality: "{{ (vsphere_vm_tag_taxonomy[item.key] | default({})).cardinality | default('single') }}"
+    associable_object_types: [Virtual Machine]
+    state: present
+  loop: "{{ _vsphere_guest.tags | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  throttle: 1
+  delegate_to: localhost
+  become: false
+
+- name: Tags | Look up tag category IDs
+  community.vmware.vmware_category_info:
+  register: _vsphere_catinfo
+  delegate_to: localhost
+  become: false
+
+- name: Tags | Ensure each tag exists in its category
+  community.vmware.vmware_tag:
+    tag_name: "{{ item.tag }}"
+    category_id: "{{ (_vsphere_catinfo.tag_category_info | selectattr('category_name', 'eq', item.category) | first).category_id }}"
+    state: present
+  loop: "{{ _vsphere_tag_pairs }}"
+  loop_control:
+    label: "{{ item.category }}:{{ item.tag }}"
+  throttle: 1
+  delegate_to: localhost
+  become: false
+
+# add, not set: tags placed outside this role stay. vCenter refuses a second
+# value in a single-cardinality category, and the module reports that refusal
+# as a change, so the read-back below is what catches it.
+- name: Tags | Associate tags with the VM ({{ _vsphere_guest.name }})
+  community.vmware.vmware_tag_manager:
+    object_name: "{{ _vsphere_guest.name }}"
+    object_type: VirtualMachine
+    tag_names: "{{ _vsphere_tag_pairs | map(attribute='category') | zip(_vsphere_tag_pairs | map(attribute='tag')) | map('join', ':') | list }}"
+    state: add
+  delegate_to: localhost
+  become: false
+
+- name: Tags | Read the VM's tags back
+  community.vmware.vmware_vm_info:
+    vm_name: "{{ _vsphere_guest.name }}"
+    show_tag: true
+  register: _vsphere_tags_read
+  delegate_to: localhost
+  become: false
+
+- name: Tags | Assert vCenter holds every declared tag
+  ansible.builtin.assert:
+    that: _vsphere_tags_absent | length == 0
+    fail_msg: >-
+      {{ _vsphere_guest.name }} lacks {{ _vsphere_tags_absent | join(', ') }} in vCenter.
+      A single-cardinality category probably holds another value there: change it in
+      vCenter or in inventory so both agree.
+    quiet: true
+  vars:
+    _vsphere_tags_live: >-
+      {{ (_vsphere_tags_read.virtual_machines | first).tags | default([])
+         | map(attribute='category_name')
+         | zip((_vsphere_tags_read.virtual_machines | first).tags | default([]) | map(attribute='name'))
+         | map('join', ':') | list }}
+    _vsphere_tags_absent: >-
+      {{ _vsphere_tag_pairs | map(attribute='category')
+         | zip(_vsphere_tag_pairs | map(attribute='tag')) | map('join', ':') | list
+         | difference(_vsphere_tags_live) }}
+  delegate_to: localhost
+  become: false

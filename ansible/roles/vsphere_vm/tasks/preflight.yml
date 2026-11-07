@@ -29,6 +29,121 @@
   delegate_to: localhost
   become: false
 
+# The three provisioning modes pick different vCenter calls and cannot compose:
+# GOSC/GuestInfo clone a template, ISO creates a blank VM. Silently preferring
+# one would build the wrong thing, so refuse the ambiguous combination.
+- name: Preflight | Assert only one provisioning mode is selected
+  ansible.builtin.assert:
+    that:
+      - not ((vsphere_vm_provision_via_iso | default(false) | bool)
+             and (vsphere_vm_provision_via_guestinfo | default(false) | bool))
+    fail_msg: >-
+      vsphere_vm_provision_via_iso and vsphere_vm_provision_via_guestinfo are both
+      true on {{ inventory_hostname }}. ISO mode creates a blank VM and installs
+      from media; GuestInfo clones a template and injects cloud-init. Pick one.
+    quiet: true
+  delegate_to: localhost
+  become: false
+
+# ISO mode has no template to inherit device defaults from, so the two things a
+# blank VM cannot be built without are required up front rather than failing
+# halfway through vmware_guest with an opaque vCenter fault.
+- name: Preflight | Assert ISO-boot inputs are complete
+  ansible.builtin.assert:
+    that:
+      - vsphere_vm_installer_iso | default('') | length > 0
+      - vsphere_vm_guest_id | default('') | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} is provisioned via ISO but is missing
+      {{ 'vsphere_vm_installer_iso ' if (vsphere_vm_installer_iso | default('') | length == 0) else '' }}
+      {{ 'vsphere_vm_guest_id ' if (vsphere_vm_guest_id | default('') | length == 0) else '' }}.
+      installer_iso is a datastore path ("[datastore] dir/file.iso"); guest_id is
+      a vSphere guestId (`govc vm.create -g` lists them).
+    quiet: true
+  when:
+    - vsphere_vm_provision_via_iso | default(false) | bool
+    - (vsphere_vm_state | default('poweredon')) != 'absent'
+  delegate_to: localhost
+  become: false
+
+# A datastore path that is not in "[ds] path" form is accepted by vmware_guest
+# and then fails at power-on with "file not found" — cheap to catch here.
+- name: Preflight | Assert every ISO path is in vSphere datastore-path form
+  ansible.builtin.assert:
+    that:
+      # Empty brackets are legal and meaningful: "[] /vmimages/..." addresses a
+      # path on the ESXi host itself rather than a datastore, which is how the
+      # bundled guest-tools images are reached.
+      - item is match('^\[[^\]]*\] .+')
+    fail_msg: >-
+      ISO path '{{ item }}' is not a vSphere datastore path. Expected the
+      "[datastore-name] relative/path/file.iso" form (note the space after the
+      closing bracket), e.g. "[datastore02-4TB] iso/windows/server/ws2022.iso",
+      or "[] /vmimages/tools-isoimages/windows.iso" for an ESXi-host-local path.
+    quiet: true
+  loop: "{{ [vsphere_vm_installer_iso] + (vsphere_vm_extra_isos | default([])) }}"
+  when:
+    - vsphere_vm_provision_via_iso | default(false) | bool
+    - (vsphere_vm_state | default('poweredon')) != 'absent'
+    - item | default('') | length > 0
+  delegate_to: localhost
+  become: false
+
+# The seed ISO is built from a directory the CALLING role rendered. If that role
+# was skipped (wrong tags, disabled) the directory is absent and the guest would
+# boot to an interactive installer and sit there forever looking "slow".
+- name: Preflight | Stat the seed source directory
+  ansible.builtin.stat:
+    path: "{{ vsphere_vm_seed_iso_src_dir }}"
+  register: _vsphere_seed_src
+  when:
+    - vsphere_vm_provision_via_iso | default(false) | bool
+    - (vsphere_vm_state | default('poweredon')) != 'absent'
+    - vsphere_vm_seed_iso_src_dir | default('') | length > 0
+  delegate_to: localhost
+  become: false
+
+- name: Preflight | Assert the seed source directory exists and is not empty
+  ansible.builtin.assert:
+    that:
+      - _vsphere_seed_src.stat.exists | default(false)
+      - _vsphere_seed_src.stat.isdir | default(false)
+    fail_msg: >-
+      vsphere_vm_seed_iso_src_dir '{{ vsphere_vm_seed_iso_src_dir }}' does not
+      exist as a directory on the controller. The role that renders the answer
+      file must run BEFORE vsphere_vm in the play — without it the guest boots
+      to an interactive installer and never finishes.
+    quiet: true
+  when: _vsphere_seed_src.stat is defined
+  delegate_to: localhost
+  become: false
+
+# A guest reports its IP through the hypervisor's guest agent. An ISO-mode VM
+# has no agent while it is being installed — the OS does not exist yet — so the
+# IP poll cannot succeed and the connect phase would always fail the play a few
+# minutes into a 20-minute install. This is structural, not a tuning value, so
+# it is forced rather than left to every caller to rediscover.
+- name: Preflight | Force the IP wait off for an ISO-mode build
+  ansible.builtin.set_fact:
+    vsphere_vm_wait_for_ip: false
+  when:
+    - vsphere_vm_provision_via_iso | default(false) | bool
+    - vsphere_vm_wait_for_ip | default(true) | bool
+  delegate_to: localhost
+  become: false
+
+- name: Preflight | Explain why the IP wait is off
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} is an ISO-mode build, so vsphere_vm_wait_for_ip is
+      forced false: the guest agent that reports an IP is installed BY the OS
+      installer that is about to run. Wait for the guest in the calling playbook
+      instead (wait_for_connection on its real management transport), which is
+      also the only check that proves the install actually finished.
+  when: vsphere_vm_provision_via_iso | default(false) | bool
+  delegate_to: localhost
+  become: false
+
 # gateway_auto last-octet math only works for /24–/32; refuse shorter masks.
 - name: Preflight | Assert gateway_auto only with a last-octet host mask
   ansible.builtin.assert:
@@ -61,6 +176,35 @@
       vsphere_vm_network (single NIC) or vsphere_vm_networks[].name (multi-NIC).
       An empty network string clones a VM with no usable NIC.
     quiet: true
+  when: (vsphere_vm_state | default('poweredon')) != 'absent'
+  delegate_to: localhost
+  become: false
+
+- name: Preflight | Assert the VM carries every required tag from the taxonomy
+  ansible.builtin.assert:
+    that:
+      - _vsphere_tags_missing | length == 0
+      - _vsphere_tags_invalid | length == 0
+    fail_msg: >-
+      {{ inventory_hostname }} cannot be built with incomplete vCenter tags.
+      Missing categories: {{ _vsphere_tags_missing | join(', ') or 'none' }}.
+      Not in the taxonomy: {{ _vsphere_tags_invalid | join(', ') or 'none' }}.
+      Set them in vsphere_vm_tag_defaults (inventory group_vars) or vsphere_vm_tags.
+    quiet: true
+  vars:
+    _vsphere_tags_effective: "{{ vsphere_vm_tag_defaults | combine(vsphere_vm_tags) }}"
+    _vsphere_tags_missing: "{{ vsphere_vm_tags_required | difference(_vsphere_tags_effective.keys() | list) }}"
+    # Category:value pairs the taxonomy does not list (skipped without a taxonomy).
+    _vsphere_tags_invalid: >-
+      {%- set out = [] -%}
+      {%- for cat, val in _vsphere_tags_effective.items() if vsphere_vm_tag_taxonomy | length > 0 -%}
+      {%-   set allowed = vsphere_vm_tag_taxonomy[cat].tags | default([]) | map('string') | list
+                          if cat in vsphere_vm_tag_taxonomy else [] -%}
+      {%-   for v in ([val] if val is string else val) if (v | string) not in allowed -%}
+      {%-     set _ = out.append(cat ~ ':' ~ v) -%}
+      {%-   endfor -%}
+      {%- endfor -%}
+      {{ out }}
   when: (vsphere_vm_state | default('poweredon')) != 'absent'
   delegate_to: localhost
   become: false

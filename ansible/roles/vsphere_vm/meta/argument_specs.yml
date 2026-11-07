@@ -3,6 +3,26 @@ argument_specs:
   main:
     short_description: Create and destroy vCenter VMs from templates.
     options:
+      vsphere_vm_boot_order:
+        description: Optional boot device order; a change restarts a powered-on guest.
+        type: list
+        elements: str
+        default: []
+      vsphere_vm_template_path:
+        description: Existing datastore VMTX artifact to register as the source template.
+        type: str
+        default: ""
+      vsphere_vm_snapshot_name:
+        description: Optional idempotent recovery snapshot after provisioning.
+        type: str
+        default: ""
+      vsphere_vm_enabled:
+        type: bool
+        default: true
+        description: >-
+          Role enable gate. When false the role emits a skip-debug and runs no
+          phases; set it in host/group_vars to no-op the role on hosts a broad
+          play happens to target.
       vsphere_vm_server:
         type: str
         required: true
@@ -105,6 +125,51 @@ argument_specs:
           Run the post-build NIC reconnect phase (bounded multi-pass reconnect plus IP
           wait) that heals the clone+customize NIC-disconnect. Set false to trust vCenter
           to settle the NIC on its own; the whole phase is then skipped as a single task.
+      vsphere_vm_create_retries:
+        type: int
+        default: 3
+        description: >-
+          Retries for each vCenter call in the create phase (clone, power-on,
+          disk grow) before the phase fails. Absorbs transient vCenter API
+          errors; it does not extend the NIC reconnect budget, which has its own
+          connect_* knobs.
+      vsphere_vm_create_delay:
+        type: int
+        default: 15
+        description: >-
+          Seconds between the create-phase retries above.
+      vsphere_vm_connect_passes:
+        type: int
+        default: 3
+        description: >-
+          How many reconnect passes the NIC-heal phase runs. Each pass gathers
+          the guest's vNICs, reconnects any found disconnected, and (when
+          vsphere_vm_wait_for_ip is true) polls for an IP; the phase stops early
+          once every NIC is connected and an IP is reported.
+      vsphere_vm_connect_pass_retries:
+        type: int
+        default: 8
+        description: >-
+          Retries of the guest-IP poll inside one reconnect pass. A vCenter
+          lookup that FAILS aborts the phase instead of consuming these — they
+          exist only for "booting, no IP yet".
+      vsphere_vm_connect_pass_delay:
+        type: int
+        default: 10
+        description: >-
+          Seconds between guest-IP poll attempts inside one reconnect pass.
+      vsphere_vm_connect_gather_retries:
+        type: int
+        default: 2
+        description: >-
+          Retries of the vNIC gather inside one reconnect pass. Separate from
+          the create-phase knobs on purpose, so the whole reconnect budget is
+          expressible in connect_* variables alone.
+      vsphere_vm_connect_gather_delay:
+        type: int
+        default: 10
+        description: >-
+          Seconds between vNIC gather attempts inside one reconnect pass.
       vsphere_vm_scsi_type:
         type: str
         required: false
@@ -180,10 +245,161 @@ argument_specs:
           as base64 guestinfo.metadata. Requires a GuestInfo-ready template. Reads
           the same per-guest fields as the GOSC path; each NIC may set `interface`
           (default ens192/ens224/ens256… in vmware slot order).
+      vsphere_vm_provision_via_iso:
+        type: bool
+        required: false
+        description: >-
+          Provision by creating a BLANK VM and installing the guest OS unattended
+          from media, instead of cloning a template. Use when no template exists
+          for the OS and hand-building one would be an unreproducible step.
+          Attaches vsphere_vm_installer_iso plus a seed ISO burned from
+          vsphere_vm_seed_iso_src_dir (the answer file a calling role rendered),
+          then powers on and returns — the installer runs on its own. No GOSC and
+          no cloud-init: the answer file configures hostname, network and remote
+          management. Mutually exclusive with vsphere_vm_provision_via_guestinfo.
+      vsphere_vm_installer_iso:
+        type: str
+        required: false
+        description: >-
+          OS installer ISO in vSphere datastore-path form,
+          "[datastore-name] relative/path/file.iso". Required in ISO mode.
+      vsphere_vm_extra_isos:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          Additional read-only ISOs attached after the installer and seed (e.g. a
+          guest-tools image whose drivers the answer file installs), same
+          datastore-path form. Order preserved.
+      vsphere_vm_seed_iso_src_dir:
+        type: str
+        required: false
+        description: >-
+          Directory on the CONTROLLER whose contents are burned to the seed ISO.
+          The calling role renders the OS's answer file (autounattend.xml,
+          kickstart, preseed) plus any first-boot scripts into it. Empty means no
+          seed ISO, which leaves the installer interactive — almost never wanted.
+      vsphere_vm_seed_iso_label:
+        type: str
+        required: false
+        description: >-
+          Volume label of the seed ISO. Some installers select their answer file
+          by label (EL expects OEMDRV); Windows Setup scans volumes regardless.
+      vsphere_vm_seed_iso_tool:
+        type: str
+        required: false
+        choices: [xorriso, hdiutil]
+        description: ISO authoring tool used on the controller to burn the seed.
+      vsphere_vm_seed_local_dir:
+        type: str
+        required: false
+        description: Controller-local directory the seed ISO is built in (mode 0700).
+      vsphere_vm_seed_remote_dir:
+        type: str
+        required: false
+        description: Datastore-relative directory the seed ISO is uploaded into.
+      vsphere_vm_seed_iso_cleanup:
+        type: bool
+        required: false
+        description: >-
+          Delete the seed ISO from the datastore and the controller once the VM
+          exists. Answer files carry the local administrator password in clear
+          text, so this defaults on. The delete happens on the converge AFTER the
+          one that creates the VM — the installer is still reading the media
+          during the first run.
+      vsphere_vm_guest_id:
+        type: str
+        required: false
+        description: >-
+          vSphere guestId for the blank VM in ISO mode (e.g.
+          windows2019srvNext_64Guest for Windows Server 2022). vCenter uses it to
+          pick device defaults; it does not affect what the installer writes.
+          `govc vm.create -g` lists valid ids. Required in ISO mode.
+          For clones, an explicit value is applied while powered off before the
+          first boot; empty preserves the normal template path.
+      vsphere_vm_boot_firmware:
+        type: str
+        required: false
+        choices: [efi, bios]
+        description: Firmware for an ISO-mode VM. EFI for any current Windows Server.
+      vsphere_vm_secure_boot:
+        type: bool
+        required: false
+        description: >-
+          Secure Boot. Unset, an ISO-mode VM gets it off (unattended installs
+          that side-load storage/network drivers fail closed under it) and a
+          clone keeps the template's setting. true/false is enforced on a clone too.
+      vsphere_vm_pci_passthrough:
+        type: list
+        elements: str
+        required: false
+        default: []
+        description: >-
+          Host PCI addresses to attach to this guest, e.g. ["0000:01:00.0"].
+          Empty skips the whole passthrough phase. Requires
+          vsphere_vm_memory_reservation_lock, because vSphere will not power on
+          a guest holding a passthrough device unless its memory is fully
+          reserved. Attaching is a powered-off reconfigure, so the phase
+          shuts the guest down and powers it back on, but only when a declared
+          device is actually missing.
+      vsphere_vm_pci_settings:
+        type: dict
+        default: {}
+        description: VMX PCI settings applied while powered off before attaching devices.
+      vsphere_vm_memory_reservation_lock:
+        type: bool
+        required: false
+        default: false
+        description: >-
+          Reserve all configured memory and lock it. Mandatory for any guest
+          with a PCI passthrough device; harmless otherwise.
+      vsphere_vm_iso_boot_key:
+        type: str
+        required: false
+        choices: [ENTER, ESC, SPACE, UP, DOWN]
+        description: >-
+          Console key injected after an ISO-mode power-on to answer a firmware
+          boot prompt. UEFI Windows media requires it — unanswered, "Press any
+          key to boot from CD or DVD..." times out and the VM falls through to
+          the Boot Manager instead of installing.
+      vsphere_vm_iso_boot_key_count:
+        type: int
+        required: false
+        description: >-
+          How many times to send vsphere_vm_iso_boot_key. Sent across the whole
+          boot window rather than at a guessed instant, because the prompt is
+          short and moves with POST duration. Late presses are ignored by an
+          already-running unattended installer. Set 0 for media that boots
+          unprompted (most Linux installers).
+      vsphere_vm_iso_boot_key_interval:
+        type: float
+        required: false
+        description: Seconds between console keypresses.
       vsphere_vm_tags:
         type: dict
         required: false
         description: >-
-          vCenter tags applied to the created VM as a {Category: tag} map (e.g.
-          tenant/environment). The role ensures each category + tag exists then
-          associates them. Set per host or group.
+          vCenter tags applied to the VM as a {Category: tag} map, combined over
+          vsphere_vm_tag_defaults (this map wins). A list value tags a
+          multiple-cardinality category once per item. The role ensures each
+          category and tag exists, then adds them to the VM.
+      vsphere_vm_tag_defaults:
+        type: dict
+        required: false
+        description: >-
+          Tags shared by every VM of an inventory (Environment, Site and the like),
+          set in inventory group_vars. Host or group vsphere_vm_tags override per key.
+      vsphere_vm_tags_required:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          Categories every VM must carry. Preflight fails a build (any state but
+          absent) that is missing one, so an untagged VM cannot be created.
+      vsphere_vm_tag_taxonomy:
+        type: dict
+        required: false
+        description: >-
+          {Category: {tags: [...], cardinality}}. When set, preflight also rejects a
+          category or value it does not list, and tag categories are created with
+          the cardinality given here (single otherwise).
