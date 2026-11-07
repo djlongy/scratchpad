@@ -1,0 +1,139 @@
+---
+# Create missing repositories via the Nexus REST API (create-if-absent).
+
+- name: Resolve Nexus admin password for repository API
+  ansible.builtin.include_tasks:
+    file: resolve_admin_password.yml
+    apply:
+      tags: [config, nexus_repos]
+  tags: [config, nexus_repos]
+
+- name: List existing Nexus repositories
+  become: false  # REST API
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nexus_port }}/service/rest/v1/repositories"
+    method: GET
+    user: admin
+    password: "{{ _nexus_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+  check_mode: false
+  register: _nexus_existing_repos
+  no_log: true
+
+- name: Build list of existing repository names
+  ansible.builtin.set_fact:
+    _nexus_existing_repo_names: "{{ _nexus_existing_repos.json | map(attribute='name') | list }}"
+
+- name: Create missing Nexus repositories
+  become: false  # REST API
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nexus_port }}/service/rest/v1/repositories/{{ item.format }}/{{ item.type }}"
+    method: POST
+    user: admin
+    password: "{{ _nexus_admin_password }}"
+    force_basic_auth: true
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body: "{{ _repo_body }}"
+    status_code: [201]
+  loop: "{{ nexus_repositories }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.format }}/{{ item.type }})"
+  when: item.name not in _nexus_existing_repo_names
+  no_log: true
+  vars:
+    _repo_base:
+      name: "{{ item.name }}"
+      online: true
+      storage:
+        blobStoreName: "{{ nexus_blob_store }}"
+        strictContentTypeValidation: "{{ item.strict_content_type_validation | default(true) }}"
+        writePolicy: "{{ 'ALLOW' if item.type in ['hosted', 'group'] else omit }}"
+    _repo_proxy: >-
+      {{
+        {
+          'proxy': {
+            'remoteUrl': item.proxy.remoteUrl,
+            'contentMaxAge': item.proxy.contentMaxAge | default(nexus_proxy_content_max_age),
+            'metadataMaxAge': item.proxy.metadataMaxAge | default(nexus_proxy_metadata_max_age)
+          },
+          'negativeCache': {
+            'enabled': true,
+            'timeToLive': nexus_negative_cache_ttl
+          },
+          'httpClient': {
+            'blocked': false,
+            'autoBlock': true
+          }
+        } if item.type == 'proxy' else {}
+      }}
+    _repo_docker_base:
+      v1Enabled: false
+      forceBasicAuth: true
+    _repo_docker_port: >-
+      {{
+        {'httpPort': item.docker.httpPort}
+        if (item.docker is defined and item.docker.httpPort is defined)
+        else {}
+      }}
+    _repo_docker: >-
+      {{
+        {'docker': _repo_docker_base | combine(_repo_docker_port)}
+        if item.docker is defined else {}
+      }}
+    _repo_docker_proxy: >-
+      {{
+        {
+          'dockerProxy': {
+            'indexType': item.dockerProxy.indexType
+          }
+        } if item.dockerProxy is defined else {}
+      }}
+    _repo_group: >-
+      {{
+        {
+          'group': {
+            'memberNames': item.group.memberNames
+          }
+        } if item.group is defined else {}
+      }}
+    _repo_yum: >-
+      {{
+        {
+          'yum': {
+            'repodataDepth': item.yum.repodataDepth,
+            'deployPolicy': item.yum.deployPolicy | default('STRICT')
+          }
+        } if item.yum is defined else {}
+      }}
+    _repo_apt: >-
+      {{
+        {
+          'apt': {
+            'distribution': item.apt.distribution,
+            'flat': item.apt.flat | default(false)
+          }
+        } if item.apt is defined else {}
+      }}
+    _repo_body: >-
+      {{
+        _repo_base
+        | combine(_repo_proxy)
+        | combine(_repo_docker)
+        | combine(_repo_docker_proxy)
+        | combine(_repo_group)
+        | combine(_repo_yum)
+        | combine(_repo_apt)
+      }}
+
+- name: Reconcile explicitly configured repository content validation
+  ansible.builtin.include_tasks:
+    file: repository_content_validation.yml
+    apply:
+      tags: [config, nexus_repos]
+  loop: "{{ nexus_repositories | selectattr('strict_content_type_validation', 'defined') | list }}"
+  loop_control:
+    loop_var: nexus_repository
+    label: "{{ nexus_repository.name }}"

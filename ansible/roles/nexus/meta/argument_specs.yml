@@ -1,0 +1,72 @@
+---
+argument_specs:
+  main:
+    short_description: "Sonatype Nexus Repository OSS on Docker Compose + systemd"
+    description:
+      - "Installs Nexus as a docker compose stack managed by systemd, bootstraps"
+      - "the admin password from Vault, and provisions repositories via the REST API."
+    options:
+      nexus_enabled:
+        description: "Master toggle. Set false to skip the role."
+        type: bool
+        default: true
+      nexus_version:
+        description: "sonatype/nexus3 image tag."
+        type: str
+        default: "3.89.1"
+      nexus_data_dir:
+        description: "Install root (compose file + data/ volume)."
+        type: str
+        default: "/opt/nexus"
+      nexus_port:
+        description: "Host port for the Nexus UI/API (container 8081)."
+        type: int
+        default: 8081
+      nexus_docker_hosted_http_port:
+        description: "Host port for the docker-hosted connector."
+        type: int
+        default: 8082
+      nexus_docker_group_http_port:
+        description: "Host port for the docker-group connector."
+        type: int
+        default: 8083
+      nexus_wait_retries:
+        description: "Readiness probe attempts against /service/rest/v1/status."
+        type: int
+        default: 30
+      nexus_wait_delay:
+        description: "Seconds between readiness probe attempts."
+        type: int
+        default: 10
+      nexus_admin_password:
+        description: >-
+          Admin password override. Empty string resolves from HashiCorp Vault
+          at vault_apps_runtime_base/nexus/runtime:admin_password.
+        type: str
+        default: ""
+      nexus_blob_store:
+        description: "Blob store name for created repositories."
+        type: str
+        default: default
+      nexus_proxy_content_max_age:
+        description: "Default contentMaxAge (minutes) for proxy repositories."
+        type: int
+        default: 1440
+      nexus_proxy_metadata_max_age:
+        description: "Default metadataMaxAge (minutes) for proxy repositories."
+        type: int
+        default: 1440
+      nexus_negative_cache_ttl:
+        description: "Negative-cache TTL (minutes) for proxy repositories."
+        type: int
+        default: 1440
+      nexus_repositories:
+        description: >-
+          Repository definitions created idempotently (hosted to proxy to group).
+          Each entry needs name, format, type; proxies need proxy.remoteUrl;
+          groups need group.memberNames. An optional strict_content_type_validation
+          boolean reconciles MIME validation on existing repositories; it defaults
+          to true when creating a repository.
+        type: list
+        elements: dict
+        required: true

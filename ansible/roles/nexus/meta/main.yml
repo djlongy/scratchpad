@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: nexus
+  author: longy
+  description: >-
+    Sonatype Nexus Repository OSS on Docker Compose + systemd , admin bootstrap
+    from Vault and idempotent repository provisioning via the REST API.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+dependencies: []

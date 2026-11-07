@@ -1,0 +1,7 @@
+---
+# Non-overridable constants for the nexus role.
+
+nexus_image: "sonatype/nexus3"
+# Official sonatype/nexus3 image runs as this UID:GID inside the container.
+nexus_data_uid: 200
+nexus_data_gid: 200

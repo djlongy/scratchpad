@@ -1,0 +1,16 @@
+services:
+  nexus:
+    image: {{ nexus_image }}:{{ nexus_version }}
+    container_name: nexus
+    restart: unless-stopped
+    ports:
+      - "{{ nexus_port }}:8081"
+      - "{{ nexus_docker_hosted_http_port }}:{{ nexus_docker_hosted_http_port }}"
+      - "{{ nexus_docker_group_http_port }}:{{ nexus_docker_group_http_port }}"
+    volumes:
+      - {{ nexus_data_dir }}/data:/nexus-data
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 65536
+        hard: 65536

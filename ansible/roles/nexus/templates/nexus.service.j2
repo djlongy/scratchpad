@@ -1,0 +1,17 @@
+[Unit]
+Description=Nexus Repository OSS
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory={{ nexus_data_dir }}
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

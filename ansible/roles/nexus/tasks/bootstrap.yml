@@ -1,0 +1,46 @@
+---
+# First-boot only: promote the on-disk generated admin password to the
+# Vault-managed value, then delete the initial password file.
+
+- name: Check for Nexus initial admin password file
+  ansible.builtin.stat:
+    path: "{{ nexus_data_dir }}/data/admin.password"
+  register: _nexus_initial_pwd_file
+
+- name: Bootstrap admin password from initial file
+  when: _nexus_initial_pwd_file.stat.exists | default(false)
+  block:
+
+    - name: Read initial Nexus admin password from disk
+      become: true  # root: file is mode-0600 owned by container UID
+      ansible.builtin.slurp:
+        src: "{{ nexus_data_dir }}/data/admin.password"
+      register: _nexus_initial_pwd
+      no_log: true
+
+    - name: Resolve desired Nexus admin password
+      ansible.builtin.include_tasks:
+        file: resolve_admin_password.yml
+        apply:
+          tags: [bootstrap, nexus_bootstrap]
+      tags: [bootstrap, nexus_bootstrap]
+
+    - name: Set Nexus admin password to managed value
+      become: false  # REST API
+      ansible.builtin.uri:
+        url: "http://localhost:{{ nexus_port }}/service/rest/v1/security/users/admin/change-password"
+        method: PUT
+        user: admin
+        password: "{{ _nexus_initial_pwd.content | b64decode | trim }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: "text/plain"
+        body: "{{ _nexus_admin_password }}"
+        status_code: [204]
+      no_log: true
+
+    - name: Remove Nexus initial admin password file
+      become: true  # root: file under container-owned tree
+      ansible.builtin.file:
+        path: "{{ nexus_data_dir }}/data/admin.password"
+        state: absent

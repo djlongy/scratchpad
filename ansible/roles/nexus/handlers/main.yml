@@ -1,0 +1,11 @@
+---
+- name: Reload systemd
+  become: true  # root: reloads the systemd manager
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart Nexus
+  become: true  # root: restarts the nexus unit (docker compose up)
+  ansible.builtin.systemd:
+    name: nexus
+    state: restarted

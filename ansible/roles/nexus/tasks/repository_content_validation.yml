@@ -1,0 +1,52 @@
+---
+- name: Read repository configuration without changing it
+  become: false  # REST API only.
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nexus_port }}/service/rest/v1/repositories/{{ nexus_repository.format }}/{{ nexus_repository.type }}/{{ nexus_repository.name }}"
+    user: admin
+    password: "{{ _nexus_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  check_mode: false
+  register: _nexus_repository_config
+  no_log: true
+
+- name: Reconcile repository MIME validation while preserving other settings
+  become: false  # REST API only.
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nexus_port }}/service/rest/v1/repositories/{{ nexus_repository.format }}/{{ nexus_repository.type }}/{{ nexus_repository.name }}"
+    method: PUT
+    user: admin
+    password: "{{ _nexus_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: >-
+      {{ _nexus_repository_config.json
+         | dict2items | rejectattr('key', 'in', ['url', 'format', 'type']) | items2dict
+         | combine({'storage': _nexus_repository_config.json.storage
+           | combine({'strictContentTypeValidation': nexus_repository.strict_content_type_validation})}) }}
+    status_code: 204
+  when: _nexus_repository_config.json.storage.strictContentTypeValidation != nexus_repository.strict_content_type_validation
+  changed_when: true
+  no_log: true
+
+- name: Read back repository content validation
+  become: false  # REST API only.
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nexus_port }}/service/rest/v1/repositories/{{ nexus_repository.format }}/{{ nexus_repository.type }}/{{ nexus_repository.name }}"
+    user: admin
+    password: "{{ _nexus_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: _nexus_repository_verified
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Verify declared repository content validation
+  become: false  # API result assertion only.
+  ansible.builtin.assert:
+    that:
+      - _nexus_repository_verified.json.storage.strictContentTypeValidation == nexus_repository.strict_content_type_validation
+    quiet: true
+  when: not ansible_check_mode
+  no_log: true

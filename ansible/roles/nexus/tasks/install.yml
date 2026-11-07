@@ -1,0 +1,65 @@
+---
+# Directories, compose file, systemd unit, enable + start, readiness.
+
+- name: Create Nexus install directory
+  become: true  # root: system path under /opt
+  ansible.builtin.file:
+    path: "{{ nexus_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create Nexus data volume directory
+  become: true  # root: chown to container UID
+  ansible.builtin.file:
+    path: "{{ nexus_data_dir }}/data"
+    state: directory
+    owner: "{{ nexus_data_uid }}"
+    group: "{{ nexus_data_gid }}"
+    mode: "0755"
+
+- name: Deploy Nexus docker-compose file
+  become: true  # root: writes under install dir
+  ansible.builtin.template:
+    src: nexus-compose.yml.j2
+    dest: "{{ nexus_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Nexus
+
+- name: Deploy Nexus systemd unit
+  become: true  # root: writes /etc/systemd/system
+  ansible.builtin.template:
+    src: nexus.service.j2
+    dest: /etc/systemd/system/nexus.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart Nexus
+
+- name: Enable and start Nexus service
+  become: true  # root: manages systemd unit
+  ansible.builtin.systemd:
+    name: nexus
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Apply any pending restart (compose/unit change) before the readiness probe.
+- name: Flush handlers so a pending restart finishes before wait
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for Nexus REST API to be ready
+  become: false  # localhost probe to container-published port
+  ansible.builtin.uri:
+    url: "http://localhost:{{ nexus_port }}/service/rest/v1/status"
+    method: GET
+    status_code: [200]
+  register: _nexus_status
+  until: _nexus_status.status == 200
+  retries: "{{ nexus_wait_retries }}"
+  delay: "{{ nexus_wait_delay }}"

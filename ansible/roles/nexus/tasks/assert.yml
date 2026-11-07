@@ -1,0 +1,71 @@
+---
+# Fail fast on missing secret sources and malformed repository definitions.
+
+- name: Assert a Nexus admin password source is configured
+  ansible.builtin.assert:
+    that:
+      - >-
+        (nexus_admin_password | default('') | length > 0)
+        or (vault_apps_runtime_base | default('') | length > 0)
+    fail_msg: >-
+      No Nexus admin password source configured. Set nexus_admin_password
+      (Ansible Vault) or vault_apps_runtime_base (HashiCorp Vault mount base
+      for {{ vault_apps_runtime_base }}/nexus/runtime:admin_password).
+    quiet: true
+
+- name: Assert every repository definition has name, format, and type
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name | string | length > 0
+      - item.format is defined
+      - item.format | string | length > 0
+      - item.type is defined
+      - item.type in ['hosted', 'proxy', 'group']
+    fail_msg: >-
+      Each nexus_repositories entry needs non-empty name, format, and type in
+      {hosted,proxy,group} (offending entry: {{ item }}).
+    quiet: true
+  loop: "{{ nexus_repositories }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+
+- name: Assert proxy repositories declare remoteUrl
+  ansible.builtin.assert:
+    that:
+      - item.proxy is defined
+      - item.proxy.remoteUrl is defined
+      - item.proxy.remoteUrl | string | length > 0
+    fail_msg: >-
+      Proxy repository {{ item.name | default('<unnamed>') }} needs
+      proxy.remoteUrl.
+    quiet: true
+  loop: "{{ nexus_repositories }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+  when: item.type | default('') == 'proxy'
+
+- name: Assert group repositories declare memberNames
+  ansible.builtin.assert:
+    that:
+      - item.group is defined
+      - item.group.memberNames is defined
+      - item.group.memberNames | length > 0
+    fail_msg: >-
+      Group repository {{ item.name | default('<unnamed>') }} needs
+      group.memberNames.
+    quiet: true
+  loop: "{{ nexus_repositories }}"
+  loop_control:
+    label: "{{ item.name | default('<unnamed>') }}"
+  when: item.type | default('') == 'group'
+
+- name: Assert repository content validation settings are booleans
+  become: false  # Input validation only.
+  ansible.builtin.assert:
+    that:
+      - item.strict_content_type_validation is boolean
+    quiet: true
+  loop: "{{ nexus_repositories | selectattr('strict_content_type_validation', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"

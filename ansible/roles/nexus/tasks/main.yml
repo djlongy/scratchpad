@@ -1,0 +1,42 @@
+---
+# nexus , Sonatype Nexus Repository OSS on Docker Compose + systemd.
+# Phases: assert to install to bootstrap to repos. No-tags runs everything.
+
+- name: Skip nexus (nexus_enabled is false)
+  ansible.builtin.debug:
+    msg: "nexus_enabled is false , skipping nexus"
+  when: not (nexus_enabled | bool)
+  tags: [always]
+
+- name: Configure nexus
+  when: nexus_enabled | bool
+  block:
+
+    - name: Skip nexus (disabled)
+      ansible.builtin.debug:
+        msg: "nexus skipped (nexus_enabled={{ nexus_enabled }})"
+      when: not (nexus_enabled | bool)
+      tags: [always]
+
+    - name: Deploy Nexus
+      when: nexus_enabled | bool
+      block:
+
+        - name: Validate Nexus inputs
+          ansible.builtin.import_tasks: assert.yml
+          tags: [always]
+
+        - name: Install Nexus stack (dirs, compose, systemd)
+          ansible.builtin.import_tasks: install.yml
+          # install: selected by supply-chain --tags install (via role invocation tags).
+          # nexus_install: role-scoped refinement without pulling other roles.
+          tags: [install, nexus_install]
+
+        - name: Bootstrap Nexus admin password
+          ansible.builtin.import_tasks: bootstrap.yml
+          tags: [bootstrap, nexus_bootstrap]
+
+        - name: Provision Nexus repositories
+          ansible.builtin.import_tasks: repos.yml
+          # Avoid bare `repos` , collides with baseline's package-repo phase tag.
+          tags: [config, nexus_repos]

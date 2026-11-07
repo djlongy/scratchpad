@@ -1,0 +1,250 @@
+---
+# Behavioural defaults for Sonatype Nexus Repository OSS. Override via inventory.
+# Env-specific hostnames/URLs stay in inventory , not here.
+
+# Master toggle. Set false to skip the role entirely.
+nexus_enabled: true
+
+nexus_version: "3.89.1"
+nexus_data_dir: "/opt/nexus"
+
+# Host ports published into the container.
+nexus_port: 8081
+# Docker repository connectors (must match docker.httpPort in nexus_repositories).
+nexus_docker_hosted_http_port: 8082
+nexus_docker_group_http_port: 8083
+
+# Readiness probe against the REST status endpoint.
+nexus_wait_retries: 30
+nexus_wait_delay: 10
+
+# Admin password , Ansible-Vault-first. Empty ("") resolves from HashiCorp Vault
+# at {{ vault_apps_runtime_base }}/nexus/runtime:admin_password.
+nexus_admin_password: ""
+
+# Shared storage defaults applied when creating repositories.
+nexus_blob_store: default
+nexus_proxy_content_max_age: 1440
+nexus_proxy_metadata_max_age: 1440
+nexus_negative_cache_ttl: 1440
+
+# Repository definitions (created idempotently via REST API).
+# Order matters: hosted first, then proxy, then group (groups reference others).
+nexus_repositories:
+  # Docker
+  - name: docker-hosted
+    format: docker
+    type: hosted
+    docker:
+      httpPort: 8082
+  - name: docker-hub-proxy
+    format: docker
+    type: proxy
+    docker: {}
+    proxy:
+      remoteUrl: https://registry-1.docker.io
+    dockerProxy:
+      indexType: HUB
+  - name: docker-group
+    format: docker
+    type: group
+    docker:
+      httpPort: 8083
+    group:
+      memberNames:
+        - docker-hosted
+        - docker-hub-proxy
+  # Helm
+  - name: helm-hosted
+    format: helm
+    type: hosted
+  - name: helm-proxy
+    format: helm
+    type: proxy
+    proxy:
+      remoteUrl: https://charts.helm.sh/stable
+  # RPM/Yum , OS trees (EL8/9/10 under $releasever / $basearch). Proxy remotes are
+  # tree roots and path-transparent, so EL10 subpaths resolve with no new remote.
+  # On EL10 $releasever expands to the full minor (e.g. 10.2). See the role README
+  # "EL10 client paths" for the EPEL redirector and Alma GPG-key caveats.
+  - name: yum-hosted
+    format: yum
+    type: hosted
+    yum:
+      repodataDepth: 0
+      deployPolicy: STRICT
+  # Client: .../yum-almalinux-proxy/$releasever/BaseOS/$basearch/os/
+  # GPG key is per-major: RPM-GPG-KEY-AlmaLinux-10 (there is no per-minor -10.2 key).
+  - name: yum-almalinux-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://repo.almalinux.org/almalinux/
+  - name: yum-rocky-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://dl.rockylinux.org/pub/rocky/
+  # Paths are 9-stream/... . Client: .../9-stream/BaseOS/$basearch/os/
+  - name: yum-centos-stream-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://mirror.stream.centos.org/
+  # EPEL + Fedora. The remote is the Fedora mirror redirector, which serves only
+  # plain minor dirs (10, 10.0, 10.2, ...). z-stream dirs (10.2z, 10z) exist on the
+  # master (dl.fedoraproject.org) but 404 at the redirector, so EL10 clients through
+  # this proxy use plain $releasever, not a z suffix.
+  - name: yum-epel-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download.fedoraproject.org/pub/epel/
+  # epel-next: EL9 and earlier only , upstream pub/epel/next/ has no EL10 tree.
+  - name: yum-epel-next-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download.fedoraproject.org/pub/epel/next/
+  - name: yum-epel-testing-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download.fedoraproject.org/pub/epel/testing/
+  - name: yum-fedora-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download.fedoraproject.org/pub/fedora/linux/
+  # Common third-party trusted (EL8/9/10)
+  - name: yum-docker-ce-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download.docker.com/linux/centos/
+  - name: yum-hashicorp-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://rpm.releases.hashicorp.com/
+  - name: yum-postgresql-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download.postgresql.org/pub/repos/yum/
+  - name: yum-grafana-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://rpm.grafana.com/
+  - name: yum-rpmfusion-free-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download1.rpmfusion.org/free/el/
+  - name: yum-rpmfusion-nonfree-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://download1.rpmfusion.org/nonfree/el/
+  - name: yum-nginx-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://nginx.org/packages/centos/
+  - name: yum-elastic-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://artifacts.elastic.co/packages/
+  - name: yum-k8s-proxy
+    format: yum
+    type: proxy
+    proxy:
+      remoteUrl: https://pkgs.k8s.io/
+  # PyPI
+  - name: pypi-hosted
+    format: pypi
+    type: hosted
+  - name: pypi-proxy
+    format: pypi
+    type: proxy
+    proxy:
+      remoteUrl: https://pypi.org/
+  - name: pypi-group
+    format: pypi
+    type: group
+    group:
+      memberNames:
+        - pypi-hosted
+        - pypi-proxy
+  # NPM
+  - name: npm-hosted
+    format: npm
+    type: hosted
+  - name: npm-proxy
+    format: npm
+    type: proxy
+    proxy:
+      remoteUrl: https://registry.npmjs.org/
+  - name: npm-group
+    format: npm
+    type: group
+    group:
+      memberNames:
+        - npm-hosted
+        - npm-proxy
+  # Go
+  - name: go-proxy
+    format: raw
+    type: proxy
+    proxy:
+      remoteUrl: https://proxy.golang.org/
+  # Raw
+  - name: raw-hosted
+    format: raw
+    type: hosted
+  - name: raw-github-releases-proxy
+    format: raw
+    type: proxy
+    proxy:
+      remoteUrl: https://github.com/
+  - name: raw-hashicorp-releases-proxy
+    format: raw
+    type: proxy
+    proxy:
+      remoteUrl: https://releases.hashicorp.com/
+  # Model weights. Fetch by commit, <org>/<model>/resolve/<sha>/<file>, so a
+  # cached file can never go stale; the upstream 302s to its CDN.
+  - name: raw-huggingface-proxy
+    format: raw
+    type: proxy
+    # Safetensors MTP headers are opaque to Nexus MIME detection.
+    strict_content_type_validation: false
+    proxy:
+      remoteUrl: https://huggingface.co/
+  # Apt (Debian)
+  - name: apt-debian-trixie-proxy
+    format: apt
+    type: proxy
+    apt:
+      distribution: trixie
+      flat: false
+    proxy:
+      remoteUrl: http://deb.debian.org/debian
+  - name: apt-debian-security-trixie-proxy
+    format: apt
+    type: proxy
+    apt:
+      distribution: trixie-security
+      flat: false
+    proxy:
+      remoteUrl: http://security.debian.org/debian-security
+  - name: apt-debian-updates-trixie-proxy
+    format: apt
+    type: proxy
+    apt:
+      distribution: trixie-updates
+      flat: false
+    proxy:
+      remoteUrl: http://deb.debian.org/debian
