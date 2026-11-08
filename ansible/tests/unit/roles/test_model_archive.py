@@ -71,3 +71,20 @@ def test_missing_readme_is_documented_but_corruption_never_completes(tmp_path, m
         assert (metadata / "VERIFIED.json").is_file()
         assert "no README/model card" in (metadata / "ABOUT.txt").read_text()
         assert not (metadata.parent / "snapshot/README.md").exists()
+
+
+def test_local_description_never_targets_snapshot_files():
+    import yaml
+    from _templating import render
+
+    tasks = yaml.safe_load((SOURCE.parents[1] / "tasks/main.yml").read_text())
+    task = next(t for t in tasks[1]["block"] if t["name"] == "Publish separate local model descriptions")
+    item = {"repo": "owner/model", "revision": "a" * 40,
+            "note": "MLX supports CUDA, checkpoint TP2 fit is untested."}
+    scope = {"item": item, "model_archive_root": "/srv/archive"}
+    copy = task["ansible.builtin.copy"]
+    target = render(copy["dest"], scope)
+    assert target.endswith("/archive-metadata/ABOUT.txt")
+    assert "/snapshot/" not in target
+    assert item["note"] in render(copy["content"], scope)
+    assert "not an upstream model card" in render(copy["content"], scope)

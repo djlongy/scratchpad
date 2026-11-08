@@ -58,6 +58,8 @@ Each snapshot keeps upstream paths beneath `huggingface/<owner>/<model>/<revisio
 
 Native Hugging Face downloads resume incomplete transfers. Completed revisions are skipped. Older revisions remain when inventory changes. No snapshot is deleted. Use the saved SHA256SUMS from its sibling snapshot directory for a later integrity audit.
 
+Local compatibility notes reconcile separately on subsequent runs without rewriting upstream files or source hashes.
+
 ## Out of scope
 
 Model serving, runtime validation, upstream repository history, authentication for private models, share creation and cross-NAS backups.
@@ -65,3 +67,7 @@ Model serving, runtime validation, upstream repository history, authentication f
 ## Expected result
 
 Every requested revision has an `archive-metadata/VERIFIED.json` record whose repository and revision match inventory.
+
+## Tag safety
+
+`metadata` requires existing snapshot manifests. Run it alone only after the snapshot download has started.

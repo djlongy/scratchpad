@@ -135,6 +135,24 @@
         label: "{{ item.repo }}@{{ item.revision }}"
       tags: [download]
 
+    - name: Publish separate local model descriptions
+      ansible.builtin.copy:
+        content: |
+          Local archive metadata, not an upstream model card.
+          Repository: {{ item.repo }}
+          Revision: {{ item.revision }}
+          {{ item.note | default('Runtime compatibility is unverified.') }}
+          Original upstream files, including any README, remain unchanged in ../snapshot/.
+          The source file list and expected hashes are in upstream-manifest.json.
+        dest: "{{ model_archive_root }}/huggingface/{{ item.repo }}/{{ item.revision }}/archive-metadata/ABOUT.txt"
+        owner: "{{ model_archive_owner }}"
+        group: "{{ model_archive_group }}"
+        mode: "0644"
+      loop: "{{ model_archive_models }}"
+      loop_control:
+        label: "{{ item.repo }}"
+      tags: [metadata]
+
     - name: Read verified completion records
       become: false
       ansible.builtin.slurp:
