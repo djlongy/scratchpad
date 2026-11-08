@@ -1,0 +1,9 @@
+---
+# Collections: ansible.builtin only.
+galaxy_info:
+  role_name: model_archive
+  author: longy
+  description: Preserve immutable Hugging Face snapshots with original documentation and verified hashes
+  license: MIT
+  min_ansible_version: "2.15"
+dependencies: []

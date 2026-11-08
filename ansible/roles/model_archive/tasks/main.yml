@@ -1,0 +1,159 @@
+---
+- name: Skip model_archive when disabled
+  ansible.builtin.debug:
+    msg: "model_archive_enabled is false, skipping model_archive"
+  when: not (model_archive_enabled | bool)
+  tags: [always]
+
+- name: Configure model archive
+  when: model_archive_enabled | bool
+  become: true  # root: manages the archive directory and isolated tool environment
+  block:
+    - name: Validate archive destination
+      ansible.builtin.assert:
+        that:
+          - model_archive_root is match('^/[^.].+')
+          - model_archive_models | length > 0
+          - ansible_connection | default('ssh') != 'local'
+          - model_archive_expected_gateway | length > 0
+      tags: [always]
+
+    - name: Check the download host route before transferring model weights
+      become: false
+      ansible.builtin.command:
+        argv: [ip, -json, route, get, "1.1.1.1"]
+      register: _model_archive_route
+      changed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Require the declared local internet gateway
+      ansible.builtin.assert:
+        that:
+          - (_model_archive_route.stdout | from_json | first).gateway == model_archive_expected_gateway
+        fail_msg: "Archive downloads must originate on the NAS through its declared WAN, never the controller tether."
+      tags: [always]
+
+    - name: Validate immutable model identities
+      ansible.builtin.assert:
+        that:
+          - item.repo is match('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+          - "'..' not in item.repo.split('/')"
+          - item.revision is match('^[0-9a-f]{40}$')
+      loop: "{{ model_archive_models }}"
+      loop_control:
+        label: "{{ item.repo }}"
+      tags: [always]
+
+    - name: Create archive and tool directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ model_archive_owner }}"
+        group: "{{ model_archive_group }}"
+        mode: "0755"
+      loop:
+        - "{{ model_archive_root }}"
+        - "{{ model_archive_root }}/.tools"
+      tags: [install]
+
+    - name: Create isolated snapshot client environment
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -m
+          - venv
+          - "{{ model_archive_root }}/.tools/huggingface-hub-{{ model_archive_hub_version }}"
+        creates: "{{ model_archive_root }}/.tools/huggingface-hub-{{ model_archive_hub_version }}/bin/python"
+      tags: [install]
+
+    # The target system Python may lack packaging, required by ansible.builtin.pip.
+    - name: Install isolated native Hugging Face snapshot client
+      ansible.builtin.command:
+        argv:
+          - "{{ model_archive_root }}/.tools/huggingface-hub-{{ model_archive_hub_version }}/bin/python"
+          - -m
+          - pip
+          - install
+          - --disable-pip-version-check
+          - "huggingface-hub=={{ model_archive_hub_version }}"
+        creates: "{{ model_archive_root }}/.tools/huggingface-hub-{{ model_archive_hub_version }}/bin/hf"
+      environment:
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        ALL_PROXY: ""
+        http_proxy: ""
+        https_proxy: ""
+        all_proxy: ""
+      tags: [install]
+
+    - name: Install snapshot verification entrypoint
+      ansible.builtin.copy:
+        src: archive_model.py
+        dest: "{{ model_archive_root }}/.tools/archive_model.py"
+        owner: "{{ model_archive_owner }}"
+        group: "{{ model_archive_group }}"
+        mode: "0755"
+      tags: [config]
+
+    - name: Publish the archive catalog
+      ansible.builtin.template:
+        src: catalog.txt.j2
+        dest: "{{ model_archive_root }}/CATALOG.txt"
+        owner: "{{ model_archive_owner }}"
+        group: "{{ model_archive_group }}"
+        mode: "0644"
+      tags: [config]
+
+    - name: Download and verify immutable snapshots
+      ansible.builtin.command:
+        argv:
+          - "{{ model_archive_root }}/.tools/huggingface-hub-{{ model_archive_hub_version }}/bin/python"
+          - "{{ model_archive_root }}/.tools/archive_model.py"
+          - --root
+          - "{{ model_archive_root }}"
+          - --repo
+          - "{{ item.repo }}"
+          - --revision
+          - "{{ item.revision }}"
+          - --note
+          - "{{ item.note | default('') }}"
+        creates: "{{ model_archive_root }}/huggingface/{{ item.repo }}/{{ item.revision }}/archive-metadata/VERIFIED.json"
+      environment:
+        HF_HUB_DISABLE_XET: "1"
+        HF_HUB_DISABLE_PROGRESS_BARS: "1"
+        HF_HUB_DOWNLOAD_TIMEOUT: "120"
+        HF_HOME: "{{ model_archive_root }}/.tools/hf-cache"
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        ALL_PROXY: ""
+        http_proxy: ""
+        https_proxy: ""
+        all_proxy: ""
+      loop: "{{ model_archive_models }}"
+      loop_control:
+        label: "{{ item.repo }}@{{ item.revision }}"
+      tags: [download]
+
+    - name: Read verified completion records
+      become: false
+      ansible.builtin.slurp:
+        src: "{{ model_archive_root }}/huggingface/{{ item.repo }}/{{ item.revision }}/archive-metadata/VERIFIED.json"
+      register: _model_archive_verified
+      loop: "{{ model_archive_models }}"
+      loop_control:
+        label: "{{ item.repo }}"
+      when: not ansible_check_mode
+      tags: [verify]
+
+    - name: Assert every requested snapshot completed verification
+      ansible.builtin.assert:
+        that:
+          - (item.content | b64decode | from_json).revision == item.item.revision
+          - (item.content | b64decode | from_json).repo == item.item.repo
+          - (item.content | b64decode | from_json).files | int > 0
+      loop: "{{ _model_archive_verified.results }}"
+      loop_control:
+        label: "{{ item.item.repo }}"
+      when: not ansible_check_mode
+      tags: [verify]

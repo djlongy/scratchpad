@@ -1,0 +1,8 @@
+---
+model_archive_enabled: true
+model_archive_root: ""
+model_archive_expected_gateway: ""
+model_archive_models: []
+model_archive_hub_version: "2.4.0"
+model_archive_owner: root
+model_archive_group: root

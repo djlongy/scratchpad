@@ -1,0 +1,6 @@
+---
+- name: Preserve pinned model repositories
+  hosts: archive_hosts
+  gather_facts: false
+  roles:
+    - role: model_archive

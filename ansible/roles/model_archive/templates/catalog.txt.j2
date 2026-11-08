@@ -1,0 +1,19 @@
+Pinned model archive
+
+Snapshots: huggingface/<owner>/<model>/<revision>/snapshot/
+Original upstream READMEs, licenses, tokenizers and weights retain their names.
+Local provenance, compatibility notes and hashes: ../archive-metadata/
+VERIFIED.json exists only after every upstream file passes its source hash.
+
+Offline integrity check from any snapshot directory:
+  sha256sum -c ../archive-metadata/SHA256SUMS
+
+Removing an inventory entry does not delete its snapshots.
+
+{% for model in model_archive_models %}
+{{ model.repo }}
+  Revision: {{ model.revision }}
+  Source: https://huggingface.co/{{ model.repo }}/tree/{{ model.revision }}
+  {{ model.note | default('Runtime compatibility is unverified.') }}
+
+{% endfor %}

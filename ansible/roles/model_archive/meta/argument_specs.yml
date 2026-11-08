@@ -1,0 +1,19 @@
+---
+argument_specs:
+  main:
+    short_description: Archive pinned model repositories without deleting older snapshots
+    options:
+      model_archive_enabled: {type: bool, default: true}
+      model_archive_root: {type: path, required: true}
+      model_archive_expected_gateway: {type: str, required: true}
+      model_archive_hub_version: {type: str, default: "2.4.0"}
+      model_archive_owner: {type: str, default: root}
+      model_archive_group: {type: str, default: root}
+      model_archive_models:
+        type: list
+        elements: dict
+        default: []
+        options:
+          repo: {type: str, required: true}
+          revision: {type: str, required: true}
+          note: {type: str, default: ""}
