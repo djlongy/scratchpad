@@ -135,22 +135,42 @@
         label: "{{ item.repo }}@{{ item.revision }}"
       tags: [download]
 
-    - name: Publish separate local model descriptions
-      ansible.builtin.copy:
-        content: |
-          Local archive metadata, not an upstream model card.
-          Repository: {{ item.repo }}
-          Revision: {{ item.revision }}
-          {{ item.note | default('Runtime compatibility is unverified.') }}
-          Original upstream files, including any README, remain unchanged in ../snapshot/.
-          The source file list and expected hashes are in upstream-manifest.json.
-        dest: "{{ model_archive_root }}/huggingface/{{ item.repo }}/{{ item.revision }}/archive-metadata/ABOUT.txt"
-        owner: "{{ model_archive_owner }}"
-        group: "{{ model_archive_group }}"
-        mode: "0644"
+    - name: Read source file lists for local descriptions
+      become: false
+      ansible.builtin.slurp:
+        src: "{{ model_archive_root }}/huggingface/{{ item.repo }}/{{ item.revision }}/archive-metadata/upstream-manifest.json"
+      register: _model_archive_manifests
       loop: "{{ model_archive_models }}"
       loop_control:
         label: "{{ item.repo }}"
+      when: not ansible_check_mode
+      tags: [metadata]
+
+    - name: Publish separate local model descriptions
+      vars:
+        _model_archive_has_readme: >-
+          {{ (item.content | b64decode | from_json).files | map(attribute='path')
+             | select('match', '(?i)^readme') | list | length > 0 }}
+      ansible.builtin.copy:
+        content: |
+          Local archive metadata, not an upstream model card.
+          Repository: {{ item.item.repo }}
+          Revision: {{ item.item.revision }}
+          {{ item.item.note | default('Runtime compatibility is unverified.') }}
+          {% if _model_archive_has_readme %}
+          Original upstream README preserved unchanged in ../snapshot/.
+          {% else %}
+          Upstream provides no README/model card at this revision.
+          {% endif %}
+          The source file list and expected hashes are in upstream-manifest.json.
+        dest: "{{ model_archive_root }}/huggingface/{{ item.item.repo }}/{{ item.item.revision }}/archive-metadata/ABOUT.txt"
+        owner: "{{ model_archive_owner }}"
+        group: "{{ model_archive_group }}"
+        mode: "0644"
+      loop: "{{ _model_archive_manifests.results }}"
+      loop_control:
+        label: "{{ item.item.repo }}"
+      when: not ansible_check_mode
       tags: [metadata]
 
     - name: Read verified completion records
