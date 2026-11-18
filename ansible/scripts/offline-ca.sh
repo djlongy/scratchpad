@@ -6,7 +6,7 @@
 #   root CA (offline, ~25y)  ──signs──▶  issuing CA (imported into HashiCorp
 #                                        Vault's PKI engine, ~10y)
 #
-# plus coldca-parity operations: a subordinate allowlist with expected-subject
+# plus these operations: a subordinate allowlist with expected-subject
 # guards, subject-checked CA-CSR signing off the root, replay-safe re-runs,
 # chain verification, and inspection. When generation finishes it prints the
 # exact commands to escrow the results in Ansible Vault.

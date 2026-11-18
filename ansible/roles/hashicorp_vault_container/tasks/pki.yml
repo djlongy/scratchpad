@@ -4,7 +4,7 @@
 # role's bootstrap path: docker exec on the first node with the root token.
 #
 # What this phase does NOT do: intermediate issuer lifecycle
-# (generate/internal CSR + external coldca sign + set-signed). That re-keys on
+# (generate/internal CSR + external sign + set-signed). That re-keys on
 # every bare generate/internal call and lives in roles/vault_pki +
 # playbooks/25_plat_pki.yml under never-tagged opt-in tags. Enable the engine
 # here, then wire issuer + roles estate-wide via vault_pki when you have a cold

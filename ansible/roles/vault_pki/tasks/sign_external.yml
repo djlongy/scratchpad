@@ -1,7 +1,7 @@
 ---
 # roles/vault_pki/tasks/sign_external.yml
 # Sign a fetched FreeIPA external-ca CSR off a Vault PKI root, through
-# <mount>/root/sign-intermediate. This is the mirror of coldca sign for the signed_install
+# <mount>/root/sign-intermediate. This is the Vault PKI path for the signed_install
 # flow: the mount here acts as the SIGNER (its issuing/root key stays inside Vault), and the
 # only on-disk artifacts are the signed IPA CA cert and the assembled chain, written to the
 # SAME pki/ipa/ exchange paths phase 1a fetched to and phase 2 reads back.
