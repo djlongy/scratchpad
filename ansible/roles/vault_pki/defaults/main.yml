@@ -6,7 +6,7 @@ vault_pki_enabled: true
 #
 # Declarative manager for a HashiCorp Vault PKI secrets engine on an EXISTING cluster:
 # mount + tune, issuing roles, and the intermediate issuer lifecycle (generate the CSR
-# inside Vault -> the CSR is signed EXTERNALLY, e.g. by the coldca cold root ->
+# inside Vault -> the CSR is signed EXTERNALLY, e.g. by smallca intermediate sign ->
 # set-signed import). The mount's private key never leaves Vault
 # (intermediate/generate/internal); the only artifacts on disk are the public CSR and
 # the signed chain, exchanged through control-node paths.

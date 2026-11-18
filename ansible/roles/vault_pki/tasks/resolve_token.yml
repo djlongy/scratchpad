@@ -2,7 +2,7 @@
 # roles/vault_pki/tasks/resolve_token.yml
 #
 # Vault token resolution, mirroring the estate credential idiom (declared var FIRST,
-# file fallback — see roles/coldca/tasks/resolve_credentials.yml): vault_pki_token wins
+# file fallback): vault_pki_token wins
 # when set; otherwise the token is read from vault_pki_token_file (`vault login` sink).
 # Sets _vault_pki_token, cached for the rest of the play so repeated phases don't
 # re-resolve. Every task that touches the token value is no_log — it must never hit
