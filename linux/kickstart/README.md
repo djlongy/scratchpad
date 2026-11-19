@@ -40,6 +40,6 @@ plaintext passwords for `--iscrypted` SHA-512 hashes.
 
 - [`linux/fapolicyd/`](../fapolicyd/) — debugging fapolicyd denials and
   whitelisting more applications post-install.
-- [`ansible/files/fapolicyd-rule-templates/`](../../ansible/files/fapolicyd-rule-templates/)
+- [`examples/files/fapolicyd-rule-templates/`](https://github.com/djlongy/ansible-infra-roles/tree/main/examples/files/fapolicyd-rule-templates/)
   — Jinja templates for app-specific allow rules consumed by
-  [`ansible/roles/common/tasks/fapolicyd.yml`](../../ansible/roles/common/tasks/fapolicyd.yml).
+  [`roles/common/tasks/fapolicyd.yml`](https://github.com/djlongy/ansible-infra-roles/blob/main/roles/common/tasks/fapolicyd.yml).
