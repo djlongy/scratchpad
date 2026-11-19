@@ -3,7 +3,7 @@
 Distribution-level reference docs and configs that aren't tied to a
 specific automation tool. Things in here are the kind of thing you'd
 copy into a runbook or onto a workstation, not into an Ansible repo.
-For Ansible-specific snippets see [`ansible-infra-roles`](https://github.com/djlongy/ansible-infra-roles).
+For Ansible-specific snippets see [`ansible-infra-roles`](https://github.com/newen-systems/ansible-infra-roles).
 
 ## Contents
 
@@ -19,5 +19,5 @@ The fapolicyd guide above documents the **shell** workflow (debug,
 diagnose, drop a rule file). When you want to deploy the same rules
 **at scale via Ansible**, the guide cross-links to:
 
-- [`roles/common/tasks/fapolicyd.yml`](https://github.com/djlongy/ansible-infra-roles/blob/main/roles/common/tasks/fapolicyd.yml) — reusable task that templates a rule into `/etc/fapolicyd/rules.d/` and reloads.
-- [`examples/files/fapolicyd-rule-templates/*.j2`](https://github.com/djlongy/ansible-infra-roles/tree/main/examples/files/fapolicyd-rule-templates/) — Jinja templates for app-specific allow rules (generic, Java, NiFi, podman, vscode).
+- [`roles/common/tasks/fapolicyd.yml`](https://github.com/newen-systems/ansible-infra-roles/blob/main/roles/common/tasks/fapolicyd.yml) — reusable task that templates a rule into `/etc/fapolicyd/rules.d/` and reloads.
+- [`files/fapolicyd-rule-templates/*.j2`](https://github.com/newen-systems/ansible-infra-roles/tree/main/files/fapolicyd-rule-templates/) — Jinja templates for app-specific allow rules (generic, Java, NiFi, podman, vscode).

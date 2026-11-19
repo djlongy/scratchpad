@@ -12,7 +12,7 @@ README explaining what it does, what it requires, and how to plug it in.
 
 | Folder | What's in there |
 |---|---|
-| [ansible-infra-roles](https://github.com/djlongy/ansible-infra-roles) | The Ansible roles, reference playbooks, sample inventories, plugins and docs moved to their own repo, packaged as the `djlongy.infra` collection. Install with `ansible-galaxy collection install git+https://github.com/djlongy/ansible-infra-roles.git`. |
+| [ansible-infra-roles](https://github.com/newen-systems/ansible-infra-roles) | The Ansible roles, reference playbooks, sample inventories, plugins and docs moved to their own repo, as a plain Ansible project tree you can `rsync` into your own Ansible repo. |
 | [`linux/`](linux/) | Distribution-level reference docs and configs. fapolicyd troubleshooting on EL9, hardened EL9 kickstart with GNOME + FIPS + STIG. |
 | [`bash/`](bash/) | Self-contained bash tools — fzf-driven git helpers, an Oh My Bash powerline theme + deploy script, a VS Code Server installer for air-gapped networks. |
 | [`python/`](python/) | Python install/setup notes and small helpers. Currently the VMware vSphere Automation SDK install guide. |

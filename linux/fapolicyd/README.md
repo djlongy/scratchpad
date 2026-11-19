@@ -414,9 +414,9 @@ sudo journalctl -u fapolicyd --no-pager --since "10 minutes ago" | grep deny
 
 A reusable common task and Jinja2 templates are provided in this repo:
 
-- [`roles/common/tasks/fapolicyd.yml`](https://github.com/djlongy/ansible-infra-roles/blob/main/roles/common/tasks/fapolicyd.yml) -- reusable include task (3 tasks, no tags, no silent skips)
-- [`examples/files/fapolicyd-rule-templates/31-app.rules.j2`](https://github.com/djlongy/ansible-infra-roles/tree/main/examples/files/fapolicyd-rule-templates/31-app.rules.j2) -- generic data-driven rule template
-- [`examples/files/fapolicyd-rule-templates/31-java-app.rules.j2`](https://github.com/djlongy/ansible-infra-roles/tree/main/examples/files/fapolicyd-rule-templates/31-java-app.rules.j2) -- Java app template with symlink resolution
+- [`roles/common/tasks/fapolicyd.yml`](https://github.com/newen-systems/ansible-infra-roles/blob/main/roles/common/tasks/fapolicyd.yml) -- reusable include task (3 tasks, no tags, no silent skips)
+- [`files/fapolicyd-rule-templates/31-app.rules.j2`](https://github.com/newen-systems/ansible-infra-roles/tree/main/files/fapolicyd-rule-templates/31-app.rules.j2) -- generic data-driven rule template
+- [`files/fapolicyd-rule-templates/31-java-app.rules.j2`](https://github.com/newen-systems/ansible-infra-roles/tree/main/files/fapolicyd-rule-templates/31-java-app.rules.j2) -- Java app template with symlink resolution
 
 ### Design decisions
 
