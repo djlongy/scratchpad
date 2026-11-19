@@ -1,7 +1,0 @@
----
-# roles/baseline/tasks/almalinux.yml
-# AlmaLinux dispatches to the shared EL distro specifics. CRB/EPEL enablement
-# now lives in repos.yml (runs earlier), so there is nothing AlmaLinux-only to
-# do before the common EL path.
-- name: "{{ base_task_name }}"
-  ansible.builtin.include_tasks: redhat.yml
