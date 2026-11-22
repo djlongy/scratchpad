@@ -26,14 +26,38 @@
   when: artifactory_saml_config | length > 0
   no_log: true
 
+- name: "SSO | Read OAuth settings"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.oauth }}"
+    headers: "{{ _af_json_headers }}"
+  register: _af_oauth_before
+  when: artifactory_oauth_config | length > 0
+  no_log: true
+
+- name: "SSO | Create or update OAuth providers"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.oauth }}/provider"
+    method: "{{ 'POST' if _af_oauth_existing | length > 0 else 'PUT' }}"
+    headers: "{{ _af_json_headers }}"
+    body_format: json
+    body: "{{ item }}"
+    status_code: [200, 201, 204]
+  vars:
+    _af_oauth_existing: >-
+      {{ _af_oauth_before.json.providers | default([])
+         | selectattr('name', 'eq', item.name) | list }}
+  loop: "{{ artifactory_oauth_config.providers | default([]) }}"
+  changed_when: true
+  no_log: true
+
 - name: "SSO | Configure OAuth"
   ansible.builtin.uri:
     url: "{{ artifactory_ep.oauth }}"
-    # POST, not PUT — /api/oauth only allows POST (PUT 405s).
+    # Global settings ignore providers; those require the separate endpoint.
     method: "{{ artifactory_sso_method | default('POST') }}"
     headers: "{{ _af_json_headers }}"
     body_format: json
-    body: "{{ artifactory_oauth_config }}"
+    body: "{{ artifactory_oauth_config | dict2items | rejectattr('key', 'eq', 'providers') | items2dict }}"
     status_code: [200, 201, 204]
   register: _oauth
   changed_when: _oauth.status in [200, 201, 204]
@@ -41,6 +65,42 @@
     - artifactory_fail_fast | bool
     - _oauth.status not in [200, 201, 204]
   when: artifactory_oauth_config | length > 0
+  no_log: true
+
+- name: "SSO | Read back OAuth settings"
+  ansible.builtin.uri:
+    url: "{{ artifactory_ep.oauth }}"
+    headers: "{{ _af_json_headers }}"
+  register: _af_oauth_after
+  when: artifactory_oauth_config | length > 0
+  no_log: true
+
+- name: "SSO | Verify OAuth global settings persisted"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (artifactory_oauth_config | dict2items | rejectattr('key', 'eq', 'providers') | list
+        | difference(_af_oauth_after.json | dict2items)) | length == 0
+    fail_msg: "OAuth global settings readback differs from the requested configuration"
+  when:
+    - artifactory_oauth_config | length > 0
+    - not ansible_check_mode
+  no_log: true
+
+- name: "SSO | Verify OAuth providers persisted"
+  ansible.builtin.assert:
+    that:
+      - _af_oauth_stored | length == 1
+      - >-
+        (item | dict2items | rejectattr('key', 'eq', 'secret') | list
+        | difference((_af_oauth_stored | first | default({})) | dict2items)) | length == 0
+    fail_msg: "OAuth provider readback differs from the requested configuration"
+  vars:
+    _af_oauth_stored: >-
+      {{ _af_oauth_after.json.providers | default([])
+         | selectattr('name', 'eq', item.name) | list }}
+  loop: "{{ artifactory_oauth_config.providers | default([]) }}"
+  when: not ansible_check_mode
   no_log: true
 
 - name: "SSO | Configure Crowd / Azure AD"

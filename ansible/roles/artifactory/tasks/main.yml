@@ -55,7 +55,11 @@
     # admin password (a password-only/basic-auth setup keeps working WITHOUT a
     # restart+mint), not under --check, and gated on the resolved _af_token.
     - name: Bootstrap a durable admin token when no credential was supplied
-      ansible.builtin.import_tasks: bootstrap.yml
+      # Evaluate once: bootstrap fills _af_token before its persistence tasks.
+      ansible.builtin.include_tasks:
+        file: bootstrap.yml
+        apply:
+          tags: [always, bootstrap]
       when:
         - artifactory_bootstrap_enabled | bool
         - not ansible_check_mode
@@ -68,6 +72,7 @@
     # via bootstrap and retry instead of hard-failing. Any other preflight failure
     # — or a rejected token with self-heal off — is re-raised unchanged.
     - name: Preflight (auth, health, output paths)
+      tags: [always]
       block:
         - name: Run preflight
           ansible.builtin.import_tasks: preflight.yml
@@ -97,7 +102,6 @@
 
         - name: "Self-heal | Re-run preflight with the freshly minted token"
           ansible.builtin.import_tasks: preflight.yml
-      tags: [always]
 
     - name: Backup live Artifactory configuration
       ansible.builtin.import_tasks: backup.yml

@@ -142,12 +142,12 @@
         url: "{{ artifactory_ep.projects }}/_/attach/repositories/{{ repo_key }}/{{ _proj.project_key }}?force=true"
         method: PUT
         headers: "{{ _af_headers }}"
-        status_code: [200, 201, 409]
+        status_code: [200, 201, 204, 409]
       register: _proj_repo
-      changed_when: _proj_repo.status in [200, 201]
+      changed_when: _proj_repo.status in [200, 201, 204]
       failed_when:
         - artifactory_fail_fast | bool
-        - _proj_repo.status not in [200, 201, 409]
+        - _proj_repo.status not in [200, 201, 204, 409]
       loop: "{{ _proj.repositories | default([]) }}"
       loop_control:
         loop_var: repo_key

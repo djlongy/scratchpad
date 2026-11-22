@@ -319,3 +319,10 @@ argument_specs:
         elements: dict
         default: []
         description: Access tokens to mint on apply (opt-in).
+      artifactory_oauth_config:
+        type: dict
+        default: {}
+        description: >-
+          OAuth global settings and an optional providers list. Providers are
+          created or updated by name through the native provider endpoint. Empty
+          skips the section; client secrets must be supplied at apply time.
