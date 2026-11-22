@@ -80,9 +80,6 @@ secring.*
 # files/ and vars/ are deliberately NOT included: files/ demonstrably holds real
 # captured state (see the artifactory state rules below) and vars/ can hold
 # values rather than references. Those stay under the blanket.
-!ansible/roles/*/tasks/**
-!ansible/roles/*/handlers/**
-!ansible/roles/*/templates/**
 # Same rule for task files that live outside a role (playbook-level tasks/ dirs).
 !**/tasks/*.yml
 
@@ -150,7 +147,6 @@ group_vars/*/vault*
 # Installed Ansible collections — vendored into collections_path (./collections) by
 # `ansible-galaxy collection install -r requirements.yml`. Thousands of files, fully
 # re-installable. requirements.yml is the tracked source of truth; the install dir is not.
-ansible/collections/ansible_collections/
 # Galaxy-installed roles, if a requirements.yml pulls any into ./collections too.
 **/ansible_collections/
 
@@ -197,19 +193,15 @@ CLAUDE.md
 
 # ── Browser-automation / agent tool artifacts ─────────────────────────────────────
 .playwright-cli/
-ansible/_trial-backup/
 
 # Daemon-agent chaos-test findings handoff (not tracked)
 CHAOS-FINDINGS.md
 
 # Live-instance config exports / backups from role testing (contain real config)
-ansible/trial-backups/
-ansible/artifactory-as-built*.yml
 # Captured Artifactory As-Built state — per-env (real hostnames/DNs/emails/XML).
 # Defence-in-depth alongside roles/artifactory/files/state/.gitignore.
 **/files/state/*/artifactory.*
 # Ansible inventory local overrides (real hostnames/URLs/secrets — never commit).
-ansible/inventories/**/local.yml
 # FreeIPA config snapshots from `--tags export` (real usernames/emails — rename
 # into group_vars deliberately if you want to commit one)
 **/freeipa.config.snapshot.yml
