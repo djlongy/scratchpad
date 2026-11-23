@@ -1,0 +1,40 @@
+# TEST ONLY: two workloads whose image cannot be pulled. The first is in a
+# namespace that matches the system pattern (cattle-.*), the second is not.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cattle-healthcheck-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-core-service
+  namespace: cattle-healthcheck-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: broken-core-service}
+  template:
+    metadata:
+      labels: {app: broken-core-service}
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:does-not-exist-0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-app
+  namespace: alert-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: broken-app}
+  template:
+    metadata:
+      labels: {app: broken-app}
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:does-not-exist-0

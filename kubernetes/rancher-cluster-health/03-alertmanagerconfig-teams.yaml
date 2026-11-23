@@ -1,0 +1,36 @@
+# Route the image-pull alerts to a Microsoft Teams channel through a Workflows
+# webhook (Teams: the channel, Workflows, "Post to a channel when a webhook
+# request is received"; copy the URL it gives you).
+# Needs alertmanagerConfigMatcherStrategy type None (README step 3).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: teams-webhook
+  namespace: cattle-monitoring-system
+type: Opaque
+stringData:
+  url: "https://example.webhook.office.com/REPLACE-WITH-YOUR-WORKFLOW-URL"
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: cluster-health-teams
+  namespace: cattle-monitoring-system
+spec:
+  route:
+    receiver: teams
+    groupBy: [alertname, namespace, pod]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    matchers:
+      - name: alertname
+        matchType: "=~"
+        value: "ImagePullFailing.*"
+  receivers:
+    - name: teams
+      msteamsv2Configs:
+        - webhookURL:
+            name: teams-webhook
+            key: url
+          sendResolved: true
