@@ -81,6 +81,9 @@ spec:
         - name: mirror-ca
           secret:
             secretName: mirror-ca
+            items:
+            - key: ca.crt
+              path: ca.crt
         initContainers:
         - name: corp-trust-store
           image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2@sha256:9c1e1afc2bda921b35025e21c72ec6e392266995aa35ad6a47887363592718be
