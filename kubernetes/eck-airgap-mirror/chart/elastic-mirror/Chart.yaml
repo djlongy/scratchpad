@@ -1,6 +1,0 @@
-apiVersion: v2
-name: elastic-mirror
-description: Offline Elastic content for ECK stacks with no internet access, the full package registry plus a file server for agent binaries, Defend artifacts, GeoIP, ML models and AI Assistant documentation.
-type: application
-version: 2.0.0
-appVersion: "9.5.2"

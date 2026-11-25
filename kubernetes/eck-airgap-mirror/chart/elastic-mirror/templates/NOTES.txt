@@ -1,4 +1,0 @@
-Registry:    https://{{ .Values.ingress.eprHost }}
-File server: https://{{ .Values.ingress.filesHost }}
-Load files:  tar -C <bundle> -cf - MANIFEST.sha256 artifacts geoip models kb | kubectl -n {{ .Release.Namespace }} exec -i deploy/files -- tar -xf - -C /srv/mirror
-Verify:      kubectl -n {{ .Release.Namespace }} exec deploy/files -- sh -c 'cd /srv/mirror && grep -v bundle.env MANIFEST.sha256 | sha256sum -c -s && echo all-files-match'

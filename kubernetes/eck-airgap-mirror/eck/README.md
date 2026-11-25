@@ -26,4 +26,4 @@ ECK creates the Deployment, HTTPS Service and certificates. Verify `kubectl -n e
 
 ## Out of scope
 
-This replaces the chart's EPR workload. Do not install both EPR implementations. The binary, Defend, GeoIP, model and documentation file server remains separate; EPR does not serve those files.
+The binary, Defend, GeoIP, model and documentation file server remains separate; EPR does not serve those files. ECK is the only EPR deployment path in this example.

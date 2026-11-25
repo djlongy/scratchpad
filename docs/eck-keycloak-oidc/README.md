@@ -242,82 +242,49 @@ ES /_security/oidc/prepare -X POST -d '{"realm":"oidc1"}'   # must return a Keyc
 `oidc/prepare` returning a redirect URL proves the realm loaded. An error here
 (licence, bad issuer, missing secret) shows up before anyone tries the browser.
 
-## 7. Map Keycloak groups to Elasticsearch roles
+## 7. Define roles and group mappings as code
 
-A user who logs in but matches no mapping gets no roles, and Kibana says they have no
-access. Create mappings with the API (or Kibana: Stack Management, Security, Role
-Mappings). ECK has no CRD for role mappings.
+[roles.yml](roles.yml) defines the `logs-read` role and its permissions: read and
+index-metadata access to `logs-*`, plus Kibana Discover and Dashboard read access.
+The Kibana privileges apply to all spaces; restrict `resources` to named spaces if
+required. Elastic supplies built-in roles such as `superuser`, `editor` and `viewer`.
 
-Three tiers, one Keycloak group each:
+Import the file into a Kubernetes Secret in `<NS>`:
 
-```bash
-ES /_security/role_mapping/oidc-admins -X PUT -d '{
-  "enabled": true,
-  "roles": ["superuser"],
-  "rules": { "all": [
-    { "field": { "realm.name": "oidc1" } },
-    { "field": { "groups": "es-admins" } } ] } }'
-
-ES /_security/role_mapping/oidc-analysts -X PUT -d '{
-  "enabled": true,
-  "roles": ["editor"],
-  "rules": { "all": [
-    { "field": { "realm.name": "oidc1" } },
-    { "field": { "groups": "es-analysts" } } ] } }'
-
-ES /_security/role_mapping/oidc-viewers -X PUT -d '{
-  "enabled": true,
-  "roles": ["viewer"],
-  "rules": { "all": [
-    { "field": { "realm.name": "oidc1" } },
-    { "field": { "groups": "es-viewers" } } ] } }'
+```sh
+kubectl -n <NS> create secret generic es-custom-roles --from-file=roles.yml=roles.yml \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Always include `realm.name` in the rule, so a group of the same name from another realm
-cannot grant the role.
+Merge [elasticsearch-roles.yml](elasticsearch-roles.yml) into your existing Elasticsearch
+manifest, preserving its other authentication settings, and apply the merged manifest.
+ECK distributes the role file to every node through `spec.auth.roles`; Elasticsearch
+reloads it. Repeat the Secret apply command after editing permissions. File-defined
+roles cannot be viewed or edited through the role-management API or UI. Kibana must
+start and register its application privileges before its feature permissions take effect.
 
-Useful rule shapes:
+### OIDC group mappings
 
-| Need | Rule |
-|---|---|
-| Any of several groups | `{"any": [{"field":{"groups":"team-a"}}, {"field":{"groups":"team-b"}}]}` |
-| Group name pattern | `{"field": {"groups": "es-*"}}` |
-| One named user | `{"field": {"username": "jane.doe"}}` |
-| Exclude a group | `{"except": {"field": {"groups": "contractors"}}}` inside an `all` |
+[role-mappings.yml](role-mappings.yml) declares the group assignments as an ECK
+`StackConfigPolicy`. This requires an **ECK Enterprise or Enterprise trial licence**,
+separate from the stack licence needed by OIDC. Without it, ECK does not apply this
+policy; a `Ready` status with `readyCount: 0/0` is not evidence that mappings exist.
+The file-based role import above does not require that ECK licence.
 
-Role per group, without one mapping each (every group named like a role becomes that
-role):
+Set the policy namespace to `<NS>` and add `security-profile: oidc` to the target
+Elasticsearch resource's `metadata.labels` in its manifest. Apply the updated
+Elasticsearch manifest and then `kubectl apply -f role-mappings.yml`. Use a workload
+namespace, not the operator namespace, to keep its scope within that namespace.
 
-```json
-{
-  "enabled": true,
-  "role_templates": [ { "template": { "source": "{{#tojson}}groups{{/tojson}}" }, "format": "json" } ],
-  "rules": { "field": { "realm.name": "oidc1" } }
-}
-```
+The policy maps `es-admins`, `es-analysts`, `es-viewers` and `es-log-readers` to
+`superuser`, `editor`, `viewer` and `logs-read`. Every mapping also requires realm
+`oidc1`, so a same-named group from another realm cannot grant these roles.
 
-### Custom roles
-
-Built-in roles: `superuser`, `editor`, `viewer`, plus `kibana_admin` and others. For
-per-index access, define your own role and map a group to it:
-
-```bash
-ES /_security/role/logs-read -X PUT -d '{
-  "indices": [ { "names": ["logs-*"], "privileges": ["read", "view_index_metadata"] } ],
-  "applications": [ { "application": "kibana-.kibana",
-                      "privileges": ["feature_discover.read", "feature_dashboard.read"],
-                      "resources": ["*"] } ] }'
-```
-
-Or keep roles in git: a Secret with a `roles.yml` key, referenced from the
-Elasticsearch spec (file realm roles, applied by ECK):
-
-```yaml
-spec:
-  auth:
-    roles:
-      - secretName: es-custom-roles
-```
+Elasticsearch's `role_mapping.yml` files support PKI, LDAP and Active Directory,
+not OIDC. The operator policy is the declarative OIDC mapping path here; no manual
+role or role-mapping API writes are part of this procedure. A user who authenticates
+but matches no mapping receives no roles. Verify the policy has applied to the target
+cluster before testing login.
 
 ## 8. Verify a real login
 
@@ -344,6 +311,6 @@ spec:
 
 | Change | Restarts Elasticsearch |
 |---|---|
-| Role mappings, roles (API) | No |
+| Role files, role-mapping policy | No |
 | Kibana `config` | Kibana only |
 | Realm settings, secureSettings Secret | Yes, rolling |

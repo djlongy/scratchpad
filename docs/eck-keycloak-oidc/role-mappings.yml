@@ -1,0 +1,52 @@
+# Requires ECK Enterprise or Enterprise trial; OIDC mappings are not role_mapping.yml files.
+apiVersion: stackconfigpolicy.k8s.elastic.co/v1alpha1
+kind: StackConfigPolicy
+metadata:
+  name: oidc-roles
+  namespace: elastic
+spec:
+  resourceSelector:
+    matchLabels:
+      security-profile: oidc
+  elasticsearch:
+    securityRoleMappings:
+      oidc-admins:
+        enabled: true
+        roles:
+        - superuser
+        rules:
+          all:
+          - field:
+              realm.name: oidc1
+          - field:
+              groups: es-admins
+      oidc-analysts:
+        enabled: true
+        roles:
+        - editor
+        rules:
+          all:
+          - field:
+              realm.name: oidc1
+          - field:
+              groups: es-analysts
+      oidc-viewers:
+        enabled: true
+        roles:
+        - viewer
+        rules:
+          all:
+          - field:
+              realm.name: oidc1
+          - field:
+              groups: es-viewers
+      oidc-log-readers:
+        enabled: true
+        roles:
+        - logs-read
+        rules:
+          all:
+          - field:
+              realm.name: oidc1
+          - field:
+              groups: es-log-readers

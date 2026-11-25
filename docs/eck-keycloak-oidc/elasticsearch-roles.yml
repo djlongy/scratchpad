@@ -1,0 +1,11 @@
+# Merge auth.roles into the existing Elasticsearch resource; preserve other auth settings.
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: es
+  namespace: elastic
+spec:
+  version: 9.5.2
+  auth:
+    roles:
+      - secretName: es-custom-roles
