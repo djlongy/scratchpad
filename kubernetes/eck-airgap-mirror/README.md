@@ -4,6 +4,8 @@
 
 A Helm chart that serves the full Elastic package registry and every file an offline ECK stack fetches: integrations, detection rules, agent binaries, Defend artifacts, GeoIP, ELSER and the AI Assistant documentation. It builds on the OIDC setup in `docs/eck-keycloak-oidc`. On the air-gapped side you use `helm` and `kubectl` only.
 
+For operator-managed EPR, use [the ECK manifests](eck/README.md).
+
 ## Requirements
 
 - **Starting point:** the stack from `docs/eck-keycloak-oidc`, with the same placeholders (`<NS>`, `<ES>`, `<KB>`, `<INT_ISSUER>`).

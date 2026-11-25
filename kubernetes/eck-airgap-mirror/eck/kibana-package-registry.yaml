@@ -1,0 +1,13 @@
+# Merge into your existing Kibana resource; remove xpack.fleet.registryUrl from
+# its config. ECK supplies the registry URL and trusts its serving certificate.
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kb
+  namespace: elastic
+spec:
+  version: 9.5.2
+  packageRegistryRef:
+    name: registry
+  config:
+    xpack.fleet.isAirGapped: true
