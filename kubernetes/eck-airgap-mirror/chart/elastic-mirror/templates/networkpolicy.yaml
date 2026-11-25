@@ -1,5 +1,5 @@
 # No egress at all: the mirror serves, it never fetches. Ingress only from the
-# consumer namespaces and, when enabled, the ingress controller.
+# ingress controller, which terminates TLS with the corp-signed certificates.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,20 +11,9 @@ spec:
   ingress:
     - from:
         - namespaceSelector:
-            matchExpressions:
-              - key: kubernetes.io/metadata.name
-                operator: In
-                values: {{- toYaml .Values.consumerNamespaces | nindent 18 }}
-      ports:
-        - {protocol: TCP, port: 8080}
-        - {protocol: TCP, port: 8443}
-    {{- if .Values.ingress.enabled }}
-    - from:
-        - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.ingress.controllerNamespace }}
           podSelector:
             matchLabels: {{- toYaml .Values.ingress.controllerPodLabels | nindent 14 }}
       ports:
-        - {protocol: TCP, port: 8443}
-    {{- end }}
+        - {protocol: TCP, port: 8080}

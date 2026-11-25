@@ -14,6 +14,17 @@ Replace these placeholders throughout:
 | `<NS>` | `elastic` |
 | `<ES>` | `es` (Elasticsearch resource name) |
 | `<KB>` | `kb` (Kibana resource name) |
+| `<INT_ISSUER>` | `corp-int` (cert-manager ClusterIssuer signed by the corp CA) |
+
+Certificates: cert-manager issues every internal certificate from `<INT_ISSUER>`,
+and the corp CA signs that issuer and Keycloak's certificate. Elasticsearch and Kibana
+trust the corp CA through one Secret, `corp-ca` in `<NS>`, key `ca.crt`: a PEM bundle
+of the corp root and intermediate certificates, each ending in a newline (Elasticsearch
+refuses a bundle whose `-----END CERTIFICATE-----` line runs into the next one).
+
+```bash
+kubectl -n <NS> create secret generic corp-ca --from-file=ca.crt=corp-ca-bundle.pem
+```
 
 ## 0. Licence first
 
@@ -115,6 +126,19 @@ spec:
           claims.groups: groups                     # feeds the role mapping rules
           claims.mail: email
           claims.name: name
+          ssl.certificate_authorities: ["/usr/share/elasticsearch/config/corp-ca/ca.crt"]
+      podTemplate:
+        spec:
+          containers:
+            - name: elasticsearch
+              volumeMounts:
+                - name: corp-ca
+                  mountPath: /usr/share/elasticsearch/config/corp-ca
+                  readOnly: true
+          volumes:
+            - name: corp-ca
+              secret:
+                secretName: corp-ca
       volumeClaimTemplates:
         - metadata:
             name: elasticsearch-data
@@ -130,25 +154,10 @@ Notes:
 - `op.issuer` must match `issuer` in the discovery document exactly.
 - `rp.redirect_uri` must match the Keycloak redirect URI exactly, scheme and host
   included.
-- Keycloak behind a private CA: Elasticsearch fetches `op.jwkset_path` and the token
-  endpoint over HTTPS, so it must trust that CA. Put the CA in a ConfigMap, mount it,
-  and add `xpack.security.authc.realms.oidc.oidc1.ssl.certificate_authorities:
-  ["/usr/share/elasticsearch/config/idp-ca/ca.crt"]`:
-
-  ```yaml
-      podTemplate:
-        spec:
-          containers:
-            - name: elasticsearch
-              volumeMounts:
-                - name: idp-ca
-                  mountPath: /usr/share/elasticsearch/config/idp-ca
-                  readOnly: true
-          volumes:
-            - name: idp-ca
-              configMap:
-                name: idp-ca
-  ```
+- Elasticsearch fetches `op.jwkset_path` and the token endpoint over HTTPS. The realm
+  trusts Keycloak through `ssl.certificate_authorities`, read from the mounted
+  `corp-ca` Secret. `GET _ssl/certificates` lists every certificate of the bundle under
+  that path.
 
 - Egress through a proxy: add `-Dhttps.proxyHost=... -Dhttps.proxyPort=...` to
   `ES_JAVA_OPTS`, or allow direct egress from the Elasticsearch pods to Keycloak.
@@ -194,6 +203,7 @@ metadata:
   name: kibana
   namespace: <NS>
   annotations:
+    cert-manager.io/cluster-issuer: <INT_ISSUER>            # issues kibana-tls
     nginx.ingress.kubernetes.io/backend-protocol: HTTPS
     nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"   # large OIDC cookies and headers
 spec:
@@ -325,7 +335,8 @@ spec:
 | Kibana: "Cannot find OIDC realm" or button errors | Licence is Basic, or realm failed to load | `GET _license`; read the Elasticsearch logs for `oidc1` |
 | Login works, "no permissions" | No role mapping matched | Step 8; groups claim missing, or full path on (`/group`) |
 | Groups claim empty for LDAP users | Membership is nested, or cached | Direct membership; clear Keycloak user cache |
-| `PKIX path building failed` in ES logs | ES does not trust Keycloak's CA | `ssl.certificate_authorities` (step 3) |
+| `PKIX path building failed` in ES logs | ES does not trust Keycloak's CA | `corp-ca` must hold the CA that signs Keycloak; `ssl.certificate_authorities` (step 3) |
+| ES will not start: `Invalid PEM format: No EOL char found in footer` | `corp-ca` bundle joined without newlines | Put each `-----END CERTIFICATE-----` on its own line, recreate the Secret |
 | Login loops or 502 at the ingress | Backend protocol HTTP, or header too large | `backend-protocol: HTTPS`; raise proxy buffer size |
 | Trial gone after a restart | ECK reset it to Basic | Annotation in section 0, set at creation; the cluster cannot re-trial |
 
