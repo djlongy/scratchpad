@@ -1,5 +1,5 @@
-# Kibana resource fragment (ECK). Merge into your existing Kibana spec.
-# Rollback: remove the three config keys and the env and volume, let ECK roll the pods.
+# Kibana fragment (ECK). Merge config, env, volumeMounts and volumes into your
+# Kibana resource, then kubectl apply it. Kibana restarts.
 apiVersion: kibana.k8s.elastic.co/v1
 kind: Kibana
 metadata:
@@ -10,7 +10,7 @@ spec:
   config:
     xpack.fleet.isAirGapped: true
     xpack.fleet.registryUrl: "https://epr.elastic-mirror.svc:8080"
-    xpack.productDocBase.artifactRepositoryUrl: "https://minio.elastic-mirror.svc:9000/elastic-kb"
+    xpack.productDocBase.artifactRepositoryUrl: "https://files.elastic-mirror.svc:8443/kb"
   podTemplate:
     spec:
       containers:
@@ -20,10 +20,7 @@ spec:
             - name: NODE_EXTRA_CA_CERTS
               value: /usr/share/kibana/mirror-ca/ca.crt
           volumeMounts:
-            - name: mirror-ca
-              mountPath: /usr/share/kibana/mirror-ca
-              readOnly: true
+            - {name: mirror-ca, mountPath: /usr/share/kibana/mirror-ca, readOnly: true}
       volumes:
         - name: mirror-ca
-          configMap:
-            name: elastic-mirror-ca   # key ca.crt, copied from secret elastic-mirror-tls
+          configMap: {name: elastic-mirror-ca}

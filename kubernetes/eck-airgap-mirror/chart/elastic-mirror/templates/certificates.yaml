@@ -1,0 +1,51 @@
+# A CA made inside this namespace by cert-manager, and one serving certificate for
+# both Services. Consumers trust ca.crt of secret elastic-mirror-tls.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: elastic-mirror-selfsigned
+  labels: {{- include "elastic-mirror.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: elastic-mirror-ca
+  labels: {{- include "elastic-mirror.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: elastic-mirror-ca
+  secretName: elastic-mirror-ca
+  duration: 87600h
+  privateKey: {algorithm: ECDSA, size: 256}
+  issuerRef: {name: elastic-mirror-selfsigned, kind: Issuer}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: elastic-mirror-ca
+  labels: {{- include "elastic-mirror.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: elastic-mirror-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: elastic-mirror-tls
+  labels: {{- include "elastic-mirror.labels" . | nindent 4 }}
+spec:
+  secretName: elastic-mirror-tls
+  duration: 8760h
+  renewBefore: 720h
+  privateKey: {algorithm: ECDSA, size: 256}
+  usages: [server auth]
+  dnsNames:
+  {{- range list "epr" "files" }}
+    - {{ . }}
+    - {{ . }}.{{ $.Release.Namespace }}
+    - {{ . }}.{{ $.Release.Namespace }}.svc
+    - {{ . }}.{{ $.Release.Namespace }}.svc.cluster.local
+  {{- end }}
+  issuerRef: {name: elastic-mirror-ca, kind: Issuer}

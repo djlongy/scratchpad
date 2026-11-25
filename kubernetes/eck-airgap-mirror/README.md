@@ -2,208 +2,168 @@
 
 ## TL;DR
 
-Mirror the full Elastic integration catalogue, Defend artifacts, GeoIP, ML models and the AI Assistant documentation into an air-gapped Kubernetes cluster, then point an existing ECK stack at it: `scripts/mirror-bundle.sh -v 9.5.2 -o ./bundle-9.5.2 --dry-run`.
+A Helm chart that serves the full Elastic package registry and every file an offline ECK stack fetches: integrations, detection rules, agent binaries, Defend artifacts, GeoIP, ELSER and the AI Assistant documentation. On the air-gapped side you use `helm` and `kubectl` only.
 
 ## Requirements
 
-- Connected side: `bash`, `curl`, `jq`, `skopeo` 1.13 or later, `python3` 3.9 or later, `unzip`, and about 30 GiB free disk.
-- Air-gapped side: Kubernetes with an enforcing `NetworkPolicy` CNI, cert-manager, an internal image registry, an existing ECK stack (Elastic Stack 9.x), `kubectl`, `skopeo`, `curl` 7.75 or later.
+- Connected host: `bash`, `curl`, `jq`, `python3` 3.9 or later, `unzip`, about 2 GiB free disk.
+- Air-gapped cluster: Kubernetes with an enforcing `NetworkPolicy` CNI, cert-manager, an internal image registry, ECK running Elastic Stack 9.5.x, `helm` 3, `kubectl`.
 - One node with at least 80 GiB of image disk for the registry pod (25 GiB compressed image plus 45 GiB extracted).
-- An ML node in the Elasticsearch cluster if you want the AI Assistant documentation (it needs ELSER).
+- An ML-capable Elasticsearch node and a Platinum, Enterprise or trial licence for ELSER and the AI Assistant documentation.
 
-## What the stack fetches and where it comes from here
+## Values
 
-| Content | Upstream | Served here by | Consumer setting |
+Full set: `chart/elastic-mirror/values.yaml`.
+
+| Req | Name | Default | Purpose |
 |---|---|---|---|
-| Integrations, detection rules, prebuilt ML jobs, dashboards | `epr.elastic.co` | `epr` pod | Kibana `xpack.fleet.registryUrl` |
-| Agent, Fleet Server, Endpoint binaries and the upgrade key | `artifacts.elastic.co` | bucket `elastic-mirror`, `downloads/` | Fleet agent binary source |
-| Defend malware and behaviour artifacts | `artifacts.security.elastic.co` | bucket `elastic-mirror`, `downloads/endpoint/` | Defend `<os>.advanced.artifacts.global.base_url` |
-| GeoIP databases | `geoip.elastic.co` | bucket `elastic-mirror`, `geoip/` | Elasticsearch `ingest.geoip.downloader.endpoint` |
-| ELSER, e5 and rerank models | `ml-models.elastic.co` | bucket `elastic-mirror`, `models/` | Elasticsearch `xpack.ml.model_repository` |
-| AI Assistant product documentation and Security Labs | `kibana-knowledge-base-artifacts.elastic.co` | bucket `elastic-kb` | Kibana `xpack.productDocBase.artifactRepositoryUrl` |
+| Required | `epr.image` | none | Registry image in your registry, by digest |
+| Required | `files.image` | none | `nginx-unprivileged` Alpine image in your registry, by digest |
+| Required | `consumerNamespaces` | `[elastic-system]` | Namespaces of the Kibana and Elasticsearch pods that read the mirror |
+| Optional | `imagePullSecrets` | `[]` | Pull secrets for both pods |
+| Optional | `epr.nodeSelector`, `epr.tolerations` | none | Put the registry on a node with a large image disk |
+| Optional | `files.storageClassName`, `files.size` | default class, `20Gi` | The volume that holds the files |
+| When agents run outside the cluster | `ingress.enabled`, `ingress.host`, `ingress.clusterIssuer`, `ingress.controllerNamespace`, `ingress.controllerPodLabels` | off | Ingress to the file server, and the NetworkPolicy rule for the controller pods |
 
-The registry image decides which rules and integrations you get. `distribution:production` is the full catalogue with the newest packages. `distribution:<version>` is the full catalogue as released with that stack version, so its rules are older. `lite-<version>` holds about 17 packages and is not enough for a full install.
+## 1. Export on the connected host
 
-## 1. Export on the connected side
-
-1. Set the version. It must equal the Kibana version on the air-gapped side.
+1. Check the sizes. This downloads nothing.
 
    ```sh
-   export V=9.5.2
+   COMPONENTS="agent endpoint geoip models kb" MODELS="elser_model_2:linux-x86_64,generic" \
+     scripts/mirror-bundle.sh -v 9.5.2 -o ./bundle-9.5.2 --dry-run
    ```
 
-2. Read the sizes. This downloads nothing.
+2. Export. Measured for 9.5.2, linux x86_64: 78 files, 1.3 GiB.
 
    ```sh
-   scripts/mirror-bundle.sh -v "$V" -o ./bundle-$V --dry-run
+   COMPONENTS="agent endpoint geoip models kb" MODELS="elser_model_2:linux-x86_64,generic" \
+     scripts/mirror-bundle.sh -v 9.5.2 -o ./bundle-9.5.2
+   (cd bundle-9.5.2 && sha256sum -c --quiet MANIFEST.sha256)
    ```
 
-   Measured for 9.5.2, linux x86_64: registry image about 24.5 GiB, the stack images about 2 GiB, files about 2.9 GiB (agents 464 MiB, Defend 45 MiB, GeoIP 30 MiB, models 2.2 GiB, documentation 80 MiB).
+   Add agent platforms with `AGENT_ARCHS="linux-x86_64 windows-x86_64"` and `AGENT_PACKAGES="tar.gz msi"`.
 
-3. Export. Re-running resumes where it stopped.
+3. Bring these images into your internal registry through your site's normal image import, and note each digest:
 
-   ```sh
-   export EPR_VARIANT=production
-   export AGENT_ARCHS="linux-x86_64 windows-x86_64"   # the platforms your agents run on
-   export AGENT_PACKAGES="tar.gz msi"                 # add deb or rpm as needed
-   export EXTRA_IMAGES="docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z docker.io/curlimages/curl:8.11.1"
-   scripts/mirror-bundle.sh -v "$V" -o ./bundle-$V
+   | Image | Size |
+   |---|---|
+   | `docker.elastic.co/package-registry/distribution:production` | about 25 GiB |
+   | `docker.io/nginxinc/nginx-unprivileged:1.27-alpine` | about 20 MiB |
+
+   `production` is the full catalogue with the newest rules. `distribution:9.5.2` is the full catalogue as released with 9.5.2, so its rules are older. `lite-9.5.2` holds about 17 packages and is not enough.
+
+4. Carry `bundle-9.5.2/` and this folder's `chart/` and `eck/` across. Record `sha256sum bundle-9.5.2/MANIFEST.sha256` on the transfer paperwork.
+
+## 2. Install the mirror
+
+1. Write `values.yaml` with the required rows:
+
+   ```yaml
+   imagePullSecrets: [{name: registry-pull}]
+   epr:
+     image: registry.example.internal/elastic/package-registry/distribution:production@sha256:<digest>
+     nodeSelector: {kubernetes.io/hostname: <large-disk-node>}
+   files:
+     image: registry.example.internal/nginxinc/nginx-unprivileged:1.27-alpine@sha256:<digest>
+   consumerNamespaces: [elastic-system]
+   ingress:
+     enabled: true
+     host: elastic-mirror.example.internal
+     clusterIssuer: <your-cluster-issuer>
+     controllerNamespace: ingress-nginx
+     controllerPodLabels: {app.kubernetes.io/name: ingress-nginx}
    ```
 
-   - `EXTRA_IMAGES` carries the store and the bootstrap images. Use any MinIO community build that ships `mc`.
-   - The documentation export takes `kb-product-doc-{security,kibana,observability,elasticsearch,openapi}-<major.minor>.zip` and the newest `security-labs-*.zip`. These are the ELSER builds. For the multilingual e5 builds set `KB_SUFFIX=--.multilingual-e5-small-elasticsearch`.
-   - To export only some parts later: `COMPONENTS="endpoint geoip kb"` (parts: `images agent endpoint geoip models kb`).
-
-4. Check the bundle and record its fingerprint on the transfer paperwork.
+2. Install, then wait. A cold pull of the registry image is the slow part. Its startup probe allows 30 minutes for indexing.
 
    ```sh
-   (cd bundle-$V && sha256sum -c --quiet MANIFEST.sha256)   # macOS: shasum -a 256 -c --quiet
-   sha256sum bundle-$V/MANIFEST.sha256
-   ```
-
-   `bundle-$V/bundle.env` records the export time and the `security_detection_engine` version the public registry served.
-
-## 2. Transfer
-
-1. Copy `bundle-$V/` and this folder's `scripts/` and `k8s/` to the transfer medium. Split files over a size limit with `split -b 4000m <file> <file>.part-` and rejoin with `cat <file>.part-* > <file>`.
-2. Expect the scanner to flag `artifacts/downloads/endpoint/`: those are Elastic's detection artifacts. Allow-list that directory per site policy.
-3. On the air-gapped side, compare the fingerprint of `MANIFEST.sha256` with the paperwork before anything else.
-
-## 3. Deploy the mirror on the air-gapped side
-
-1. Push the images. Note the digest printed for each one: `docker-archive` rebuilds the manifest, so the digest differs from upstream.
-
-   ```sh
-   skopeo login registry.example.internal
-   scripts/load-bundle.sh -b ./bundle-$V -r registry.example.internal/elastic
-   ```
-
-2. Put those digests in `k8s/epr.yaml`, `k8s/minio.yaml`, `k8s/bootstrap-job.yaml` and `k8s/egress-probe.yaml`. Set the storage class in `k8s/minio.yaml`, the ECK namespace in `k8s/networkpolicy.yaml`, and the host and cluster issuer in `k8s/ingress.yaml`.
-3. Label the node that holds the registry pod.
-
-   ```sh
-   kubectl label node <node> elastic-mirror/epr=true
-   ```
-
-4. Create the namespace and secrets. Keep the generated values in your secret store.
-
-   ```sh
-   kubectl apply -f k8s/namespace.yaml
-   kubectl -n elastic-mirror create secret generic minio-root \
-     --from-literal=MINIO_ROOT_USER=mirror-admin \
-     --from-literal=MINIO_ROOT_PASSWORD="$(openssl rand -base64 24)"
-   kubectl -n elastic-mirror create secret generic minio-writer \
-     --from-literal=WRITER_USER=transfer-writer \
-     --from-literal=WRITER_PASSWORD="$(openssl rand -base64 24)"
+   kubectl create namespace elastic-mirror
    kubectl -n elastic-mirror create secret docker-registry registry-pull \
-     --docker-server=registry.example.internal --docker-username=<puller> --docker-password="$PULL_TOKEN"
+     --docker-server=registry.example.internal --docker-username=<puller> --docker-password=<token>
+   helm install elastic-mirror chart/elastic-mirror -n elastic-mirror -f values.yaml
+   kubectl -n elastic-mirror rollout status deploy/epr --timeout=60m
+   kubectl -n elastic-mirror rollout status deploy/files --timeout=10m
    ```
 
-5. Apply and wait. The full registry indexes for up to 30 minutes before it listens. The startup probe allows that.
+3. Load the files and check every one against the manifest. The load is a tar stream through `kubectl exec` (1.3 GiB took 7 seconds on a LAN).
 
    ```sh
-   kubectl apply -k k8s
-   kubectl -n elastic-mirror wait --for=condition=complete job/minio-bootstrap job/minio-writer-bootstrap --timeout=10m
-   kubectl -n elastic-mirror rollout status deploy/epr --timeout=60m
+   tar -C ./bundle-9.5.2 -cf - MANIFEST.sha256 artifacts geoip models kb \
+     | kubectl -n elastic-mirror exec -i deploy/files -- tar -xf - -C /srv/mirror
+   kubectl -n elastic-mirror exec deploy/files -- \
+     sh -c 'cd /srv/mirror && grep -v bundle.env MANIFEST.sha256 | sha256sum -c -s && echo all-files-match'
    ```
 
-   Under Argo CD the two Jobs run after every sync. With plain `kubectl`, delete a Job before you apply it again.
+   Expect `all-files-match`. The files stay on the volume across pod restarts and `helm upgrade`.
 
-6. Upload the files with the write-only user. Every object goes up as one PUT, so its `ETag` is the plain MD5 that Elastic Endpoint needs.
+## 3. Point the ECK stack at the mirror
+
+Save your current `Kibana` and `Elasticsearch` resources first: `kubectl -n elastic-system get kibana,elasticsearch -o yaml > before.yaml`. That file is the rollback.
+
+1. Copy the mirror CA into the stack namespace.
 
    ```sh
    kubectl -n elastic-mirror get secret elastic-mirror-tls -o jsonpath='{.data.ca\.crt}' | base64 -d > mirror-ca.crt
-   kubectl -n elastic-mirror port-forward svc/minio 9000:9000 &
-   export S3_USER=transfer-writer
-   S3_PASSWORD="$(kubectl -n elastic-mirror get secret minio-writer -o jsonpath='{.data.WRITER_PASSWORD}' | base64 -d)"
-   export S3_PASSWORD
-   scripts/load-bundle.sh -b ./bundle-$V -s https://minio.elastic-mirror.svc:9000 -c mirror-ca.crt
-   ```
-
-   The certificate names the service, not `127.0.0.1`. Map `minio.elastic-mirror.svc` to `127.0.0.1` in `/etc/hosts` on the upload host while the port-forward runs.
-
-7. Prove the pods cannot reach the internet. Expect `exit=28` twice and `200` once.
-
-   ```sh
-   kubectl -n elastic-mirror apply -f k8s/egress-probe.yaml
-   kubectl -n elastic-mirror wait --for=condition=complete job/egress-probe --timeout=120s
-   kubectl -n elastic-mirror logs job/egress-probe && kubectl -n elastic-mirror delete job/egress-probe
-   ```
-
-## 4. Check the mirror before you touch the stack
-
-Run from a host that resolves the service names (or from a pod), with the CA file:
-
-```sh
-scripts/verify-mirror.sh -v "$V" \
-  -e https://epr.elastic-mirror.svc:8080 \
-  -f https://minio.elastic-mirror.svc:9000/elastic-mirror \
-  -b https://minio.elastic-mirror.svc:9000/elastic-kb \
-  -c mirror-ca.crt
-```
-
-Expect `ok` on every line. Do not continue on a `FAIL`. Then prove the path from inside Kibana, because a Kibana that cannot reach the registry loses its integration catalogue:
-
-```sh
-kubectl -n elastic-system exec deploy/<kibana>-kb -c kibana -- \
-  curl -sS -m 10 -k -o /dev/null -w '%{http_code}\n' https://epr.elastic-mirror.svc:8080/
-```
-
-`200` is the pass. A timeout means a network policy or firewall rule is missing.
-
-## 5. Point the existing ECK stack at the mirror
-
-Keep a copy of the current `Kibana` and `Elasticsearch` resources first. That copy is the rollback.
-
-1. Copy the CA into the ECK namespace.
-
-   ```sh
    kubectl -n elastic-system create configmap elastic-mirror-ca --from-file=ca.crt=mirror-ca.crt
    ```
 
-2. Kibana: merge `eck/kibana.yaml` into your `Kibana` resource. It sets:
+2. Merge `eck/elasticsearch.yaml` into every nodeSet of your `Elasticsearch` resource and `eck/kibana.yaml` into your `Kibana` resource. Replace `elastic-mirror` in the URLs if you installed into another namespace. Apply both with `kubectl apply -f`. Elasticsearch rolls node by node, and Kibana restarts.
 
-   ```yaml
-   xpack.fleet.isAirGapped: true
-   xpack.fleet.registryUrl: "https://epr.elastic-mirror.svc:8080"
-   xpack.productDocBase.artifactRepositoryUrl: "https://minio.elastic-mirror.svc:9000/elastic-kb"
-   ```
+   | Resource | Setting | Value |
+   |---|---|---|
+   | Kibana | `xpack.fleet.isAirGapped` | `true` |
+   | Kibana | `xpack.fleet.registryUrl` | `https://epr.elastic-mirror.svc:8080` |
+   | Kibana | `xpack.productDocBase.artifactRepositoryUrl` | `https://files.elastic-mirror.svc:8443/kb` |
+   | Elasticsearch | `ingest.geoip.downloader.endpoint` | `https://files.elastic-mirror.svc:8443/geoip/overview.json` |
+   | Elasticsearch | `xpack.ml.model_repository` | `https://files.elastic-mirror.svc:8443/models` |
 
-   and `NODE_EXTRA_CA_CERTS` to the mounted CA. Kibana restarts.
+3. Wait for green: `kubectl -n elastic-system get elasticsearch,kibana`.
 
-3. Elasticsearch: merge `eck/elasticsearch.yaml` into every nodeSet, ML nodes included. It sets `ingest.geoip.downloader.endpoint` and `xpack.ml.model_repository`, and an init container that adds the CA to a copy of the JDK trust store. Both settings are static, so ECK rolls the nodes one at a time.
-4. Wait for `GET _cluster/health` to report green. Do not trust the ECK resource status: it lags the cluster.
-5. Check: Fleet, Integrations lists the catalogue, and `GET _ingest/geoip/stats` shows 3 databases and `failed_downloads: 0`.
+## 4. Check from inside Kibana
 
-If your trust bundle holds more than one certificate, `keytool -importcert` imports only the first. Split the PEM and import each, or GeoIP and model downloads fail with a TLS error while Kibana works.
+```sh
+KB="kubectl -n elastic-system exec deploy/<kibana>-kb -c kibana --"
+CA=/usr/share/kibana/mirror-ca/ca.crt
+$KB curl -sS --cacert $CA "https://epr.elastic-mirror.svc:8080/search?kibana.version=9.5.2" | jq length
+$KB curl -sSI --cacert $CA https://files.elastic-mirror.svc:8443/downloads/endpoint/manifest/artifacts-9.5.2.zip
+$KB curl -sS --cacert $CA https://files.elastic-mirror.svc:8443/kb | head -c 60
+```
 
-## 6. Install the content
+Expect a package count above 400, `HTTP/1.1 200` with one `ETag` and no dash in it, and `<?xml ... <ListBucketResult`. A timeout means a NetworkPolicy or firewall rule. A TLS error means the CA.
 
-1. Integrations: Fleet, Integrations, install `Fleet Server`, `Elastic Defend`, `System` and the rest.
-2. Detection rules: Security, Rules, Add Elastic rules, Install all. This installs `security_detection_engine` from your registry.
-3. ELSER: Machine Learning, Trained models, `.elser_model_2_linux-x86_64`, Download, then Start deployment. It downloads from `models/`.
-4. Elastic documentation for the AI Assistant: Stack Management, AI Assistants, Settings, install Elastic documentation. Kibana reads the bucket listing of `elastic-kb` and installs the product zips for your `<major.minor>`.
-5. Security Labs: Security, AI Assistant, Settings, Knowledge base, enable it. The Security Labs content comes from the same bucket.
-6. Agents, after they are enrolled: Fleet, Settings, Agent binary download, add `https://elastic-mirror.example.internal/elastic-mirror/downloads/` and tick default. Give agents the CA at install with `--certificate-authorities`. For upgrades, set the Fleet Server option `server.pgp.upstream_url: https://elastic-mirror.example.internal/elastic-mirror/GPG-KEY-elastic-agent`.
-7. Defend, per policy, Advanced settings: `linux`, `windows` and `mac` `.advanced.artifacts.global.base_url` set to `https://elastic-mirror.example.internal/elastic-mirror`.
+## 5. Install the content
+
+Run these in Kibana once Kibana is green:
+
+1. Integrations: Fleet, Integrations, install `Fleet Server`, `Elastic Defend`, `System` and any others you need.
+2. Detection rules: Security, Rules, Add Elastic rules, Install all.
+3. GeoIP: Dev Tools, `PUT _cluster/settings {"persistent":{"ingest.geoip.downloader.eager.download":true}}`, then `GET _ingest/geoip/stats` shows 3 databases and `failed_downloads: 0`.
+4. ELSER: Machine Learning, Trained models, `.elser_model_2_linux-x86_64`, Download.
+5. Elastic documentation for the AI Assistant: Stack Management, AI Assistants, Settings, install Elastic documentation.
+6. Security AI Assistant knowledge base: Security, AI Assistant, Settings, Knowledge base, Setup. Kibana 9.5.2 loads the 191 Security Labs documents from content bundled inside Kibana, not from the mirror, and embeds each with ELSER. Size the ML node for it: a single 8 GiB node with ML at 60 percent was OOMKilled, and a single 12 GiB node with 2 CPUs indexed 190 of 191 after one bulk request timed out.
+7. Agents: Fleet, Settings, Agent binary download, add `https://elastic-mirror.example.internal/downloads/` as default. Enrol agents with `--certificate-authorities` for your ingress CA.
+8. Defend: in each Defend integration policy, Advanced settings, set `linux.advanced.artifacts.global.base_url`, `windows...` and `mac...` to `https://elastic-mirror.example.internal`.
 
 ## Behaviour
 
-- Rules and integrations change only with the registry image. To update: export `COMPONENTS=images EPR_VARIANT=production`, load it, change the digest in `k8s/epr.yaml`. The old pod serves until the new one has indexed.
-- Defend artifacts change daily, GeoIP expires after 30 days without an update. Export `COMPONENTS="endpoint geoip"` at least monthly and run step 3.6 again. Objects are overwritten in place and nothing restarts.
-- Documentation: export `COMPONENTS=kb` on each stack upgrade.
-- `load-bundle.sh` stops on the first checksum mismatch and loads nothing.
+- **No egress:** the chart's NetworkPolicy denies all egress from the mirror and admits only the consumer namespaces and, with the Ingress on, the controller pods.
+- **Rules and integrations:** these change only with the registry image. Import a newer `production` image, set its digest in `values.yaml` and run `helm upgrade`. The old pod serves until the new one has indexed.
+- **Defend artifacts and GeoIP:** Defend artifacts change daily, and GeoIP databases expire after 30 days without an update. Export `COMPONENTS="endpoint geoip"` at least monthly and repeat step 2.3. No restart is needed.
+- **Documentation:** export `COMPONENTS=kb` again on each stack upgrade.
+- **Rollback:** `kubectl apply -f before.yaml` for the stack, and `helm rollback elastic-mirror` for the mirror.
 
 ## Out of scope
 
-- The AI Assistant still needs an LLM. Point a connector at a model you host. Elastic-hosted inference needs Elastic Cloud.
-- Licences: apply the licence file while connected or through your Elastic account team.
-- UI links to the blog, release notes and Security Labs site do not open.
+- **LLM:** the AI Assistant still needs one. Point a connector at a model you host.
+- **OpenAPI documentation:** Kibana 9.5.2 rejects the upstream `kb-product-doc-openapi-9.5.zip` ("Manifest file not found"), so the export leaves it out.
+- **Licence:** apply the licence file while connected or through your Elastic account team.
 
 ## Expected result
 
-Namespace `elastic-mirror` with `epr` and `minio` pods Ready and no internet egress. Kibana lists every integration, Elastic rules install, the AI Assistant answers with documentation sources, and this passes:
+Validated on RKE2 with ECK 3.5 and Elastic 9.5.2, with the stack's egress limited to the mirror and DNS:
 
-```sh
-curl -sS --cacert mirror-ca.crt "https://epr.elastic-mirror.svc:8080/search?package=security_detection_engine&kibana.version=$V" | jq -r '.[0].version'
-```
+- **Mirror:** pods `epr` and `files` are Ready in `elastic-mirror`. The registry lists 495 packages and `security_detection_engine` 9.5.11.
+- **Content:** Elastic rules install (2316 rules). GeoIP downloads 3 databases with no failures. ELSER downloads from `models/`. The Elastic documentation installs for security, kibana, observability and elasticsearch.
+- **Security Labs:** 190 of 191 documents loaded on one 2 CPU node.
+- **Agent path:** the agent tarball through the Ingress passes `sha512sum -c` and `gpg --verify`. All 49 Defend artifacts match their manifest hashes.
