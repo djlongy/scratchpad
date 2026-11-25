@@ -24,7 +24,7 @@ available inside the disconnected environment.
 
 The evaluation trial belongs to the new Elasticsearch cluster. The shared ECK operator
 licence stays unchanged. OIDC authentication uses Keycloak; authorization uses the
-file-realm username allowlist and role assignments in `stack/base/users_roles`.
+file-realm immutable-subject allowlist and role assignments in `stack/base/users_roles`.
 
 ## Expected result
 

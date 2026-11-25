@@ -1,5 +1,5 @@
-# Usernames must match Keycloak preferred_username exactly.
-superuser: admin
-infrastructure_admin: infrastructure-admin
-inference_admin: infrastructure-admin
-logs-read: analyst
+# Use immutable OIDC sub values, never mutable usernames. Replace every placeholder.
+superuser: replace-with-admin-subject-id
+infrastructure_admin: replace-with-infrastructure-admin-subject-id
+inference_admin: replace-with-infrastructure-admin-subject-id
+logs-read: replace-with-analyst-subject-id

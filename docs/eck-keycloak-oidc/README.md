@@ -272,11 +272,11 @@ start and register its application privileges before its feature permissions tak
 
 The [combined Kustomize stack](../../kubernetes/eck-airgap-mirror/stack/README.md)
 uses `authorization_realms: [file1]` on its OIDC realm. Keycloak authenticates the
-user; Elasticsearch looks up the exact username in the imported file realm and
+user; Elasticsearch maps the immutable OIDC `sub` claim to the imported file realm and
 uses `users_roles` for authorization. This uses the cluster's OIDC-capable licence
 or trial without enabling an Enterprise trial on the shared ECK operator.
 
-This is username-based authorization. It does not evaluate Keycloak group mappings;
+This is immutable-subject authorization. It does not evaluate Keycloak group mappings;
 configure the group-policy path below only when group-based authorization is intended,
 and remove delegated authorization when switching to realm role mappings.
 

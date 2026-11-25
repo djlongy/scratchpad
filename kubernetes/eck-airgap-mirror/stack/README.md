@@ -22,7 +22,7 @@ The complete resources are in this directory. Set site values before applying:
 | Required | Kibana/Fleet/files hostnames and corporate ingress issuer | `base/ingress.yaml`, `base/kibana.yaml`, `base/files.yaml` |
 | Required | Imported EPR image by digest; other pinned images available internally | `base/package-registry.yaml` and workload image fields |
 | Required | Identity IP allowlist and ingress-controller pod labels | `base/networkpolicy.yaml` |
-| Required | Authorized usernames and role assignments | `base/users_roles` and `base/secrets/users` |
+| Required | Authorized immutable OIDC subject IDs and role assignments | `base/users_roles` and `base/secrets/users` |
 
 Keep the namespace as `elastic`, or update every namespace-bearing service URL, association CA path and certificate DNS name in your overlay as well as the Kustomize namespace.
 
@@ -31,7 +31,9 @@ Supply these ignored files from your secret manager:
 - `base/secrets/ca.crt`: PEM corporate CA chain trusted by the Keycloak HTTPS client.
 - `base/secrets/oidc.env`: `xpack.security.authc.realms.oidc.oidc1.rp.client_secret=<client-secret>`.
 - `base/secrets/dockerconfig.json`: Kubernetes Docker config JSON for your internal image registry.
-- `base/secrets/users`: file-realm `username:bcrypt-hash` records for the exact Keycloak `preferred_username` values listed in `base/users_roles`. Use independent random lookup-account passwords, not the users' Keycloak passwords. The file realm also permits basic authentication with those independent passwords.
+- `base/secrets/users`: file-realm `subject-id:bcrypt-hash` records for the exact immutable Keycloak OIDC `sub` values listed in `base/users_roles`. Use independent random lookup-account passwords, not the users' Keycloak passwords. The file realm also permits basic authentication with those independent passwords.
+
+Use the actual `sub` claim for this OIDC client; do not substitute a mutable username. The default placeholders authorize no real user. File-realm identifiers cannot contain a colon; use a compatible immutable subject claim or directory-backed authorization for such providers.
 
 ## Usage
 
@@ -53,7 +55,7 @@ Pre-populating the claim through your storage/transfer process works too. Transf
 
 ## Behaviour
 
-Keycloak authenticates OIDC users. Elasticsearch delegates authorization to its file realm (`authorization_realms: [file1]`): `base/users_roles` is the username allowlist and role assignment file. Custom permissions come from the shared `roles.yml` Secret generator. Keycloak group claims do not grant roles in this path; the Enterprise group-mapping policy in the OIDC guide is separate.
+Keycloak authenticates OIDC users. Elasticsearch delegates authorization to its file realm (`authorization_realms: [file1]`): `base/users_roles` is the immutable-subject allowlist and role assignment file. Custom permissions come from the shared `roles.yml` Secret generator. Keycloak group claims do not grant roles in this path; the Enterprise group-mapping policy in the OIDC guide is separate.
 
 Fleet Server uses evaluation-only `emptyDir` state; pod replacement re-enrolls it. Use persistent Agent state for production. Fleet Server enrolls against the preconfigured `eck-fleet-server` policy. Kibana installs pinned System, Elastic Agent and Fleet Server packages from the native EPR; `eck-agent` provides the System monitoring policy. Kibana's OIDC login, basic break-glass provider and package registry association are preconfigured.
 
@@ -61,7 +63,7 @@ The namespace CA signs EPR and file-server certificates; ECK supplies their CA t
 
 ## Expected result
 
-`kubectl -n elastic get elasticsearch,kibana,agent,packageregistry,pods,pvc,certificate` shows healthy components, bound storage and ready certificates. Open the configured Kibana hostname and choose Keycloak; the authenticated username must exist in `base/secrets/users` and `base/users_roles`.
+`kubectl -n elastic get elasticsearch,kibana,agent,packageregistry,pods,pvc,certificate` shows healthy components, bound storage and ready certificates. Open the configured Kibana hostname and choose Keycloak; the authenticated OIDC subject ID must exist in `base/secrets/users` and `base/users_roles`.
 
 ## Out of scope
 

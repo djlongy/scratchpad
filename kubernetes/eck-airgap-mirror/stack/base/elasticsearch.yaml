@@ -36,7 +36,7 @@ spec:
         op.userinfo_endpoint: https://sso.example.com/realms/corp/protocol/openid-connect/userinfo
         op.endsession_endpoint: https://sso.example.com/realms/corp/protocol/openid-connect/logout
         op.jwkset_path: https://sso.example.com/realms/corp/protocol/openid-connect/certs
-        claims.principal: preferred_username
+        claims.principal: sub
         claims.groups: groups
         claims.mail: email
         claims.name: name
