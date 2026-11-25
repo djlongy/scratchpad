@@ -18,7 +18,8 @@ spec:
         spec:
           initContainers:
             # The GeoIP downloader and the model repository use the JVM trust store,
-            # not the realm ssl settings. -Djavax.net.ssl.trustStore replaces the JDK
+            # not the realm ssl settings. Omit this import only if the JVM already trusts
+            # your mirror CA. -Djavax.net.ssl.trustStore replaces the JDK
             # default, so this copies the JDK cacerts and adds every certificate of
             # the corp CA bundle (keytool reads only the first certificate of a PEM
             # file, hence the split). Runs on every pod start.

@@ -40,8 +40,10 @@ The EPR policy permits only that Kibana's pods in the same namespace and grants 
 
 4. Merge `eck/kibana-package-registry.yaml` into your existing Kibana resource and apply it. Remove an explicit `xpack.fleet.registryUrl`; `spec.packageRegistryRef` lets ECK configure the service URL and registry CA trust. Preserve your Elasticsearch association, authentication and other existing settings.
 5. Publish the exported artifact files through your separate file server. Serve the contents of `artifacts/` at its root, and `geoip/`, `models/` and `kb/` at matching URL paths. Verify transferred files against `MANIFEST.sha256`. The `/kb` endpoint must provide the S3-style `ListBucketResult` XML index; Endpoint artifacts need an ETag without a dash.
-6. Merge the file-mirror settings from `eck/elasticsearch.yaml` into each existing Elasticsearch nodeSet. From `eck/kibana.yaml`, take the documentation URL and file-mirror CA mount only: its explicit registry URL is for the chart deployment. If you set `NODE_EXTRA_CA_CERTS`, the referenced PEM bundle must trust both the file server and EPR; do not overwrite ECK's registry trust with a corp-only bundle. Apply the merged resources and wait for their rollouts.
+6. Merge the file-mirror settings from `eck/elasticsearch.yaml` into each existing Elasticsearch nodeSet. From `eck/kibana.yaml`, take the documentation URL and file-mirror CA mount only: omit its explicit registry URL when using the native association. If you set `NODE_EXTRA_CA_CERTS`, the referenced PEM bundle must trust both the file server and EPR; do not overwrite ECK's registry trust with a corp-only bundle. Apply the merged resources and wait for their rollouts.
 7. In Fleet, install your integrations and set the agent binary download source to the file server's `/downloads/` URL. Set Defend's platform-specific `advanced.artifacts.global.base_url` values to the file-server root. Install detection rules, GeoIP, ELSER and product documentation as required by your licence and ML capacity.
+
+Security permissions live in [roles.yml](../../docs/eck-keycloak-oidc/roles.yml), imported by ECK through `spec.auth.roles`. Follow the [OIDC guide](../../docs/eck-keycloak-oidc/README.md) for the import and separate declarative group mappings; the mapping policy requires ECK Enterprise or Enterprise trial.
 
 ## Expected result
 
@@ -64,4 +66,4 @@ Refresh Endpoint artifacts and GeoIP independently of the EPR image; GeoIP datab
 
 ## Out of scope
 
-The [chart/elastic-mirror](chart/elastic-mirror) directory still contains the combined Helm implementation, including its own EPR Deployment and nginx file server. It is an alternative to the native path above, not a dependency. Do not install its EPR alongside the native registry. The native manifests do not provision a file server or migrate an existing deployment.
+The native manifests do not provision a file server or migrate an existing deployment. EPR is deployed only through ECK; no Helm chart is included.
