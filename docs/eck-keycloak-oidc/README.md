@@ -268,6 +268,18 @@ reloads it. Repeat the Secret apply command after editing permissions. File-defi
 roles cannot be viewed or edited through the role-management API or UI. Kibana must
 start and register its application privileges before its feature permissions take effect.
 
+### File-based authorization without an ECK operator trial
+
+The [combined Kustomize stack](../../kubernetes/eck-airgap-mirror/stack/README.md)
+uses `authorization_realms: [file1]` on its OIDC realm. Keycloak authenticates the
+user; Elasticsearch looks up the exact username in the imported file realm and
+uses `users_roles` for authorization. This uses the cluster's OIDC-capable licence
+or trial without enabling an Enterprise trial on the shared ECK operator.
+
+This is username-based authorization. It does not evaluate Keycloak group mappings;
+configure the group-policy path below only when group-based authorization is intended,
+and remove delegated authorization when switching to realm role mappings.
+
 ### OIDC group mappings
 
 [role-mappings.yml](role-mappings.yml) declares the group assignments as an ECK

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: Elasticsearch
+      name: es
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          # shortcut: affected ECK 3.5 builds replace cluster trials; use an operator-managed licence for production.
+          eck.k8s.elastic.co/es-observer-interval: "0s"
+      - op: add
+        path: /spec/nodeSets/0/config/xpack.license.self_generated.type
+        value: trial

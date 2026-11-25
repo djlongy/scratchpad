@@ -1,0 +1,92 @@
+apiVersion: kibana.k8s.elastic.co/v1
+kind: Kibana
+metadata:
+  name: kb
+  namespace: elastic
+spec:
+  version: 9.5.2
+  count: 1
+  image: docker.elastic.co/kibana/kibana:9.5.2@sha256:861d93114b756dd214f6d5c8824f90ac92e07d5b6223fd4a20212f7504eec2ad
+  elasticsearchRef:
+    name: es
+  packageRegistryRef:
+    name: registry
+  config:
+    server.publicBaseUrl: https://kibana.example.com
+    telemetry.enabled: false
+    xpack.fleet.isAirGapped: true
+    xpack.security.authc.providers:
+      oidc.oidc1:
+        order: 0
+        realm: oidc1
+        description: Log in with Keycloak
+      basic.basic1:
+        order: 1
+    xpack.fleet.agents.fleet_server.hosts:
+    - https://fleet.example.com
+    xpack.fleet.packages:
+    - name: system
+      version: 3.5.0
+    - name: elastic_agent
+      version: 2.9.6
+    - name: fleet_server
+      version: 1.6.1
+    xpack.fleet.agentPolicies:
+    - name: Fleet Server
+      id: eck-fleet-server
+      namespace: default
+      is_managed: true
+      is_default_fleet_server: true
+      monitoring_enabled:
+      - logs
+      - metrics
+      package_policies:
+      - name: fleet-server
+        id: fleet-server
+        package:
+          name: fleet_server
+      data_output_id: eck-elasticsearch
+      monitoring_output_id: eck-elasticsearch
+    - name: System monitoring
+      id: eck-agent
+      namespace: default
+      is_managed: true
+      is_default: true
+      monitoring_enabled:
+      - logs
+      - metrics
+      package_policies:
+      - name: system
+        id: system
+        package:
+          name: system
+      data_output_id: eck-elasticsearch
+      monitoring_output_id: eck-elasticsearch
+    xpack.productDocBase.artifactRepositoryUrl: https://files.elastic.svc:8443/kb
+    xpack.fleet.outputs:
+    - id: eck-elasticsearch
+      name: ECK Elasticsearch
+      type: elasticsearch
+      is_default: true
+      is_default_monitoring: true
+      hosts:
+      - https://es-es-http.elastic.svc:9200
+      ssl:
+        certificate_authorities:
+        - /mnt/elastic-internal/elasticsearch-association/elastic/es/certs/ca.crt
+  podTemplate:
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: registry-pull
+      containers:
+      - name: kibana
+        env:
+        - name: NODE_OPTIONS
+          value: --max-old-space-size=1536
+        resources:
+          requests:
+            cpu: 100m
+            memory: 2Gi
+          limits:
+            memory: 2Gi

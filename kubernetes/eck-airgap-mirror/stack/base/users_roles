@@ -1,0 +1,5 @@
+# Usernames must match Keycloak preferred_username exactly.
+superuser: admin
+infrastructure_admin: infrastructure-admin
+inference_admin: infrastructure-admin
+logs-read: analyst

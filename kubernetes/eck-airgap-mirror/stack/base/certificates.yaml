@@ -1,0 +1,50 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: mirror-selfsigned
+  namespace: elastic
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mirror-ca
+  namespace: elastic
+spec:
+  isCA: true
+  commonName: elastic-mirror-ca
+  secretName: mirror-ca
+  duration: 87600h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    kind: Issuer
+    name: mirror-selfsigned
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: mirror-ca
+  namespace: elastic
+spec:
+  ca:
+    secretName: mirror-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: registry-http
+  namespace: elastic
+spec:
+  secretName: registry-http-tls
+  issuerRef:
+    kind: Issuer
+    name: mirror-ca
+  dnsNames:
+  - registry-epr-http
+  - registry-epr-http.elastic
+  - registry-epr-http.elastic.svc

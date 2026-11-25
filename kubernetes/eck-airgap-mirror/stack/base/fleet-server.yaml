@@ -1,0 +1,33 @@
+apiVersion: agent.k8s.elastic.co/v1alpha1
+kind: Agent
+metadata:
+  name: fleet-server
+  namespace: elastic
+spec:
+  version: 9.5.2
+  image: docker.elastic.co/elastic-agent/elastic-agent:9.5.2@sha256:cbb8913e92505e0b551c7d5d596ac5c2d4ded9ac20c53275bc96f466b6ba85ac
+  mode: fleet
+  fleetServerEnabled: true
+  policyID: eck-fleet-server
+  kibanaRef:
+    name: kb
+  elasticsearchRefs:
+  - name: es
+  deployment:
+    replicas: 1
+    podTemplate:
+      spec:
+        automountServiceAccountToken: false
+        imagePullSecrets:
+        - name: registry-pull
+        volumes:
+        - name: agent-data
+          emptyDir: {}
+        containers:
+        - name: agent
+          resources:
+            requests:
+              cpu: 25m
+              memory: 1Gi
+            limits:
+              memory: 1Gi
