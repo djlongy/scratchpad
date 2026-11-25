@@ -249,6 +249,11 @@ index-metadata access to `logs-*`, plus Kibana Discover and Dashboard read acces
 The Kibana privileges apply to all spaces; restrict `resources` to named spaces if
 required. Elastic supplies built-in roles such as `superuser`, `editor` and `viewer`.
 
+The file also defines `infrastructure_admin`: cluster monitoring plus read, monitoring
+and metadata access to all non-restricted indices. It does not grant writes or security
+administration. Its group mapping adds the built-in `inference_admin` role to allow
+inference requests and endpoint management. Narrow the index patterns if required.
+
 Import the file into a Kubernetes Secret in `<NS>`:
 
 ```sh
@@ -279,6 +284,11 @@ namespace, not the operator namespace, to keep its scope within that namespace.
 The policy maps `es-admins`, `es-analysts`, `es-viewers` and `es-log-readers` to
 `superuser`, `editor`, `viewer` and `logs-read`. Every mapping also requires realm
 `oidc1`, so a same-named group from another realm cannot grant these roles.
+
+`es-infrastructure-admins` receives `[infrastructure_admin, inference_admin]`.
+`es-admins` retains `superuser`, which already includes inference access; no extra
+inference role is needed for superusers. These permissions cover Elasticsearch's
+Inference APIs, not authentication to a separate inference server or Kibana feature access.
 
 Elasticsearch's `role_mapping.yml` files support PKI, LDAP and Active Directory,
 not OIDC. The operator policy is the declarative OIDC mapping path here; no manual
