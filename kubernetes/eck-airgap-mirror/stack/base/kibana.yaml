@@ -47,6 +47,8 @@ spec:
           name: fleet_server
       data_output_id: eck-elasticsearch
       monitoring_output_id: eck-elasticsearch
+      advanced_settings:
+        agent_monitoring_runtime_experimental: process
     - name: System monitoring
       id: eck-agent
       namespace: default
@@ -62,6 +64,8 @@ spec:
           name: system
       data_output_id: eck-elasticsearch
       monitoring_output_id: eck-elasticsearch
+      advanced_settings:
+        agent_monitoring_runtime_experimental: process
     xpack.productDocBase.artifactRepositoryUrl: https://files.elastic.svc:8443/kb
     xpack.fleet.outputs:
     - id: eck-elasticsearch
