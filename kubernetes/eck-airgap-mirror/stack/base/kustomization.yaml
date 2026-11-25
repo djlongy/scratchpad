@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: elastic
+resources:
+- namespace.yaml
+- elasticsearch.yaml
+- kibana.yaml
+- package-registry.yaml
+- fleet-server.yaml
+- ingress.yaml
+- networkpolicy.yaml
+- ../../../../docs/eck-keycloak-oidc
+- files.yaml
+- certificates.yaml
+secretGenerator:
+- name: corp-ca
+  files:
+  - ca.crt=secrets/ca.crt
+  options:
+    disableNameSuffixHash: true
+- name: es-oidc-secure-settings
+  envs:
+  - secrets/oidc.env
+  options:
+    disableNameSuffixHash: true
+- name: registry-pull
+  type: kubernetes.io/dockerconfigjson
+  files:
+  - .dockerconfigjson=secrets/dockerconfig.json
+  options:
+    disableNameSuffixHash: true
+- name: oidc-authorizations
+  files:
+  - users=secrets/users
+  - users_roles
+  options:
+    disableNameSuffixHash: true
+configMapGenerator:
+- name: files-nginx
+  files:
+  - default.conf=nginx.conf

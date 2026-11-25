@@ -6,7 +6,7 @@
 #   mirror-bundle.sh -v 9.5.2 -o ./bundle --dry-run     # sizes only, downloads nothing
 #   mirror-bundle.sh -v 9.5.2 -o ./bundle               # full export
 #
-# Bundle layout (load-bundle.sh expects it):
+# Bundle layout served by the artifact-server PVC:
 #   images/*.tar                 docker-archive per image (+ images.tsv: name, digest)
 #   artifacts/downloads/...      agent binaries (artifacts.elastic.co layout) and
 #                                endpoint artifacts (artifacts.security.elastic.co layout)

@@ -1,0 +1,119 @@
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: es
+  namespace: elastic
+  labels:
+    security-profile: oidc
+spec:
+  version: 9.5.2
+  image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2@sha256:9c1e1afc2bda921b35025e21c72ec6e392266995aa35ad6a47887363592718be
+  auth:
+    roles:
+    - secretName: es-custom-roles
+    fileRealm:
+    - secretName: oidc-authorizations
+  secureSettings:
+  - secretName: es-oidc-secure-settings
+  nodeSets:
+  - name: default
+    count: 3
+    config:
+      node.store.allow_mmap: false
+      xpack.security.authc.realms.oidc.oidc1:
+        order: 2
+        rp.client_id: kibana
+        rp.response_type: code
+        rp.requested_scopes:
+        - openid
+        - profile
+        - email
+        rp.redirect_uri: https://kibana.example.com/api/security/oidc/callback
+        rp.post_logout_redirect_uri: https://kibana.example.com/security/logged_out
+        op.issuer: https://sso.example.com/realms/corp
+        op.authorization_endpoint: https://sso.example.com/realms/corp/protocol/openid-connect/auth
+        op.token_endpoint: https://sso.example.com/realms/corp/protocol/openid-connect/token
+        op.userinfo_endpoint: https://sso.example.com/realms/corp/protocol/openid-connect/userinfo
+        op.endsession_endpoint: https://sso.example.com/realms/corp/protocol/openid-connect/logout
+        op.jwkset_path: https://sso.example.com/realms/corp/protocol/openid-connect/certs
+        claims.principal: sub
+        claims.groups: groups
+        claims.mail: email
+        claims.name: name
+        ssl.certificate_authorities:
+        - /usr/share/elasticsearch/config/corp-ca/ca.crt
+        authorization_realms:
+        - file1
+      ingest.geoip.downloader.endpoint: https://files.elastic.svc:8443/geoip/overview.json
+      xpack.ml.model_repository: https://files.elastic.svc:8443/models
+      xpack.ml.max_machine_memory_percent: 60
+    podTemplate:
+      spec:
+        automountServiceAccountToken: false
+        imagePullSecrets:
+        - name: registry-pull
+        containers:
+        - name: elasticsearch
+          resources:
+            requests:
+              cpu: 250m
+              memory: 8Gi
+            limits:
+              memory: 8Gi
+          env:
+          - name: ES_JAVA_OPTS
+            value: -Xms2g -Xmx2g -Djavax.net.ssl.trustStore=/es-trust/cacerts -Djavax.net.ssl.trustStorePassword=changeit
+          volumeMounts:
+          - name: corp-ca
+            mountPath: /usr/share/elasticsearch/config/corp-ca
+            readOnly: true
+          - name: es-trust
+            mountPath: /es-trust
+            readOnly: true
+        volumes:
+        - name: corp-ca
+          secret:
+            secretName: corp-ca
+        - name: es-trust
+          emptyDir: {}
+        - name: trust-tmp
+          emptyDir: {}
+        - name: mirror-ca
+          secret:
+            secretName: mirror-ca
+            items:
+            - key: ca.crt
+              path: ca.crt
+        initContainers:
+        - name: corp-trust-store
+          image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2@sha256:9c1e1afc2bda921b35025e21c72ec6e392266995aa35ad6a47887363592718be
+          command:
+          - sh
+          - -ec
+          args:
+          - "J=/usr/share/elasticsearch/jdk\ncp \"$J/lib/security/cacerts\" /es-trust/cacerts\n\
+            chmod u+w /es-trust/cacerts\nawk '/BEGIN CERTIFICATE/{n++} n>0{print >\
+            \ (\"/tmp/corp-ca-\" n \".pem\")}' /corp-ca/ca.crt /mirror-ca/ca.crt\n\
+            for f in /tmp/corp-ca-*.pem; do\n  \"$J/bin/keytool\" -importcert -noprompt\
+            \ -alias \"$(basename \"$f\" .pem)\" \\\n    -file \"$f\" -keystore /es-trust/cacerts\
+            \ -storepass changeit\ndone\n"
+          volumeMounts:
+          - name: corp-ca
+            mountPath: /corp-ca
+            readOnly: true
+          - name: es-trust
+            mountPath: /es-trust
+          - name: trust-tmp
+            mountPath: /tmp
+          - name: mirror-ca
+            mountPath: /mirror-ca
+            readOnly: true
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 40Gi

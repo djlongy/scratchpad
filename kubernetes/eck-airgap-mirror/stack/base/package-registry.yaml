@@ -1,0 +1,35 @@
+apiVersion: packageregistry.k8s.elastic.co/v1alpha1
+kind: PackageRegistry
+metadata:
+  name: registry
+  namespace: elastic
+spec:
+  version: 9.5.2
+  count: 1
+  image: registry.example.internal/elastic/package-registry/distribution:production@sha256:<digest>
+  resources:
+    requests:
+      cpu: 100m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+  podTemplate:
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+      - name: registry-pull
+      containers:
+      - name: package-registry
+        imagePullPolicy: IfNotPresent
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTPS
+          periodSeconds: 10
+          failureThreshold: 180
+          timeoutSeconds: 5
+  http:
+    tls:
+      certificate:
+        secretName: registry-http-tls

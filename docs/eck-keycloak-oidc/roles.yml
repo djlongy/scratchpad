@@ -14,3 +14,11 @@ logs-read:
     - feature_dashboard.read
     resources:
     - '*'
+
+# Infrastructure visibility; inference management comes from the built-in role.
+infrastructure_admin:
+  cluster: [monitor]
+  indices:
+  - names: ["logs-*", "metrics-*"]
+    privileges: [read, monitor, view_index_metadata]
+    allow_restricted_indices: false

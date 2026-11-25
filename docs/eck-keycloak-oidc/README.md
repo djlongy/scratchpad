@@ -249,6 +249,11 @@ index-metadata access to `logs-*`, plus Kibana Discover and Dashboard read acces
 The Kibana privileges apply to all spaces; restrict `resources` to named spaces if
 required. Elastic supplies built-in roles such as `superuser`, `editor` and `viewer`.
 
+The file also defines `infrastructure_admin`: cluster monitoring plus read, monitoring
+and metadata access to `logs-*` and `metrics-*`. It does not grant index writes or security
+administration. Its group mapping additionally grants the built-in `inference_admin`
+role: running inference and creating, updating or deleting inference endpoints. Extend index patterns only for approved datasets.
+
 Import the file into a Kubernetes Secret in `<NS>`:
 
 ```sh
@@ -262,6 +267,18 @@ ECK distributes the role file to every node through `spec.auth.roles`; Elasticse
 reloads it. Repeat the Secret apply command after editing permissions. File-defined
 roles cannot be viewed or edited through the role-management API or UI. Kibana must
 start and register its application privileges before its feature permissions take effect.
+
+### File-based authorization without an ECK operator trial
+
+The [combined Kustomize stack](../../kubernetes/eck-airgap-mirror/stack/README.md)
+uses `authorization_realms: [file1]` on its OIDC realm. Keycloak authenticates the
+user; Elasticsearch maps the immutable OIDC `sub` claim to the imported file realm and
+uses `users_roles` for authorization. This uses the cluster's OIDC-capable licence
+or trial without enabling an Enterprise trial on the shared ECK operator.
+
+This is immutable-subject authorization. It does not evaluate Keycloak group mappings;
+configure the group-policy path below only when group-based authorization is intended,
+and remove delegated authorization when switching to realm role mappings.
 
 ### OIDC group mappings
 
@@ -279,6 +296,11 @@ namespace, not the operator namespace, to keep its scope within that namespace.
 The policy maps `es-admins`, `es-analysts`, `es-viewers` and `es-log-readers` to
 `superuser`, `editor`, `viewer` and `logs-read`. Every mapping also requires realm
 `oidc1`, so a same-named group from another realm cannot grant these roles.
+
+`es-infrastructure-admins` receives `[infrastructure_admin, inference_admin]`.
+`es-admins` retains `superuser`, which already includes inference access; no extra
+inference role is needed for superusers. These permissions cover Elasticsearch's
+Inference APIs, not authentication to a separate inference server or Kibana feature access.
 
 Elasticsearch's `role_mapping.yml` files support PKI, LDAP and Active Directory,
 not OIDC. The operator policy is the declarative OIDC mapping path here; no manual
