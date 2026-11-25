@@ -25,8 +25,8 @@ spec:
         roles: [infrastructure_admin, inference_admin]
         rules:
           all:
-            - field: {realm.name: oidc1}
-            - field: {groups: es-infrastructure-admins}
+          - field: {realm.name: oidc1}
+          - field: {groups: es-infrastructure-admins}
       oidc-analysts:
         enabled: true
         roles:
