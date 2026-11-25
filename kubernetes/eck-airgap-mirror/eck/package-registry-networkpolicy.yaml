@@ -1,0 +1,19 @@
+# EPR serves the imported catalogue without making outbound connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: package-registry
+  namespace: elastic
+spec:
+  podSelector:
+    matchLabels:
+      packageregistry.k8s.elastic.co/name: registry
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              kibana.k8s.elastic.co/name: kb
+      ports:
+        - {protocol: TCP, port: 8080}
+  egress: []

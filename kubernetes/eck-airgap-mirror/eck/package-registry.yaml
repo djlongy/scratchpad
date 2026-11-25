@@ -1,0 +1,27 @@
+# ECK manages the Deployment, Service and TLS. Import the full production image
+# into your internal registry first; the operator's default image is Lite.
+apiVersion: packageregistry.k8s.elastic.co/v1alpha1
+kind: PackageRegistry
+metadata:
+  name: registry
+  namespace: elastic
+spec:
+  version: 9.5.2
+  count: 1
+  image: registry.example.internal/elastic/package-registry/distribution:production@sha256:<digest>
+  resources:
+    requests: {cpu: 100m, memory: 2Gi}
+    limits: {memory: 4Gi}
+  podTemplate:
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: registry-pull}]
+      containers:
+        - name: package-registry
+          imagePullPolicy: IfNotPresent
+          # The full catalogue indexes before the HTTPS listener starts.
+          startupProbe:
+            httpGet: {path: /health, port: 8080, scheme: HTTPS}
+            periodSeconds: 10
+            failureThreshold: 180
+            timeoutSeconds: 5
