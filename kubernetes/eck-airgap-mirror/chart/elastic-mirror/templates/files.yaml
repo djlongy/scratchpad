@@ -11,10 +11,7 @@ data:
     # ETag with the dash removed.
     map $sent_http_etag $elastic_etag { "~(.*)-(.*)" "$1$2"; }
     server {
-      listen 8443 ssl;
-      ssl_certificate     /tls/tls.crt;
-      ssl_certificate_key /tls/tls.key;
-      ssl_protocols       TLSv1.2 TLSv1.3;
+      listen 8080;
       root /srv/mirror;
       add_header ETag $elastic_etag;
       # Agent binaries and Defend artifacts, artifacts.elastic.co layout.
@@ -75,18 +72,17 @@ spec:
           image: {{ required "files.image is required" .Values.files.image }}
           imagePullPolicy: IfNotPresent
           ports:
-            - {name: https, containerPort: 8443}
+            - {name: http, containerPort: 8080}
           volumeMounts:
             - {name: data, mountPath: /srv/mirror}
             - {name: conf, mountPath: /etc/nginx/conf.d}
-            - {name: tls, mountPath: /tls, readOnly: true}
             - {name: tmp, mountPath: /tmp}
           {{- include "elastic-mirror.container" . | nindent 10 }}
           readinessProbe:
-            httpGet: {path: /healthz, port: https, scheme: HTTPS}
+            httpGet: {path: /healthz, port: http}
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /healthz, port: https, scheme: HTTPS}
+            httpGet: {path: /healthz, port: http}
             periodSeconds: 20
           resources: {{- toYaml .Values.files.resources | nindent 12 }}
       volumes:
@@ -94,8 +90,6 @@ spec:
           persistentVolumeClaim: {claimName: files}
         - name: conf
           configMap: {name: files-nginx}
-        - name: tls
-          secret: {secretName: elastic-mirror-tls}
         - name: tmp
           emptyDir: {sizeLimit: 64Mi}
 ---
@@ -107,4 +101,4 @@ metadata:
 spec:
   selector: {app.kubernetes.io/name: files}
   ports:
-    - {name: https, port: 8443, targetPort: https}
+    - {name: http, port: 8080, targetPort: http}

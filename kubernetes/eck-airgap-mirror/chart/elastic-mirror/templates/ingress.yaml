@@ -1,33 +1,31 @@
-{{- if .Values.ingress.enabled }}
-# TLS ends here with a certificate from your cluster issuer, then re-encrypts to
-# the file server and verifies it against the in-namespace CA.
+# TLS ends here with certificates from your internal ClusterIssuer, which the corp
+# CA signs. Consumers (Kibana, Elasticsearch, agents) trust the corp CA.
+{{- $issuer := required "ingress.clusterIssuer is required" .Values.ingress.clusterIssuer }}
+{{- range $name, $host := dict "epr" .Values.ingress.eprHost "files" .Values.ingress.filesHost }}
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: files
-  labels: {{- include "elastic-mirror.labels" . | nindent 4 }}
+  name: {{ $name }}
+  labels: {{- include "elastic-mirror.labels" $ | nindent 4 }}
   annotations:
-    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
-    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
-    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
-    nginx.ingress.kubernetes.io/proxy-ssl-secret: {{ .Release.Namespace }}/elastic-mirror-tls
-    nginx.ingress.kubernetes.io/proxy-ssl-name: files.{{ .Release.Namespace }}.svc
-    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+    cert-manager.io/cluster-issuer: {{ $issuer }}
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Agent binaries and model files are large downloads.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
 spec:
-  ingressClassName: {{ .Values.ingress.className }}
+  ingressClassName: {{ $.Values.ingress.className }}
   tls:
-    - hosts: [{{ .Values.ingress.host }}]
-      secretName: files-ingress-tls
+    - hosts: [{{ required (printf "ingress.%sHost is required" $name) $host }}]
+      secretName: {{ $name }}-ingress-tls
   rules:
-    - host: {{ .Values.ingress.host }}
+    - host: {{ $host }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: files
-                port: {number: 8443}
+                name: {{ $name }}
+                port: {number: 8080}
 {{- end }}

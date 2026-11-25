@@ -38,30 +38,22 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - {name: EPR_ADDRESS, value: "0.0.0.0:8080"}
-            - {name: EPR_TLS_CERT, value: /tls/tls.crt}
-            - {name: EPR_TLS_KEY, value: /tls/tls.key}
-            - {name: EPR_TLS_MIN_VERSION, value: "1.2"}
           ports:
-            - {name: https, containerPort: 8080}
-          volumeMounts:
-            - {name: tls, mountPath: /tls, readOnly: true}
+            - {name: http, containerPort: 8080}
           {{- include "elastic-mirror.container" . | nindent 10 }}
           # The registry indexes every package before it listens: up to 30 minutes
           # for the full catalogue (180 x 10 s).
           startupProbe:
-            httpGet: {path: /, port: https, scheme: HTTPS}
+            httpGet: {path: /, port: http}
             periodSeconds: 10
             failureThreshold: 180
           readinessProbe:
-            httpGet: {path: /, port: https, scheme: HTTPS}
+            httpGet: {path: /, port: http}
             periodSeconds: 10
           livenessProbe:
-            httpGet: {path: /, port: https, scheme: HTTPS}
+            httpGet: {path: /, port: http}
             periodSeconds: 20
           resources: {{- toYaml .Values.epr.resources | nindent 12 }}
-      volumes:
-        - name: tls
-          secret: {secretName: elastic-mirror-tls}
 ---
 apiVersion: v1
 kind: Service
@@ -71,4 +63,4 @@ metadata:
 spec:
   selector: {app.kubernetes.io/name: epr}
   ports:
-    - {name: https, port: 8080, targetPort: https}
+    - {name: http, port: 8080, targetPort: http}
