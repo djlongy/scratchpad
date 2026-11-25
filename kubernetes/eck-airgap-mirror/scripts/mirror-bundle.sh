@@ -37,7 +37,8 @@ AGENT_PACKAGES="${AGENT_PACKAGES:-tar.gz}"           # tar.gz deb rpm msi (msi: 
 # multilingual-e5-small (.multilingual-e5-small-elasticsearch) and rerank-v1
 # (.rerank-v1-elasticsearch, published without a platform variant).
 MODELS="${MODELS:-elser_model_2:linux-x86_64,generic multilingual-e5-small:linux-x86_64,generic rerank-v1:generic}"
-KB_PRODUCTS="${KB_PRODUCTS:-security kibana observability elasticsearch openapi}"
+# openapi is left out: Kibana 9.5.2 rejects the upstream openapi zip ("Manifest file not found").
+KB_PRODUCTS="${KB_PRODUCTS:-security kibana observability elasticsearch}"
 KB_SUFFIX="${KB_SUFFIX:-}"                           # e.g. --.multilingual-e5-small-elasticsearch ; empty = default (ELSER) artifacts
 ARTIFACTS_BASE="https://artifacts.elastic.co/downloads"
 ENDPOINT_BASE="https://artifacts.security.elastic.co"

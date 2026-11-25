@@ -1,5 +1,6 @@
-# Elasticsearch resource fragment (ECK). Merge into every nodeSet.
-# Both settings are static: applying this rolls the nodes one at a time.
+# Elasticsearch fragment (ECK). Merge config, initContainers, env and volumes into
+# every nodeSet of your Elasticsearch resource, then kubectl apply it.
+# Both settings are static: ECK rolls the nodes one at a time.
 apiVersion: elasticsearch.k8s.elastic.co/v1
 kind: Elasticsearch
 metadata:
@@ -11,47 +12,40 @@ spec:
     - name: default
       count: 3
       config:
-        ingest.geoip.downloader.endpoint: "https://minio.elastic-mirror.svc:9000/elastic-mirror/geoip/overview.json"
-        xpack.ml.model_repository: "https://minio.elastic-mirror.svc:9000/elastic-mirror/models"
+        ingest.geoip.downloader.endpoint: "https://files.elastic-mirror.svc:8443/geoip/overview.json"
+        xpack.ml.model_repository: "https://files.elastic-mirror.svc:8443/models"
       podTemplate:
         spec:
           initContainers:
-            # -Djavax.net.ssl.trustStore replaces the JDK default instead of adding to
-            # it, so the init container copies the JDK's cacerts and adds the mirror CA.
-            # It re-runs on every pod start, so a rotated CA lands on the next restart.
+            # -Djavax.net.ssl.trustStore replaces the JDK default instead of adding
+            # to it, so this copies the JDK cacerts and adds the mirror CA. It runs on
+            # every pod start, so a rotated CA lands on the next restart.
+            # keytool imports only the first certificate of a PEM file: the
+            # configmap must hold the mirror CA alone.
             - name: mirror-trust-store
-              image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2   # use your internal registry path
-              command: ["sh", "-c"]
+              image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2   # the same image as the nodes
+              command: ["sh", "-ec"]
               args:
                 - |
-                  set -e
                   J=/usr/share/elasticsearch/jdk
                   cp "$J/lib/security/cacerts" /es-trust/cacerts
                   chmod u+w /es-trust/cacerts
                   "$J/bin/keytool" -importcert -noprompt -alias elastic-mirror-ca \
                     -file /mirror-ca/ca.crt -keystore /es-trust/cacerts -storepass changeit
-              securityContext:
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop: ["ALL"]
-                runAsNonRoot: true
-                seccompProfile:
-                  type: RuntimeDefault
               volumeMounts:
                 - {name: mirror-ca, mountPath: /mirror-ca, readOnly: true}
                 - {name: es-trust, mountPath: /es-trust}
           containers:
             - name: elasticsearch
               env:
-                # The store password only satisfies the keystore format: the file holds
-                # public certificates.
+                # Heap sizing stays automatic. The store password only satisfies the
+                # keystore format: the file holds public certificates.
                 - name: ES_JAVA_OPTS
-                  value: "-Xms2g -Xmx2g -Djavax.net.ssl.trustStore=/es-trust/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
+                  value: "-Djavax.net.ssl.trustStore=/es-trust/cacerts -Djavax.net.ssl.trustStorePassword=changeit"
               volumeMounts:
                 - {name: es-trust, mountPath: /es-trust, readOnly: true}
           volumes:
             - name: mirror-ca
-              configMap:
-                name: elastic-mirror-ca
+              configMap: {name: elastic-mirror-ca}
             - name: es-trust
               emptyDir: {}

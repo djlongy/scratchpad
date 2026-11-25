@@ -1,0 +1,36 @@
+# Image pull secrets for both pods, for example [{name: registry-pull}].
+imagePullSecrets: []
+
+epr:
+  # Required. The full registry, pinned by digest after it lands in your registry.
+  image: ""
+  # The full image is about 25 GiB compressed and 45 GiB extracted: schedule it on
+  # nodes with a large image disk.
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    requests: {cpu: 100m, memory: 2Gi}
+    limits: {memory: 4Gi}
+
+files:
+  # Required. nginx-unprivileged (Alpine based, it carries tar for the load step), by digest.
+  image: ""
+  storageClassName: ""   # empty uses the cluster default
+  size: 20Gi
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+# Namespaces whose pods (Kibana, Elasticsearch) may read the mirror.
+consumerNamespaces: [elastic-system]
+
+# Agents and Elastic Defend outside the cluster read the file server through this.
+ingress:
+  enabled: false
+  className: nginx
+  host: elastic-mirror.example.internal
+  clusterIssuer: internal-ca
+  # The ingress controller pods, for the NetworkPolicy.
+  controllerNamespace: ingress-nginx
+  controllerPodLabels:
+    app.kubernetes.io/name: ingress-nginx

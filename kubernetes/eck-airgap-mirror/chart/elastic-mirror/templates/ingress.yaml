@@ -1,0 +1,33 @@
+{{- if .Values.ingress.enabled }}
+# TLS ends here with a certificate from your cluster issuer, then re-encrypts to
+# the file server and verifies it against the in-namespace CA.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: files
+  labels: {{- include "elastic-mirror.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+    nginx.ingress.kubernetes.io/backend-protocol: HTTPS
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: {{ .Release.Namespace }}/elastic-mirror-tls
+    nginx.ingress.kubernetes.io/proxy-ssl-name: files.{{ .Release.Namespace }}.svc
+    nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts: [{{ .Values.ingress.host }}]
+      secretName: files-ingress-tls
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: files
+                port: {number: 8443}
+{{- end }}
