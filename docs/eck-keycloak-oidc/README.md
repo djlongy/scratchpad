@@ -250,9 +250,9 @@ The Kibana privileges apply to all spaces; restrict `resources` to named spaces 
 required. Elastic supplies built-in roles such as `superuser`, `editor` and `viewer`.
 
 The file also defines `infrastructure_admin`: cluster monitoring plus read, monitoring
-and metadata access to all non-restricted indices. It does not grant writes or security
+and metadata access to `logs-*` and `metrics-*`. It does not grant writes or security
 administration. Its group mapping adds the built-in `inference_admin` role to allow
-inference requests and endpoint management. Narrow the index patterns if required.
+inference requests and endpoint management. Extend index patterns only for approved datasets.
 
 Import the file into a Kubernetes Secret in `<NS>`:
 
