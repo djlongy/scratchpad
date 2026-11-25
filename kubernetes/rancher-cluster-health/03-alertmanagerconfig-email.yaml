@@ -1,0 +1,39 @@
+# Route the image-pull alerts to email. Replace the SMTP host, addresses and
+# credentials. Needs alertmanagerConfigMatcherStrategy type None (README step 3).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: smtp-auth
+  namespace: cattle-monitoring-system
+type: Opaque
+stringData:
+  password: "REPLACE-WITH-SMTP-PASSWORD"
+---
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: cluster-health-email
+  namespace: cattle-monitoring-system
+spec:
+  route:
+    receiver: email
+    groupBy: [alertname, namespace, pod]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    matchers:
+      - name: alertname
+        matchType: "=~"
+        value: "ImagePullFailing.*"
+  receivers:
+    - name: email
+      emailConfigs:
+        - to: platform-team@example.com
+          from: alertmanager@example.com
+          smarthost: smtp.example.com:587
+          authUsername: alertmanager@example.com
+          authPassword:
+            name: smtp-auth
+            key: password
+          requireTLS: true
+          sendResolved: true

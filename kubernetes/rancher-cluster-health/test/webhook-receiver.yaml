@@ -1,0 +1,44 @@
+# TEST ONLY: logs every alert Alertmanager posts, to prove routing works.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: alert-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-sink
+  namespace: alert-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: alert-sink}
+  template:
+    metadata:
+      labels: {app: alert-sink}
+    spec:
+      containers:
+        - name: sink
+          image: python:3.12-alpine
+          command: ["python3", "-u", "-c"]
+          args:
+            - |
+              import http.server, json
+              class H(http.server.BaseHTTPRequestHandler):
+                  def do_POST(self):
+                      body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                      for a in body.get("alerts", []):
+                          l = a["labels"]
+                          print("ALERT", a["status"], l.get("alertname"), l.get("severity"), l.get("namespace"), l.get("pod"), flush=True)
+                      self.send_response(200); self.end_headers()
+              http.server.HTTPServer(("", 8080), H).serve_forever()
+          ports: [{containerPort: 8080}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-sink
+  namespace: alert-test
+spec:
+  selector: {app: alert-sink}
+  ports: [{port: 8080}]

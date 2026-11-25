@@ -1,0 +1,22 @@
+# TEST ONLY: route the image-pull alerts to the test webhook.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: image-pull-route
+  namespace: cattle-monitoring-system
+spec:
+  route:
+    receiver: test-webhook
+    groupBy: [alertname, namespace, pod]
+    groupWait: 30s
+    groupInterval: 1m
+    repeatInterval: 4h
+    matchers:
+      - name: alertname
+        matchType: "=~"
+        value: "ImagePullFailing.*"
+  receivers:
+    - name: test-webhook
+      webhookConfigs:
+        - url: http://alert-sink.alert-test.svc:8080/
+          sendResolved: true

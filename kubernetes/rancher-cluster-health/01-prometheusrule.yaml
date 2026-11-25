@@ -1,0 +1,43 @@
+# Alerts for containers that cannot start because their image cannot be pulled.
+# Critical within 5 minutes for system namespaces, warning within 15 minutes
+# elsewhere. rancher-monitoring loads PrometheusRules from every namespace.
+# The waiting reason is not a grouping label on purpose: it flips between
+# ErrImagePull and ImagePullBackOff on every retry, and each flip would start a
+# new alert whose "for" timer begins again, so the alert would never fire.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: image-pull-failing
+  namespace: cattle-monitoring-system
+spec:
+  groups:
+    - name: image-pull-failing
+      rules:
+        - alert: ImagePullFailingSystem
+          expr: |
+            max by (namespace, pod, container) (
+              kube_pod_container_status_waiting_reason{
+                reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName",
+                namespace=~"kube-system|cattle-.*|ingress-.*|calico-.*|tigera-.*|longhorn-.*|cert-manager|fleet-.*"
+              }
+            ) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "System container cannot pull its image: {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }})"
+            description: "ErrImagePull or ImagePullBackOff for more than 5 minutes. Check the image name, tag and registry access: kubectl -n {{ $labels.namespace }} describe pod {{ $labels.pod }}"
+        - alert: ImagePullFailing
+          expr: |
+            max by (namespace, pod, container) (
+              kube_pod_container_status_waiting_reason{
+                reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName",
+                namespace!~"kube-system|cattle-.*|ingress-.*|calico-.*|tigera-.*|longhorn-.*|cert-manager|fleet-.*"
+              }
+            ) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Container cannot pull its image: {{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }})"
+            description: "ErrImagePull or ImagePullBackOff for more than 15 minutes. kubectl -n {{ $labels.namespace }} describe pod {{ $labels.pod }}"
