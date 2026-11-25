@@ -1,0 +1,166 @@
+# Creates the two buckets and sets anonymous read on them. Safe to run again: a
+# bucket that exists answers 409 and the policy is replaced with the same document.
+# Runs after every sync (PostSync hook, old Job deleted first).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bootstrap
+  namespace: elastic-mirror
+  labels:
+    app.kubernetes.io/name: minio-bootstrap
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio-bootstrap
+      spec:
+      restartPolicy: OnFailure
+      imagePullSecrets:
+        - name: registry-pull
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: registry.example.internal/mirror/curl:8.11.1@sha256:<digest>
+          envFrom:
+            - secretRef:
+                name: minio-root
+          command: [sh, -ec]
+          args:
+            - |
+              H=https://minio.elastic-mirror.svc:9000
+              CA="--cacert /tls/ca.crt"
+              until curl -sf $CA "$H/minio/health/ready"; do sleep 3; done
+              for b in elastic-mirror elastic-kb; do
+                code=$(curl -s $CA --aws-sigv4 aws:amz:us-east-1:s3 -u "$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD" \
+                  -X PUT -o /dev/null -w '%{http_code}' "$H/$b")
+                case "$code" in 200|409) ;; *) echo "create $b: HTTP $code"; exit 1 ;; esac
+                cat > /tmp/policy.json <<EOF
+              {"Version":"2012-10-17","Statement":[
+                {"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::$b/*"]},
+                {"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::$b"]}]}
+              EOF
+                code=$(curl -s $CA --aws-sigv4 aws:amz:us-east-1:s3 -u "$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD" \
+                  -X PUT --data-binary @/tmp/policy.json -o /dev/null -w '%{http_code}' "$H/$b?policy")
+                [ "$code" = 204 ] || { echo "policy $b: HTTP $code"; exit 1; }
+                echo "bucket $b ready"
+              done
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 64Mi}
+      volumes:
+        - name: tls
+          secret:
+            secretName: elastic-mirror-tls
+            items:
+              - {key: ca.crt, path: ca.crt}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi
+---
+# The write-only store user of the high-side file transfer flow. It may put
+# objects into the two buckets and nothing else: no read of other keys, no delete, no admin. The
+# store's root key stays with this namespace. Uses the store image itself (it carries mc), so no
+# new image is pulled. Safe to run again: the policy is replaced, the user password is set from
+# the secret, and attaching a policy that is already attached is checked rather than assumed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-writer-bootstrap
+  namespace: elastic-mirror
+  labels:
+    app.kubernetes.io/name: minio-writer-bootstrap
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio-writer-bootstrap
+      spec:
+      restartPolicy: OnFailure
+      imagePullSecrets:
+        - name: registry-pull
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: registry.example.internal/mirror/minio:RELEASE.<pin>@sha256:<digest>
+          envFrom:
+            - secretRef:
+                name: minio-root
+            - secretRef:
+                name: minio-writer
+          command: [sh, -ec]
+          args:
+            - |
+              export MC_CONFIG_DIR=/tmp/mc
+              mkdir -p /tmp/mc/certs/CAs
+              cp /tls/ca.crt /tmp/mc/certs/CAs/ca.crt
+              until mc alias set local https://minio.elastic-mirror.svc:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null; do sleep 3; done
+              cat > /tmp/writer.json <<EOF
+              {"Version":"2012-10-17","Statement":[
+                {"Effect":"Allow","Action":["s3:PutObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],
+                 "Resource":["arn:aws:s3:::elastic-mirror/*","arn:aws:s3:::elastic-kb/*"]},
+                {"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucketMultipartUploads"],
+                 "Resource":["arn:aws:s3:::elastic-mirror","arn:aws:s3:::elastic-kb"]}]}
+              EOF
+              mc admin policy create local transfer-writer /tmp/writer.json
+              mc admin user add local "$WRITER_USER" "$WRITER_PASSWORD"
+              mc admin policy attach local transfer-writer --user "$WRITER_USER" || true
+              case "$(mc admin user info local "$WRITER_USER")" in
+                *transfer-writer*) echo "writer $WRITER_USER ready" ;;
+                *) echo "policy transfer-writer is not attached to $WRITER_USER"; exit 1 ;;
+              esac
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+      volumes:
+        - name: tls
+          secret:
+            secretName: elastic-mirror-tls
+            items:
+              - {key: ca.crt, path: ca.crt}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi

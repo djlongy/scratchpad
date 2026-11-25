@@ -1,0 +1,14 @@
+# Offline Elastic content for the stacks in this cluster: the package registry
+# (pod epr) and a file store for agent, endpoint, GeoIP, model and knowledge-base
+# files (pod minio). Create the secrets first (see docs/05-high-side.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: elastic-mirror
+resources:
+  - namespace.yaml
+  - tls.yaml
+  - networkpolicy.yaml
+  - minio.yaml
+  - epr.yaml
+  - bootstrap-job.yaml
+  - ingress.yaml

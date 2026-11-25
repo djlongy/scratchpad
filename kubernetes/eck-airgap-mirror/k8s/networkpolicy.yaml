@@ -1,0 +1,66 @@
+# Default deny both ways, then the narrow allows. With no egress rule to the
+# internet and none to any other namespace, the pods cannot reach the internet or
+# docker.elastic.co: the only egress is cluster DNS and the pods of this namespace
+# (the bootstrap Job talks to the store). Image pulls are made by the kubelet on the
+# node, not by the pod, so the registry needs no rule here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: elastic-mirror
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-and-same-namespace
+  namespace: elastic-mirror
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+---
+# Who may read the mirror. Kibana and Elasticsearch pods of each ECK namespace read
+# the registry, the models, the GeoIP databases and the knowledge base. The ingress
+# controller carries agents and Endpoint from outside the cluster to the store.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-consumers
+  namespace: elastic-mirror
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: [elastic-system]   # the namespace(s) of your ECK stacks
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - {protocol: TCP, port: 9000}
