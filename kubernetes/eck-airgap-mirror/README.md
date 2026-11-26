@@ -40,4 +40,6 @@ an artifact transfer process. `kubectl apply -k` deploys resources; it does not 
 images, agent binaries, GeoIP databases, models or documentation across an air gap.
 
 The [individual ECK fragments](eck/README.md) are references for an existing stack.
+[Offline docs and Security Labs](offline-docs/README.md) installs the Agent Builder
+documentation from files on a volume, with no web server or CA trust.
 The combined deployment and its exact feature limits are documented in `stack/README.md`.
