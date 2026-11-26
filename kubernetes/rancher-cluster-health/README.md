@@ -1,163 +1,157 @@
 # Rancher cluster health: dashboard and image-pull alerts
 
-A one-screen Grafana dashboard that is empty when the cluster is healthy, and
-alerts that fire when a container cannot pull its image. Built for
-**Rancher Monitoring** (the `rancher-monitoring` chart that Rancher installs from
-Cluster Tools). Tested with chart `110.0.2+up80.9.1-rancher.22`.
+Install Rancher Monitoring, add a one-screen "Cluster Health" Grafana dashboard that
+is empty when the cluster is healthy, and alert when a container cannot pull its image.
 
-## Why the stock alerts can miss this
+## Requirements
 
-Rancher Monitoring ships `KubeContainerWaiting` (fires after 1 hour) and
-`KubePodNotReady` (15 minutes, warning). `KubeContainerWaiting` keeps the
-waiting `reason` as a label. A pod that cannot pull its image alternates between
-`ErrImagePull` and `ImagePullBackOff` on every retry (at most every 5 minutes), so
-each flip starts a new alert whose 1-hour timer begins again. In testing its timer
-restarted every few minutes, so it never got near 1 hour and never fired. The
-rules here group without the reason, so the timer survives the flips: the
-5-minute rule fired on time while the stock rule was still restarting.
-
-Even a firing alert does nothing unless Alertmanager routes it somewhere. Step 3
-covers that, including a Rancher default that silently drops most alerts.
-
-## Files
+- Rancher-managed cluster, `kubectl` with cluster-admin.
+- Rancher Monitoring chart `110.0.2+up80.9.1-rancher.22` (tested).
 
 | File | What it is |
 |---|---|
-| `01-prometheusrule.yaml` | `ImagePullFailingSystem` (critical after 5 minutes, system namespaces) and `ImagePullFailing` (warning after 15 minutes, everything else) |
-| `02-dashboard-configmap.yaml` | The "Cluster Health" dashboard, loaded by Rancher's Grafana from `cattle-dashboards` |
-| `cluster-health.json` | The same dashboard for **Dashboards, New, Import** in Grafana |
-| `03-alertmanagerconfig-email.yaml` | Route the alerts to email |
-| `03-alertmanagerconfig-teams.yaml` | Route the alerts to a Microsoft Teams channel |
-| `test/` | A webhook receiver, a test route and two broken workloads to prove it end to end |
+| `01-prometheusrule.yaml` | `ImagePullFailingSystem` (critical after 5 min, system namespaces), `ImagePullFailing` (warning after 15 min, everything else) |
+| `02-dashboard-configmap.yaml` | The dashboard, auto-loaded by Rancher's Grafana |
+| `cluster-health.json` | The same dashboard for a manual Grafana import |
+| `03-alertmanagerconfig-{email,teams}.yaml` | Send the alerts to email or a Teams channel |
+| `test/` | Two broken workloads and a webhook receiver to prove it end to end |
 
-## 1. Check Rancher Monitoring is installed
+## Step 1: Install Rancher Monitoring
 
-Rancher UI: the cluster, **Cluster Tools**, **Monitoring**. If it is not installed,
-install it there with the defaults. Then:
+Skip if it is already installed (check 1.4 first).
 
-```sh
-kubectl -n cattle-monitoring-system get pods            # prometheus, alertmanager, grafana Running
-kubectl get ns cattle-dashboards                         # created by the chart
-```
+1. Rancher UI: open the cluster.
+2. **Cluster Tools**, then **Monitoring**, then **Install**.
+3. Keep the defaults. On the last page, click **Edit YAML** and add this, so alert
+   routes in step 4 see alerts from every namespace:
 
-## 2. Add the alerts and the dashboard
+   ```yaml
+   alertmanager:
+     alertmanagerSpec:
+       alertmanagerConfigMatcherStrategy:
+         type: None
+   ```
 
-Edit the system-namespace list in `01-prometheusrule.yaml` first if your core
-services live elsewhere (the regex appears twice: `=~` in the first rule and `!~`
-in the second; keep them identical).
+4. Click **Install**, wait for it to finish, then check:
 
-```sh
-kubectl apply -f 01-prometheusrule.yaml
-kubectl apply -f 02-dashboard-configmap.yaml
-```
+   ```sh
+   kubectl -n cattle-monitoring-system get pods     # prometheus, alertmanager, grafana all Running
+   kubectl get ns cattle-dashboards                 # exists
+   ```
 
-Rancher Monitoring loads PrometheusRules from every namespace and Grafana loads any
-ConfigMap labelled `grafana_dashboard: "1"` in `cattle-dashboards`, so nothing
-else is needed. Open Grafana from the Rancher UI (**Monitoring**, **Grafana**),
-then **Dashboards**, **Cluster Health**.
+Already installed without the 1.3 setting: **Apps**, **Installed Apps**,
+`rancher-monitoring`, **Edit/Upgrade**, **Edit YAML**, add it, **Upgrade**.
 
-Healthy, every counter green and every table empty:
+## Step 2: Add the alerts and the dashboard
+
+1. Clone this repo and `cd kubernetes/rancher-cluster-health`.
+2. Open `01-prometheusrule.yaml`. Edit the system-namespace regex if your core
+   services live elsewhere. It appears twice (`=~` and `!~`): keep both identical.
+3. Apply:
+
+   ```sh
+   kubectl apply -f 01-prometheusrule.yaml
+   kubectl apply -f 02-dashboard-configmap.yaml
+   ```
+
+4. Check both loaded:
+
+   ```sh
+   kubectl -n cattle-monitoring-system get prometheusrule image-pull-failing
+   kubectl -n cattle-dashboards get cm cluster-health-dashboard
+   ```
+
+## Step 3: Open the dashboard in Grafana
+
+**From Rancher (normal way):**
+
+1. Rancher UI: the cluster, **Monitoring** (left menu).
+2. Click the **Grafana** tile. Grafana opens through the Rancher proxy, read-only.
+3. **Dashboards**, search `Cluster Health`, open it. It loads within a minute of step 2.
+
+**Without the Rancher UI (port-forward):**
+
+1. `kubectl -n cattle-monitoring-system port-forward deploy/rancher-monitoring-grafana 3000:3000`
+2. Open `http://localhost:3000`, **Dashboards**, **Cluster Health**.
+
+**Make it the home page (needs admin):**
+
+1. Get the admin password (user `admin`, chart default `prom-operator`, change it):
+
+   ```sh
+   kubectl -n cattle-monitoring-system get secret rancher-monitoring-grafana \
+     -o jsonpath='{.data.admin-password}' | base64 -d; echo
+   ```
+
+2. Port-forward as above, **Sign in** as `admin`.
+3. Open Cluster Health, star it.
+4. **Administration**, **Default preferences**, **Home dashboard**: Cluster Health, **Save**.
+
+Healthy, every counter `0` and every table `None: healthy`:
 
 ![Cluster Health dashboard, healthy](cluster-health-healthy.png)
 
-During the step 4 test (two broken workloads):
+With two broken workloads (step 5):
 
 ![Cluster Health dashboard with two broken workloads](cluster-health-failing.png)
 
-| Panel | Shows | Healthy |
-|---|---|---|
-| Six counters | containers that cannot start, image pull failures, pods not ready, workloads short of replicas, nodes not ready, firing critical alerts | all `0`, green |
-| Containers that cannot start (reason) | namespace, pod, container and reason for every stuck container: ImagePullBackOff, CrashLoopBackOff, CreateContainerConfigError and so on | `None: healthy` |
-| Workloads short of replicas | Deployments, DaemonSets and StatefulSets with unavailable replicas | `None: healthy` |
-| Pods not ready | every pod not Ready (finished Job pods excluded) | `None: healthy` |
-| Containers restarting (last hour) | restarts per container | `None: healthy` |
-| Firing alerts | everything Alertmanager would send, except Watchdog | `None: healthy` |
-
-To make it the first thing people see: open the dashboard, star it, then
-**Administration**, **Default preferences**, **Home dashboard**: Cluster Health.
-
-## 3. Send the alerts somewhere
-
-Pick `03-alertmanagerconfig-email.yaml` or `03-alertmanagerconfig-teams.yaml`,
-fill in the placeholders and the Secret, and apply it.
-
-**The trap:** by default an AlertmanagerConfig only receives alerts whose
-`namespace` label equals the AlertmanagerConfig's own namespace (the operator's
-`OnNamespace` matcher strategy). A route created in `cattle-monitoring-system`
-therefore never sees an alert about a pod in `kube-system`. Turn that off once,
-in the Rancher Monitoring chart values (Rancher UI: **Apps**, **Installed Apps**,
-`rancher-monitoring`, **Edit/Upgrade**, YAML):
-
-```yaml
-alertmanager:
-  alertmanagerSpec:
-    alertmanagerConfigMatcherStrategy:
-      type: None
-```
-
-Check it took effect:
-
-```sh
-kubectl -n cattle-monitoring-system get alertmanager -o jsonpath='{.items[0].spec.alertmanagerConfigMatcherStrategy}'
-# {"type":"None"}
-```
-
-## 4. Test it
-
-Uses a namespace that matches the system pattern (`cattle-.*`), so nothing real is
-touched. Allow about 7 minutes.
-
-```sh
-kubectl apply -f test/webhook-receiver.yaml          # namespace alert-test: logs what Alertmanager sends
-kubectl apply -f test/alertmanagerconfig-webhook.yaml
-kubectl apply -f test/broken-workloads.yaml          # two Deployments with an image tag that does not exist
-
-kubectl get pods -A | grep broken                    # ErrImagePull / ImagePullBackOff
-```
-
-- At once: the dashboard counters show `2` and both pods appear in the tables.
-- After about 5 minutes: `ImagePullFailingSystem` fires (Grafana **Alerting**, or
-  the Alertmanager UI from the Rancher Monitoring page).
-- Within a minute of firing: the receiver logs it:
-
-  ```sh
-  kubectl -n alert-test logs deploy/alert-sink
-  # ALERT firing ImagePullFailingSystem critical cattle-healthcheck-test broken-core-service-...
-  ```
-
-- After 15 minutes: `ImagePullFailing` (warning) fires for the `alert-test` pod.
-
-Clean up, which also shows the "resolved" message arriving:
-
-```sh
-kubectl delete -f test/broken-workloads.yaml
-kubectl -n alert-test logs deploy/alert-sink | tail   # ALERT resolved ...
-kubectl delete -f test/alertmanagerconfig-webhook.yaml -f test/webhook-receiver.yaml
-```
-
-## Test record
-
-Run on a three-node k3s cluster with `rancher-monitoring` `110.0.2+up80.9.1-rancher.22`
-installed from the Rancher chart repository with default values:
-
-| Check | Result |
+| Panel | Shows |
 |---|---|
-| Rule loaded from `cattle-monitoring-system` | yes, no extra selector needed |
-| Dashboard loaded from `cattle-dashboards` | yes, within a minute |
-| Dashboard with two broken workloads | every counter and table showed both (screenshot above) |
-| `ImagePullFailingSystem` | pending at once, firing 5 minutes later, through the reason flips |
-| Stock `KubeContainerWaiting` on the same pods | timer restarted at each flip, still pending when the test ended |
-| Route in `cattle-monitoring-system`, default matcher strategy | alert sent to the `null` receiver; generated route carried `namespace="cattle-monitoring-system"` |
-| Same route after `alertmanagerConfigMatcherStrategy: {type: None}` | firing message at the webhook within a minute |
-| Workload deleted | resolved message within about a minute |
-| `ImagePullFailing` (warning, other namespaces) | firing after 15 minutes, delivered |
-| Email and Teams routes | accepted by the API server (`kubectl apply --dry-run=server`); not sent to a real mailbox or channel |
+| Six counters | containers that cannot start, image pull failures, pods not ready, workloads short of replicas, nodes not ready, firing critical alerts |
+| Containers that cannot start | namespace, pod, container, reason (ImagePullBackOff, CrashLoopBackOff, CreateContainerConfigError...) |
+| Workloads short of replicas | Deployments, DaemonSets, StatefulSets with unavailable replicas |
+| Pods not ready | every pod not Ready, finished Job pods excluded |
+| Containers restarting | restarts per container, last hour |
+| Firing alerts | everything Alertmanager would send, except Watchdog |
 
-## Notes
+## Step 4: Send the alerts somewhere
 
-- `for: 5m` and `for: 15m` are the only timing knobs. Alertmanager waits a further
-  `groupWait` (30 seconds here) before the first message.
-- `InvalidImageName` is included: it never retries, so it would otherwise only
-  show on the dashboard.
-- The dashboard needs nothing beyond kube-state-metrics, which Rancher Monitoring
-  includes.
+1. Pick `03-alertmanagerconfig-email.yaml` or `03-alertmanagerconfig-teams.yaml`.
+2. Replace every placeholder (`example.com` addresses, SMTP host or Teams webhook URL).
+   Put the real password or webhook URL in the Secret at the top of the file, not in git.
+3. `kubectl apply -f 03-alertmanagerconfig-email.yaml` (or `-teams`).
+4. Confirm the step 1.3 setting is live. Without it the route only sees alerts about
+   pods in `cattle-monitoring-system` and everything else goes to the `null` receiver:
+
+   ```sh
+   kubectl -n cattle-monitoring-system get alertmanager \
+     -o jsonpath='{.items[0].spec.alertmanagerConfigMatcherStrategy}'   # {"type":"None"}
+   ```
+
+## Step 5: Test it (about 7 minutes)
+
+1. Deploy the receiver, its route and two broken workloads:
+
+   ```sh
+   kubectl apply -f test/webhook-receiver.yaml
+   kubectl apply -f test/alertmanagerconfig-webhook.yaml
+   kubectl apply -f test/broken-workloads.yaml
+   ```
+
+2. `kubectl get pods -A | grep broken` shows `ErrImagePull` or `ImagePullBackOff`.
+3. Dashboard: counters show `2`, both pods in the tables, at once.
+4. After 5 minutes `ImagePullFailingSystem` fires. Check the receiver got it:
+
+   ```sh
+   kubectl -n alert-test logs deploy/alert-sink
+   # ALERT firing ImagePullFailingSystem critical cattle-healthcheck-test broken-core-service-...
+   ```
+
+5. After 15 minutes `ImagePullFailing` (warning) fires for the `alert-test` pod.
+6. Clean up. The receiver then logs `ALERT resolved`:
+
+   ```sh
+   kubectl delete -f test/broken-workloads.yaml
+   kubectl -n alert-test logs deploy/alert-sink | tail
+   kubectl delete -f test/alertmanagerconfig-webhook.yaml -f test/webhook-receiver.yaml
+   ```
+
+## Behaviour
+
+- The stock `KubeContainerWaiting` (1 hour) keeps `reason` as a label. The reason flips
+  between `ErrImagePull` and `ImagePullBackOff` on every retry, restarting its timer, so
+  it never fires. These rules group without `reason`, so their timer survives the flips.
+- `InvalidImageName` is included: it never retries, so it would otherwise only show on
+  the dashboard.
+- Alertmanager waits `groupWait` (30 seconds) after `for:` before the first message.
+- The dashboard needs only kube-state-metrics, which Rancher Monitoring includes.
