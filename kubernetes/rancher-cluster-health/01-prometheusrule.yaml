@@ -1,6 +1,6 @@
 # Alerts for containers that cannot start because their image cannot be pulled.
 # Critical within 5 minutes for system namespaces, warning within 15 minutes
-# elsewhere. rancher-monitoring loads PrometheusRules from every namespace.
+# elsewhere. Apply with -n set to the monitoring namespace (README).
 # The waiting reason is not a grouping label on purpose: it flips between
 # ErrImagePull and ImagePullBackOff on every retry, and each flip would start a
 # new alert whose "for" timer begins again, so the alert would never fire.
@@ -8,7 +8,6 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: image-pull-failing
-  namespace: cattle-monitoring-system
 spec:
   groups:
     - name: image-pull-failing

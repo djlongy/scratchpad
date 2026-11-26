@@ -1,10 +1,9 @@
-# Grafana dashboard "Cluster Health". rancher-monitoring's Grafana loads every
-# ConfigMap labelled grafana_dashboard: "1" in namespace cattle-dashboards.
+# Grafana dashboard "Cluster Health". The Grafana sidecar loads every ConfigMap
+# labelled grafana_dashboard: "1". Apply with -n set per the README.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: cluster-health-dashboard
-  namespace: cattle-dashboards
   labels:
     grafana_dashboard: "1"
 data:

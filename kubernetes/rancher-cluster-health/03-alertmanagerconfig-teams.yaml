@@ -6,7 +6,6 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: teams-webhook
-  namespace: cattle-monitoring-system
 type: Opaque
 stringData:
   url: "https://example.webhook.office.com/REPLACE-WITH-YOUR-WORKFLOW-URL"
@@ -15,7 +14,6 @@ apiVersion: monitoring.coreos.com/v1alpha1
 kind: AlertmanagerConfig
 metadata:
   name: cluster-health-teams
-  namespace: cattle-monitoring-system
 spec:
   route:
     receiver: teams

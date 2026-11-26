@@ -3,7 +3,6 @@ apiVersion: monitoring.coreos.com/v1alpha1
 kind: AlertmanagerConfig
 metadata:
   name: image-pull-route
-  namespace: cattle-monitoring-system
 spec:
   route:
     receiver: test-webhook
